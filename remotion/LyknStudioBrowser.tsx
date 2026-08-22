@@ -934,23 +934,23 @@ const BrowserCard: React.FC<{
           style={{
             height: 30,
             borderRadius: 99,
-            padding: "0 12px",
+            padding: "0 8px 0 12px",
             display: "flex",
             alignItems: "center",
-            gap: 6,
-            background: useLyknOn ? "#0a0a0a" : "rgba(255,255,255,0.72)",
-            color: useLyknOn ? "#fff" : ink,
-            border: "1px solid rgba(0,0,0,0.1)",
+            gap: 5,
+            background: useLyknOn ? "#2a62e6" : "#3b78ff",
+            color: "#fff",
+            border: "1px solid transparent",
             fontSize: 12,
             fontWeight: 600,
             transform: `scale(${1 - usePress * 0.08})`,
-            boxShadow: useLyknOn ? "0 4px 14px rgba(0,0,0,0.25)" : undefined,
+            boxShadow: "0 4px 14px rgba(59,120,255,0.28)",
             flexShrink: 0,
             marginLeft: "auto",
           }}
         >
-          <LyknMark size={14} color={useLyknOn ? "#fff" : "#3b78ff"} />
-          {useLyknOn ? "Hide LYKN chat" : "Use LYKN"}
+          Use
+          <LyknMark size={18} color="#fff" />
         </div>
       </div>
 

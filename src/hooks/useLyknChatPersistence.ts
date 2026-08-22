@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { supabase } from "@/lib/supabase";
-import { useLyknChatStore } from "@/store/lyknChatStore";
-import type { Block } from "@/lyknChat/types";
 import { snapshotToSynthesisText } from "@/lib/synthesis/sourceText";
 import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
 import { scheduleUserProfileRefresh } from "@/lib/synthesis/profileRefresh";
@@ -116,9 +114,6 @@ function migrateNotesContent(snapshot: any): NotePage[] {
 export interface UseLyknChatPersistenceParams {
   routeChatId: string | undefined;
   userId: string | undefined;
-  gridSize: number;
-  loadBlocks: (blocks: Block[], opts?: any) => void;
-  reset: () => void;
   chatMessages: any[];
   chatMessagesRef: MutableRefObject<any[]>;
   aiThreadRef: MutableRefObject<Array<{ role: "user" | "assistant"; content: string }>>;
@@ -128,10 +123,8 @@ export interface UseLyknChatPersistenceParams {
   setChatMessages: Dispatch<SetStateAction<any[]>>;
   setChatRailOpen: Dispatch<SetStateAction<boolean>>;
   setChatRailVisible: Dispatch<SetStateAction<boolean>>;
-  setChatMode: Dispatch<SetStateAction<boolean>>;
   reSignChatAttachments: (messages?: any[]) => void;
   restoreSavedToVaultState: (bid: string | null) => void;
-  onCanvasChange?: () => void;
   onDraftEffectCleanup?: () => void;
   savedMediaUrls: Set<string>;
   savedYouTubeIds: Set<string>;
@@ -147,11 +140,11 @@ export interface UseLyknChatPersistenceParams {
 
 export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
   const {
-    routeChatId, userId, gridSize, loadBlocks, reset,
+    routeChatId, userId,
     chatMessages, chatMessagesRef, aiThreadRef, notesPagesRef, setNotesPages, setActiveNotePageId,
-    setChatMessages, setChatRailOpen, setChatRailVisible, setChatMode,
+    setChatMessages, setChatRailOpen, setChatRailVisible,
     reSignChatAttachments, restoreSavedToVaultState,
-    onCanvasChange, onDraftEffectCleanup,
+    onDraftEffectCleanup,
     savedMediaUrls, savedYouTubeIds,
     chatModelKeyRef,
     onChatModelKeyHydrated,
@@ -218,7 +211,6 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
   /*  buildSnapshot                                                      */
   /* ------------------------------------------------------------------ */
   const buildSnapshot = useCallback(() => {
-    const st = useLyknChatStore.getState();
     const current = titleRef.current;
     const resolvedTitle = (current && String(current).trim()) ? String(current).trim() : "New Chat";
     const chatModelKey =
@@ -226,11 +218,11 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
         ? String(chatModelKeyRef.current).trim()
         : null;
     return {
-      blocks: st.blocks,
-      blockOrder: st.blockOrder,
-      camera: st.camera,
-      gridSize: st.gridSize,
-      wireConnections: st.wireConnections,
+      blocks: {},
+      blockOrder: [],
+      camera: { x: 0, y: 0, zoom: 1 },
+      gridSize: 24,
+      wireConnections: [],
       title: resolvedTitle,
       version: SNAPSHOT_VERSION,
       chatMessages: chatMessagesRef.current,
@@ -250,104 +242,6 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
   const applySnapshot = useCallback(
     (snapshot: any, hydrateChatId?: string | null) => {
       if (!snapshot || typeof snapshot !== "object") return;
-      const blocksRecord = (snapshot.blocks && typeof snapshot.blocks === "object") ? snapshot.blocks : {};
-      const order: string[] = Array.isArray(snapshot.blockOrder)
-        ? snapshot.blockOrder.filter((id: any) => typeof id === "string" && id)
-        : Object.keys(blocksRecord);
-      const isTransientTextBrick = (b: any) => {
-        const data = (b?.data && typeof b.data === "object" ? b.data : {}) as Record<string, any>;
-        const txt = String(data.content ?? data.body ?? b?.content ?? "")
-          .trim()
-          .toLowerCase();
-        const bTitle = String(data.title || "").trim().toLowerCase();
-        const isBrickish =
-          String(b?.universalType || b?.universal?.blockType || "").toLowerCase() === "brick" ||
-          String(data.kind || "").toLowerCase() === "brick";
-        if (isBrickish && (txt === "text brick" || bTitle === "text brick")) return true;
-        const isLegacyStarter =
-          (bTitle === "workspace note" || txt.startsWith("new ") || txt.includes("workspace")) &&
-          txt.includes("click and type to edit this square");
-        return isLegacyStarter;
-      };
-      const blocks: Block[] = order
-        .map((id) => blocksRecord[id])
-        .filter((b: any) => b && typeof b === "object" && b.id)
-        .filter((b: any) => { try { return !isTransientTextBrick(b); } catch { return true; } })
-        .map((b: any) => {
-          try {
-            if (!b?.universal) return b;
-            return {
-              ...b,
-              universal: {
-                ...b.universal,
-                dataSource: {
-                  kind: b.universal?.dataSource?.kind || "none",
-                  inputs: Array.isArray(b.universal?.dataSource?.inputs) ? b.universal.dataSource.inputs : [],
-                  outputs: Array.isArray(b.universal?.dataSource?.outputs) ? b.universal.dataSource.outputs : [],
-                },
-                events: {
-                  emits: Array.isArray(b.universal?.events?.emits) ? b.universal.events.emits : [],
-                  listensTo: Array.isArray(b.universal?.events?.listensTo) ? b.universal.events.listensTo : [],
-                },
-                logic: {
-                  conditions: Array.isArray(b.universal?.logic?.conditions) ? b.universal.logic.conditions : [],
-                  filters: Array.isArray(b.universal?.logic?.filters) ? b.universal.logic.filters : [],
-                  dependencies: Array.isArray(b.universal?.logic?.dependencies) ? b.universal.logic.dependencies : [],
-                  triggers: Array.isArray(b.universal?.logic?.triggers) ? b.universal.logic.triggers : [],
-                },
-                aiContext: {
-                  purpose: String(b.universal?.aiContext?.purpose || ""),
-                  tags: Array.isArray(b.universal?.aiContext?.tags) ? b.universal.aiContext.tags : [],
-                  semanticType: String(b.universal?.aiContext?.semanticType || ""),
-                },
-                permissions: Array.isArray(b.universal?.permissions) ? b.universal.permissions : ["view", "edit", "admin"],
-                visibility: b.universal?.visibility || "visible",
-                connections: Array.isArray(b.universal?.connections) ? b.universal.connections : [],
-              },
-            };
-          } catch (blockErr) {
-            if (import.meta.env.DEV) console.warn("[LYKN] Skipping corrupt block:", b?.id, blockErr);
-            return null;
-          }
-        })
-        .filter(Boolean) as Block[];
-      const rawCam = snapshot.camera && typeof snapshot.camera === "object" ? snapshot.camera : {};
-      const camera = {
-        x: Number.isFinite(rawCam.x) ? rawCam.x : 0,
-        y: Number.isFinite(rawCam.y) ? rawCam.y : 0,
-        zoom: Number.isFinite(rawCam.zoom) ? Math.max(0.2, Math.min(3, rawCam.zoom)) : 1,
-      };
-      const g = Number.isFinite(snapshot.gridSize) ? Number(snapshot.gridSize) : gridSize;
-      const wires = Array.isArray(snapshot.wireConnections) ? snapshot.wireConnections : [];
-      loadBlocks(blocks, { camera, gridSize: g, wireConnections: wires });
-
-      const st = useLyknChatStore.getState();
-      const loadedOrder = st.blockOrder;
-      const isDefaultCamera = camera.x === 0 && camera.y === 0;
-      if (loadedOrder.length > 0 && isDefaultCamera) {
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const id of loadedOrder) {
-          const b = st.blocks[id] as any;
-          if (!b) continue;
-          minX = Math.min(minX, Number(b.x) || 0);
-          minY = Math.min(minY, Number(b.y) || 0);
-          maxX = Math.max(maxX, (Number(b.x) || 0) + (Number(b.width) || 0));
-          maxY = Math.max(maxY, (Number(b.y) || 0) + (Number(b.height) || 0));
-        }
-        if (minX < Infinity) {
-          const vpW = window.innerWidth || 1280;
-          const vpH = window.innerHeight || 800;
-          const z = camera.zoom || 1;
-          const cx = (minX + maxX) / 2;
-          const cy = (minY + maxY) / 2;
-          st.setCamera({ x: cx - vpW / (2 * z), y: cy - vpH / (2 * z), zoom: z });
-        }
-      } else if (loadedOrder.length === 0) {
-        const vpW = window.innerWidth || 1280;
-        const vpH = window.innerHeight || 800;
-        st.setCamera({ x: -vpW / 2, y: -vpH / 2, zoom: 1 });
-      }
-
       if (snapshot.title) setTitleTracked(String(snapshot.title));
 
       const hydratedModelKey =
@@ -381,35 +275,7 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
         }
       }
 
-      (async () => {
-        const innerSt = useLyknChatStore.getState();
-        const pending: { id: string; blk: any; field: string }[] = [];
-        for (const id of innerSt.blockOrder) {
-          const blk: any = innerSt.blocks[id];
-          if (!blk?.data?.storagePath) continue;
-          const field = blk.type === "create" && blk.mode === "image" ? "src" : "url";
-          const current = String(blk.data[field] || "");
-          if (current && !current.startsWith("data:") && current !== "") continue;
-          pending.push({ id, blk, field });
-        }
-        if (pending.length === 0) return;
-        const results = await Promise.allSettled(
-          pending.map(({ id, blk, field }) =>
-            supabase.storage
-              .from(blk.data.storageBucket || "user-files")
-              .createSignedUrl(blk.data.storagePath, 60 * 60 * 24 * 7)
-              .then(({ data: signed }) => ({ id, blk, field, url: signed?.signedUrl }))
-          )
-        );
-        for (const r of results) {
-          if (r.status === "fulfilled" && r.value.url) {
-            const { id, blk, field, url } = r.value;
-            innerSt.updateBlock(id, { data: { ...blk.data, [field]: url } } as any);
-          }
-        }
-      })();
-
-        const chatChatId = hydrateChatId ?? chatId;
+      const chatChatId = hydrateChatId ?? chatId;
       if (chatChatId) {
         const boardChatKey = `lyknchat_chat_${chatChatId}`;
         let cachedMessages: any[] = [];
@@ -456,7 +322,7 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
       setActiveNotePageId(restoredPages[0].id);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chatId, gridSize, loadBlocks]
+    [chatId]
   );
 
   const applySnapshotRef = useRef(applySnapshot);
@@ -468,45 +334,6 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
   const isBoardEmpty = useCallback(() => {
     if (chatMessages.length > 0) return false;
     if (aiThreadRef.current.length > 0) return false;
-    const st = useLyknChatStore.getState();
-    const blockIds = st.blockOrder || [];
-    const blocksMap = st.blocks || {};
-    const MEDIA_MODES = new Set([
-      "image",
-      "video",
-      "audio",
-      "embed",
-      "pdf",
-      "youtube",
-      "social",
-      "spreadsheet",
-      "table",
-      "media",
-      "link",
-      "file",
-    ]);
-    const meaningful = blockIds.filter((id: string) => {
-      const b = blocksMap[id] as any;
-      if (!b) return false;
-      const data = b?.data && typeof b.data === "object" ? b.data : {};
-      const content = String(data.content ?? data.body ?? b?.content ?? "").trim();
-      const fmt = String(b?.format || data.format || "").toLowerCase();
-      const mode = String(b?.mode || data.mode || "").toLowerCase();
-      // Any rendered media / embed / file / table brick counts. These store
-      // their payload in data.url / data.src / data.videoId / data.storagePath
-      // rather than in content, so the legacy "must have content" rule was
-      // wrong and could trigger empty-board cleanup that DELETED the row.
-      if (fmt === "media" || fmt === "table" || fmt === "button") return true;
-      if (mode && MEDIA_MODES.has(mode)) return true;
-      if (b?.type === "create") return true;
-      if (
-        (data && (data.url || data.src || data.videoId || data.storagePath || data.dataUrl
-          || data.audioData || data.pdfData || data.oembedHtml || data.extractedText))
-      ) return true;
-      if (content.length > 0) return true;
-      return false;
-    });
-    if (meaningful.length > 0) return false;
     if (!isNotesPagesEmpty(notesPagesRef.current)) return false;
     return true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -864,20 +691,9 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
         userRenamedRef.current = demoTitle !== "New Chat";
         chatIdRef.current = routeChatId;
         setChatId(routeChatId);
-        reset();
         chatMessagesRef.current = [];
         aiThreadRef.current = [];
         setChatMessages([]);
-        // Demo snapshots already carry a non-default camera computed at
-        // fetch time (see `computeDemoCamera` in demoGrids.js) — framing
-        // the top of the grid at a zoom that fits the bbox width. That
-        // lets `applySnapshot` commit the camera in a single update via
-        // `loadBlocks({ camera })`, bypassing its default-camera auto-
-        // centre branch. Patching the camera a second time from here
-        // would open a window where an in-flight wheel-zoom flush reads
-        // a stale `canvasZoomRef` / `el.scrollTop` pair and clamps the
-        // scroll to `maxTop`, visibly shooting the user to the bottom
-        // of the grid on their first zoom-out gesture.
         if (snapshot) applySnapshotRef.current(snapshot, routeChatId);
         // applySnapshot hydrates chat from the explicit board id passed
         // above — no manual branch needed here.
@@ -1034,7 +850,6 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
           if (!rtSnap.isChatLoading) queueMicrotask(() => saveSnapshotRef.current());
         } catch { /* ignore */ }
       };
-      reset();
       chatMessagesRef.current = [];
       aiThreadRef.current = [];
       setChatMessages([]);
@@ -1198,29 +1013,13 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
   useEffect(() => {
     if (!chatId || !userId) return;
     if (isDemoLyknChatId(chatId)) return; // demo grids never persist
-    let draftTimer: ReturnType<typeof setTimeout> | null = null;
-    const unsubscribe = useLyknChatStore.subscribe(() => {
-      onCanvasChange?.();
-      if (draftTimer) return;
-      draftTimer = setTimeout(() => {
-        draftTimer = null;
-        try {
-          const st = useLyknChatStore.getState();
-          localStorage.setItem(`lyknchat_camera_${chatId}`, JSON.stringify(st.camera));
-          const snapshot = buildSnapshot();
-          localStorage.setItem(`lyknchat_draft_${chatId}`, JSON.stringify(snapshot));
-        } catch { /* quota */ }
-      }, 2000);
-    });
     return () => {
-      unsubscribe();
-      if (draftTimer) clearTimeout(draftTimer);
       if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
       onDraftEffectCleanup?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId, buildSnapshot, onCanvasChange, userId]);
+  }, [chatId, userId]);
 
   /* ------------------------------------------------------------------ */
   /*  Chat → Supabase debounced save (cross-device sync)                 */

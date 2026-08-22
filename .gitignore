@@ -71,3 +71,8 @@ gitleaks-report.json
 
 # macOS Spotlight saved-search bundles
 *.cannedSearch/
+eval/runs/
+eval/mind2web/cache/
+
+# Swift build output for the native actuator
+native/**/.build/

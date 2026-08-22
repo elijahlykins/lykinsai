@@ -14,23 +14,28 @@ interface LyknOutlineSpinnerProps {
   size?: number;
   /** Stroke thickness in screen px (non-scaling). */
   strokeWidth?: number;
+  /** Freeze the mark on its solid frame instead of looping the draw. */
+  paused?: boolean;
   className?: string;
 }
 
 export default function LyknOutlineSpinner({
   size = 24,
   strokeWidth = 1.75,
+  paused = false,
   className = "",
 }: LyknOutlineSpinnerProps) {
   return (
     <svg
-      className={`lykn-outline-spinner ${className}`}
+      className={`lykn-outline-spinner ${
+        paused ? "lykn-outline-spinner--static" : ""
+      } ${className}`}
       width={size}
       height={size}
       viewBox={ICON_VIEWBOX}
       fill="none"
       role="img"
-      aria-label="Loading"
+      aria-label={paused ? "Waiting for you" : "Loading"}
       style={{ flexShrink: 0 }}
     >
       <path

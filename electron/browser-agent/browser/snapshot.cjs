@@ -14,21 +14,36 @@ let snapshotCounter = 0;
  * `catalog` items come from ownedBrowserAct.getDOMCatalog
  * ({id, tag, type, role, selector, label, value, checked, href, clientX, clientY, inView}).
  */
-function buildSnapshot({ url = "", title = "", catalog = [], text = "", tabs = [] } = {}) {
+function buildSnapshot({ url = "", title = "", catalog = [], text = "", tabs = [], viewport = null } = {}) {
   snapshotCounter += 1;
   const id = `snap-${snapshotCounter}`;
   const elements = [];
   const byRef = new Map();
+  const byLoc = new Map();
   for (let i = 0; i < catalog.length; i += 1) {
     const item = catalog[i];
     if (!item) continue;
-    const ref = `e${i + 1}`;
+    // The uid is minted in page context and pinned to the element for the
+    // document's lifetime. A catalog from an older collector has none, so fall
+    // back to position — a stale ref is better than a crash.
+    const uid = item.uid === undefined || item.uid === null || item.uid === "" ? `p${i + 1}` : item.uid;
+    const ref = `e${uid}`;
+    const role = normalizeRole(item);
+    const label = String(item.label || "").slice(0, 120);
     const el = {
       ref,
-      role: normalizeRole(item),
-      label: String(item.label || "").slice(0, 120),
+      loc: elementLocator(item, role, label),
+      role,
+      label,
       value: item.value ? String(item.value).slice(0, 80) : "",
       checked: item.checked === true,
+      // Tri-state on purpose: null means the widget does not claim the state at
+      // all, which is different from claiming it and being false. Collapsing
+      // the two would make every plain button look like a collapsed menu.
+      expanded: asTriState(item.expanded),
+      selected: asTriState(item.selected),
+      pressed: asTriState(item.pressed),
+      current: item.current ? String(item.current).slice(0, 20) : "",
       href: item.href ? String(item.href).slice(0, 200) : "",
       inView: item.inView !== false,
       // State the model has to know or it wastes rounds: clicking a disabled
@@ -43,7 +58,11 @@ function buildSnapshot({ url = "", title = "", catalog = [], text = "", tabs = [
       raw: item,
     };
     elements.push(el);
-    byRef.set(ref, el);
+    // Two elements can collide on a ref only if the collector handed out a
+    // duplicate uid. First writer wins so the earlier (usually in-view) element
+    // keeps the handle the model was given.
+    if (!byRef.has(ref)) byRef.set(ref, el);
+    if (el.loc && !byLoc.has(el.loc)) byLoc.set(el.loc, el);
   }
   return {
     id,
@@ -53,8 +72,22 @@ function buildSnapshot({ url = "", title = "", catalog = [], text = "", tabs = [
     tabs: Array.isArray(tabs) ? tabs : [],
     elements,
     byRef,
+    byLoc,
     visibleText: String(text || ""),
+    // The viewport every position in this snapshot was measured against.
+    // Null when the collector predates viewport reporting — the layout guard
+    // simply stays quiet then.
+    viewport:
+      viewport && Number(viewport.w) > 0 && Number(viewport.h) > 0
+        ? { w: Number(viewport.w), h: Number(viewport.h) }
+        : null,
   };
+}
+
+function asTriState(value) {
+  if (value === true) return true;
+  if (value === false) return false;
+  return null;
 }
 
 function normalizeRole(item) {
@@ -76,32 +109,96 @@ function normalizeRole(item) {
 }
 
 /**
+ * A locator that outlives the snapshot that produced it.
+ *
+ * A uid dies with its document, so after a navigation or a framework remount
+ * the model has nothing durable to aim at and has to re-read the page. These
+ * are ordered by how well each survives a re-render: an author-written DOM id
+ * essentially always does, a link's path nearly always does, and role+label
+ * survives anything short of a copy change. The generated `nth-of-type` chain
+ * is last because it is the one that breaks the moment the DOM shifts —
+ * exactly the failure the uid already fixed.
+ */
+function elementLocator(item, role, label) {
+  const selector = String(item?.selector || "").trim();
+  if (/^#[^ >]+$/.test(selector)) return `css:${selector}`;
+  const href = String(item?.href || "").trim();
+  if (href && !/^(?:javascript:|#)/i.test(href)) {
+    try {
+      const u = new URL(href);
+      if (/^https?:$/i.test(u.protocol)) return `href:${u.pathname}${u.search}`.slice(0, 120);
+    } catch {
+      /* relative or malformed — fall through */
+    }
+  }
+  const text = String(label || "").trim().slice(0, 60);
+  if (role && text) return `role:${role}|${text}`;
+  return selector ? `css:${selector}`.slice(0, 120) : "";
+}
+
+/**
  * Render a snapshot as compact text for the model. Interactive elements in
  * view come first; below-fold elements fill the remaining budget.
  */
 function formatSnapshotForModel(snapshot, { maxElements = 90, maxTextChars = 5000 } = {}) {
   if (!snapshot) return "(no snapshot)";
+  // A snapshot reaches here from several paths, including `after = before` on a
+  // failed re-observe, so nothing is assumed to be populated.
+  const tabs = Array.isArray(snapshot.tabs) ? snapshot.tabs : [];
+  const elements = Array.isArray(snapshot.elements) ? snapshot.elements : [];
   const lines = [];
   lines.push("PAGE");
   lines.push(`Title: ${snapshot.title || "(untitled)"}`);
   lines.push(`URL: ${snapshot.url || "(blank)"}`);
-  if (snapshot.tabs.length) {
+  if (tabs.length) {
     lines.push("");
     lines.push("TABS");
-    for (const tab of snapshot.tabs) {
+    for (const tab of tabs) {
       lines.push(
         `[${tab.id}] ${String(tab.title || tab.url || "(blank)").slice(0, 80)}${tab.active ? " (active)" : ""}`,
       );
     }
   }
   lines.push("");
+  if (snapshot.collectorFailed) {
+    lines.push(
+      "(WARNING: the page could not be read this round — the list below is incomplete or empty " +
+        "because the collector failed, NOT because the page is empty. Wait and observe again, " +
+        "or take a screenshot.)",
+    );
+    lines.push("");
+  }
+  // The page changed before it was read, and not because the agent acted.
+  // Unexplained, that reads as a site behaving erratically.
+  const cleared = Array.isArray(snapshot.overlaysDismissed) ? snapshot.overlaysDismissed : [];
+  if (cleared.length) {
+    lines.push(
+      `(Cleared out of the way before this snapshot: ${cleared
+        .map((o) => o.what || o.kind)
+        .join("; ")}. That was done for you — do not go looking for it.)`,
+    );
+    lines.push("");
+  }
+  // Still up, and already clicked once without shifting. The model needs this:
+  // a covered page swallows clicks silently, and nothing else in the snapshot
+  // would ever tell it why.
+  const stillUp = Array.isArray(snapshot.overlaysBlocking) ? snapshot.overlaysBlocking : [];
+  if (stillUp.length) {
+    lines.push(
+      `(STILL COVERING THE PAGE: ${stillUp
+        .map((o) => o.what || o.kind)
+        .join("; ")}. An attempt to close it did not work, so clicks on the page behind it may not land. ` +
+        "Deal with it first — its own controls are in the list below, or press Escape.)",
+    );
+    lines.push("");
+  }
   lines.push("INTERACTIVE ELEMENTS");
   // A modal changes what every other element means — say so before listing.
-  if (snapshot.elements.some((e) => e.inDialog)) {
+  if (elements.some((e) => e.inDialog)) {
     lines.push("(A dialog is open. Elements marked [dialog] belong to it; the rest are behind it.)");
   }
   const embeddedHosts = [
-    ...new Set(snapshot.elements.map((e) => e.frameHost).filter(Boolean)),
+    ...new Set(elements.map((e) => e.frameHost).filter(Boolean)),
   ];
   if (embeddedHosts.length) {
     lines.push(
@@ -110,25 +207,76 @@ function formatSnapshotForModel(snapshot, { maxElements = 90, maxTextChars = 500
         `Embedded documents here: ${embeddedHosts.join(", ")}.)`,
     );
   }
-  const chosen = chooseElements(snapshot.elements, maxElements);
+  const chosen = chooseElements(elements, maxElements);
   for (const el of chosen) {
     let line = `[${el.ref}] ${el.role} "${el.label}"`;
+    // Where a link goes is the single most useful thing about it, and it was
+    // collected, stored, and then dropped on the floor here. Without it the
+    // agent cannot tell an outbound link from an internal one, cannot choose
+    // between two links with the same text, and cannot skip the click and
+    // navigate straight to the URL it is already holding.
+    const href = linkDestination(el);
+    if (href) line += ` -> ${href}`;
     if (el.value) line += ` value="${el.value}"`;
     if (el.checked) line += " (checked)";
+    // A menu the agent already opened looks identical to one it has not, and
+    // that is how a round gets spent opening something twice — the second
+    // click closing what the first opened.
+    if (el.expanded === true) line += " (open)";
+    else if (el.expanded === false) line += " (closed — click to open)";
+    if (el.selected === true) line += " (selected)";
+    if (el.pressed === true) line += " (on)";
+    else if (el.pressed === false) line += " (off)";
+    if (el.current) line += " (current)";
     if (el.disabled) line += " (disabled — not clickable until something enables it)";
     if (el.inDialog) line += " [dialog]";
     if (el.scrollable) line += " (scrollable — scroll this ref to reach its contents)";
+    // Which of these will accept writing. A rich editor is an anonymous div in
+    // the list otherwise, so the agent hunts for the writing surface by pixel.
+    if (el.raw?.editable === true && !["textbox", "searchbox", "combobox"].includes(String(el.role || ""))) {
+      line += " (editable — you can write here)";
+    }
     if (el.frameHost) line += ` [embedded: ${el.frameHost}]`;
     if (!el.inView) line += " (below fold)";
+    // The durable handle. Refs die with the document; this survives a reload,
+    // so the model can re-aim after a navigation without another observe round.
+    if (el.loc) line += ` loc=${el.loc}`;
     lines.push(line);
   }
-  if (snapshot.elements.length > chosen.length) {
-    lines.push(`(+${snapshot.elements.length - chosen.length} more elements)`);
+  if (elements.length > chosen.length) {
+    lines.push(`(+${elements.length - chosen.length} more elements)`);
   }
   lines.push("");
   lines.push("VISIBLE CONTENT");
-  lines.push(snapshot.visibleText.slice(0, maxTextChars) || "(no visible text)");
+  const fullText = String(snapshot.visibleText || "");
+  lines.push(fullText.slice(0, maxTextChars) || "(no visible text)");
+  if (fullText.length > maxTextChars) {
+    lines.push(`… (${fullText.length - maxTextChars} more characters — scroll or extract to read the rest)`);
+  }
   return lines.join("\n");
+}
+
+/**
+ * A link's destination, trimmed to what is worth spending prompt on.
+ *
+ * Tracking parameters and long opaque ids are noise — the host and path are
+ * what tell the agent whether this leaves the site and where it lands.
+ */
+function linkDestination(el) {
+  const href = String(el?.href || "").trim();
+  if (!href) return "";
+  if (/^(?:javascript:|#|about:blank$)/i.test(href)) return "";
+  try {
+    const u = new URL(href);
+    if (!/^https?:$/i.test(u.protocol)) return href.slice(0, 60);
+    const path = u.pathname === "/" ? "" : u.pathname;
+    const base = `${u.host}${path}`;
+    const q = u.search ? "?…" : "";
+    return `${base.length > 78 ? `${base.slice(0, 77)}…` : base}${q}`;
+  } catch {
+    // Relative or malformed — still more useful to the agent than nothing.
+    return href.slice(0, 60);
+  }
 }
 
 /**
@@ -141,10 +289,33 @@ function formatSnapshotForModel(snapshot, { maxElements = 90, maxTextChars = 500
  */
 function chooseElements(elements, maxElements) {
   const rank = (e) => (e.inView ? 0 : 1);
+  // A dialog makes everything behind it inert, so when one is open its own
+  // controls are the only ones worth spending the budget on. They used to
+  // compete with the whole page for room and routinely lost — a share
+  // dialog's recipient field and Send button were both in the snapshot and
+  // both absent from the list the model was shown, so it fell back to aiming
+  // by pixel at controls it could have clicked by reference.
+  const dialog = elements.filter((e) => e.inDialog);
+  if (dialog.length) {
+    const rest = elements.filter((e) => !e.inDialog).sort((a, b) => rank(a) - rank(b));
+    const kept = [
+      ...dialog.sort((a, b) => rank(a) - rank(b)).slice(0, maxElements),
+      // Whatever room is left goes to the page behind it, which still explains
+      // where the dialog came from.
+      ...rest.slice(0, Math.max(0, maxElements - Math.min(dialog.length, maxElements))),
+    ];
+    return kept.slice(0, maxElements);
+  }
   const embedded = elements.filter((e) => e.frameHost).sort((a, b) => rank(a) - rank(b));
   const main = elements.filter((e) => !e.frameHost).sort((a, b) => rank(a) - rank(b));
   if (!embedded.length) return main.slice(0, maxElements);
-  const embeddedQuota = Math.min(embedded.length, Math.max(30, Math.floor(maxElements / 3)));
+  // A third of the budget, floored at 30 only when the budget is big enough to
+  // spare it. The absolute floor starved the main page at the verifier's
+  // 40-element budget, leaving it ten slots for the whole outer application.
+  const embeddedQuota = Math.min(
+    embedded.length,
+    Math.max(Math.floor(maxElements / 3), Math.min(30, Math.floor(maxElements / 2))),
+  );
   const kept = [
     ...main.slice(0, Math.max(0, maxElements - embeddedQuota)),
     ...embedded.slice(0, embeddedQuota),
@@ -163,22 +334,53 @@ function chooseElements(elements, maxElements) {
 /**
  * Deterministic diff between two snapshots — cheap evidence for the verifier.
  */
+function emptyDiff() {
+  return {
+    urlChanged: false,
+    titleChanged: false,
+    newLabels: [],
+    removedLabels: [],
+    textChanged: false,
+    countChanges: [],
+    stateChanges: [],
+    summary: "",
+  };
+}
+
 function diffSnapshots(before, after) {
-  if (!before || !after) {
-    return { urlChanged: false, titleChanged: false, newLabels: [], removedLabels: [], textChanged: false, summary: "" };
-  }
+  if (!before || !after) return emptyDiff();
   const urlChanged = before.url !== after.url;
   const titleChanged = before.title !== after.title;
-  const beforeLabels = labelSet(before);
-  const afterLabels = labelSet(after);
-  const newLabels = [...afterLabels].filter((l) => !beforeLabels.has(l)).slice(0, 20);
-  const removedLabels = [...beforeLabels].filter((l) => !afterLabels.has(l)).slice(0, 20);
+  const beforeLabels = labelCounts(before);
+  const afterLabels = labelCounts(after);
+  const newLabels = [...afterLabels.keys()].filter((l) => !beforeLabels.has(l)).slice(0, 20);
+  const removedLabels = [...beforeLabels.keys()].filter((l) => !afterLabels.has(l)).slice(0, 20);
+  // How MANY of a repeated label there are, which the label set could never
+  // see. Deleting one of five identical "Remove" rows, or adding a second copy
+  // of a line item, leaves the set of labels untouched and the page changed.
+  const countChanges = [];
+  for (const [label, now] of afterLabels) {
+    const was = beforeLabels.get(label);
+    if (was !== undefined && was !== now) countChanges.push({ label, was, now });
+  }
   const textChanged = normText(before.visibleText) !== normText(after.visibleText);
+  const stateChanges = diffElementStates(before, after);
   const parts = [];
   if (urlChanged) parts.push(`URL changed: ${before.url} -> ${after.url}`);
   if (titleChanged) parts.push(`Title changed: "${before.title}" -> "${after.title}"`);
   if (newLabels.length) parts.push(`New elements: ${newLabels.map((l) => `"${l}"`).join(", ")}`);
   if (removedLabels.length) parts.push(`Gone: ${removedLabels.map((l) => `"${l}"`).join(", ")}`);
+  if (countChanges.length) {
+    parts.push(
+      `Counts changed: ${countChanges
+        .slice(0, 8)
+        .map((c) => `"${c.label}" ${c.was}→${c.now}`)
+        .join(", ")}`,
+    );
+  }
+  if (stateChanges.length) {
+    parts.push(`State changed: ${stateChanges.slice(0, 8).map((c) => c.text).join("; ")}`);
+  }
   if (!urlChanged && !titleChanged && textChanged) parts.push("Page text changed.");
   if (!parts.length) parts.push("No observable page change.");
   return {
@@ -187,21 +389,113 @@ function diffSnapshots(before, after) {
     newLabels,
     removedLabels,
     textChanged,
+    countChanges,
+    stateChanges,
     summary: parts.join(" "),
   };
 }
 
-function labelSet(snapshot) {
-  const set = new Set();
-  for (const el of snapshot.elements) {
-    const label = normText(el.label);
-    if (label && label.length >= 2) set.add(label);
+/**
+ * The states a control can change without changing a word of the page.
+ *
+ * Every one of these is a normal, successful outcome of a click, and none of
+ * them alters a label or the visible text — so an action that produced one used
+ * to be scored as "nothing happened" and sent back through the recovery ladder,
+ * where the retry clicked the same control again and undid it.
+ */
+const TRACKED_STATES = [
+  ["checked", "ticked", "unticked"],
+  ["expanded", "opened", "closed"],
+  ["selected", "selected", "deselected"],
+  ["pressed", "turned on", "turned off"],
+];
+
+function diffElementStates(before, after) {
+  const changes = [];
+  const seen = new Map();
+  for (const el of Array.isArray(before?.elements) ? before.elements : []) {
+    if (el?.ref && !seen.has(el.ref)) seen.set(el.ref, el);
   }
-  return set;
+  for (const now of Array.isArray(after?.elements) ? after.elements : []) {
+    // Refs are minted per element and pinned for the document's lifetime, so
+    // the same ref in both snapshots is the same node — not merely one that
+    // looks like it.
+    const was = now?.ref ? seen.get(now.ref) : null;
+    if (!was) continue;
+    const name = `"${now.label || was.label || now.role}"`;
+    for (const [key, onWord, offWord] of TRACKED_STATES) {
+      if (was[key] === now[key]) continue;
+      // Appearing or losing the attribute entirely is a re-render, not a state
+      // change the agent caused; only a real flip counts.
+      if (typeof was[key] !== "boolean" || typeof now[key] !== "boolean") continue;
+      changes.push({ ref: now.ref, key, from: was[key], to: now[key], text: `${name} ${now[key] ? onWord : offWord}` });
+    }
+    if (was.disabled !== now.disabled) {
+      changes.push({
+        ref: now.ref,
+        key: "disabled",
+        from: was.disabled,
+        to: now.disabled,
+        text: `${name} became ${now.disabled ? "disabled" : "enabled"}`,
+      });
+    }
+    if (normText(was.value) !== normText(now.value)) {
+      changes.push({
+        ref: now.ref,
+        key: "value",
+        from: was.value,
+        to: now.value,
+        text: `${name} now holds "${String(now.value || "").slice(0, 40)}"`,
+      });
+    }
+    if ((was.current || "") !== (now.current || "")) {
+      changes.push({
+        ref: now.ref,
+        key: "current",
+        from: was.current,
+        to: now.current,
+        text: `${name} ${now.current ? "became the current item" : "is no longer the current item"}`,
+      });
+    }
+    if (changes.length >= 24) break;
+  }
+  return changes;
+}
+
+/**
+ * Anything at all that the page did. The loop and the verifier have to agree on
+ * this, or one of them will retry an action the other considers done.
+ */
+function hasObservableChange(diff) {
+  if (!diff) return false;
+  return !!(
+    diff.urlChanged ||
+    diff.titleChanged ||
+    diff.textChanged ||
+    diff.newLabels?.length ||
+    diff.removedLabels?.length ||
+    diff.countChanges?.length ||
+    diff.stateChanges?.length
+  );
+}
+
+function labelCounts(snapshot) {
+  const counts = new Map();
+  for (const el of Array.isArray(snapshot?.elements) ? snapshot.elements : []) {
+    const label = normText(el.label);
+    if (label && label.length >= 2) counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  return counts;
 }
 
 function normText(s) {
   return String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
-module.exports = { buildSnapshot, formatSnapshotForModel, diffSnapshots };
+module.exports = {
+  buildSnapshot,
+  formatSnapshotForModel,
+  diffSnapshots,
+  hasObservableChange,
+  elementLocator,
+};

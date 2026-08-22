@@ -18,31 +18,101 @@ const browserAgent = require("./browser-agent/index.cjs");
 const localSystem = require("./localSystem.cjs");
 const { runLocalAgentTask, looksLikeLocalSystemAsk } = require("./localAgentTask.cjs");
 const artifactBuildIntent = require("../lib/artifactBuildIntent.cjs");
+const workDestination = require("../lib/agentWorkDestination.cjs");
+
+/**
+ * Bridge the main process's sub-tab capability onto the browser controller's
+ * tabs interface, scoped to ONE agent.
+ *
+ * The adapter keeps its own notion of which tab the agent is driving
+ * (`activeTabId`), separate from the stage's visible selection — the user may
+ * be looking at a different agent entirely, and what they watch must never
+ * decide which page this agent's next click lands on. Exported for tests.
+ */
+function createAgentTabsAdapter({ agentId, agentTabs, rootWc, onTabOpened = null }) {
+  let activeTabId = agentId;
+  const wcOf = (tabId) =>
+    tabId === agentId ? rootWc : agentTabs.getWebContents(tabId);
+  return {
+    async list() {
+      const rows = (await agentTabs.list(agentId)) || [];
+      // The agent's own active tab, not the stage's visible one.
+      return rows.map((t) => ({
+        id: t.id,
+        url: t.url || "",
+        title: t.title || "",
+        active: t.id === activeTabId,
+      }));
+    },
+    async open(url) {
+      const res = agentTabs.open(agentId, url) || { ok: false, error: "tab_open_failed" };
+      if (res.ok && res.tabId) {
+        activeTabId = res.tabId;
+        // Let the runtime wire the new tab into whatever it watches on the
+        // root — user-input seizure above all. A hook failure must not fail
+        // the open; the tab exists either way.
+        if (typeof onTabOpened === "function") {
+          try {
+            onTabOpened(res.tabId, wcOf(res.tabId));
+          } catch {
+            /* observation is best-effort */
+          }
+        }
+      }
+      return res;
+    },
+    async close(tabId) {
+      const res = agentTabs.close(agentId, tabId) || { ok: false, error: "tab_close_failed" };
+      if (res.ok && activeTabId === tabId) activeTabId = agentId;
+      return res;
+    },
+    async activate(tabId) {
+      const target = wcOf(tabId);
+      if (!target || target.isDestroyed?.()) return { ok: false, error: "unknown_tab" };
+      const res = agentTabs.activate(agentId, tabId) || { ok: false, error: "tab_activate_failed" };
+      if (res.ok) activeTabId = tabId;
+      return res;
+    },
+    getActiveWebContents() {
+      const target = wcOf(activeTabId);
+      // A tab that died under us (closed view, crashed renderer) falls back to
+      // the root tab rather than throwing the whole run.
+      if (target && !target.isDestroyed?.()) return target;
+      activeTabId = agentId;
+      return rootWc;
+    },
+  };
+}
 const {
-  matchCreateInToolVenue,
-  looksLikeCreateInToolVenueAsk,
-  toolVenueExplicitlyNamed,
-  looksLikeEditCurrentInToolAsk,
-  shouldOpenFreshVenueFile,
-  toolStartUrlIsSpecific,
-  toolVenueFromUrl,
-  venueHasEditableSurface,
-  resolveToolCreateStartUrl,
-  venueLooksLikeWorkingSurface,
-  buildToolDeepLinkSearchQuery,
-  buildToolActAdaptiveGoal,
-  stripShareSendTail,
   matchComplexSoftwareOffer,
   buildComplexSoftwareOfferMessage,
   complexSoftwareChoiceButtons,
-  venueDeepLinkHost,
-  extractToolCreateTopic,
 } = require("../lib/agentToolVenues.cjs");
 const {
   detectImageIntent,
   detectReferenceImageAsk,
 } = require("../lib/imageGenIntent.cjs");
 const { buildAgentPlan } = require("../lib/agentMultiStep.cjs");
+// User-facing rendering of a browse run's history. Lives outside this file
+// because it is the one place that decides what internal detail a user is
+// allowed to see, and that rule deserves its own tests.
+const { formatBrowseWorkLog, humanLabel, verbFor } = require("../lib/browseWorkLog.cjs");
+const diagnostics = require("./diagnostics.cjs");
+
+/**
+ * App version for diagnostics records.
+ *
+ * Read from package.json rather than electron's `app`, because this module is
+ * deliberately electron-free — everything it needs from the shell arrives
+ * through `deps`, which is what lets the test suite drive it in plain node.
+ */
+function getAppVersion() {
+  try {
+    return String(require("../package.json").version || "");
+  } catch {
+    return "";
+  }
+}
 
 /**
  * Compact Agent Mode doctrine — invent steps, use full chat + open app,
@@ -82,14 +152,18 @@ const ARTIFACT_SHEETISH_NOUN_RE =
   /\b(budget|budgets|expenses?|income|ledger|tracker|planner|log|inventory|schedule|roster|timesheet|invoice|pipeline|crm|template|table|list|matrix|spreadsheet|worksheet)\b/i;
 
 /**
- * Back-compat: Sheets-specific create (subset of tool-venue creates).
- * Prefer looksLikeCreateInToolVenueAsk / matchCreateInToolVenue for new code.
+ * Back-compat: the ask is to make a spreadsheet-shaped thing somewhere.
+ * Prefer workDestination.looksLikeWorkInApp for new code — it does not care
+ * what the spreadsheet tool is called.
  */
 function looksLikeCreateInGoogleSheetsAsk(text, opts = {}) {
   if (looksLikePasteReportIntoSheets(text)) return false;
   if (ownedBrowserAct.looksLikeOrganizeSheetAsk?.(text)) return false;
-  const venue = matchCreateInToolVenue(text, opts);
-  return !!(venue && (venue.id === "google-sheets" || venue.id === "excel"));
+  if (!workDestination.looksLikeWorkInApp(text, opts)) return false;
+  const said = `${text || ""} ${workDestination.destinationFromAsk(text)}`;
+  return /\b(sheet|sheets|spreadsheet|excel|grid|workbook|budget|tracker|table)\b/i.test(
+    said,
+  );
 }
 
 /** Model refused drafting and told the user to arm Glass Build/Create instead. */
@@ -265,17 +339,201 @@ function shouldRouteDeliverableEdit(text, opts = {}) {
   return hasOpen && looksLikeOpenDeliverableFollowUp(text);
 }
 
+/**
+ * The line or two under the step pill.
+ *
+ * Each step keeps its own note in the stack, so the explanation has to stay
+ * readable at a glance. A repeated step accumulates commentary from each
+ * attempt, and a model occasionally writes a paragraph, so keep the two most
+ * recent sentences and drop the rest.
+ */
+function trimStepNote(raw) {
+  const text = String(raw || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  // Two sentences is the budget \u2014 that is what "a line or two" means in a
+  // narrow rail. A step retried several times accumulates a sentence per
+  // attempt, and eight short ones are as unreadable as one long one, so the
+  // count matters more than the character total.
+  const sentences = (text.match(/[^.!?]+[.!?]*/g) || [text]).map((s) => s.trim()).filter(Boolean);
+  const kept = sentences.length > 2 ? sentences.slice(-2).join(" ") : text;
+  if (kept.length <= 220) return kept;
+  return `${kept.slice(0, 220).replace(/\s+\S*$/, "")}\u2026`;
+}
+
+/**
+ * One step pill plus the agent's line or two about it.
+ *
+ * The index is load-bearing: it is the click target for that step's
+ * deliverable, so later steps stacking underneath must not renumber it.
+ */
+function renderOneLiveStep(agentId, step, index, { sanitizeLabel, sanitizeDetail } = {}) {
+  const label0 = (v) => (sanitizeLabel ? sanitizeLabel(v) : String(v || "").trim());
+  const detail0 = (v) => (sanitizeDetail ? sanitizeDetail(v) : String(v || "").trim());
+  const status = String(step?.status || "done");
+  const kind = String(step?.kind || "browse").replace(/[^a-z0-9_-]/gi, "") || "browse";
+  const label = label0(step?.label) || `Step ${index + 1}`;
+  const suffix = status === "done" ? "" : `/${status}`;
+  // Two layers, deliberately. The title carries the mechanical detail —
+  // reason, expectation, evidence — which stays folded away in the step's
+  // dropdown. `note` is the agent talking to the user, and it renders as
+  // ordinary prose under the pill.
+  const detail = detail0(step?.detail);
+  const title = detail ? ` "${detail}"` : "";
+  const blocks = [`![lykn_step:${kind}:${label}](lykn-agent-step://${agentId}/${index}${suffix}${title})`];
+  const note = trimStepNote(step?.note);
+  if (note) blocks.push(note);
+  return blocks.join("\n\n");
+}
+
+/**
+ * What the user watches while the agent works: every step so far, each with
+ * the agent's own line or two about it, newest underneath.
+ *
+ * A finished run keeps the stack — the closing summary is appended after it
+ * (see emitStepTranscript / paintBrowseDone). `allDone` is accepted for
+ * callers that still pass it; hiding the work log on finish is what made
+ * a long run look like it had only ever done the last thing.
+ */
+function renderLiveStep(agentId, liveSteps, { allDone: _allDone = false, sanitizeLabel, sanitizeDetail } = {}) {
+  const steps = Array.isArray(liveSteps) ? liveSteps : [];
+  if (!steps.length) return "";
+  return steps
+    .map((step, index) => renderOneLiveStep(agentId, step, index, { sanitizeLabel, sanitizeDetail }))
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+/** How long an unanswered question stays resumable. */
+const PENDING_QUESTION_MS = 30 * 60 * 1000;
+
+/**
+ * Is this message the answer to the question the agent is parked on?
+ *
+ * When the agent stops to ask something ("what should the email say?"), the
+ * reply arrives as a bare fragment — "tell him the deck is ready" — which on
+ * its own reads as ordinary chat. Left unrecognised it routes to the chat
+ * model, which helpfully writes the email into the response area while the
+ * real task stays parked forever. Recognising it here is what resumes the
+ * work the question came out of.
+ *
+ * The record is CONSUMED whatever the answer turns out to be: a question is
+ * answered once, and a stale one must never fold itself into a later,
+ * unrelated ask. A complete new instruction supersedes the question rather
+ * than answering it.
+ *
+ * @returns {{ask: string, at: number}|null} the paused ask to resume, or null
+ */
+function takePendingQuestion(agent, text) {
+  const pending = agent?.pendingQuestion;
+  if (!pending?.ask) return null;
+  const fresh = Date.now() - (pending.at || 0) < PENDING_QUESTION_MS;
+  agent.pendingQuestion = null;
+  const answer = String(text || "").trim();
+  // The mail path keeps its own copy of the ask and folds it in itself; once
+  // this has folded, that copy would fold it a second time.
+  const dropMailCopy = () => {
+    agent.pendingMailAsk = null;
+  };
+  if (!fresh || !answer) {
+    dropMailCopy();
+    return null;
+  }
+  if (looksLikeNewTaskAsk(answer)) {
+    dropMailCopy();
+    return null;
+  }
+  // "yes" / "go ahead" / "send it" answers an approval, and an approval is
+  // about the action already prepared and waiting. Folding it back into the
+  // original ask restarts the whole task — which is exactly what happened:
+  // one "yes" to "ready to send?" replayed the entire request from the top
+  // instead of clicking Send. Let it through as the approval it is.
+  if (ownedBrowserAct.looksLikeSendApprovalFollowUp?.(answer)) {
+    dropMailCopy();
+    return null;
+  }
+  dropMailCopy();
+  return pending;
+}
+
+/**
+ * A pause that is really a yes/no about an action. It belongs on the approval
+ * buttons, not in the free-text answer card: permission cannot be typed
+ * usefully, and a typed "yes" then has to be guessed at.
+ */
+function looksLikePermissionAsk(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  return (
+    /^\W*(?:do you want|would you like|should i|shall i|may i|can i|is it (?:ok|okay|alright)|are you (?:ok|happy|ready|sure)|ready for me)\b/i.test(t) ||
+    /\b(?:want me to|ready (?:for me )?to|shall i|should i|ok(?:ay)? (?:for me )?to|go ahead and|say the word)\b/i.test(t)
+  );
+}
+
+/**
+ * A message that starts a fresh task rather than answering a question. Kept
+ * deliberately narrow — an answer can be phrased almost any way, so only an
+ * unmistakable new instruction gets to supersede a pending question.
+ */
+function looksLikeNewTaskAsk(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (ownedBrowserAct.looksLikeMailComposeTask?.(t)) return true;
+  return /^(?:go to|open|navigate|search|find|look ?up|buy|book|order|create|build|make me|draft me|write me)\b/i.test(t);
+}
+
+/**
+ * Does this ask require finding or checking something before anything can be
+ * sent?
+ *
+ * "Verify I have a folder called final and send it to sam@example.com" names
+ * its subject but not its address: which link goes in the email is only known
+ * once the folder has been found. Treating the open tab as the answer sends
+ * whatever happened to be on screen — in one run, google.com.
+ */
+function askNeedsFindingFirst(text) {
+  const t = String(text || "").toLowerCase();
+  if (!t) return false;
+  return (
+    /\b(?:find|locate|search for|look (?:for|up)|check (?:if|whether|that)|verify|confirm|make sure|see if)\b/.test(t) ||
+    // Uncertainty about the thing itself — the user does not know where it is
+    // or what it is called, so neither do we until we look.
+    /\bi think i (?:have|had|made|saved)\b/.test(t) ||
+    /\b(?:called|named) (?:like|something like)\b/.test(t) ||
+    /\bsomething like that\b/.test(t)
+  );
+}
+
 function classifyAgentSkill(text, opts = {}) {
   const t = String(text || "").trim();
   const lower = t.toLowerCase();
-  // Where the user said the work happens. Naming a product names a
-  // destination, and the deliverable words sitting next to it — "newsletter",
-  // "flyer", "landing page", "report" — say what to make once we are there.
-  // They are not a reason to make it somewhere else instead. Without this, "log
-  // into Klaviyo and make a flyer" reads as an image commission and the user
-  // gets a picture in the chat rather than a flyer in Klaviyo, which is both
-  // the wrong artifact and the wrong place.
-  const namedWorkVenue = String(ownedBrowserAct.resolveNamedWorkVenueUrl?.(t) || "");
+  // Where the user said the work happens, in their own words — any app, no
+  // table of products. The deliverable words sitting next to a destination —
+  // "newsletter", "flyer", "landing page", "report" — say what to make once we
+  // are there; they are not a reason to make it somewhere else instead.
+  // Without this, "log into Klaviyo and make a flyer" reads as an image
+  // commission and the user gets a picture in the chat rather than a flyer in
+  // Klaviyo, which is both the wrong artifact and the wrong place.
+  const namedWorkVenue = workDestination.looksLikeWorkInNamedApp(t)
+    ? workDestination.destinationFromAsk(t)
+    : "";
+  // A destination can also be named by standing in it. Someone looking at an
+  // app who says "create a budget" means here, and said so by having it open —
+  // the same signal the named case gets from a word. It holds inside an open
+  // file too: an explicit create while editing means a new one, not this one.
+  //
+  // Three things keep it from swallowing ordinary browsing. The page must be
+  // somewhere you work rather than pass through; the ask must be to start
+  // something rather than to act on what is on screen; and a fully specified
+  // commission — "a slide deck on material science, 11 slides, neutral
+  // colours" — is a LYKN artifact whatever happens to be open behind it.
+  const liveUrl = String(opts.liveUrl || "");
+  const standingInAnApp =
+    !!opts.hasLiveTab &&
+    /^https?:\/\//i.test(liveUrl) &&
+    !workDestination.isPassThroughPage(liveUrl) &&
+    !namedWorkVenue &&
+    workDestination.asksToStartSomethingNew(t) &&
+    !artifactBuildIntent.isTypedNewDeliverableAsk(t);
   if (
     /\b(monitor|watch for|alert me|notify me when|keep an eye|tell me when)\b/.test(lower)
   ) {
@@ -285,12 +543,15 @@ function classifyAgentSkill(text, opts = {}) {
   if (looksLikePasteReportIntoSheets(t)) {
     return "sheets-fill";
   }
-  // Named tool venue ("in PowerPoint", "in Google Sheets") beats LYKN artifacts.
-  // Edit-the-open-file asks are excluded inside looksLikeCreateInToolVenueAsk.
+  // The user named where the work belongs — "in Notion", "in Google Sheets",
+  // "in Linear", "in our team wiki". Any app: this asks whether a destination
+  // was named and whether something is being created, not whether the product
+  // appears in a list we maintain. It beats a LYKN artifact, because they said
+  // where they want it.
   if (
     !ownedBrowserAct.looksLikeOrganizeSheetAsk?.(t) &&
-    !looksLikeEditCurrentInToolAsk(t, opts) &&
-    looksLikeCreateInToolVenueAsk(t, opts)
+    !workDestination.looksLikeEditCurrentInToolAsk(t, opts) &&
+    (workDestination.looksLikeWorkInNamedApp(t) || standingInAnApp)
   ) {
     return "tool-create";
   }
@@ -416,7 +677,7 @@ function classifyAgentSkill(text, opts = {}) {
   if (
     artifactBuildIntent.isTypedNewDeliverableAsk(t) &&
     !namedWorkVenue &&
-    !looksLikeCreateInToolVenueAsk(t, opts)
+    !standingInAnApp
   ) {
     return "build";
   }
@@ -439,7 +700,7 @@ function classifyAgentSkill(text, opts = {}) {
   }
   if (
     !namedWorkVenue &&
-    !looksLikeCreateInToolVenueAsk(t, opts) &&
+    !standingInAnApp &&
     (/\b(build|create|make|scaffold|code)\b.{0,40}\b(app|page|dashboard|deck|artifact|landing|tool|spreadsheet|worksheet|site|webapp|presentation|slideshow|slides?|calculator|quiz|tracker|form|widget|portal|simulator)\b/.test(
       lower,
     ) ||
@@ -450,7 +711,7 @@ function classifyAgentSkill(text, opts = {}) {
   // "create me a budget" (no external tool named) → LYKN artifact.
   if (
     !namedWorkVenue &&
-    !looksLikeCreateInToolVenueAsk(t, opts) &&
+    !standingInAnApp &&
     /\b(create|make|build|draft|generate|whip\s+up|put\s+together)\b(?:\s+(?:for\s+)?(?:me|us))?(?:\s+(?:a|an|my|the|some))\b/.test(
       lower,
     ) &&
@@ -667,6 +928,11 @@ function createAgentRuntime(deps) {
     getBrowsingContext,
     // Optional: id of the browse tab currently visible in Studio/stage chrome.
     getActiveBrowseAgentId,
+    // Optional: main-process capability for agent-owned browser sub-tabs
+    // (open/close/activate/list/getWebContents). When present AND
+    // LYKN_AGENT_TABS=1, the modular browser agent gets a real tabs adapter;
+    // otherwise it stays in single-tab mode exactly as before.
+    agentTabs = null,
   } = deps;
 
   /** @type {Map<string, any>} */
@@ -695,7 +961,11 @@ function createAgentRuntime(deps) {
       partialText: a.partialText || "",
       updatedAt: a.updatedAt,
       createdAt: a.createdAt,
-      busy: !!a.busy,
+      // `busy` means "a turn is inferencing", which is what locks the
+      // composer. A run parked on the user is NOT busy: the whole point of
+      // the pause is that we want their answer, and send() routes a typed
+      // yes/no straight into resolveChoice.
+      busy: !!a.busy && !waiting,
       error: a.error || "",
       role,
       pinned: role === "main" || !!a.pinned,
@@ -711,6 +981,9 @@ function createAgentRuntime(deps) {
         ? String(a.waitingUserAction || "").replace(/\*\*/g, "")
         : "",
       waitingHost: waiting ? String(a.waitingHost || "") : "",
+      // One-tap answers for a question pause, so a rail that mounts after the
+      // event still offers them.
+      waitingOptions: waiting && Array.isArray(a.waitingOptions) ? a.waitingOptions : [],
     };
   }
 
@@ -951,10 +1224,21 @@ function createAgentRuntime(deps) {
     await ownedBrowserAct.waitForDomSettle?.(wc, 1200).catch(() => {});
 
     const reportTitle = `${reportHit.worker.title || "Research"} report`;
-    const filled = await ownedBrowserAct.fillGoogleSheetFromText(wc, {
-      text: reportHit.md,
-      title: reportTitle,
+    // Through the loop like every other write into a tool; the deterministic
+    // grid fill stays as the fallback.
+    const reportLoop = await writeIntoToolWithLoop(sheetsWorker, {
+      ask: `Put the ${reportTitle} into this spreadsheet.`,
+      draft: reportHit.md,
+      gen: sheetsWorker.generation,
+      wc,
+      maxRounds: 10,
     });
+    const filled = reportLoop.ok
+      ? { ok: true, via: "agent_loop" }
+      : await ownedBrowserAct.fillGoogleSheetFromText(wc, {
+          text: reportHit.md,
+          title: reportTitle,
+        });
     if (!filled?.ok) {
       return {
         ok: false,
@@ -1098,10 +1382,20 @@ function createAgentRuntime(deps) {
     }
 
     await ownedBrowserAct.waitForDomSettle?.(wc, 600).catch(() => {});
-    const filled = await ownedBrowserAct.fillGoogleSheetFromText(wc, {
-      text: tsv,
-      replaceAll: true,
+    const organizeLoop = await writeIntoToolWithLoop(agent, {
+      ask: "Replace the sheet's contents with the organized table.",
+      draft: tsv,
+      gen,
+      wc,
+      maxRounds: 10,
     });
+    if (organizeLoop.aborted) return "";
+    const filled = organizeLoop.ok
+      ? { ok: true, via: "agent_loop", text: tsv }
+      : await ownedBrowserAct.fillGoogleSheetFromText(wc, {
+          text: tsv,
+          replaceAll: true,
+        });
     if (!filled?.ok) {
       return paintBrowseDone(
         agent,
@@ -1204,119 +1498,6 @@ function createAgentRuntime(deps) {
     return tool;
   }
 
-  /**
-   * Land on the best start URL for a tool create:
-   * 1) known deep link when we already have a specific create/edit URL
-   * 2) else silent Google hunt for a deep link on that host
-   * 3) else tool home / known fallback — adaptive click-through finishes inside the app
-   * User never sees the SERP ("Opening {Tool}…").
-   */
-  async function discoverSilentToolStartUrl(agent, venue, text, gen, wc) {
-    const fallback =
-      resolveToolCreateStartUrl(venue, text) || venue.createUrl || "";
-    const host = venueDeepLinkHost(venue);
-    const topic = extractToolCreateTopic(text, venue);
-    const query = buildToolDeepLinkSearchQuery(venue, text);
-    const openLabel = `Opening ${venue.name}…`;
-
-    // Skip Google when we already have a category create/edit deep link.
-    const shouldSearch =
-      !!query &&
-      !!host &&
-      !toolStartUrlIsSpecific(fallback, venue) &&
-      (venue.fill === "navigate-brief" || !fallback);
-
-    async function landOn(url, via) {
-      const target = url || fallback || (host ? `https://${host}` : "");
-      if (!target) return { url: "", via: "failed", error: "no_start_url" };
-      emitProgress(agent.id, {
-        status: "running",
-        step: openLabel,
-        url: "",
-        skill: "tool-create",
-      });
-      const land = await ownedBrowserAct.navigate(wc, target);
-      if (!land?.ok) {
-        if (target !== fallback && fallback) {
-          const retry = await ownedBrowserAct.navigate(wc, fallback);
-          if (retry?.ok) {
-            return { url: retry.url || fallback, via: "known-fallback" };
-          }
-        }
-        return { url: "", via: "failed", error: land?.error || "navigation failed" };
-      }
-      return { url: land.url || target, via };
-    }
-
-    if (!shouldSearch) {
-      return landOn(fallback, "known");
-    }
-
-    emitProgress(agent.id, {
-      status: "running",
-      step: openLabel,
-      url: "", // hide Google SERP from the UI chrome
-      skill: "tool-create",
-    });
-    sendToAgentChannels(agent.id, "lykn:agent-status", { status: openLabel });
-    showBrowserWindow?.(agent.id, { focus: false, label: agent.title || venue.name });
-
-    const serpUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-    const serpNav = await ownedBrowserAct.navigate(wc, serpUrl);
-    if (!serpNav?.ok) {
-      return landOn(fallback, "known-fallback");
-    }
-
-    await ownedBrowserAct
-      .waitForSearchResultsReady?.(wc, {
-        hint: topic || venue.name,
-        timeoutMs: 2200,
-        pollMs: 160,
-      })
-      .catch(() => null);
-
-    if (gen !== agent.generation) return { url: "", via: "aborted" };
-
-    // Prefer create/blank/edit paths from the topic — not a templates-gallery bias.
-    const preferPath =
-      String(topic || "")
-        .toLowerCase()
-        .replace(/[^a-z0-9\s-]/g, " ")
-        .trim()
-        .split(/\s+/)[0] || "create";
-
-    const peek = await ownedBrowserAct
-      .peekVenueDeepLinkFromSerp?.(wc, {
-        hostIncludes: host,
-        hint: `${topic} create blank new ${preferPath}`.trim(),
-        preferPath,
-      })
-      .catch(() => null);
-
-    const deep =
-      peek?.ok && peek.href && /^https?:\/\//i.test(peek.href) ? peek.href : "";
-
-    let chosen = fallback;
-    let via = "known";
-    if (deep) {
-      try {
-        const pathName = new URL(deep).pathname || "/";
-        const deepOk =
-          pathName.length > 2 &&
-          !/\/(login|signup|pricing|pro)(\/|$)/i.test(pathName) &&
-          (peek.score >= 2 ||
-            /create|blank|new|design|edit|template|doc|file/i.test(deep));
-        if (deepOk) {
-          chosen = deep;
-          via = "silent-search";
-        }
-      } catch {
-        /* keep fallback */
-      }
-    }
-
-    return landOn(chosen, via);
-  }
 
   /**
    * Review-before-send pause: the draft/share is prepared and only the final
@@ -1342,6 +1523,60 @@ function createAgentRuntime(deps) {
       message: String(message || ""),
       buttons,
     });
+  }
+
+  /**
+   * The agent needs an ANSWER, not a click: a subject line, a missing detail,
+   * a choice only the user can make. Frame it as a question in the response
+   * area — the step transcript stays, the question renders as the closing
+   * prose, and the rail's waiting card holds it up front while the composer
+   * takes the answer (a typed reply resumes the task through the normal
+   * pipeline). This used to fall through the completion path, where the
+   * question was dressed up as a finished summary — or worse, filed away in
+   * a subtab the user had no reason to open.
+   */
+  function offerAgentQuestion(agent, question, answerOptions = [], { ask = "" } = {}) {
+    const q =
+      String(question || "").trim() || "I need one more detail from you to continue.";
+    // Tappable answers, when the agent proposed any. Kept on the agent as well
+    // as on the event so a rail that mounts late — or reloads — still shows
+    // them; they are cleared by the next send, like the question itself.
+    const options = (Array.isArray(answerOptions) ? answerOptions : [])
+      .map((o) => String(o || "").replace(/\s+/g, " ").trim().slice(0, 120))
+      .filter(Boolean)
+      .slice(0, 4);
+    agent.status = "waiting";
+    agent.busy = false;
+    agent.waitingForSignIn = false;
+    agent.step = "Needs an answer from you";
+    agent.waitingReason = "question";
+    agent.waitingUserAction = q;
+    agent.waitingOptions = options;
+    // What the agent was working on when it asked. The user's next message is
+    // the answer, and without this it arrives as a bare fragment that reads as
+    // ordinary chat — so the paused work never resumes.
+    const resumeAsk = String(ask || "").trim();
+    agent.pendingQuestion = resumeAsk ? { ask: resumeAsk.slice(0, 2000), at: Date.now() } : null;
+    // Steps so far + the question as the closing prose of the response.
+    const text = emitStepTranscript(agent, { final: true, appendix: q }) || q;
+    agent.partialText = text;
+    sendToAgentChannels(agent.id, "lykn:agent-delta", { text, final: true });
+    sendToAgentChannels(agent.id, "lykn:agent-status", { status: agent.step });
+    emitProgress(agent.id, {
+      status: "waiting",
+      step: agent.step,
+      url: agent.url,
+      skill: "browse",
+    });
+    emitAgentWaiting(agent.id, {
+      waiting: true,
+      kind: "question",
+      label: "Needs an answer from you",
+      detail: q.slice(0, 300),
+      options,
+    });
+    schedulePersist();
+    return text;
   }
 
   /**
@@ -1515,10 +1750,15 @@ function createAgentRuntime(deps) {
       return paintBrowseDone(agent, "Couldn't reach the open document tab.");
     }
     let url = getLiveTabUrl(agent, wc) || agent.url || "";
-    const venue =
-      toolVenueFromUrl(url) ||
-      matchCreateInToolVenue(text, { liveUrl: url });
-    if (!venue) {
+    // There has to be an open document to edit. A file list, an app home or a
+    // search page is not one — told apart by the shape of the URL rather than
+    // by recognising which product it belongs to.
+    const editable =
+      /^https?:\/\//i.test(url) &&
+      !workDestination.isPassThroughPage(url) &&
+      !workDestination.standingInAppHome(url);
+    const venueName = hostLabel(url) || "this app";
+    if (!editable) {
       return runBrowse(agent, text, gen, {
         suppressDone: !!(stepMeta && stepMeta.total > 1),
         fullAsk: String(stepMeta?.fullAsk || text).trim(),
@@ -1526,7 +1766,7 @@ function createAgentRuntime(deps) {
       });
     }
 
-    showBrowserWindow?.(agent.id, { focus: true, label: agent.title || venue.name });
+    showBrowserWindow?.(agent.id, { focus: true, label: agent.title || venueName });
     try {
       syncAgentBrowserTabs({ focusId: agent.id, activate: true });
       setMainLinkedBrowser(agent.id);
@@ -1544,12 +1784,12 @@ function createAgentRuntime(deps) {
 
     emitProgress(agent.id, {
       status: "running",
-      step: `Editing in ${venue.name}…`,
+      step: `Editing in ${venueName}…`,
       url: agent.url || url,
       skill: "browse",
     });
     sendToAgentChannels(agent.id, "lykn:agent-status", {
-      status: `Editing in ${venue.name}…`,
+      status: `Editing in ${venueName}…`,
     });
 
     const uiOnlyEdit =
@@ -1563,12 +1803,14 @@ function createAgentRuntime(deps) {
     // Content revisions: draft the updated body with prior-prompt context, then paste.
     if (
       !uiOnlyEdit &&
-      (venue.fill === "docs-text" || venue.fill === "slides-outline") &&
-      venueLooksLikeWorkingSurface(venue, url)
+      // A text surface: prose or an outline, as opposed to a grid. The draft-
+      // then-paste route suits it; a grid is handled by the loop the same way
+      // it handles everything else.
+      !/\/(?:spreadsheets|sheets)\//i.test(url)
     ) {
       emitProgress(agent.id, {
         status: "running",
-        step: `Drafting edits for ${venue.name}…`,
+        step: `Drafting edits for ${venueName}…`,
         url: agent.url || url,
         skill: "browse",
       });
@@ -1583,7 +1825,7 @@ function createAgentRuntime(deps) {
 
       if (currentBody.length >= 40) {
         const opsPrompt =
-          `A document is OPEN in ${venue.name}. Its CURRENT full text is below.\n` +
+          `A document is OPEN in ${venueName}. Its CURRENT full text is below.\n` +
           `Apply the user's edit request as targeted operations.\n` +
           `Return ONLY a valid JSON array of {"find": "...", "replace": "..."} objects — nothing else.\n` +
           `Rules:\n` +
@@ -1600,7 +1842,7 @@ function createAgentRuntime(deps) {
             await streamChat(agent, opsPrompt, [], "browse-summary", gen, {
               suppressDone: true,
               toolDraft: true,
-              toolDraftVenue: venue.name,
+              toolDraftVenue: venueName,
             }),
           );
           patched = applyDocEditOps(currentBody, parseDocEditOps(raw));
@@ -1610,15 +1852,16 @@ function createAgentRuntime(deps) {
         if (patched != null && patched !== currentBody) {
           emitProgress(agent.id, {
             status: "running",
-            step: `Applying edits in ${venue.name}…`,
+            step: `Applying edits in ${venueName}…`,
             url: agent.url || url,
             skill: "browse",
           });
           await ownedBrowserAct.waitForDomSettle?.(wc, 1200).catch(() => {});
-          let filled = await ownedBrowserAct.pasteTextIntoPage(wc, {
-            text: patched,
-            replaceAll: true,
+          const editLoop = await writeIntoToolWithLoop(agent, {
+            venue, ask, draft: patched, gen, wc, maxRounds: 10,
           });
+          if (editLoop.aborted) return "";
+          let filled = editLoop.ok ? { ok: true, via: "agent_loop" } : null;
           if (!filled?.ok) {
             await ownedBrowserAct.focusPageEditor?.(wc).catch(() => {});
             filled = await ownedBrowserAct.pasteTextIntoPage(wc, {
@@ -1629,15 +1872,15 @@ function createAgentRuntime(deps) {
           agent.url = wc.getURL?.() || agent.url || url;
           if (filled?.ok) {
             agent.lastSheetText = patched.slice(0, 120000);
-            agent.lastToolDraft = { text: patched, venue: venue.name, at: Date.now() };
-            const link = formatToolVenueOpenLink(agent.url, venue.name);
+            agent.lastToolDraft = { text: patched, venue: venueName, at: Date.now() };
+            const link = formatToolVenueOpenLink(agent.url, venueName);
             return paintBrowseDone(
               agent,
-              `Made that change in the open **${venue.name}** — the rest of the document is untouched.\n\n${link || agent.url || ""}\n\nWant another change?`,
+              `Made that change in the open **${venueName}** — the rest of the document is untouched.\n\n${link || agent.url || ""}\n\nWant another change?`,
               {
                 goal: ask,
                 url: agent.url,
-                title: venue.name,
+                title: venueName,
                 midStep: !!(stepMeta && stepMeta.total > 1),
               },
             );
@@ -1646,7 +1889,7 @@ function createAgentRuntime(deps) {
       }
 
       const genPrompt =
-        `The user already has a document OPEN in ${venue.name} (Agent Mode tab).\n` +
+        `The user already has a document OPEN in ${venueName} (Agent Mode tab).\n` +
         `Apply their NEW edit request to that document. Do NOT create a new file.\n` +
         `Return the FULL updated document body as plain text (light markdown ok).\n` +
         `First line = document title, then a blank line, then the body.\n` +
@@ -1660,7 +1903,7 @@ function createAgentRuntime(deps) {
         `Edit request now:\n${ask}`;
       let body = "";
       try {
-        body = await draftToolPlainText(agent, genPrompt, gen, venue.name);
+        body = await draftToolPlainText(agent, genPrompt, gen, venueName);
       } catch (e) {
         body = "";
       }
@@ -1669,15 +1912,16 @@ function createAgentRuntime(deps) {
       if (body.length >= 40 && !looksLikeBuildModeRefusal(body)) {
         emitProgress(agent.id, {
           status: "running",
-          step: `Applying edits in ${venue.name}…`,
+          step: `Applying edits in ${venueName}…`,
           url: agent.url || url,
           skill: "browse",
         });
         await ownedBrowserAct.waitForDomSettle?.(wc, 1200).catch(() => {});
-        let filled = await ownedBrowserAct.pasteTextIntoPage(wc, {
-          text: body,
-          replaceAll: true,
+        const rewriteLoop = await writeIntoToolWithLoop(agent, {
+          venue, ask, draft: body, gen, wc, maxRounds: 10,
         });
+        if (rewriteLoop.aborted) return "";
+        let filled = rewriteLoop.ok ? { ok: true, via: "agent_loop" } : null;
         if (!filled?.ok) {
           await ownedBrowserAct.focusPageEditor?.(wc).catch(() => {});
           filled = await ownedBrowserAct.pasteTextIntoPage(wc, {
@@ -1688,14 +1932,14 @@ function createAgentRuntime(deps) {
         agent.url = wc.getURL?.() || agent.url || url;
         if (filled?.ok) {
           agent.lastSheetText = body.slice(0, 120000);
-          const link = formatToolVenueOpenLink(agent.url, venue.name);
+          const link = formatToolVenueOpenLink(agent.url, venueName);
           return paintBrowseDone(
             agent,
-            `Updated the open **${venue.name}** with your edit.\n\n${link || agent.url || ""}\n\nWant another change?`,
+            `Updated the open **${venueName}** with your edit.\n\n${link || agent.url || ""}\n\nWant another change?`,
             {
               goal: ask,
               url: agent.url,
-              title: venue.name,
+              title: venueName,
               midStep: !!(stepMeta && stepMeta.total > 1),
             },
           );
@@ -1705,8 +1949,8 @@ function createAgentRuntime(deps) {
 
     // UI / formatting / leftover content edits → click through on the open tab.
     const adaptiveGoal =
-      `EDIT the OPEN ${venue.name} document in this tab — do NOT create a new file, ` +
-      `do NOT leave this document, do NOT open ${venue.name} home.\n` +
+      `EDIT the OPEN ${venueName} document in this tab — do NOT create a new file, ` +
+      `do NOT leave this document, do NOT open ${venueName} home.\n` +
       (priorBlock ? `Prior conversation for context:\n${priorBlock.slice(0, 1800)}\n\n` : "") +
       `Edit request: ${ask}`;
     return runAdaptiveBrowse(agent, ask, gen, wc, {
@@ -1717,703 +1961,158 @@ function createAgentRuntime(deps) {
     });
   }
 
-  async function runCreateInToolVenue(agent, text, gen) {
-    const liveUrl =
-      getLiveTabUrl(agent, getBrowserWebContents?.(agent.id)) || agent.url || "";
-    const complexOffer = matchComplexSoftwareOffer(text, { liveUrl });
+  /**
+   * Put drafted content into the open tool THROUGH the agent loop.
+   *
+   * Every venue used to write its own way: paste a document at Notion, push a
+   * TSV into Sheets, paste an outline into Slides — each straight at the page,
+   * each reporting success from whether the paste call returned. Nothing
+   * verified the content arrived, no safety gate applied, no trace was written
+   * (so a working run looked like one that never ran), and a paste that
+   * silently did nothing was indistinguishable from one that worked.
+   *
+   * The loop does it now: it can see the editor, it pastes with one action, it
+   * checks the page afterwards, and it recovers when an editor swallows the
+   * first attempt. Each caller keeps its own deterministic paste as the
+   * fallback for when the loop cannot finish — or when there is no model to
+   * run it at all.
+   *
+   * @returns {Promise<{ok: boolean, aborted?: boolean}>}
+   */
+  /** "docs.google.com" → "docs.google.com"; a blank or odd URL → "". */
+  /**
+   * A human name for the site we are on, worked out from its address.
+   *
+   * "docs.google.com" reads back as "Google Docs", "notion.so" as "Notion",
+   * "app.asana.com" as "Asana". The labels run most-specific-first in a
+   * hostname and most-general-first in a product name, so reversing them lands
+   * on what people actually call the thing — no table of products required, and
+   * an app nobody has heard of gets a sensible name too.
+   */
+  function hostLabel(url) {
+    let host = "";
+    try {
+      host = new URL(String(url || "")).hostname;
+    } catch {
+      return "";
+    }
+    const GENERIC = /^(?:www|app|apps|web|my|go|get|us|en|beta|new|secure|login|account)$/i;
+    const parts = host
+      .split(".")
+      .slice(0, -1) // drop the TLD
+      .filter((p) => p && !GENERIC.test(p));
+    // A two-label public suffix ("co.uk", "com.au") leaves a stray tail.
+    if (parts.length > 1 && /^(?:co|com|net|org|gov|ac)$/i.test(parts[parts.length - 1])) {
+      parts.pop();
+    }
+    if (!parts.length) return host.replace(/^www\./i, "");
+    return parts
+      .reverse()
+      .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+      .join(" ");
+  }
+
+  async function writeIntoToolWithLoop(agent, { venue, ask, draft, gen, wc, maxRounds = 12 }) {
+    if (!wc) return { ok: false };
+    try {
+      // Named by whatever the user called it, or by the site we are on — no
+      // product table involved.
+      const where =
+        String(venue?.name || "").trim() ||
+        workDestination.destinationFromAsk(ask) ||
+        hostLabel(agent?.url || "");
+      const goal = workDestination.buildAppWorkGoal({ ask, destination: where, draft });
+      const wrote = await runAdaptiveBrowse(agent, goal, gen, wc, {
+        adaptiveGoal: goal,
+        suppressDone: true,
+        returnRaw: true,
+        maxRounds,
+        conversationHistory: historyForPlanner(agent),
+      });
+      if (gen !== agent.generation) return { ok: false, aborted: true };
+      agent.url = wc.getURL?.() || agent.url;
+      return { ok: !!(wrote?.ok && !wrote.stuck) };
+    } catch (e) {
+      // No model endpoint, no loop. The caller's own paste is what keeps this
+      // working offline, so this is a fallback rather than a failure.
+      if (e instanceof browserAgent.AgentModelUnavailableError) return { ok: false };
+      throw e;
+    }
+  }
+
+  /**
+   * Do a piece of work in whatever app the user named — any app.
+   *
+   * This replaces a table of eight products, each with its own create URL, its
+   * own way of being recognised in a sentence, and its own strategy for
+   * getting content onto the page. That table could only ever serve the
+   * products in it: an ask naming Linear, Coda, Airtable or a company's own
+   * tool fell off the end of it, and every new product meant new code.
+   *
+   * Nothing here knows what the destination is. The content is drafted in the
+   * shape the destination implies (a model reading "google sheets" knows it
+   * wants rows), and the agent loop does the rest — find the app, make a new
+   * file the way that app makes one, put the content in, check it landed —
+   * reading the page as it goes and keeping what it learns in site memory
+   * rather than in this file.
+   */
+  async function runWorkInNamedApp(agent, text, gen) {
+    const ask = String(text || "").trim();
+    const liveUrl = getLiveTabUrl(agent, getBrowserWebContents?.(agent.id)) || agent.url || "";
+    const destination = workDestination.destinationFromAsk(ask);
+
+    // Complex visual software is still worth offering an alternative for: a
+    // design tool is a bad place to drive blind, and the offer is about the
+    // KIND of surface, not about which product it is.
+    const complexOffer = matchComplexSoftwareOffer(ask, { liveUrl });
     if (complexOffer && !agent.skipComplexGateOnce) {
-      return offerComplexSoftwareChoice(agent, text, complexOffer);
+      return offerComplexSoftwareChoice(agent, ask, complexOffer);
     }
     if (agent.skipComplexGateOnce) agent.skipComplexGateOnce = false;
-
-    const venue =
-      matchCreateInToolVenue(text, { liveUrl }) ||
-      toolVenueFromUrl(agent.url) ||
-      matchCreateInToolVenue(text, {});
-    if (!venue) {
-      return paintBrowseDone(
-        agent,
-        "Tell me which tool to use (PowerPoint, Google Sheets, Canva, …) or ask without a tool name for a LYKN artifact.",
-      );
-    }
 
     ensureBrowserWindow?.(agent.id, { show: true });
     const wc = getBrowserWebContents?.(agent.id);
     if (!wc) {
-      return paintBrowseDone(agent, `Couldn't open a browser tab for ${venue.name}.`);
+      return paintBrowseDone(agent, `Couldn't open a browser tab${destination ? ` for ${destination}` : ""}.`);
     }
+    showBrowserWindow?.(agent.id, { focus: false, label: agent.title || destination || "Agent" });
 
-    let url = getLiveTabUrl(agent, wc) || agent.url || "";
-    // Rule: in a tool, CREATE always opens a brand-new file. EDIT the open thing
-    // never reaches here (matchCreateInToolVenue returns null for edit asks).
-    const openFresh = shouldOpenFreshVenueFile(text, venue, url);
-    const knownStart =
-      resolveToolCreateStartUrl(venue, text) || venue.createUrl || "";
-    const needsCreateNav =
-      openFresh ||
-      !venue.urlMatch.test(url || "") ||
-      (venue.fill === "navigate-brief" && !venueLooksLikeWorkingSurface(venue, url));
-    if (needsCreateNav) {
-      const openLabel = openFresh
-        ? `Opening a new ${venue.name}…`
-        : `Opening ${venue.name}…`;
-      emitProgress(agent.id, {
-        status: "running",
-        step: openLabel,
-        url: "",
-        skill: "tool-create",
-      });
-      sendToAgentChannels(agent.id, "lykn:agent-status", {
-        status: openLabel,
-      });
-      showBrowserWindow?.(agent.id, { focus: false, label: agent.title || venue.name });
-
-      // Magic: silently find a deep link (Google → venue templates/create), then land.
-      // Paste venues (Docs/Sheets) keep their known /create URLs — no SERP needed.
-      let landed = "";
-      if (
-        venue.fill === "navigate-brief" ||
-        (!venueHasEditableSurface(venue, knownStart) &&
-          !/\/(?:document|spreadsheets|presentation)\/create\b/i.test(knownStart))
-      ) {
-        const discovered = await discoverSilentToolStartUrl(agent, venue, text, gen, wc);
-        if (gen !== agent.generation) return "";
-        if (discovered?.error && !discovered.url) {
-          return paintBrowseDone(
-            agent,
-            `Couldn't open ${venue.name} (${discovered.error}).`,
-          );
-        }
-        landed = discovered?.url || knownStart;
-      } else {
-        const nav = await ownedBrowserAct.navigate(wc, knownStart);
-        if (!nav?.ok) {
-          return paintBrowseDone(
-            agent,
-            `Couldn't open ${venue.name} (${nav?.error || "navigation failed"}).`,
-          );
-        }
-        landed = nav.url || knownStart;
-      }
-
-      agent.url = landed || knownStart;
-      url = agent.url;
-      await ownedBrowserAct.waitForLoad?.(wc, 14000).catch(() => {});
-      // /create redirects into /d/…/edit — wait for a real editable surface before paste.
-      if (
-        venue.fill === "sheets-tsv" ||
-        venue.fill === "docs-text" ||
-        venue.fill === "slides-outline"
-      ) {
-        const start = Date.now();
-        while (Date.now() - start < 12000) {
-          const live = wc.getURL?.() || "";
-          if (venueHasEditableSurface(venue, live) && !/\/(?:create|new)\b/i.test(live)) {
-            agent.url = live;
-            url = live;
-            break;
-          }
-          await new Promise((r) => setTimeout(r, 280));
-        }
-      }
-      await ownedBrowserAct.waitForDomSettle?.(wc, 900).catch(() => {});
-      url = wc.getURL?.() || agent.url || url;
-      agent.url = url;
-      emitProgress(agent.id, {
-        status: "running",
-        step: openLabel,
-        url: agent.url,
-        skill: "tool-create",
-      });
-    }
-
-    showBrowserWindow?.(agent.id, { focus: true, label: agent.title || venue.name });
-    try {
-      syncAgentBrowserTabs({ focusId: agent.id, activate: true });
-      setMainLinkedBrowser(agent.id);
-    } catch {
-      /* ignore */
-    }
-
-    // Pause if sign-in wall (Office / Google / Canva).
-    {
-      const pause = await pauseForUserSignIn(agent, gen, wc, {
-        context: `opening ${venue.name}`,
-      });
-      if (pause.blocked && !pause.cleared) {
-        return pause.message || "";
-      }
-    }
-
-    // Paywall / upgrade gate — tell the user clearly (don't silently thrash).
-    {
-      let page = { url: agent.url, text: "", title: "" };
-      try {
-        page = await ownedBrowserAct.getPageContext(wc);
-      } catch {
-        /* ignore */
-      }
-      const pageUrl = page.url || wc.getURL?.() || agent.url || "";
-      if (
-        ownedBrowserAct.looksLikePaywall?.({
-          url: pageUrl,
-          text: page.text,
-          title: page.title || wc.getTitle?.() || "",
-        })
-      ) {
-        agent.url = pageUrl;
-        const link = formatToolVenueOpenLink(pageUrl, venue.name);
-        return paintBrowseDone(
-          agent,
-          `I opened **${venue.name}** for your ask, but hit a **paywall / upgrade screen**.\n\n` +
-            `**Ask:** ${String(text || "").trim()}\n\n` +
-            `Sign in / upgrade in the agent browser if you want, then tell me to continue — or pick a free template and I’ll keep going.\n\n` +
-            `${link || pageUrl}`,
-        );
-      }
-    }
-
-    emitProgress(agent.id, {
-      status: "running",
-      step: `Building in ${venue.name}…`,
-      url: agent.url || url,
-      skill: "tool-create",
-    });
-    sendToAgentChannels(agent.id, "lykn:agent-status", {
-      status: `Building in ${venue.name}…`,
-    });
-
-    const ask = String(text || "").trim();
-
-    if (venue.fill === "sheets-tsv") {
-      const genPrompt =
-        `The user wants this built INSIDE ${venue.name} (not a LYKN artifact / webapp).\n` +
-        `${venue.name} is already open in Agent Mode — draft the content to paste now.\n` +
-        `Produce a practical spreadsheet as TSV (tab-separated values) only.\n` +
-        `First row = column headers. Then realistic starter rows the user can edit.\n` +
-        `Include formulas as plain text where helpful (e.g. =SUM(B2:B20)).\n` +
-        `No markdown fences, no commentary, no Build/Create mode instructions — TSV only.\n\n` +
-        `User ask:\n${ask}`;
-      let tsv = "";
-      try {
-        tsv = await draftToolPlainText(agent, genPrompt, gen, venue.name);
-      } catch (e) {
-        return paintBrowseDone(
-          agent,
-          `Opened ${venue.name} but couldn't generate the table: ${e?.message || "error"}`,
-        );
-      }
-      if (looksLikeBuildModeRefusal(tsv)) {
-        return paintBrowseDone(
-          agent,
-          `Opened ${venue.name}, but drafting failed. Ask me again to fill the sheet.`,
-        );
-      }
-      if (!tsv.includes("\t") && tsv.includes(",")) {
-        tsv = tsv
-          .split("\n")
-          .map((line) => line.replace(/,/g, "\t"))
-          .join("\n");
-      }
-      if (tsv.length < 8) {
-        return paintBrowseDone(
-          agent,
-          `Opened ${venue.name}, but I couldn't produce a usable table. Try being more specific about columns.`,
-        );
-      }
-      emitProgress(agent.id, {
-        status: "running",
-        step: `Pasting into ${venue.name}…`,
-        url: agent.url || url,
-        skill: "tool-create",
-      });
-      const filled =
-        venue.id === "excel"
-          ? await ownedBrowserAct.pasteTextIntoPage(wc, { text: tsv, replaceAll: true })
-          : await ownedBrowserAct.fillGoogleSheetFromText(wc, {
-              text: tsv,
-              replaceAll: true,
-            });
-      if (!filled?.ok) {
-        agent.lastSheetText = tsv.slice(0, 120000);
-        agent.lastDeliverableKind = "sheets";
-        return paintBrowseDone(
-          agent,
-          `Built the table for ${venue.name} but couldn't paste (${filled?.error || "paste failed"}).\n\n` +
-            `Click the grid and ask me to paste again.`,
-        );
-      }
-      agent.lastSheetText = String(filled.text || tsv).slice(0, 120000);
-      agent.lastSheetSource = `created in ${venue.name}`;
-      agent.lastDeliverableKind = "sheets";
-      agent.url = wc.getURL?.() || agent.url || url;
-      const sheetLink = formatToolVenueOpenLink(agent.url, venue.name);
-      return paintBrowseDone(
-        agent,
-        `Created it in **${venue.name}** (~${filled.lines || "?"} rows) and pasted into the grid.\n\n` +
-          `${sheetLink || agent.url || ""}\n\nWhat next?`,
-      );
-    }
-
-    if (venue.fill === "docs-text") {
-      const genPrompt =
-        `The user wants this written INSIDE ${venue.name} (already open in Agent Mode).\n` +
-        `Return the FULL document body as plain text (light markdown ok).\n` +
-        `First line = a short document title, then a blank line, then the body.\n` +
-        `Do NOT mention Build mode, Create mode, Glass, menus, or resending.\n` +
-        `No code fences. No preamble. No meta commentary — essay/doc text only.\n\n` +
-        `User ask:\n${ask}`;
-      let body = "";
-      try {
-        body = await draftToolPlainText(agent, genPrompt, gen, venue.name);
-      } catch (e) {
-        return paintBrowseDone(
-          agent,
-          `Opened ${venue.name} but couldn't draft the doc: ${e?.message || "error"}`,
-        );
-      }
-      if (body.length < 20 || looksLikeBuildModeRefusal(body)) {
-        return paintBrowseDone(
-          agent,
-          `Opened ${venue.name}, but the draft came back empty. Ask me again to write it in the doc.`,
-        );
-      }
-      emitProgress(agent.id, {
-        status: "running",
-        step: `Pasting into ${venue.name}…`,
-        url: agent.url || url,
-        skill: "tool-create",
-      });
-      // Wait for Docs editor chrome (kix) before the first paste attempt.
-      await ownedBrowserAct.waitForDomSettle?.(wc, 1600).catch(() => {});
-      let filled = await ownedBrowserAct.pasteTextIntoPage(wc, {
-        text: body,
-        replaceAll: true,
-      });
-      if (!filled?.ok) {
-        // Slow editors may not have the surface ready yet — settle and retry.
-        await ownedBrowserAct.waitForDomSettle?.(wc, 2500).catch(() => {});
-        await ownedBrowserAct.focusPageEditor?.(wc).catch(() => {});
-        filled = await ownedBrowserAct.pasteTextIntoPage(wc, {
-          text: body,
-          replaceAll: true,
-        });
-      }
-      agent.lastSheetText = body.slice(0, 120000);
-      agent.lastSheetSource = `created in ${venue.name}`;
-      agent.lastDeliverableKind = "sheets";
-      agent.url = wc.getURL?.() || agent.url || url;
-      const docLink = formatToolVenueOpenLink(agent.url, venue.name);
-      if (!filled?.ok) {
-        // Last resort: adaptive click into the body with the draft in-goal.
-        emitProgress(agent.id, {
-          status: "running",
-          step: `Clicking into ${venue.name} to write…`,
-          url: agent.url,
-          skill: "tool-create",
-        });
-        try {
-          const adaptiveGoal = buildToolActAdaptiveGoal(venue, ask, { draft: body });
-          const browseResult = await runAdaptiveBrowse(agent, adaptiveGoal, gen, wc, {
-            suppressDone: true,
-            maxRounds: 10,
-            returnRaw: true,
-            adaptiveGoal,
-            conversationHistory: historyForPlanner(agent),
-          });
-          agent.url = wc.getURL?.() || agent.url;
-          if (!browseResult?.stuck) {
-            // Try paste again after adaptive focused the body.
-            filled = await ownedBrowserAct.pasteTextIntoPage(wc, {
-              text: body,
-              replaceAll: true,
-            });
-          }
-        } catch {
-          /* keep filled failure */
-        }
-      }
-      if (!filled?.ok) {
-        return paintBrowseDone(
-          agent,
-          `Drafted the doc for ${venue.name} but couldn't paste into the document body (${filled?.error || "paste failed"}).\n\n` +
-            `Click in the document body (not the title) and ask me to paste again.\n\n` +
-            `${docLink || ""}`,
-        );
-      }
-      return paintBrowseDone(
-        agent,
-        `Wrote your draft in **${venue.name}**.\n\n${docLink || agent.url || ""}\n\nWant edits or formatting?`,
-      );
-    }
-
-    if (venue.fill === "slides-outline") {
-      const genPrompt =
-        `The user wants a presentation built INSIDE ${venue.name} (already open in Agent Mode).\n` +
-        `Return a slide-by-slide outline ready to paste:\n` +
-        `Slide 1: Title\nSubtitle\n\nSlide 2: …\n- bullet\n\n` +
-        `Keep it concrete and complete. No code fences. No preamble. No Build/Create mode instructions.\n\n` +
-        `User ask:\n${ask}`;
-      let outline = "";
-      try {
-        outline = await draftToolPlainText(agent, genPrompt, gen, venue.name);
-      } catch (e) {
-        return paintBrowseDone(
-          agent,
-          `Opened ${venue.name} but couldn't draft slides: ${e?.message || "error"}`,
-        );
-      }
-      if (looksLikeBuildModeRefusal(outline)) {
-        return paintBrowseDone(
-          agent,
-          `Opened ${venue.name}, but drafting failed. Ask me again to fill the deck.`,
-        );
-      }
-      if (outline.length < 20) {
-        return paintBrowseDone(
-          agent,
-          `Opened ${venue.name}, but the slide outline came back empty.`,
-        );
-      }
-      emitProgress(agent.id, {
-        status: "running",
-        step: `Pasting into ${venue.name}…`,
-        url: agent.url || url,
-        skill: "tool-create",
-      });
-      const filled = await ownedBrowserAct.pasteTextIntoPage(wc, {
-        text: outline,
-        replaceAll: false,
-      });
-      agent.lastSheetText = outline.slice(0, 120000);
-      agent.lastSheetSource = `created in ${venue.name}`;
-      agent.lastDeliverableKind = "sheets";
-      agent.url = wc.getURL?.() || agent.url || url;
-      if (!filled?.ok) {
-        return paintBrowseDone(
-          agent,
-          `Opened **${venue.name}** with your slide outline ready, but paste missed.\n\n` +
-            `Click the title box and ask me to paste the outline.\n\n` +
-            `Outline preview:\n\n${outline.slice(0, 1200)}`,
-        );
-      }
-      const slidesLink = formatToolVenueOpenLink(agent.url, venue.name);
-      return paintBrowseDone(
-        agent,
-        `Opened **${venue.name}** and pasted your slide outline into the deck so you can split it across slides.\n\n` +
-          `${slidesLink || agent.url || ""}\n\n` +
-          `I can keep editing in ${venue.name} — say what to change.`,
-      );
-    }
-
-    // navigate-brief: ANY complex web tool — deep link when possible, else click
-    // through the real UI, do the work, report. Multi-step; do not stop on galleries.
-    agent.url = wc.getURL?.() || agent.url || url;
-    emitProgress(agent.id, {
-      status: "running",
-      step: `Working in ${venue.name}…`,
-      url: agent.url,
-      skill: "tool-create",
-    });
-    sendToAgentChannels(agent.id, "lykn:agent-status", {
-      status: `Working in ${venue.name}…`,
-    });
-
-    // Draft content up front for write/create asks so the UI agent can fill once in-editor.
-    // Strip "then send it to email@…" so the model doesn't draft that as body text.
-    const writeAsk =
-      ownedBrowserAct.stripShareSendInstructions?.(ask) ||
-      stripShareSendTail(ask) ||
-      ask;
-    const needsDocShare =
-      ownedBrowserAct.isShareInviteGoal?.(ask) ||
-      ownedBrowserAct.looksLikeShareCurrentPageAsk?.(ask);
+    // Draft first, place second. A long document cannot be composed inside a
+    // decision — the reply that carries an action has room for a sentence, not
+    // an essay — so the writing happens here and the loop does the placing.
     let draft = "";
-    if (/\b(write|draft|create|make|build|compose|type|author|pen|generate|paper|essay)\b/i.test(ask)) {
-      emitProgress(agent.id, {
-        status: "running",
-        step: `Drafting content for ${venue.name}…`,
-        url: agent.url,
-        skill: "tool-create",
-      });
-      try {
-        draft = await draftToolPlainText(
-          agent,
-          `The user wants this done INSIDE ${venue.name} (already open / opening in Agent Mode).\n` +
-            `Draft ONLY the document body they asked for (essay/paper/copy).\n` +
-            `Plain text only. No markdown fences. No Build/Create mode instructions. No meta commentary.\n` +
-            `Do NOT include any "send it to …", "share with …", email addresses, or sharing instructions in the draft — sharing is a separate UI step.\n\n` +
-            `Content ask:\n${writeAsk}`,
-          gen,
-          venue.name,
-        );
-        draft =
-          ownedBrowserAct.sanitizeDraftedDocBody?.(draft) ||
-          String(draft || "").trim();
-        if (looksLikeBuildModeRefusal(draft) || String(draft || "").trim().length < 40) {
-          draft = "";
-        }
-      } catch {
-        draft = "";
-      }
-    }
-
-    // When share/send is a separate step (same turn or later plan step), the
-    // adaptive pass is WRITE-ONLY — share runs once afterward. Stops rewrite loops.
-    const adaptiveSourceAsk = needsDocShare ? writeAsk || ask : ask;
-    const adaptiveGoal = buildToolActAdaptiveGoal(venue, adaptiveSourceAsk, {
-      draft,
-    });
-
-    let browseResult = null;
     try {
-      browseResult = await runAdaptiveBrowse(agent, adaptiveGoal, gen, wc, {
-        suppressDone: true,
-        maxRounds: needsDocShare ? 12 : 18,
-        returnRaw: true,
-        adaptiveGoal,
-        conversationHistory: historyForPlanner(agent),
-      });
+      draft = await draftToolPlainText(
+        agent,
+        workDestination.buildContentDraftPrompt({ ask, destination }),
+        gen,
+        destination || "the app",
+      );
     } catch (e) {
-      const link = formatToolVenueOpenLink(agent.url || url, venue.name);
+      if (gen !== agent.generation) return "";
+      return paintBrowseDone(agent, `Couldn't draft the content: ${e?.message || "error"}`);
+    }
+    if (gen !== agent.generation) return "";
+    if (!draft || draft.length < 20 || looksLikeBuildModeRefusal(draft)) {
       return paintBrowseDone(
         agent,
-        `I opened **${venue.name}** but got stuck while finishing your ask.\n\n` +
-          `**Ask:** ${ask}\n\n` +
-          `**Blocker:** ${e?.message || "browse stopped"}\n\n` +
-          `Take the next click in the browser tab (or tell me exactly what to click), then I can continue.\n\n` +
-          `${link || agent.url || ""}`,
+        `I couldn't draft that content. Tell me a bit more about what it should say and I'll write it${destination ? ` in ${destination}` : ""}.`,
       );
     }
 
-    agent.url = wc.getURL?.() || agent.url || url;
-    // Re-check login/paywall after click-through.
-    {
-      let page = { url: agent.url, text: "", title: "" };
-      try {
-        page = await ownedBrowserAct.getPageContext(wc);
-      } catch {
-        /* ignore */
-      }
-      const pageUrl = page.url || agent.url || "";
-      agent.url = pageUrl || agent.url;
-      if (
-        ownedBrowserAct.looksLikeSignInWall?.({
-          url: pageUrl,
-          text: page.text,
-          title: page.title || "",
-        })
-      ) {
-        const pause = await pauseForUserSignIn(agent, gen, wc, {
-          context: `working in ${venue.name}`,
-        });
-        if (pause.blocked && !pause.cleared) return pause.message || "";
-      }
-      if (
-        ownedBrowserAct.looksLikePaywall?.({
-          url: pageUrl,
-          text: page.text,
-          title: page.title || "",
-        })
-      ) {
-        const link = formatToolVenueOpenLink(pageUrl, venue.name);
-        return paintBrowseDone(
-          agent,
-          `I hit a **paywall / upgrade screen** in **${venue.name}** while working on your ask.\n\n` +
-            `**Ask:** ${ask}\n\n` +
-            `Upgrade or pick a free option in the browser tab, then tell me to continue.\n\n` +
-            `${link || pageUrl}`,
-        );
-      }
-    }
-
-    // Still on a listing/gallery — one more push to enter the working surface + do the work.
-    if (!venueLooksLikeWorkingSurface(venue, agent.url) && gen === agent.generation) {
-      emitProgress(agent.id, {
-        status: "running",
-        step: `Clicking into ${venue.name}…`,
-        url: agent.url,
-        skill: "tool-create",
-      });
-      try {
-        browseResult = await runAdaptiveBrowse(
-          agent,
-          buildToolActAdaptiveGoal(venue, adaptiveSourceAsk, { draft }) +
-            `\n\nYou are STILL on a home/gallery/listing page. Click Create/New/Blank or the first free matching item NOW, enter the editor, then place the drafted content once.`,
-          gen,
-          wc,
-          {
-            suppressDone: true,
-            maxRounds: 10,
-            returnRaw: true,
-            conversationHistory: historyForPlanner(agent),
-          },
-        );
-        agent.url = wc.getURL?.() || agent.url;
-      } catch {
-        /* keep prior result */
-      }
-    }
-
-    // In editor with drafted content but little typing yet — try a direct paste, then continue.
-    if (
-      draft &&
-      venueLooksLikeWorkingSurface(venue, agent.url) &&
-      gen === agent.generation
-    ) {
-      try {
-        await ownedBrowserAct.pasteTextIntoPage?.(wc, {
-          text: draft,
-          replaceAll: false,
-        });
-      } catch {
-        /* adaptive may have typed already */
-      }
-    }
-
-    // Write done → Share dialog for "send/share it to email@…". Never leave
-    // that as leftover text in the document body. Skip if a later plan step
-    // will handle share, or we already shared this turn.
-    let shareAns = "";
-    const deferShareToLaterStep =
-      !!agent._deferDocShare || !!agent.docShareDone;
-    if (
-      needsDocShare &&
-      !deferShareToLaterStep &&
-      venueLooksLikeWorkingSurface(venue, agent.url) &&
-      gen === agent.generation &&
-      ownedBrowserAct.sharePageWithEmail
-    ) {
-      emitProgress(agent.id, {
-        status: "running",
-        step: "Sharing the doc…",
-        url: agent.url,
-        skill: "tool-create",
-      });
-      sendToAgentChannels(agent.id, "lykn:agent-status", {
-        status: "Sharing the doc…",
-      });
-      try {
-        const shared = await ownedBrowserAct.sharePageWithEmail(wc, { ask });
-        agent.url = wc.getURL?.() || agent.url;
-        if (shared?.ok && !shared.stuck) {
-          shareAns = shared.message || `Shared with the recipient.`;
-          agent.docShareDone = true;
-        } else if (shared?.message) {
-          // Deterministic path incomplete — only chase the share remainder.
-          const progCtx = {
-            url: agent.url || "",
-            pageText: "",
-            history: agent.lastAdaptiveHistory || [],
-          };
-          try {
-            const pageNow = await ownedBrowserAct.getPageContext(wc);
-            progCtx.url = pageNow?.url || progCtx.url;
-            progCtx.pageText = pageNow?.text || "";
-            progCtx.title = pageNow?.title || "";
-          } catch {
-            /* ignore */
-          }
-          const shareGoal =
-            ownedBrowserAct.remainingAskGoal?.(ask, progCtx) ||
-            `ONLY share the open document. Click Share, add the email, Send. Do NOT rewrite the doc.\nAsk: ${ask}`;
-          const shareBrowse = await runAdaptiveBrowse(agent, shareGoal, gen, wc, {
-            suppressDone: true,
-            maxRounds: 10,
-            returnRaw: true,
-            adaptiveGoal: shareGoal,
-            conversationHistory: historyForPlanner(agent),
-          });
-          agent.url = wc.getURL?.() || agent.url;
-          if (Array.isArray(shareBrowse?.history) && shareBrowse.history.length) {
-            agent.lastAdaptiveHistory = [
-              ...(agent.lastAdaptiveHistory || []),
-              ...shareBrowse.history,
-            ];
-          }
-          shareAns = String(shareBrowse?.answer || shared.message || "").trim();
-          if (!/stuck|couldn't|could not|incomplete/i.test(shareAns)) {
-            agent.docShareDone = true;
-          }
-        }
-      } catch (e) {
-        shareAns = `Couldn't finish sharing (${e?.message || "error"}).`;
-      }
-    }
-
-    const working = venueLooksLikeWorkingSurface(venue, agent.url);
-    const link = formatToolVenueOpenLink(agent.url, venue.name);
-    const planAns = String(
-      (browseResult && browseResult.answer) ||
-        (typeof browseResult === "string" ? browseResult : "") ||
-        "",
-    ).trim();
-    if (Array.isArray(browseResult?.history) && browseResult.history.length) {
-      agent.lastAdaptiveHistory = [
-        ...(agent.lastAdaptiveHistory || []),
-        ...browseResult.history,
-      ];
-    }
-    // Re-check share gaps with a live page scrape when share was requested.
-    let shareGaps = [];
-    if (needsDocShare && working) {
-      try {
-        const pageShare = await ownedBrowserAct.getPageContext(wc);
-        shareGaps =
-          ownedBrowserAct.unmetBrowseAskRequirements?.(ask, {
-            url: pageShare?.url || agent.url || "",
-            pageText: pageShare?.text || "",
-            title: pageShare?.title || "",
-            history: agent.lastAdaptiveHistory || [],
-            mailSendDone: !!agent.docShareDone,
-          }) || [];
-      } catch {
-        shareGaps = ["share/send the doc to the recipient"];
-      }
-    }
-    const stuck =
-      !!browseResult?.stuck ||
-      !working ||
-      (needsDocShare && shareGaps.some((g) => /share|send/i.test(g))) ||
-      /\b(stuck|can't|cannot|unable|paywall|sign\s*in|log\s*in|need you|help me)\b/i.test(
-        planAns,
-      );
-
-    if (working && !stuck) {
-      return paintBrowseDone(
-        agent,
-        `Finished getting your ask into **${venue.name}**` +
-          (needsDocShare && shareAns ? ` and shared it` : "") +
-          `.\n\n` +
-          `${link || agent.url || ""}\n\n` +
-          (shareAns && shareAns.length < 400 ? `${shareAns}\n\n` : "") +
-          (planAns && planAns.length < 400 && planAns !== shareAns
-            ? `${planAns}\n\n`
-            : "") +
-          `Tell me what to change next, or keep editing in the tab.`,
-      );
-    }
-
-    const where = working
-      ? "in the working page but couldn't finish every part of the ask"
-      : /templates|\/create\/?/i.test(agent.url || "")
-        ? "still on a create/gallery page (not in the editor yet)"
-        : "in the tool but not on the editable working page yet";
-    return paintBrowseDone(
-      agent,
-      `I got stuck in **${venue.name}** — ${where}.\n\n` +
-        `**Ask:** ${ask}\n\n` +
-        (planAns
-          ? `**What I hit:** ${planAns.slice(0, 500)}\n\n`
-          : `**What I hit:** I couldn't finish the click-through / fill from here.\n\n`) +
-        `**What you can do:** Take the next click in the agent browser (Create/Blank/open the right page), then tell me “continue”.\n\n` +
-        `${link || agent.url || ""}`,
-    );
+    agent.lastToolDraft = { text: draft, venue: destination || "", at: Date.now() };
+    const goal = workDestination.buildAppWorkGoal({ ask, destination, draft });
+    return runAdaptiveBrowse(agent, goal, gen, wc, {
+      adaptiveGoal: goal,
+      conversationHistory: historyForPlanner(agent),
+      maxRounds: 20,
+    });
   }
 
-  /** @deprecated use runCreateInToolVenue */
+
+  /** @deprecated call runWorkInNamedApp directly. */
   async function runCreateInSheets(agent, text, gen) {
-    return runCreateInToolVenue(agent, text, gen);
+    return runWorkInNamedApp(agent, text, gen);
   }
 
   function resolveWorkerRef(ref) {
@@ -2704,6 +2403,23 @@ function createAgentRuntime(deps) {
   }
 
   /**
+   * "running" and "waiting" both describe a live turn. `load()` restores
+   * neither the abort handle nor `pendingChoice`, so a restored agent in either
+   * state is a ghost: it renders a permanent "Waiting for your go-ahead…" row
+   * for a run that no longer exists, with no way to answer it. Both rest to
+   * "idle" — on the way to disk and on the way back.
+   */
+  function restedStatus(status) {
+    return status === "running" || status === "waiting" ? "idle" : status;
+  }
+
+  /** The matching step label — dropped whenever it describes a live turn. */
+  function restedStep(status, step) {
+    if (status === "running" || status === "waiting") return "";
+    return stepAwaitsUser(step) ? "" : step;
+  }
+
+  /**
    * Persistent "I'm waiting on you" state for the chat UI. Unlike agent-status
    * (which the UI drops as soon as the turn ends) this survives the finished
    * turn, so a run parked on a sign-in wall keeps a live waiting indicator on
@@ -2719,17 +2435,38 @@ function createAgentRuntime(deps) {
         label: String(payload.label || ""),
         detail: String(payload.detail || ""),
         host: String(payload.host || ""),
+        // One-tap answers for a question pause; empty for every other kind.
+        options: Array.isArray(payload.options)
+          ? payload.options.map((o) => String(o || "")).filter(Boolean).slice(0, 4)
+          : [],
       });
     } catch {
       /* UI-only signal */
     }
   }
 
+  let persistChain = Promise.resolve();
+
+  function enqueuePersist() {
+    persistChain = persistChain.then(() => persist()).catch(() => {});
+    return persistChain;
+  }
+
   function schedulePersist() {
     if (persistTimer) clearTimeout(persistTimer);
     persistTimer = setTimeout(() => {
-      void persist();
+      persistTimer = null;
+      void enqueuePersist();
     }, 400);
+  }
+
+  /** Write now — used when retiring a session so a reopen can't reload stale workers. */
+  function persistNow() {
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+      persistTimer = null;
+    }
+    return enqueuePersist();
   }
 
   async function persist() {
@@ -2740,10 +2477,10 @@ function createAgentRuntime(deps) {
         title: a.title,
         role: a.role === "main" ? "main" : "worker",
         pinned: a.role === "main" || !!a.pinned,
-        status: a.status === "running" ? "idle" : a.status,
+        status: restedStatus(a.status),
         skill: a.skill,
         url: a.url,
-        step: a.step,
+        step: restedStep(a.status, a.step),
         history: Array.isArray(a.history) ? a.history.slice(-80) : [],
         createdAt: a.createdAt,
         updatedAt: a.updatedAt,
@@ -2787,10 +2524,10 @@ function createAgentRuntime(deps) {
           title: row.title || "Agent",
           role,
           pinned: false,
-          status: row.status || "idle",
+          status: restedStatus(row.status || "idle"),
           skill: row.skill || "general",
           url: row.url || "",
-          step: row.step || "",
+          step: restedStep(row.status || "idle", row.step || ""),
           history: Array.isArray(row.history) ? row.history : [],
           createdAt: row.createdAt || new Date().toISOString(),
           updatedAt: row.updatedAt || new Date().toISOString(),
@@ -2818,6 +2555,7 @@ function createAgentRuntime(deps) {
             : null,
           lastBrowseQuery: "",
           stepDeliverables: [],
+          liveOutputSteps: [],
         });
       }
       mainLinkedBrowserId =
@@ -2907,6 +2645,7 @@ function createAgentRuntime(deps) {
       lastImage: null,
       lastBrowseQuery: "",
       stepDeliverables: [],
+      liveOutputSteps: [],
     };
     // Restore a prior conversation (used when reopening a tab from History).
     if (Array.isArray(history) && history.length) {
@@ -3080,7 +2819,7 @@ function createAgentRuntime(deps) {
     if (ownedBrowserAct.looksLikeWrongOpenDestinationAsk?.(t)) return true;
     if (ownedBrowserAct.looksLikeNewBlankWorkspaceAsk?.(t, ctx)) return true;
     if (ownedBrowserAct.looksLikeOrganizeSheetAsk?.(t)) return true;
-    if (looksLikeEditCurrentInToolAsk(t, { liveUrl })) return true;
+    if (workDestination.looksLikeEditCurrentInToolAsk(t, { liveUrl })) return true;
     if (ownedBrowserAct.looksLikeDeicticFollowUp?.(t)) return true;
     if (ownedBrowserAct.looksLikeInPageAction?.(t)) return true;
     if (ownedBrowserAct.looksLikeCurrentTabTask?.(t)) return true;
@@ -3095,7 +2834,7 @@ function createAgentRuntime(deps) {
     if (ownedBrowserAct.looksLikeMailComposeTask?.(t) || ownedBrowserAct.looksLikeMailReplyTask?.(t)) {
       return true;
     }
-    if (looksLikePasteReportIntoSheets(t) || looksLikeCreateInToolVenueAsk(t, { liveUrl })) {
+    if (looksLikePasteReportIntoSheets(t) || workDestination.looksLikeWorkInApp(t, { liveUrl })) {
       return true;
     }
     if (looksLikeDeliverableEdit(t) || looksLikeOpenDeliverableFollowUp(t)) return true;
@@ -3357,6 +3096,40 @@ function createAgentRuntime(deps) {
     return { ok: true, activeAgentId };
   }
 
+  /** Retire every worker agent without recreating tabs. Used when the Studio
+   *  Browser window is closed (not minimized) so the next open is a fresh
+   *  session. Minimize leaves agents and their views in place. */
+  function closeAllWorkers() {
+    const ids = workerAgents().map((a) => a.id);
+    if (!ids.length) return { ok: true, closed: [] };
+    for (const id of ids) {
+      const a = agents.get(id);
+      if (!a) continue;
+      abortAgent(a, "closed");
+      try {
+        destroyBrowserWindow?.(id);
+      } catch {
+        /* ignore */
+      }
+      try {
+        destroyOwnedArtifactTabs?.(id);
+      } catch {
+        /* ignore */
+      }
+      agents.delete(id);
+      if (mainLinkedBrowserId === id) mainLinkedBrowserId = "";
+    }
+    const main = getMainAgent();
+    activeAgentId = main?.id || (agents.size ? [...agents.keys()][0] : null);
+    void persistNow();
+    emitList();
+    emit(
+      "lykn:agent-switched",
+      switchPayload(activeAgentId ? agents.get(activeAgentId) : null),
+    );
+    return { ok: true, closed: ids };
+  }
+
   /** Main is retired — "new chat" simply creates a fresh agent + paired tab. */
   function resetMainChat() {
     const res = createAgent({ title: "New agent" });
@@ -3367,11 +3140,9 @@ function createAgentRuntime(deps) {
   function setAgentMode(on) {
     agentModeOn = !!on;
     if (agentModeOn) {
-      // One agent per tab, no Main orchestrator: entering Agent Mode just
-      // guarantees at least one agent (with its paired tab) and lands on it.
-      if (workerCount() === 0) {
-        createAgent({ silent: true });
-      }
+      // Don't spawn a standby worker here. Callers that need a tab create
+      // one themselves — a silent create plus their own createAgent was
+      // opening the Studio browser with two extra tabs every time.
       if (!activeAgentId || !agents.has(activeAgentId)) {
         activeAgentId = workerAgents()[0]?.id || null;
       }
@@ -3398,6 +3169,58 @@ function createAgentRuntime(deps) {
 
   function sendToAgentChannels(agentId, channel, payload) {
     emit(channel, { agentId, ...payload });
+  }
+
+  /** Recent route decisions, so repeating an ask costs nothing. */
+  const routeCache = new Map();
+
+  /**
+   * Ask a model whether this needs the browser.
+   *
+   * Used ONLY where the keyword heuristics land on "general" — their
+   * catch-all, and the bucket every misroute in testing fell into. Keywords
+   * cannot tell an errand phrased as a question ("who is my folder shared
+   * with?") from a question about what is on screen ("who wrote this?"); the
+   * words are nearly identical and the right answer depends on meaning. The
+   * heuristics keep every confident case, so their accumulated lessons stay
+   * in force and the cost is one small call on the ambiguous ones.
+   *
+   * Never allowed to hurt a turn: it is capped in time, and any failure means
+   * the heuristic's own answer stands.
+   */
+  async function routeNeedsBrowser(agent, text, { liveUrl = "" } = {}) {
+    const ask = String(text || "").trim();
+    if (!ask) return false;
+    const key = `${ask.slice(0, 300)}|${liveUrl.slice(0, 80)}`;
+    if (routeCache.has(key)) return routeCache.get(key);
+    let needsBrowser = false;
+    try {
+      const model = browserAgent.createAgentModel({ apiBase, getAuthToken, timeoutMs: 6000 });
+      const recent = (agent?.history || [])
+        .slice(-2)
+        .map((m) => `${m.role === "assistant" ? "Assistant" : "User"}: ${String(m.content || "").slice(0, 160)}`)
+        .join("\n");
+      const out = await model.route({
+        ask,
+        liveUrl,
+        pageTitle: String(agent?.lastBrowseTitle || ""),
+        recent,
+        signal: agent?.abort?.signal,
+      });
+      needsBrowser = out.route === "browser";
+      diagnostics.recordRouteDecision?.({
+        userDataPath,
+        ask: ask.slice(0, 120),
+        route: out.route,
+        reason: out.reason,
+      });
+    } catch {
+      // Offline, rate limited, slow — the heuristic answer stands.
+      return false;
+    }
+    if (routeCache.size > 200) routeCache.clear();
+    routeCache.set(key, needsBrowser);
+    return needsBrowser;
   }
 
   function resolveSkillForPrompt(agent, text, attachments) {
@@ -3440,8 +3263,23 @@ function createAgentRuntime(deps) {
     if (
       skill === "general" &&
       liveTabUrl &&
-      looksLikeEditCurrentInToolAsk(q, { liveUrl: liveTabUrl })
+      workDestination.looksLikeEditCurrentInToolAsk(q, { liveUrl: liveTabUrl })
     ) {
+      skill = "browse";
+    }
+    // "who is the final folder shared with?" reads like a question and is
+    // really an errand: the answer lives behind a dialog nobody has opened, so
+    // the chat model — which has no browser — would answer from page text that
+    // cannot contain it. In practice it replied "I'm checking now…" and the
+    // task stopped there, with the agent never started.
+    if (skill === "general" && ownedBrowserAct.asksAboutAppState?.(q)) {
+      skill = "browse";
+    }
+    // In the agent rail every agent has a browser tab of its own, and an ask
+    // about the user's OWN material in an app — "my drive", "the final folder"
+    // — is an errand in that tab, not a question the chat model can field. It
+    // has no browser; the best it can do is say it is looking into it.
+    if (skill === "general" && ownedBrowserAct.looksLikeOwnAppContentAsk?.(q)) {
       skill = "browse";
     }
     if (
@@ -3504,14 +3342,14 @@ function createAgentRuntime(deps) {
     const liveForStep = agent.url || "";
     // Follow-up edits on the open Docs/Sheets/Notion file — keep context, no new file.
     if (
-      looksLikeEditCurrentInToolAsk(rawStep, { liveUrl: liveForStep }) ||
-      looksLikeEditCurrentInToolAsk(String(stepMeta?.fullAsk || ""), {
+      workDestination.looksLikeEditCurrentInToolAsk(rawStep, { liveUrl: liveForStep }) ||
+      workDestination.looksLikeEditCurrentInToolAsk(String(stepMeta?.fullAsk || ""), {
         liveUrl: liveForStep,
       })
     ) {
       // A planner micro-step ("Locate the opening paragraph") is not the edit
       // request — run the user's actual ask, not the step label.
-      const editAsk = looksLikeEditCurrentInToolAsk(rawStep, { liveUrl: liveForStep })
+      const editAsk = workDestination.looksLikeEditCurrentInToolAsk(rawStep, { liveUrl: liveForStep })
         ? rawStep
         : String(stepMeta?.fullAsk || rawStep).trim() || rawStep;
       return runEditInToolVenue(agent, editAsk, gen, stepMeta);
@@ -3524,10 +3362,10 @@ function createAgentRuntime(deps) {
     if (
       skill === "tool-create" ||
       skill === "sheets-create" ||
-      (looksLikeCreateInToolVenueAsk(rawStep, { liveUrl: liveForStep }) &&
-        // Judge tool naming on the user's own words: fullAsk when the planner
+      (workDestination.looksLikeWorkInApp(rawStep, { liveUrl: liveForStep }) &&
+        // Judge the naming on the user's own words: fullAsk when the planner
         // split the task (steps are planner-authored), rawStep otherwise.
-        toolVenueExplicitlyNamed(String(stepMeta?.fullAsk || rawStep)))
+        !!workDestination.destinationFromAsk(String(stepMeta?.fullAsk || rawStep)))
     ) {
       // Complex design/3D software → offer artifact vs stop BEFORE tool-create.
       if (!agent.skipComplexGateOnce) {
@@ -3552,11 +3390,11 @@ function createAgentRuntime(deps) {
         multiActive &&
         fullAsk &&
         fullAsk.length > rawStep.length + 8 &&
-        looksLikeCreateInToolVenueAsk(fullAsk, { liveUrl: agent.url || "" })
+        workDestination.looksLikeWorkInApp(fullAsk, { liveUrl: agent.url || "" })
           ? fullAsk
           : rawStep;
       try {
-        return await runCreateInToolVenue(agent, createAsk, gen);
+        return await runWorkInNamedApp(agent, createAsk, gen);
       } finally {
         agent._deferDocShare = false;
       }
@@ -4249,6 +4087,11 @@ function createAgentRuntime(deps) {
     if (!skillWantsTextBrowserOutput(skill)) return false;
     const body = String(answer || "").trim();
     if (!body) return false;
+    // A run parked on the user has no deliverable — its "answer" is the
+    // question it is asking, and filing that in a subtab hid it from the one
+    // person who had to read it.
+    if (agent.status === "waiting" || agent.pendingChoice || agent.waitingForSignIn) return false;
+    if (body.length < 500 && /\?\s*$/.test(body)) return false;
     if (skill === "research" || skill === "report-edit") {
       return openTextOutputInBrowser(agent, body, {
         title: `${agent.title || "Research"} report`,
@@ -4279,54 +4122,309 @@ function createAgentRuntime(deps) {
     );
   }
 
-  /** User asked for a keepable written deliverable (summary/report/write-up). */
-  function wantsWrittenBrowseOutput(text) {
-    const t = String(text || "").toLowerCase();
-    return /\b(summarize|summarise|summary|write[- ]?up|write[- ]up|write (a|me|up|one)|draft (a|me)|report|brief|analysis|analyze|analyse|key (points|findings|takeaways)|takeaways?|recap|rundown|go through|walk me through|explain (what|this|it)|review (this|the|my|it))\b/.test(
-      t,
-    );
+
+  // The compact action log from adaptive browse history now lives in
+  // lib/browseWorkLog.cjs (imported at the top of this file). It moved because
+  // it is the boundary between the agent's internals and what a user reads:
+  // this version rendered whatever sat in `label`, which is how element
+  // references — "Clicked: e4" — ended up in finished task summaries.
+
+  function sanitizeStepLabel(raw) {
+    return String(raw || "")
+      .replace(/[\[\]]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 72);
   }
 
-  /** Compact action log from adaptive browse history. */
-  function formatBrowseWorkLog(history, { max = 8 } = {}) {
+  /**
+   * Reasoning arrives in pieces — why it acted, what it expected, what the page
+   * did — and this is the seam the renderers break back into separate lines.
+   */
+  const STEP_DETAIL_SEP = " · ";
+
+  /**
+   * The reasoning behind a step, as it rides inside the step marker's markdown
+   * title. Quotes would close the title early and parens would close the link,
+   * so neither can survive; everything else is one flat line the renderers fold
+   * into the step's dropdown.
+   */
+  function sanitizeStepDetail(raw) {
+    return String(raw || "")
+      .replace(/[\[\]"()]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 320);
+  }
+
+  /** Sentence-case a model fragment so a reason reads as prose in the dropdown. */
+  function tidyStepDetail(raw) {
+    const s = sanitizeStepDetail(raw);
+    if (!s) return "";
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+
+  /**
+   * A paragraph of narration, safe to sit between step markers. Anything the
+   * transcript reads as structure is flattened out: a nested marker would be
+   * parsed as another step, a horizontal rule would cut the transcript in half,
+   * and a leading bullet or heading would end the previous block early.
+   */
+  function sanitizeStepNote(raw) {
+    return String(raw || "")
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+      .split(/\r?\n/)
+      .map((l) =>
+        l
+          .replace(/^\s*-{3,}\s*$/, "")
+          .replace(/^\s*(?:[-*•]|\d+[.)]|#{1,6}|>)\s+/, ""),
+      )
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 600);
+  }
+
+  /**
+   * The opening explanation: how the agent means to go about this, then the
+   * plan it settled on. Bullets are newline-joined on purpose — a blank line
+   * between them closes the list in both renderers and leaves orphan lines.
+   */
+  function buildBrowsePlanNote({ approach = "", plan = [] } = {}) {
+    const blocks = [];
+    const opening = sanitizeStepNote(approach);
+    if (opening) blocks.push(opening);
+    const steps = (Array.isArray(plan) ? plan : [])
+      .map((s) => sanitizeStepNote(s))
+      .filter(Boolean)
+      .slice(0, 8);
+    // One step is not a plan worth listing — it just repeats the goal.
+    if (steps.length > 1) {
+      blocks.push(["Here's how I'll work through it:", ...steps.map((s) => `- ${s}`)].join("\n"));
+    }
+    return blocks.join("\n\n");
+  }
+
+  function browseHistoryToStepLabels(history, { max = 8 } = {}) {
     const acts = (Array.isArray(history) ? history : []).filter((h) => h?.result?.ok);
-    const lines = [];
+    const labels = [];
     const seen = new Set();
-    for (const h of acts) {
-      const rawType = String(h?.action?.type || "act").toLowerCase();
-      const type =
-        /click_coord|tap_coord|press_click|click|tap/i.test(rawType)
-          ? "Clicked"
-          : /os_write|write|type|fill|paste|click_type/i.test(rawType)
-            ? "Typed"
-            : /navigate|open|goto/i.test(rawType)
-              ? "Opened"
-              : String(h?.action?.type || "Act").replace(/_/g, " ");
-      const label = String(h?.action?.label || h?.result?.label || h?.action?.value || "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 72);
-      const line = label ? `${type}: ${label}` : type;
-      const key = line.toLowerCase();
+    for (const entry of acts) {
+      const verb = verbFor(entry?.action?.type);
+      const label = humanLabel(entry);
+      const line = label ? `${verb}: ${label}` : verb === "Opened" ? "Opened a page" : verb;
+      const key = String(line || "").toLowerCase();
       if (!line || seen.has(key)) continue;
       seen.add(key);
-      lines.push(`- ${line}`);
-      if (lines.length >= max) break;
+      labels.push({
+        label: sanitizeStepLabel(line),
+        kind: "browse",
+        status: "done",
+        url: String(entry?.action?.url || entry?.url || ""),
+      });
+      if (labels.length >= max) break;
     }
-    return lines.join("\n");
+    return labels;
   }
 
-  /** Live Glass narrative while the browser agent is still clicking. */
-  function formatBrowseWorkingNarrative({ history, status, taskPlan, url } = {}) {
-    const parts = ["**Working through it…**"];
-    // Never dump the internal WORKING PLAN / DONE / NOW / LATER template —
-    // that is for the planner, not the user.
-    const log = formatBrowseWorkLog(history, { max: 6 });
-    if (log) parts.push(`**Done so far**\n${log}`);
-    const now = humanizeBrowseStatus(status) || humanizeBrowseStatus(taskPlan);
-    if (now) parts.push(`_Now: ${now}_`);
-    else if (url) parts.push(`_On: ${String(url).slice(0, 120)}_`);
-    return parts.join("\n\n").slice(0, 2000);
+  function resetLiveOutputSteps(agent) {
+    if (!agent) return;
+    agent.liveOutputSteps = [];
+  }
+
+  function renderStepTranscript(agent, { allDone = false } = {}) {
+    return renderLiveStep(agent?.id, agent?.liveOutputSteps, {
+      allDone,
+      sanitizeLabel: sanitizeStepLabel,
+      sanitizeDetail: sanitizeStepDetail,
+    });
+  }
+
+  function dropTransientOutputSteps(agent) {
+    if (!Array.isArray(agent?.liveOutputSteps)) return;
+    agent.liveOutputSteps = agent.liveOutputSteps.filter((s) => !s?.transient);
+  }
+
+  function syncBrowseActionDeliverables(agent) {
+    const steps = Array.isArray(agent?.liveOutputSteps) ? agent.liveOutputSteps : [];
+    if (!agent || !steps.length) return;
+    if (!Array.isArray(agent.stepDeliverables)) agent.stepDeliverables = [];
+    if (
+      agent.stepDeliverables.some(
+        (d) => d && (d.kind === "report" || d.kind === "artifact" || d.kind === "image"),
+      )
+    ) {
+      return;
+    }
+    steps.forEach((s, i) => {
+      const existing = agent.stepDeliverables[i];
+      if (existing && existing.kind && existing.kind !== "browse" && existing.kind !== "text") {
+        return;
+      }
+      agent.stepDeliverables[i] = {
+        index: i,
+        skill: "browse",
+        label: sanitizeStepLabel(s.label),
+        summary: sanitizeStepDetail(s.detail),
+        kind: "browse",
+        title: sanitizeStepLabel(s.label),
+        url: String(s.url || agent.url || ""),
+        markdown: "",
+        code: "",
+      };
+    });
+  }
+
+  function emitStepTranscript(agent, { final = false, appendix = "" } = {}) {
+    if (!agent) return "";
+    if (final) dropTransientOutputSteps(agent);
+    syncBrowseActionDeliverables(agent);
+    const transcript = renderStepTranscript(agent, { allDone: final });
+    // The closing summary (what was done + a next step) renders as ordinary
+    // prose after the step boxes — the response area is where a finished
+    // task's story belongs, not a subtab.
+    const extra = String(appendix || "").trim();
+    // A horizontal rule keeps the closing summary out of the last step's
+    // note — the rail types notes, and without a seam the wrap-up would
+    // be swallowed into the final explanation.
+    const text = [transcript, extra].filter(Boolean).join("\n\n---\n\n");
+    if (!text) return "";
+    agent.partialText = text;
+    sendToAgentChannels(agent.id, "lykn:agent-delta", { text, final });
+    return text;
+  }
+
+  function setLiveOutputStep(
+    agent,
+    { label, kind = "browse", url = "", detail = "", note = "", transient = false } = {},
+  ) {
+    const title = sanitizeStepLabel(label);
+    if (!agent || !title) return;
+    if (!Array.isArray(agent.liveOutputSteps)) agent.liveOutputSteps = [];
+    const steps = agent.liveOutputSteps;
+    let last = steps[steps.length - 1];
+    if (last && last.status === "live" && last.label.toLowerCase() === title.toLowerCase()) {
+      if (url) last.url = url;
+      if (detail) last.detail = sanitizeStepDetail(detail);
+      if (note && !last.note) last.note = note;
+      return;
+    }
+    // A real step replaces the thinking placeholder it was decided behind
+    // rather than following it — otherwise every round leaves a spent
+    // "Thinking…" row above the thing it turned into.
+    if (last && last.transient && !transient) {
+      steps.pop();
+      last = steps[steps.length - 1];
+    }
+    if (last && last.status === "live") last.status = "done";
+    if (last && last.status === "done" && last.label.toLowerCase() === title.toLowerCase()) {
+      // Same action again — one row, but it goes back to spinning. Leaving a
+      // check on it while the agent repeats it means nothing on screen moves.
+      if (!transient) last.status = "live";
+      if (detail && !last.detail) last.detail = sanitizeStepDetail(detail);
+      // A repeat has its own commentary, and it is usually the interesting one
+      // ("that didn't take, so I'm trying it from the other menu").
+      if (note) last.note = last.note ? `${last.note}\n\n${note}` : note;
+      return;
+    }
+    steps.push({
+      label: title,
+      kind: kind || "browse",
+      status: "live",
+      url: url || agent.url || "",
+      detail: sanitizeStepDetail(detail),
+      note: String(note || ""),
+      transient: !!transient,
+    });
+  }
+
+  /**
+   * Attach commentary to the step already on screen, without starting a new
+   * one. The plan lands after the "looking at the task" step is already up, and
+   * the user reads its explanation under that step rather than above it.
+   */
+  function setLiveOutputStepNote(agent, note) {
+    const steps = Array.isArray(agent?.liveOutputSteps) ? agent.liveOutputSteps : [];
+    const step = steps[steps.length - 1];
+    const text = String(note || "").trim();
+    if (!step || !text) return;
+    if (step.note && step.note.includes(text)) return;
+    step.note = step.note ? `${step.note}\n\n${text}` : text;
+  }
+
+  /**
+   * Add to the reasoning of the step currently on screen. Used once the page has
+   * answered back, so the finished step explains both why it acted and what
+   * that actually did.
+   */
+  function appendLiveOutputStepDetail(agent, extra) {
+    const steps = Array.isArray(agent?.liveOutputSteps) ? agent.liveOutputSteps : [];
+    const step = steps[steps.length - 1];
+    const addition = sanitizeStepDetail(extra);
+    if (!step || step.transient || !addition) return;
+    const have = sanitizeStepDetail(step.detail);
+    if (have.toLowerCase().includes(addition.toLowerCase())) return;
+    step.detail = sanitizeStepDetail(have ? `${have}${STEP_DETAIL_SEP}${addition}` : addition);
+  }
+
+  /** The page has confirmed the current step — stop spinning on it. */
+  function completeLiveOutputStep(agent) {
+    const steps = Array.isArray(agent?.liveOutputSteps) ? agent.liveOutputSteps : [];
+    const step = steps[steps.length - 1];
+    if (step && !step.transient && step.status === "live") step.status = "done";
+  }
+
+  function finalizeLiveOutputSteps(agent) {
+    if (!Array.isArray(agent?.liveOutputSteps)) {
+      if (agent) agent.liveOutputSteps = [];
+      return;
+    }
+    dropTransientOutputSteps(agent);
+    for (const s of agent.liveOutputSteps) s.status = "done";
+  }
+
+  function hydrateLiveOutputFromHistory(agent, history) {
+    if (!agent) return;
+    const fromHist = browseHistoryToStepLabels(history);
+    if (!Array.isArray(agent.liveOutputSteps)) agent.liveOutputSteps = [];
+    if (!agent.liveOutputSteps.length && fromHist.length) {
+      agent.liveOutputSteps = fromHist;
+      return;
+    }
+    finalizeLiveOutputSteps(agent);
+  }
+
+  function narrateBrowseProgress(
+    agent,
+    status,
+    { url = "", history = null, detail = "", note = "", transient = false } = {},
+  ) {
+    const label = humanizeBrowseStatus(status) || String(status || "").trim();
+    if (Array.isArray(history)) {
+      const done = browseHistoryToStepLabels(history);
+      agent.liveOutputSteps = done;
+      if (label && !done.some((s) => s.label.toLowerCase() === label.toLowerCase())) {
+        agent.liveOutputSteps.push({
+          label: sanitizeStepLabel(label),
+          kind: "browse",
+          status: "live",
+          url: url || agent.url || "",
+          detail: sanitizeStepDetail(detail),
+          note: String(note || ""),
+          transient: !!transient,
+        });
+      }
+    } else if (label) {
+      setLiveOutputStep(agent, {
+        label,
+        kind: "browse",
+        url: url || agent.url || "",
+        detail,
+        note,
+        transient,
+      });
+    }
+    return emitStepTranscript(agent);
   }
 
   /** User-facing status only — strip planner boilerplate. */
@@ -4355,6 +4453,82 @@ function createAgentRuntime(deps) {
     return s.slice(0, 100);
   }
 
+  /**
+   * One line naming the action that is about to run. Deliberately plain: the
+   * step title is a chip in a narrow rail, so the model's reasoning — usually a
+   * sentence or three — goes in the dropdown underneath rather than being
+   * chopped off in the title, which is what it used to be.
+   * Returns "" when the action type says nothing useful, so the caller can fall
+   * back to the reason.
+   */
+  function describeBrowseAction(p) {
+    const type = String(p?.action?.type || "");
+    // click_coord has no element to name, so the model labels it in the action.
+    const label = String(p?.targetLabel || p?.action?.label || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 40);
+    const host = () => {
+      try {
+        return new URL(String(p?.action?.url || "")).hostname.replace(/^www\./, "");
+      } catch {
+        return "";
+      }
+    };
+    switch (type) {
+      case "navigate":
+      case "open_tab": {
+        const h = host();
+        return h ? `Opening ${h}` : "Opening a page";
+      }
+      case "click":
+      case "tap":
+      case "click_coord":
+      case "tap_coord":
+        return label ? `Clicking “${label}”` : "Clicking on the page";
+      case "type":
+      case "fill":
+      case "write":
+        return label ? `Typing into “${label}”` : "Filling in a field";
+      case "replace_text":
+        return label ? `Editing “${label}”` : "Editing the text";
+      case "select":
+        return label ? `Choosing in “${label}”` : "Choosing an option";
+      case "press_key":
+        return p?.action?.key ? `Pressing ${String(p.action.key).slice(0, 20)}` : "Pressing a key";
+      case "drag":
+        return label ? `Dragging “${label}”` : "Dragging on the page";
+      case "extract":
+        return label ? `Reading “${label}”` : "Reading the page";
+      case "scroll":
+        return "Scrolling the page";
+      case "screenshot":
+        return "Looking at the page";
+      case "wait":
+        return "Waiting for the page";
+      case "switch_tab":
+        return "Switching tabs";
+      case "go_back":
+        return "Going back";
+      case "go_forward":
+        return "Going forward";
+      default:
+        return "";
+    }
+  }
+
+  /**
+   * Title of last resort, for action types describeBrowseAction has no phrasing
+   * for. Takes the first clause of the model's reason rather than the first 64
+   * characters, so the chip ends on a word instead of mid-sentence.
+   */
+  function clipBrowseReason(raw) {
+    const s = String(raw || "").replace(/\s+/g, " ").trim();
+    if (!s) return "Working on the page";
+    const first = (s.split(/[.;]/)[0] || s).trim() || s;
+    return first.length > 64 ? `${first.slice(0, 61)}…` : first;
+  }
+
   /** Drop inline “Want me to…” blocks — follow-ups live above the chat bar. */
   function stripInlineWantMeSuggestions(text) {
     let t = String(text || "");
@@ -4368,69 +4542,22 @@ function createAgentRuntime(deps) {
     return t.replace(/\n{3,}/g, "\n\n").trim();
   }
 
-  /** Structured local close when we skip another LLM round.
-   *  Order: What I did → Link → Summary. Suggestions stay in the chat-bar popup. */
-  function formatBrowseCompletionSummary({
-    goal = "",
-    history = [],
-    page = {},
-    url = "",
-    planAnswer = "",
-    label = "",
-  } = {}) {
-    const title = String(page?.title || "").trim();
-    const pageText = String(page?.text || "");
-    const work = formatBrowseWorkLog(history);
-    const snippet = extractReadablePageSnippets(pageText, { maxLines: 5, maxChars: 1100 });
-    const fromPlan = stripInlineWantMeSuggestions(planAnswer);
-    const parts = [];
-    parts.push("## What I did");
-    if (work) parts.push(work);
-    else if (label) parts.push(`- Opened **${String(label).slice(0, 100)}**`);
-    else if (title) parts.push(`- Wrapped up on **${title.slice(0, 100)}**`);
-    else parts.push("- Finished the browser steps for your ask.");
+  // The "## What I did / ## Link / ## Summary" report subtab that used to
+  // open at the end of a browse run is gone: the completion summary is a
+  // wrap-up, not a deliverable, and it now closes the response transcript
+  // itself (see paintBrowseDone). Deliverable subtabs remain for the skills
+  // whose OUTPUT is a document — research reports, builds, images.
 
-    const linkUrl = String(url || "").trim();
-    if (linkUrl || title) {
-      parts.push("## Link");
-      if (linkUrl && title) parts.push(`[${title.slice(0, 100)}](${linkUrl})`);
-      else if (linkUrl) parts.push(linkUrl);
-      else parts.push(`**${title.slice(0, 100)}**`);
-    }
-
-    parts.push("## Summary");
-    if (fromPlan.length >= 40 && !/\b(i will|i'll|going to|next i|plan:)\b/i.test(fromPlan)) {
-      parts.push(fromPlan.slice(0, 2500));
-    } else if (snippet) {
-      parts.push(snippet);
-    } else if (title || linkUrl) {
-      parts.push(
-        title
-          ? `You're on **${title.slice(0, 100)}**.`
-          : "The tab is ready.",
-      );
-    } else {
-      parts.push("The browser work for this ask is done.");
-    }
-
-    return stripInlineWantMeSuggestions(parts.join("\n\n"));
-  }
-
-  function maybeOpenBrowseWrittenOutput(agent, answer, ask) {
-    if (isMainAgent(agent)) return false;
-    if (!wantsWrittenBrowseOutput(ask)) return false;
-    const body = String(answer || "").trim();
-    if (!looksLikeSubstantialTextOutput(body)) return false;
-    return openTextOutputInBrowser(agent, body, {
-      title: `${agent.title || "Agent"} summary`,
-      kind: "report",
-      rememberAsReport: true,
-    });
+  /** Label or prompt from a chip — chips are `{ label, prompt }`, not raw strings. */
+  function suggestionText(tip) {
+    if (tip == null) return "";
+    if (typeof tip === "string") return tip.replace(/\s+/g, " ").trim();
+    return String(tip.label || tip.prompt || "").replace(/\s+/g, " ").trim();
   }
 
   /** Short label for a follow-up chip (first-person ask, truncated). */
   function suggestionChipLabel(tip, maxLen = 56) {
-    let t = String(tip || "").replace(/\s+/g, " ").trim();
+    let t = suggestionText(tip);
     if (!t) return "";
     if (t.length > maxLen) {
       t = `${t.slice(0, Math.max(16, maxLen - 1)).replace(/\s+\S*$/, "")}…`;
@@ -4542,12 +4669,12 @@ function createAgentRuntime(deps) {
 
     if (tips.length < 3) {
       if (pageName) {
-        pushUnique(`Summarize ${pageName}`);
         pushUnique(`Take the next useful step on ${pageName}`);
+        pushUnique(`Check the result on ${pageName}`);
       }
-      pushUnique("Tell me the next click or change you want");
-      pushUnique("Have me summarize this page");
-      pushUnique("Continue with another step here");
+      pushUnique("Keep going from here");
+      pushUnique("Check the result on this page");
+      pushUnique("Take the next useful step here");
     }
 
     return tips.slice(0, 3).map((tip) => {
@@ -4686,7 +4813,10 @@ function createAgentRuntime(deps) {
     const okActs = (Array.isArray(history) ? history : []).filter((h) => h?.result?.ok);
     if (okActs.length && !needsLlmBrowseSummary(goal)) {
       const last = okActs[okActs.length - 1];
-      const actLabel = String(last?.action?.label || last?.result?.label || "").trim();
+      // Same rule as the work log: an element reference is not a place, and
+      // "I finished the step on **e11**." is what reading it raw produced.
+      // Falling through to the page title is the better failure.
+      const actLabel = humanLabel(last);
       const snippet = extractReadablePageSnippets(pageText, { maxLines: 3, maxChars: 700 });
       let msg = actLabel
         ? `I finished the step on **${actLabel.slice(0, 80)}**.`
@@ -4713,26 +4843,33 @@ function createAgentRuntime(deps) {
   }
 
   function paintBrowseDone(agent, msg, opts = {}) {
-    const raw = String(msg || "").trim();
-    if (!raw) return "";
-    const text = stripInlineWantMeSuggestions(
-      opts.skipEnrich
-        ? raw.replace(/\n*What next\?\s*$/i, "").trim()
-        : ensureHelpfulAgentClose(raw, {
-            goal:
-              opts.goal ||
-              agent.lastIntent?.browseGoal ||
-              agent.lastIntent?.understood ||
-              "",
-            url: opts.url || agent.url || "",
-            title: opts.title || "",
-            pageText: opts.pageText || "",
-          }),
-    );
-    agent.partialText = text;
-    agent.lastDeliverableKind = "browse";
-    if (opts.title) agent.lastBrowseTitle = String(opts.title).slice(0, 160);
-    // Always keep suggestion chips ready for the final agent-done payload.
+    if (Array.isArray(opts.history)) {
+      hydrateLiveOutputFromHistory(agent, opts.history);
+    }
+    finalizeLiveOutputSteps(agent);
+    if (!agent.liveOutputSteps?.length) {
+      const raw = String(msg || "")
+        .replace(/^#+\s+/gm, "")
+        .replace(/^[-*]\s+/gm, "")
+        .replace(/\*\*/g, "")
+        .trim();
+      const firstLine =
+        raw
+          .split("\n")
+          .map((l) => l.trim())
+          .find((l) => l && !/^!\[/.test(l) && !/^##\s/.test(l)) || "";
+      const label = sanitizeStepLabel(firstLine) || "Finished";
+      agent.liveOutputSteps = [
+        {
+          label,
+          kind: "browse",
+          status: "done",
+          url: opts.url || agent.url || "",
+        },
+      ];
+    }
+    // Suggestions are computed before the final paint so the closing summary
+    // can name the first one inline as the next step.
     if (!opts.skipSuggestions) {
       agent.lastSuggestions = suggestNextStepsForBrowse({
         goal:
@@ -4744,13 +4881,35 @@ function createAgentRuntime(deps) {
         title: opts.title || agent.lastBrowseTitle || "",
         pageText: String(opts.pageText || "").slice(0, 2000),
         skill: "browse",
-        answer: text,
+        answer: String(msg || ""),
       });
     }
-    sendToAgentChannels(agent.id, "lykn:agent-delta", {
-      text,
-      final: !opts.midStep,
-    });
+    // The agent's own final answer used to be dropped whenever step boxes
+    // existed — the one piece of prose written FOR the user never reached
+    // them (it only survived as a report subtab, when it survived at all).
+    // It now closes the response: what was done, then one next step.
+    let appendix = "";
+    if (!opts.midStep) {
+      let summary = stripInlineWantMeSuggestions(String(msg || "").trim())
+        .replace(/\n{3,}/g, "\n\n")
+        .slice(0, 1800)
+        .trim();
+      if (summary.length < 20) {
+        const title = String(opts.title || agent.lastBrowseTitle || "").trim();
+        summary = title
+          ? `Done — finished up on **${title.slice(0, 100)}**.`
+          : "Done — the browser work for this ask is finished.";
+      }
+      const tip = suggestionText(
+        Array.isArray(agent.lastSuggestions) ? agent.lastSuggestions[0] : "",
+      );
+      appendix = [summary, tip ? `**Next step:** ${tip} — just say the word.` : ""]
+        .filter(Boolean)
+        .join("\n\n");
+    }
+    const text = emitStepTranscript(agent, { final: !opts.midStep, appendix });
+    agent.lastDeliverableKind = "browse";
+    if (opts.title) agent.lastBrowseTitle = String(opts.title).slice(0, 160);
     if (!opts.midStep) {
       sendToAgentChannels(agent.id, "lykn:agent-status", { status: "Done" });
     }
@@ -4759,8 +4918,7 @@ function createAgentRuntime(deps) {
 
   /**
    * Single browse exit — every open/click/land path should end here so the
-   * user always gets: What I did → Link → Summary shape + suggestion chips.
-   * Pipeline: dissect → plan → do → check → summary → suggestions.
+   * user always gets finished step boxes + suggestion chips.
    */
   function finishBrowseTurn(agent, msg, opts = {}) {
     return paintBrowseDone(agent, msg, {
@@ -4807,9 +4965,7 @@ function createAgentRuntime(deps) {
 
     const fromPlan = String(opts.planAnswer || "").trim();
     const hist = Array.isArray(opts.history) ? opts.history : [];
-    const mustSummarize =
-      needsLlmBrowseSummary(text) || wantsWrittenBrowseOutput(text);
-    const wantsWrite = wantsWrittenBrowseOutput(text);
+    hydrateLiveOutputFromHistory(agent, hist);
     const actedOk = hist.some(
       (h) =>
         h?.result?.ok &&
@@ -4841,24 +4997,12 @@ function createAgentRuntime(deps) {
       url: urlForClose,
       title: pageForClose.title || "",
       pageText: String(pageForClose.text || "").slice(0, 2000),
+      history: hist,
     };
 
-    const structuredLocal = formatBrowseCompletionSummary({
-      goal: text,
-      history: hist,
-      page: pageForClose,
-      url: urlForClose,
-      planAnswer: fromPlan,
-      label: opts.label,
-    });
-
-    // Mid multi-step: never block the next step on a summary LLM call.
+    // Mid multi-step: leave the action boxes as done for this plan step.
     if (opts.suppressDone) {
-      const mid =
-        fromPlan ||
-        opts.quickMessage ||
-        `Step done — ${pageForClose.title || urlForClose || "page ready"}.`;
-      return paintBrowseDone(agent, mid, {
+      return paintBrowseDone(agent, fromPlan || opts.quickMessage || "", {
         ...paintCtx,
         skipEnrich: true,
         midStep: true,
@@ -4866,105 +5010,14 @@ function createAgentRuntime(deps) {
       });
     }
 
-    const finishLocal = (msg, enrichOpts = {}) => {
-      const out = paintBrowseDone(agent, msg, { ...paintCtx, ...enrichOpts });
-      maybeOpenBrowseWrittenOutput(agent, out, text);
-      return out;
-    };
-
-    // Action-only asks: land a structured What I did / Link / Summary close immediately.
-    // Summary / write-up asks always get a real wrap-up (LLM when possible).
-    if (!mustSummarize) {
-      if (
-        structuredLocal.length >= 80 &&
-        !/\b(cannot|can't|unable to click|sign in first)\b/i.test(structuredLocal)
-      ) {
-        return finishLocal(structuredLocal, { skipEnrich: true });
-      }
-      const quick =
-        opts.quickMessage ||
-        formatQuickBrowseAnswer({
-          goal: text,
-          page: pageForClose,
-          url: urlForClose,
-          history: hist,
-          label: opts.label,
-        });
-      if (quick) return finishLocal(quick, { skipEnrich: true });
-      if (fromPlan.length >= 20) return finishLocal(fromPlan);
-    }
-
-    emitProgress(agent.id, {
-      status: "running",
-      step: wantsWrite ? "Writing summary…" : "Wrapping up…",
-      url: urlForClose,
-      skill: "browse",
+    // The completion summary lives in the response area now (paintBrowseDone
+    // closes the transcript with the agent's answer + a next step). A summary
+    // is a wrap-up, not a deliverable — opening it as a report subtab buried
+    // the one thing the user most wants to read at the end of a run.
+    return paintBrowseDone(agent, fromPlan || opts.quickMessage || "", {
+      ...paintCtx,
+      skipEnrich: true,
     });
-    sendToAgentChannels(agent.id, "lykn:agent-status", {
-      status: wantsWrite ? "Writing summary…" : "Wrapping up…",
-    });
-    // Show the working log immediately so Glass isn't blank while the model writes.
-    if (structuredLocal.length >= 40) {
-      agent.partialText = structuredLocal;
-      sendToAgentChannels(agent.id, "lykn:agent-delta", {
-        text: structuredLocal,
-        final: false,
-      });
-    }
-
-    const signedInMail = ownedBrowserAct.looksLikeSignedInMailUrl(urlForClose);
-    const looksSignIn = ownedBrowserAct.looksLikeSignInWall({
-      url: urlForClose,
-      text: pageForClose.text,
-      title: pageForClose.title,
-    });
-    const workLog = formatBrowseWorkLog(hist);
-    const summaryPrompt =
-      `${text}\n\n[Agent browsed ${urlForClose} in the LYKN Agent Browser]\nPage title: ${pageForClose.title || ""}\n` +
-      (signedInMail && !looksSignIn
-        ? `NOTE: Authenticated mail inbox — do not claim the user still needs to sign in.\n`
-        : "") +
-      (agent.lastIntent?.understood
-        ? `What we understood the user wanted: ${agent.lastIntent.understood}\n`
-        : "") +
-      (workLog ? `Actions already taken:\n${workLog}\n\n` : "") +
-      `Visible text:\n${String(pageForClose.text || "").slice(0, 8000)}\n\n` +
-      (hist.length
-        ? `Browse step log (raw): ${JSON.stringify(hist.slice(-10))}\n\n`
-        : "") +
-      (wantsWrite
-        ? `The user asked for a written summary/report. Write a complete standalone markdown document they can keep.\n`
-        : `Write a helpful closing reply for the user using ONLY the page content and actions above.\n`) +
-      `Structure (use these headings, in this order):\n` +
-      `## What I did\n` +
-      `- Brief bullets of the browser work already completed (do not invent clicks).\n` +
-      `## Link\n` +
-      `- The page URL (and title if known).\n` +
-      `## Summary\n` +
-      `- The main findings / answer — thorough if they asked to summarize, review, analyze, or write anything up.\n` +
-      `Do NOT include “Want me to…” / follow-up questions — those appear in the UI above the chat bar.\n` +
-      `Do not invent sources or claim you searched the web. ` +
-      `Do not tell the user to open the page themselves — it is already open. ` +
-      `Never say you cannot click or control the browser — this agent owns the tab and already acted. ` +
-      `Never end with only “What next?”.`;
-
-    let summary = "";
-    try {
-      summary = await streamChat(agent, summaryPrompt, [], "browse-summary", gen, {
-        suppressDone: false,
-      });
-    } catch {
-      summary = "";
-    }
-    if (!String(summary || "").trim() || String(summary).trim().length < 40) {
-      return finishLocal(structuredLocal || fromPlan || "Finished the browse task.", {
-        skipEnrich: true,
-      });
-    }
-    summary = stripInlineWantMeSuggestions(summary);
-    maybeOpenBrowseWrittenOutput(agent, summary, text);
-    // Always paint through the shared exit so suggestions + status stay consistent.
-    return finishLocal(summary);
   }
 
   /** Immediate "on it" acknowledgment for deliverable turns — shown in the
@@ -5000,10 +5053,7 @@ function createAgentRuntime(deps) {
         .replace(/\n{3,}/g, "\n\n")
         .trim()
         .slice(0, 6000);
-      if (/\b(couldn't|could not|stuck|incomplete|not finish|couldn't finish|still open)\b/i.test(full)) {
-        return full;
-      }
-      return full || `Done${agent?.url ? ` — ${agent.url}` : ""}.`;
+      return full || "Done.";
     }
     if (skill === "build") {
       const title = agent?.lastArtifact?.title || "artifact";
@@ -5097,8 +5147,7 @@ function createAgentRuntime(deps) {
     return entry;
   }
 
-  /** Glass multi-step summary — clickable chips only (no per-step bodies).
-   *  Full link + summary are appended once at the end via formatMultiStepCompletion. */
+  /** Clickable step boxes only — no progress prose, links, or summary. */
   function formatMultiStepGlassStatus(agent, steps, stepAnswers) {
     const total = steps.length;
     const done = stepAnswers.length;
@@ -5112,75 +5161,33 @@ function createAgentRuntime(deps) {
           : ans
             ? "browse"
             : "text";
-      const label = String(steps[i] || del.label || "Step")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 72);
-      const marker = `![lykn_step:${kind}:Step ${i + 1} · ${label}](lykn-agent-step://${agent.id}/${i})`;
-      const status =
-        i < done ? "done" : i === done ? "in progress" : "pending";
-      lines.push(`${marker}\n**Step ${i + 1}/${total}** · ${label} — ${status}.`);
+      const label = sanitizeStepLabel(steps[i] || del.label || `Step ${i + 1}`);
+      const status = i < done ? "done" : i === done ? "live" : "pending";
+      const suffix = status === "done" ? "" : `/${status}`;
+      lines.push(`![lykn_step:${kind}:${label}](lykn-agent-step://${agent.id}/${i}${suffix})`);
     }
-    const head =
-      done >= total
-        ? `All ${total} steps finished. Tap a step to open it in the browser.\n\n`
-        : `Progress: ${done}/${total} steps finished. Tap a finished step to open it.\n\n`;
-    return head + lines.join("\n\n");
+    return lines.join("\n\n");
   }
 
-  /** Final multi-step reply: all step chips → Link → Summary (no Want me to). */
+  /** Finished multi-step: same boxes, all completed steps done. */
   function formatMultiStepCompletion(agent, steps, stepAnswers) {
-    const chips = formatMultiStepGlassStatus(agent, steps, stepAnswers);
-    const url = String(agent.url || "").trim();
-    let title = "";
-    const dels = Array.isArray(agent.stepDeliverables) ? agent.stepDeliverables : [];
-    for (let i = dels.length - 1; i >= 0; i--) {
-      const t = String(dels[i]?.title || "").trim();
-      if (t) {
-        title = t;
-        break;
-      }
+    const done = stepAnswers.length;
+    const lines = [];
+    for (let i = 0; i < steps.length; i += 1) {
+      const ans = String(stepAnswers[i] || "").trim();
+      const del = agent.stepDeliverables?.[i] || {};
+      const kind =
+        del.kind && del.kind !== "text"
+          ? del.kind
+          : ans
+            ? "browse"
+            : "text";
+      const label = sanitizeStepLabel(steps[i] || del.label || `Step ${i + 1}`);
+      const status = i < done ? "done" : "pending";
+      const suffix = status === "done" ? "" : `/${status}`;
+      lines.push(`![lykn_step:${kind}:${label}](lykn-agent-step://${agent.id}/${i}${suffix})`);
     }
-    // Prefer the last step's Summary section; else a cleaned last answer.
-    let summary = "";
-    for (let i = stepAnswers.length - 1; i >= 0; i--) {
-      const raw = stripInlineWantMeSuggestions(stepAnswers[i]);
-      if (!raw) continue;
-      const sumMatch = raw.match(/##\s*Summary\s*\n+([\s\S]+?)(?=\n##\s|\s*$)/i);
-      if (sumMatch && String(sumMatch[1] || "").trim().length >= 20) {
-        summary = String(sumMatch[1]).trim().slice(0, 2500);
-        break;
-      }
-      // Skip bare "Step done — …" mid markers.
-      if (/^Step done\b/i.test(raw) && raw.length < 120) continue;
-      if (raw.length >= 40) {
-        summary = raw
-          .replace(/^##\s*What I did\s*\n+[\s\S]*?(?=\n##\s)/i, "")
-          .replace(/^##\s*Link\s*\n+[\s\S]*?(?=\n##\s)/i, "")
-          .replace(/^##\s*Summary\s*\n+/i, "")
-          .trim()
-          .slice(0, 2500);
-        if (summary.length >= 20) break;
-      }
-    }
-    if (!summary) {
-      const doneN = stepAnswers.filter(Boolean).length;
-      summary =
-        doneN < steps.length
-          ? `Only finished ${doneN}/${steps.length} steps — remaining work was not completed.`
-          : `Finished all ${steps.length} steps${title ? ` — landed on **${title.slice(0, 80)}**` : ""}.`;
-    }
-
-    const parts = [chips];
-    if (url || title) {
-      parts.push("## Link");
-      if (url && title) parts.push(`[${title.slice(0, 100)}](${url})`);
-      else if (url) parts.push(url);
-      else parts.push(`**${title.slice(0, 100)}**`);
-    }
-    parts.push("## Summary");
-    parts.push(summary);
-    return stripInlineWantMeSuggestions(parts.join("\n\n"));
+    return lines.join("\n\n");
   }
 
   /** @deprecated alias — Glass no longer embeds full step bodies */
@@ -5204,6 +5211,9 @@ function createAgentRuntime(deps) {
           reuseAgentTab: true,
           show: true,
           focus: true,
+          // A step click is the user asking to see it — front it regardless
+          // of which tab family is visible.
+          force: true,
         });
       } else if (del.kind === "artifact") {
         const artUrl = String(del.url || agent.lastArtifact?.url || "").trim();
@@ -5216,6 +5226,9 @@ function createAgentRuntime(deps) {
             reuseAgentTab: true,
             show: true,
             focus: true,
+            // A step click is the user asking to see it — front it regardless
+            // of which tab family is visible.
+            force: true,
           });
         } else if (del.code || agent.lastArtifact?.code) {
           // Artifact is still on the agent tab — raise the stage even if URL wasn't cached.
@@ -5234,13 +5247,12 @@ function createAgentRuntime(deps) {
             reuseAgentTab: true,
             show: true,
             focus: true,
+            // A step click is the user asking to see it — front it regardless
+            // of which tab family is visible.
+            force: true,
           });
         } else {
           showBrowserWindow?.(id, { focus: true, label: agent.title || "Agent" });
-          const wc = getBrowserWebContents?.(id);
-          if (wc && del.url) {
-            void ownedBrowserAct.navigate(wc, del.url).catch(() => {});
-          }
         }
       } else if (del.kind === "image" && del.url) {
         openStageArtifact?.({
@@ -5251,6 +5263,9 @@ function createAgentRuntime(deps) {
           reuseAgentTab: true,
           show: true,
           focus: true,
+          // A step click is the user asking to see it — front it regardless
+          // of which tab family is visible.
+          force: true,
         });
       } else {
         showBrowserWindow?.(id, { focus: true, label: agent.title || "Agent" });
@@ -5406,11 +5421,11 @@ function createAgentRuntime(deps) {
     } catch {
       /* ignore */
     }
-    const pageUrl = page.url || quickUrl;
-    const pageTitle = page.title || wc.getTitle?.() || "";
+    let pageUrl = page.url || quickUrl;
+    let pageTitle = page.title || wc.getTitle?.() || "";
     // URL can still look like #inbox while Google is showing the public landing
     // page — never skip the wall check based on URL alone.
-    const gmailNeedsAuth = ownedBrowserAct.looksLikeGmailNeedsSignIn({
+    let gmailNeedsAuth = ownedBrowserAct.looksLikeGmailNeedsSignIn({
       url: pageUrl,
       text: page.text,
       title: pageTitle,
@@ -5422,14 +5437,43 @@ function createAgentRuntime(deps) {
     ) {
       return { blocked: false };
     }
-    if (
-      !ownedBrowserAct.looksLikeSignInWall({
+    const wallNow = () =>
+      // A public marketing/landing page always carries "Log in" and "Sign up"
+      // links, and this gate kept reading them as a wall while the user's
+      // session was live one navigation away. Landing pages are never walls;
+      // the helper is auth-host aware, so real sign-in pages still count.
+      !ownedBrowserAct.looksLikeMarketingOrHomeUrl?.(pageUrl, page.text) &&
+      ownedBrowserAct.looksLikeSignInWall({
         url: pageUrl,
         text: page.text,
         title: pageTitle,
-      })
-    ) {
+      });
+    if (!wallNow()) {
       return { blocked: false };
+    }
+    // A cookie/consent/promo modal sitting over the page reads as a wall, because
+    // its copy says "log in to continue". Close what is closable and look again
+    // before handing the run back to the user — the account may already be live
+    // underneath. Only the re-read decides.
+    try {
+      const closed = await ownedBrowserAct.dismissOverlays?.(wc, { maxDismissals: 3 });
+      if (closed?.dismissed?.length) {
+        await ownedBrowserAct.waitForDomSettle(wc, 260).catch(() => {});
+        page = await ownedBrowserAct.getPageContext(wc);
+        pageUrl = page.url || pageUrl;
+        pageTitle = page.title || wc.getTitle?.() || pageTitle;
+        gmailNeedsAuth = ownedBrowserAct.looksLikeGmailNeedsSignIn({
+          url: pageUrl,
+          text: page.text,
+          title: pageTitle,
+        });
+        agent.url = pageUrl || agent.url;
+        if (!wallNow()) {
+          return { blocked: false };
+        }
+      }
+    } catch {
+      /* ignore — fall through to the real wall handling */
     }
     // Stuck on marketing Gmail — force the real login URL before waiting.
     if (
@@ -5455,8 +5499,6 @@ function createAgentRuntime(deps) {
     } catch {
       /* ignore */
     }
-    const where = context ? ` · ${context}` : "";
-
     // Push as far as we can (Log in → email → Next) before asking the user.
     let gate = null;
     try {
@@ -5517,23 +5559,8 @@ function createAgentRuntime(deps) {
       skill: "browse",
     });
     sendToAgentChannels(agent.id, "lykn:agent-status", { status: waitStatus });
-    // Visible pause note — one specific action, bare minimum for the user.
-    const pauseNote =
-      gate?.message ||
-      ownedBrowserAct.formatUserHelpBrief?.({
-        userAction,
-        host,
-        kind: "signin",
-        note: agent.waitingNote,
-        alreadyDone: gate?.actionsTaken || [],
-      }) ||
-      (`## Waiting for you\n\n**Waiting on you to:** ${userAction}\n\n` +
-        `I'll continue automatically when you're signed in${where}.`);
-    agent.partialText = pauseNote;
-    sendToAgentChannels(agent.id, "lykn:agent-delta", {
-      text: pauseNote,
-      final: false,
-    });
+    // Keep the step boxes on screen — the waiting row is the pause UI.
+    emitStepTranscript(agent);
     emitAgentWaiting(agent.id, {
       waiting: true,
       kind: "signin",
@@ -5600,6 +5627,7 @@ function createAgentRuntime(deps) {
     agent.busy = true;
     agent.waitingForSignIn = false;
     agent.waitingUserAction = "";
+    agent.waitingOptions = [];
     agent.waitingNote = "";
     emitAgentWaiting(agent.id, { waiting: false });
     agent.step = resumeStatus;
@@ -5624,11 +5652,25 @@ function createAgentRuntime(deps) {
    * Always prefers a specific "Please: …" action so the user does the bare minimum.
    */
   function parkForUser(agent, { steps, ask, message, reason, label, userAction } = {}) {
+    // The step list is often the rewritten working query ("Go to <url> and
+    // <goal>"), which reads as a stray link back to the tab the user is already
+    // looking at. Keep the goal, drop the address.
+    const trimHere = (line) => {
+      const m = /^\s*go to\s+(https?:\/\/\S+)\s+and\s+(.+)$/i.exec(line);
+      if (!m) return line;
+      let sameTab = false;
+      try {
+        sameTab = new URL(m[1]).host === new URL(agent.url || "").host;
+      } catch {
+        sameTab = false;
+      }
+      return sameTab ? m[2].trim() : line;
+    };
     const remaining = (Array.isArray(steps) ? steps : [])
-      .map((s) => String(s || "").trim())
+      .map((s) => trimHere(String(s || "").trim()))
       .filter(Boolean);
     if (!remaining.length) {
-      const fallback = String(ask || "").trim();
+      const fallback = trimHere(String(ask || "").trim());
       if (fallback) remaining.push(fallback);
     }
     const kind = String(reason || "blocked").trim() || "blocked";
@@ -5686,7 +5728,7 @@ function createAgentRuntime(deps) {
       agent.busy = false;
       agent.waitingForSignIn = true;
       agent.waitingReason = kind;
-      agent.partialText = resumeMsg;
+      if (!agent.partialText) agent.partialText = renderStepTranscript(agent);
       // Keep the ask and the site on the agent, not just in this message, so a
       // surface that arrives later can still say what is needed and where.
       if (actionLine) agent.waitingUserAction = actionLine;
@@ -5702,14 +5744,7 @@ function createAgentRuntime(deps) {
     // Already parked — don't spawn a second watcher.
     if (agent.pendingPlan?.waitingSignIn && agent.pendingPlan?.steps?.length) {
       markParked();
-      try {
-        sendToAgentChannels(agent.id, "lykn:agent-delta", {
-          text: resumeMsg,
-          final: false,
-        });
-      } catch {
-        /* ignore */
-      }
+      emitStepTranscript(agent);
       return resumeMsg;
     }
     // No steps left to resume — but a wall we cannot get past is still a wall.
@@ -5774,6 +5809,7 @@ function createAgentRuntime(deps) {
         agent.waitingForSignIn = false;
         agent.waitingReason = "";
         agent.waitingUserAction = "";
+        agent.waitingOptions = [];
         agent.waitingNote = "";
         emitAgentWaiting(agent.id, { waiting: false });
         sendToAgentChannels(agent.id, "lykn:agent-status", {
@@ -6159,12 +6195,143 @@ function createAgentRuntime(deps) {
    * (finishBrowseResult, needs-help surfacing, history) works unchanged.
    */
   async function runModularBrowserAgent(agent, browseGoal, gen, wc, { convHistory, maxRounds, userAsk = "", sendPolicy = "auto" }) {
+    resetLiveOutputSteps(agent);
+    // Who holds this tab. Real input from the user seizes it; the controller
+    // refuses to act until they hand it back.
+    const ownership = browserAgent.createOwnership();
+    // Electron raises this for the agent's synthetic input as well as the
+    // user's, so the store's suppression window — not this listener — is what
+    // tells them apart. Filtering to down-events only keeps mouse-move and
+    // key-up noise out of it.
+    //
+    // A wheel scroll is read-only: someone peeking at what the agent is doing,
+    // not intervening. Seizing on it paused the whole run until they clicked
+    // "hand it back", which punished exactly the person watching most closely.
+    // Scrolling still moves the page, so the observation is invalidated — the
+    // controller refuses coordinate aims on a stale view and the loop
+    // re-observes — but the run keeps going. Clicks and keys still seize:
+    // those change the page, and two drivers is one too many.
+    let controllerForInput = null;
+    const onTabInput = (_event, input) => {
+      // Every emitter in this function is generation-guarded; the listener is
+      // detached in the .finally below, but input landing inside that window
+      // would otherwise post a stale run's status into a newer one's UI.
+      if (gen !== agent.generation) return;
+      const type = String(input?.type || "");
+      if (type === "mouseWheel") {
+        // Unconditional on purpose: the agent's own synthetic scrolls also land
+        // here, and invalidating after one is exactly what the controller does
+        // anyway — a spurious invalidate costs a re-observe that was already
+        // coming.
+        try {
+          controllerForInput?.invalidate?.();
+        } catch {
+          /* never let a peek break the run */
+        }
+        return;
+      }
+      if (type !== "mouseDown" && type !== "keyDown") return;
+      if (ownership.noteInput("user")) {
+        emitProgress(agent.id, {
+          status: "waiting",
+          step: "You've taken the browser — I've paused.",
+          url: wc.getURL?.() || agent.url,
+          skill: "browse",
+        });
+      }
+    };
+    try {
+      wc.on("input-event", onTabInput);
+    } catch {
+      /* older Electron without input-event: ownership stays agent-only */
+    }
+    // Real multi-tab driving is opt-in while it soaks: the capability has to
+    // be wired by main AND the flag set, or the controller stays in the
+    // single-tab mode the prompt corpus already explains to the model.
+    //
+    // Every sub-tab gets the same input listener as the root, so the user
+    // grabbing ANY of the agent's tabs pauses it — ownership is per agent,
+    // not per tab. Listeners are detached with the root's in the .finally.
+    const subTabWcs = [];
+    const tabsAdapter =
+      agentTabs && String(process.env.LYKN_AGENT_TABS || "").trim() === "1"
+        ? createAgentTabsAdapter({
+            agentId: agent.id,
+            agentTabs,
+            rootWc: wc,
+            onTabOpened: (_tabId, subWc) => {
+              if (!subWc || subWc.isDestroyed?.()) return;
+              try {
+                subWc.on("input-event", onTabInput);
+                subTabWcs.push(subWc);
+              } catch {
+                /* older Electron without input-event */
+              }
+            },
+          })
+        : null;
     const controller = browserAgent.createBrowserController({
       webContents: wc,
       actuator: ownedBrowserAct,
+      ownership,
+      tabs: tabsAdapter,
     });
-    const model = browserAgent.createAgentModel({ apiBase, getAuthToken });
+    controllerForInput = controller;
+    // What this run cost, by stage. The model layer reports tokens and
+    // upstream latency on every call, but with no sink the numbers were
+    // computed and dropped — production had no record of what a task cost or
+    // which stage its time went to. Accounting must never break a run, so the
+    // sink only accumulates.
+    const modelUsage = { calls: 0, inputTokens: 0, outputTokens: 0, upstreamMs: 0, byStage: {} };
+    const model = browserAgent.createAgentModel({
+      apiBase,
+      getAuthToken,
+      onUsage: (u) => {
+        modelUsage.calls += 1;
+        modelUsage.inputTokens += u.inputTokens || 0;
+        modelUsage.outputTokens += u.outputTokens || 0;
+        modelUsage.upstreamMs += u.upstreamMs || 0;
+        const stage = String(u.stage || "other");
+        const s = modelUsage.byStage[stage] || (modelUsage.byStage[stage] = { calls: 0, inputTokens: 0, outputTokens: 0, upstreamMs: 0 });
+        s.calls += 1;
+        s.inputTokens += u.inputTokens || 0;
+        s.outputTokens += u.outputTokens || 0;
+        s.upstreamMs += u.upstreamMs || 0;
+      },
+    });
     const memory = browserAgent.createMemoryStore({ userDataPath });
+
+    // Restart-safe task state. The loop hands a serialized snapshot after
+    // planning, every action, and finish; it lands on disk per agent, and a
+    // terminal status clears it. Operations run through one chain so a slow
+    // early write can never resurrect a file the finish already deleted.
+    const taskStateDir = path.join(userDataPath, "browser-agent-tasks");
+    const taskStateFile = path.join(taskStateDir, `${agent.id}.json`);
+    let taskPersistChain = Promise.resolve();
+    const persistTaskSnapshot = (snap) => {
+      taskPersistChain = taskPersistChain
+        .then(() => {
+          if (snap.status === "completed" || snap.status === "failed") {
+            return fs.unlink(taskStateFile).catch(() => {});
+          }
+          return fs
+            .mkdir(taskStateDir, { recursive: true })
+            .then(() => fs.writeFile(taskStateFile, JSON.stringify(snap), "utf8"));
+        })
+        .catch(() => {});
+    };
+    // A stored snapshot of THIS goal that never finished — an app restart, a
+    // crash, or the model-outage retry a few lines down — continues instead of
+    // replanning. The loop re-reads the live page before acting either way.
+    let resumeTask = null;
+    try {
+      const stored = JSON.parse(await fs.readFile(taskStateFile, "utf8"));
+      if (stored && stored.goal === browseGoal && stored.status !== "completed" && stored.status !== "failed") {
+        resumeTask = stored;
+      }
+    } catch {
+      /* nothing stored — a fresh task */
+    }
 
     const emitStatus = (status) => {
       if (gen !== agent.generation) return;
@@ -6204,10 +6371,6 @@ function createAgentRuntime(deps) {
       agent.status = "waiting";
       agent.busy = true;
       agent.step = waitStatus;
-      const note =
-        `## Waiting for you\n\n${ask}\n\n` +
-        `**I'm paused and watching this tab** — do it there and I'll keep going from where I left off.`;
-      agent.partialText = note;
       emitProgress(agent.id, {
         status: "waiting",
         step: waitStatus,
@@ -6215,7 +6378,7 @@ function createAgentRuntime(deps) {
         skill: "browse",
       });
       sendToAgentChannels(agent.id, "lykn:agent-status", { status: waitStatus });
-      sendToAgentChannels(agent.id, "lykn:agent-delta", { text: note, final: false });
+      emitStepTranscript(agent);
       let waitHostName = "";
       try {
         waitHostName = new URL(wc.getURL?.() || agent.url || "").hostname.replace(
@@ -6255,6 +6418,8 @@ function createAgentRuntime(deps) {
       }
 
       emitAgentWaiting(agent.id, { waiting: false });
+      // They are done with the tab; the agent may drive again.
+      ownership.release();
       agent.pendingChoice = null;
       agent.status = "running";
       agent.busy = true;
@@ -6284,6 +6449,8 @@ function createAgentRuntime(deps) {
       goal: browseGoal,
       userAsk,
       sendPolicy,
+      resumeTask,
+      onTaskState: persistTaskSnapshot,
       onNeedsUser,
       // Yes/No in the response area for the one click that needs a decision.
       onApprovalNeeded: async ({ question }) =>
@@ -6291,6 +6458,10 @@ function createAgentRuntime(deps) {
       controller,
       model,
       memory,
+      // Kill switch for the Holo targeting rescue. Only ever consulted here, so
+      // the runtime itself stays free of environment lookups — grounding mode
+      // read from env is exactly what caused runs to die on a stray variable.
+      holoAssist: String(process.env.LYKN_BROWSER_HOLO_ASSIST || "").trim() !== "0",
       conversationHistory: (convHistory || []).map((m) => ({
         role: m?.role === "assistant" ? "assistant" : "user",
         content: String(m?.content || "").slice(0, 600),
@@ -6300,40 +6471,122 @@ function createAgentRuntime(deps) {
       userDataPath,
       onProgress: (p) => {
         if (gen !== agent.generation) return;
-        // One step at a time: narrate the CURRENT decision (made from the live
-        // page), never a pre-baked plan. The model's stated reason is the most
-        // faithful "next step" text; element labels are the fallback.
-        if (p.phase === "planning") emitStatus("Looking at the task…");
-        else if (p.phase === "replanning") emitStatus("Rethinking the approach…");
-        else if (p.phase === "recovering") emitStatus("Hit a snag — adjusting…");
-        else if (p.phase === "acting") {
-          const reason = String(p.reason || "").trim();
-          if (reason) {
-            emitStatus(reason.length > 90 ? `${reason.slice(0, 87)}…` : reason);
-            return;
+        // Narrate the CURRENT decision (made from the live page), never a
+        // pre-baked plan. Each step carries three layers — a short title
+        // saying what is happening, a `detail` of reason, expectation and
+        // evidence that stays folded in the dropdown, and a `note` of the
+        // model's own commentary that stacks as prose under the pill.
+        const url = p.url || wc.getURL?.() || agent.url || "";
+        if (p.phase === "planning") {
+          emitStatus("Looking at the task…");
+          narrateBrowseProgress(agent, "Looking at the task…", { url });
+        } else if (p.phase === "working") {
+          // The plan came back. Explain the approach under the step that is
+          // already on screen; a resumed run sends no plan and adds nothing.
+          const intro = buildBrowsePlanNote({ approach: p.approach, plan: p.plan });
+          if (intro) {
+            setLiveOutputStepNote(agent, intro);
+            emitStepTranscript(agent);
           }
-          const type = String(p.action?.type || "");
-          const label = String(p.targetLabel || "").trim();
-          if (type === "navigate" || type === "open_tab") {
-            let host = "";
-            try { host = new URL(String(p.action.url || "")).hostname.replace(/^www\./, ""); } catch { /* ignore */ }
-            emitStatus(host ? `Opening ${host}…` : "Opening a page…");
-          } else if (type === "click") emitStatus(label ? `Clicking "${label}"…` : "Clicking…");
-          else if (type === "type") emitStatus(label ? `Typing into "${label}"…` : "Typing…");
-          else if (type === "replace_text") emitStatus("Editing the text…");
-          else if (type === "extract" || type === "scroll") emitStatus("Reading the page…");
-          else emitStatus("Working on the page…");
+        } else if (p.phase === "thinking") {
+          // Placeholder for the round being decided. Transient — the action it
+          // turns into takes its place rather than stacking under it.
+          const planStep = String(p.planStep || "").replace(/\s+/g, " ").trim();
+          const status = planStep ? `Thinking — ${planStep.slice(0, 52)}` : "Thinking…";
+          emitStatus(status);
+          narrateBrowseProgress(agent, status, {
+            url,
+            transient: true,
+            detail: planStep ? `Working out the next move for: ${planStep}` : "",
+          });
+        } else if (p.phase === "replanning") {
+          emitStatus("Rethinking the approach…");
+          narrateBrowseProgress(agent, "Rethinking the approach…", {
+            url,
+            detail: tidyStepDetail(p.reason),
+            note: sanitizeStepNote(p.narration) || sanitizeStepNote(p.reason),
+          });
+        } else if (p.phase === "recovering") {
+          // Deliberately invisible. Recovery is routine — the ladder retries,
+          // re-aims or replans within seconds, and the run usually sails on —
+          // but a "Hit a snag" box for every wobble read as a stream of
+          // failures the user could do nothing about. The step that failed
+          // already carries its folded "Didn't take: …" detail from the
+          // verified event, the model's own next narration explains the change
+          // of approach in its words, and the full recovery hint lives in the
+          // debug trace. Only a recovery that actually parks the run (the
+          // waitForUser hand-off) surfaces to the user.
+        } else if (p.phase === "acting") {
+          const status = describeBrowseAction(p) || clipBrowseReason(p.reason);
+          const detail = [
+            tidyStepDetail(p.reason),
+            p.expectedOutcome ? `Expecting ${sanitizeStepDetail(p.expectedOutcome)}` : "",
+            p.batch ? `Running in one go: ${sanitizeStepDetail(p.batch)}` : "",
+          ]
+            .filter(Boolean)
+            .join(STEP_DETAIL_SEP);
+          emitStatus(status);
+          narrateBrowseProgress(agent, status, {
+            url,
+            detail,
+            // The model's own commentary when it wrote any; its short internal
+            // reason is a poor substitute but beats a silent step.
+            note: sanitizeStepNote(p.narration) || sanitizeStepNote(p.reason),
+          });
+        } else if (p.phase === "verified") {
+          // The step is over either way — record what the page said and stop
+          // spinning on it, so the next round's thinking box is the only live
+          // thing on screen.
+          appendLiveOutputStepDetail(
+            agent,
+            p.success
+              ? p.evidence
+                ? `Confirmed: ${sanitizeStepDetail(p.evidence)}`
+                : "Confirmed on the page"
+              : p.reason
+                ? `Didn't take: ${sanitizeStepDetail(p.reason)}`
+                : "The page didn't confirm this",
+          );
+          completeLiveOutputStep(agent);
+          emitStepTranscript(agent);
         }
       },
+    // The run is over, however it ended — a thrown error must not leave the
+    // listener holding this closure alive on a tab we no longer drive.
+    }).finally(() => {
+      try {
+        wc.off?.("input-event", onTabInput);
+      } catch {
+        /* the tab may already be gone */
+      }
+      for (const subWc of subTabWcs) {
+        try {
+          subWc.off?.("input-event", onTabInput);
+        } catch {
+          /* the tab may already be gone */
+        }
+      }
     });
 
     if (gen !== agent.generation) return { ok: false, error: "aborted" };
 
+    // Where the diagnostics viewer and any later persistence read a run's cost.
+    agent.lastModelUsage = modelUsage;
+
     // Legacy-shape history so browse narratives / summaries keep working.
+    //
+    // `label` is a USER-FACING field — the work log renders it verbatim. The
+    // modular runtime aims with element references ("e4"), which are internal
+    // addressing and meaningless outside the snapshot that minted them, so the
+    // reference goes to `target` where nothing renders it, and `label` carries
+    // only what the model described in words (coordinate clicks and drags are
+    // required to fill it). A ref-targeted click therefore has no label, and
+    // the work log degrades to a bare verb rather than printing "Clicked: e4".
     const history = (result.history || []).map((h) => ({
       action: {
         type: h.action?.type || "",
-        label: String(h.action?.target || "").slice(0, 80),
+        label: String(h.action?.label || "").slice(0, 80),
+        target: String(h.action?.target || "").slice(0, 40),
         value: String(h.action?.text || h.action?.value || "").slice(0, 60),
         url: h.action?.url || undefined,
       },
@@ -6342,7 +6595,15 @@ function createAgentRuntime(deps) {
     const url = wc.getURL?.() || agent.url || "";
 
     if (result.status === "completed") {
-      return { ok: true, answer: result.answer || "Done.", history, url };
+      // The modular loop does not report completion lightly: it requires
+      // evidence for the answer, pushes back on a finish with plan steps still
+      // open, and verifies each action against the page. Record that, because
+      // the legacy gap-checker downstream reads the page text and second-
+      // guesses it — after a successful share the dialog closes and the
+      // recipient is no longer written anywhere on screen, which it read as
+      // "not shared yet" and answered by starting the whole task again.
+      agent.verifiedComplete = true;
+      return { ok: true, answer: result.answer || "Done.", history, url, verifiedComplete: true };
     }
     if (result.status === "waiting_for_user") {
       return {
@@ -6353,6 +6614,8 @@ function createAgentRuntime(deps) {
         // click pending) — callers surface Yes/No approval buttons for it.
         needsApproval: !!result.needsApproval,
         answer: result.answer || "I need your input to continue.",
+        // Tappable answers the agent proposed for its question, if any.
+        answerOptions: Array.isArray(result.answerOptions) ? result.answerOptions : [],
         history,
         url,
       };
@@ -6385,6 +6648,7 @@ function createAgentRuntime(deps) {
         ? opts.conversationHistory
         : null) || historyForPlanner(agent);
     const browseGoal = String(opts.adaptiveGoal || text || "").trim() || String(text || "").trim();
+    resetLiveOutputSteps(agent);
     emitProgress(agent.id, {
       status: "running",
       step: "Working on this page…",
@@ -6392,22 +6656,39 @@ function createAgentRuntime(deps) {
       skill: "browse",
     });
     sendToAgentChannels(agent.id, "lykn:agent-status", { status: "Working on this page…" });
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (gen !== agent.generation) return opts.returnRaw ? { ok: false, error: "aborted" } : "";
+    // The legacy sign-in pre-gate scrapes whatever page the tab happens to be
+    // on BEFORE the task runs — and a marketing homepage always carries "Log
+    // in" / "Sign up" links, so it parked signed-in tasks on a heuristic
+    // ("go to mailchimp.com and…" died on mailchimp.com's own front page while
+    // the admin session was live underneath). The modular runtime needs none
+    // of it: it navigates itself, its verifier detects real sign-in walls by
+    // where they actually are, and its hand-over waits and resumes on its own.
+    // The gate now runs only for the path it was written for — the legacy
+    // adaptive loop.
+    const useLegacyBrowseLoop =
+      String(process.env.LYKN_BROWSER_AGENT || "").trim().toLowerCase() === "legacy";
+    const legacySignInGate = async () => {
       const pause = await pauseForUserSignIn(agent, gen, wc, {
         context: "working on this page",
       });
       if (pause.blocked && !pause.cleared) {
-        if (opts.returnRaw) {
-          return {
-            ok: false,
-            stuck: true,
-            error: "sign_in_required",
-            answer: pause.message || "Sign-in needed.",
-            url: agent.url,
-          };
-        }
-        return pause.message || "";
+        return opts.returnRaw
+          ? {
+              ok: false,
+              stuck: true,
+              error: "sign_in_required",
+              answer: pause.message || "Sign-in needed.",
+              url: agent.url,
+            }
+          : pause.message || "";
+      }
+      return null;
+    };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (gen !== agent.generation) return opts.returnRaw ? { ok: false, error: "aborted" } : "";
+      if (useLegacyBrowseLoop) {
+        const gated = await legacySignInGate();
+        if (gated !== null) return gated;
       }
 
       emitProgress(agent.id, {
@@ -6422,29 +6703,62 @@ function createAgentRuntime(deps) {
       // legacy monolithic loop only on explicit opt-out or when the server
       // does not expose the agent-model endpoint yet.
       result = null;
-      const useLegacyBrowseLoop =
-        String(process.env.LYKN_BROWSER_AGENT || "").trim().toLowerCase() === "legacy";
       if (!useLegacyBrowseLoop) {
-        try {
-          result = await runModularBrowserAgent(agent, browseGoal, gen, wc, {
-            convHistory,
-            maxRounds,
-            // Run the task through. The agent's own safety gate stops for the
-            // outcomes that actually warrant it (spending money, destroying
-            // data, mailing an audience the ask didn't name); a blanket review
-            // pause here used to strand every task at its final click.
-            sendPolicy: "auto",
-            userAsk: text,
-          });
-        } catch (e) {
-          if (e instanceof browserAgent.AgentModelUnavailableError) {
+        // A transient upstream blip (rate limit, 5xx) used to swap the ENGINE:
+        // the legacy loop has different verification, progress and safety
+        // behavior, so a 30-second outage changed how the task behaved for its
+        // whole remainder. Give the modular runtime one more go after a short
+        // wait — the browser keeps everything already done, and the fresh run
+        // re-reads the live page — and only fall back when the failure is
+        // structural (endpoint missing, not signed in) or the retry loses too.
+        for (let modularTry = 0; modularTry < 2 && !result; modularTry += 1) {
+          try {
+            result = await runModularBrowserAgent(agent, browseGoal, gen, wc, {
+              convHistory,
+              maxRounds,
+              // Run the whole task through, but never deliver anything to
+              // other people without a yes: the agent prepares the send and
+              // confirms, wherever it is working. Only a reply that approves
+              // the send it just prepared skips the second ask.
+              sendPolicy: looksLikeSendApprovalFollowUp(text) ? "approved" : "auto",
+              userAsk: text,
+            });
+          } catch (e) {
+            if (!(e instanceof browserAgent.AgentModelUnavailableError)) throw e;
+            const transient = /\((?:408|429|500|502|503|504)\)/.test(String(e?.message || ""));
+            if (transient && modularTry === 0 && !agent.abort?.signal?.aborted && gen === agent.generation) {
+              emitProgress(agent.id, {
+                status: "running",
+                step: "The model service hiccuped — retrying…",
+                url: wc.getURL?.() || agent.url,
+                skill: "browse",
+              });
+              await new Promise((r) => setTimeout(r, 4000));
+              continue;
+            }
+            // Falling back is right — the user's task should still run — but it
+            // used to happen in total silence, which made a version-skewed
+            // deploy (app shipped ahead of the server route) indistinguishable
+            // from a healthy one. Record it so it is answerable after the fact.
+            diagnostics.recordRuntimeFallback({
+              userDataPath,
+              surface: "browse",
+              reason: e?.message,
+              appVersion: getAppVersion(),
+            });
             result = null; // graceful fallback to the legacy loop below
-          } else {
-            throw e;
+            break;
           }
         }
       }
 
+      // The modular engine could not run (opt-out, or a structural failure
+      // above) — the legacy loop is about to drive, so it gets the sign-in
+      // pre-check it was built around.
+      if (!result && !useLegacyBrowseLoop) {
+        const gated = await legacySignInGate();
+        if (gated !== null) return gated;
+      }
       if (!result) result = await ownedBrowserAct.executeOwnedAdaptiveTask({
         webContents: wc,
         goal: browseGoal,
@@ -6468,22 +6782,12 @@ function createAgentRuntime(deps) {
             url: p.url || wc.getURL(),
             title: wc.getTitle?.() || "",
           });
-          // Paint a short human narrative — never the internal WORKING PLAN.
-          const narrative = formatBrowseWorkingNarrative({
+          narrateBrowseProgress(agent, status, {
+            url: p.url || wc.getURL?.() || agent.url || "",
             history: Array.isArray(p.history)
               ? p.history
               : agent.lastAdaptiveHistory || [],
-            status,
-            taskPlan: "",
-            url: p.url || wc.getURL?.() || agent.url || "",
           });
-          if (narrative.length >= 24) {
-            agent.partialText = narrative;
-            sendToAgentChannels(agent.id, "lykn:agent-delta", {
-              text: narrative,
-              final: false,
-            });
-          }
         },
         planNext: async (ctx) => {
           // Fresh screenshot each round: lets the planner SEE the page and use
@@ -6568,24 +6872,46 @@ function createAgentRuntime(deps) {
       };
     }
 
-    // Agent gave up and is asking the user for help with a step — surface a
-    // "Needs you" status so the request is visible beyond the chat text.
+    // Agent stopped to ask the user for something. Two shapes, two surfaces:
+    // an approval gets Yes/No buttons; everything else — a clarification, a
+    // missing detail, a manual step — is a QUESTION and gets the question
+    // card. Neither may fall through to the completion path, which would
+    // dress the ask up as a finished task (a "Done" transcript with a
+    // next-step line) and bury the one thing the user needed to read.
     if (result?.stuck && result?.needsHelp) {
-      agent.step = "Needs you — help with a step";
-      try {
-        sendToAgentChannels(agent.id, "lykn:agent-status", {
-          status: agent.step,
-        });
-      } catch (_) {}
-      // Review-before-send pause (share/submit prepared, final click pending)
-      // → explicit Yes/No buttons instead of relying on a typed reply.
       if (result?.needsApproval) {
+        agent.step = "Needs you — help with a step";
+        try {
+          sendToAgentChannels(agent.id, "lykn:agent-status", { status: agent.step });
+        } catch (_) {}
         const msg = String(result?.answer || "").trim() || "Ready to send — say the word.";
         agent.partialText = msg;
         sendToAgentChannels(agent.id, "lykn:agent-delta", { text: msg, final: true });
         offerSendApprovalChoice(agent, msg);
         return msg;
       }
+      const asked = String(result?.answer || "").trim();
+      // A yes/no belongs on buttons. Some paths still surface a permission
+      // ask here (a legacy loop, or a model that phrased one as a question),
+      // and a text box is the wrong shape for it — the user types "yes" and
+      // that answer has to be re-interpreted as an instruction.
+      if (looksLikePermissionAsk(asked)) {
+        agent.step = "Needs you — help with a step";
+        try {
+          sendToAgentChannels(agent.id, "lykn:agent-status", { status: agent.step });
+        } catch (_) {}
+        agent.partialText = asked;
+        sendToAgentChannels(agent.id, "lykn:agent-delta", { text: asked, final: true });
+        offerSendApprovalChoice(agent, asked);
+        return asked;
+      }
+      return offerAgentQuestion(
+        agent,
+        asked,
+        result?.answerOptions,
+        // What to resume when the answer arrives.
+        { ask: String(opts.adaptiveGoal || text || "").trim() },
+      );
     }
 
     // Browser work is done — finish from scrape / plan answer; LLM only when needed.
@@ -6960,14 +7286,15 @@ function createAgentRuntime(deps) {
       !!(agent.lastImage?.url || agent.lastArtifact?.code || agent.lastDownloadedFile?.path) &&
       /\b(attach|image|picture|photo|artifact|file|pdf|html|download)\b/i.test(effectiveText);
 
-    // The venue is Gmail only when the user didn't name somewhere else. An ask
-    // that says "in mailchimp" / "in hubspot" gets composed there instead.
-    const namedVenueUrl = ownedBrowserAct.resolveNamedWorkVenueUrl?.(effectiveText) || "";
-    const nonMailVenue = !!namedVenueUrl && !ownedBrowserAct.isMailVenueUrl?.(namedVenueUrl);
+    // Gmail is the default only because it is where email lives when nobody
+    // said otherwise. Whenever the user named a place — "in mailchimp", "in
+    // hubspot", or a tool nobody here has heard of — that is where the work
+    // happens, and the name they used is enough to find it.
+    const namedDestination = workDestination.destinationFromAsk(effectiveText);
     const goalParts = [effectiveText.trim(), "", "Email task context:"];
     goalParts.push(
-      nonMailVenue
-        ? `- The user named where this happens: ${namedVenueUrl}. Do the work there — navigate to it if the browser is elsewhere. Do NOT use Gmail or any other mail client as a substitute.`
+      namedDestination
+        ? `- The user named where this happens: ${namedDestination}. Do the work there — navigate to it if the browser is elsewhere, searching for it if you do not know its address. Do NOT substitute a different app for the one they named.`
         : "- Work in Gmail (https://mail.google.com). If the browser is not on Gmail, navigate there first.",
     );
     if (ownedBrowserAct.isGmailComposeUrl?.(liveUrl)) {
@@ -7030,16 +7357,17 @@ function createAgentRuntime(deps) {
       status: isRevision ? "Updating the draft…" : isReply ? "Writing the reply…" : "Composing the email…",
     });
 
-    // An ask that plainly says "send" gets sent; "draft"/"prep" asks finish the
-    // draft and stop there. That call is made by the agent's safety gate from
-    // the user's own words, not forced here. The attachment flow is the one
-    // exception: Send has to wait until the file is attached, which happens
-    // deterministically after this run.
+    // Only a reply that plainly approves the send the agent just prepared
+    // authorizes the committing click. A first-run compose always stops for
+    // confirmation, however plainly it asked for a send — the user has not
+    // seen the message yet, and this variable was computed and then never
+    // used, which is why "write an email to X" sent itself. The attachment
+    // flow additionally has to wait for the file, so it never pre-approves.
     const sendApproved = looksLikeSendApprovalFollowUp(text);
     const result = await runModularBrowserAgent(agent, goalParts.join("\n"), gen, wc, {
       convHistory: historyForPlanner(agent),
       maxRounds: 18,
-      sendPolicy: wantsAttachment ? "ask" : "auto",
+      sendPolicy: wantsAttachment ? "ask" : sendApproved ? "approved" : "auto",
       // Send pre-approval must be judged on the user's own words only — the
       // enriched goal above mentions "Send" in its instructions. When a file
       // still has to be attached, neutralize send verbs so the agent cannot
@@ -7109,19 +7437,19 @@ function createAgentRuntime(deps) {
       /* ignore */
     }
 
-    if (result?.stuck && result?.needsHelp) {
-      agent.step = "Needs you — help with a step";
-      try {
-        sendToAgentChannels(agent.id, "lykn:agent-status", { status: agent.step });
-      } catch {
-        /* ignore */
-      }
-    }
     const msg =
       (String(result?.answer || "").trim() ||
         "The draft is ready in Gmail — tell me if you want any changes.") +
       attachNote +
       sentNote;
+    // The agent stopped on a question (subject line, missing detail, manual
+    // step) — frame it as one. pendingMailAsk is already set above, so the
+    // typed answer resumes THIS compose.
+    if (waitingOnUser && !(result?.needsApproval || attachReadyForApproval)) {
+      // effectiveText is the compose ask this question came out of — that is
+      // what the user's answer resumes.
+      return offerAgentQuestion(agent, msg, result?.answerOptions, { ask: effectiveText });
+    }
     agent.partialText = msg;
     sendToAgentChannels(agent.id, "lykn:agent-delta", { text: msg, final: true });
     // Review pause before the final send → explicit Yes/No buttons. The
@@ -7142,10 +7470,28 @@ function createAgentRuntime(deps) {
     const forceLegacy =
       String(process.env.LYKN_BROWSER_AGENT || "").trim().toLowerCase() === "legacy";
     if (!forceLegacy) {
-      try {
-        return await runMailComposeModular(agent, text, gen, wc, opts);
-      } catch (e) {
-        if (!(e instanceof browserAgent.AgentModelUnavailableError)) throw e;
+      // Same policy as the browse surface: a transient upstream blip gets one
+      // modular retry after a short wait, so a rate limit doesn't swap a
+      // compose mid-flight onto an engine with different send-approval
+      // behavior. Structural failures still fall back.
+      for (let modularTry = 0; modularTry < 2; modularTry += 1) {
+        try {
+          return await runMailComposeModular(agent, text, gen, wc, opts);
+        } catch (e) {
+          if (!(e instanceof browserAgent.AgentModelUnavailableError)) throw e;
+          const transient = /\((?:408|429|500|502|503|504)\)/.test(String(e?.message || ""));
+          if (transient && modularTry === 0 && !agent.abort?.signal?.aborted && gen === agent.generation) {
+            await new Promise((r) => setTimeout(r, 4000));
+            continue;
+          }
+          diagnostics.recordRuntimeFallback({
+            userDataPath,
+            surface: "mail",
+            reason: e?.message,
+            appVersion: getAppVersion(),
+          });
+          break;
+        }
       }
     }
     return runAdaptiveBrowse(agent, text, gen, wc, { maxRounds: 18 });
@@ -7313,9 +7659,27 @@ function createAgentRuntime(deps) {
     if (sendDeliverable) {
       return sendDeliverableByEmail(agent, text, gen, wc);
     }
+    // "Share this with bob@x.com" means the page in front of the user. Two
+    // things have to be true before that reading is safe, and neither was
+    // checked: the open page has to BE something worth sending, and the ask
+    // has to be about it rather than about something the agent still has to go
+    // and find.
+    //
+    // Both failed together in a real run. The user asked to verify a Drive
+    // folder existed and send it; the tab was on google.com; the runtime froze
+    // "the current page" into an email body before any browsing happened, and
+    // the agent dutifully emailed a link to google.com. The thing to send was
+    // not knowable until the folder had been found.
+    const linkWorthSharing =
+      !!currentUrl &&
+      /^https?:\/\//i.test(currentUrl) &&
+      !ownedBrowserAct.looksLikeMarketingOrHomeUrl?.(currentUrl, "") &&
+      !ownedBrowserAct.isPlaceholderAgentUrl?.(currentUrl);
     const sharesCurrentPage =
       !ownedBrowserAct.looksLikeSignedInMailUrl(currentUrl) &&
       !/mail\.google\.com/i.test(currentUrl || "") &&
+      linkWorthSharing &&
+      !askNeedsFindingFirst(text) &&
       ownedBrowserAct.looksLikeShareCurrentPageAsk?.(text);
     // The in-page Share dialog flow only exists on document editors (Docs,
     // Notion, Figma, Canva, Drive). Sharing any OTHER page (YouTube video,
@@ -8988,14 +9352,14 @@ function createAgentRuntime(deps) {
     if (/^https?:\/\//i.test(t) && t.length < 180) return false;
     const liveUrl = String(opts.liveUrl || "").trim();
     // Follow-up edits on an open doc → dissect into a fresh plan with chat context.
-    if (liveUrl && looksLikeEditCurrentInToolAsk(t, { liveUrl })) {
+    if (liveUrl && workDestination.looksLikeEditCurrentInToolAsk(t, { liveUrl })) {
       return true;
     }
     // "go to Google Docs and write an essay" → one tool-create, not a 5-step
     // browse plan that stops after Navigate.
     if (
-      looksLikeCreateInToolVenueAsk(t, { liveUrl }) &&
-      !looksLikeEditCurrentInToolAsk(t, { liveUrl }) &&
+      workDestination.looksLikeWorkInApp(t, { liveUrl }) &&
+      !workDestination.looksLikeEditCurrentInToolAsk(t, { liveUrl }) &&
       !ownedBrowserAct.looksLikeAccountDashboardAsk?.(t)
     ) {
       return false;
@@ -9394,6 +9758,9 @@ function createAgentRuntime(deps) {
     agent.status = "running";
     agent.step = "Starting…";
     agent.waitingForSignIn = false;
+    // Whether the LAST turn ended in a verified completion says nothing about
+    // this one.
+    agent.verifiedComplete = false;
     // A fresh turn takes over the screen — retire any stale waiting indicator.
     emitAgentWaiting(agent.id, { waiting: false });
     // Stale click/write history from a prior ask must not mark this one done.
@@ -9403,6 +9770,19 @@ function createAgentRuntime(deps) {
       // A share/send completed for a PRIOR ask must not satisfy this one.
       // (Kept during plan resumes so "continue" doesn't re-send the email.)
       agent.docShareDone = false;
+    }
+
+    // The agent stopped and asked the user something ("what should the email
+    // say?"), and this message is the answer. On its own an answer is not a
+    // task — "tell him the deck is ready" classifies as ordinary chat, which
+    // is how an answer meant to resume a paused compose instead produced a
+    // chat model writing the email into the response area. Fold it back into
+    // the ask that raised the question so the original work resumes, and let
+    // routing proceed exactly as it did for that ask.
+    const answered = takePendingQuestion(agent, q);
+    if (answered) {
+      agent.history.push({ role: "user", content: q, at: new Date().toISOString() });
+      q = `${answered.ask}\nAdditional guidance from the user: ${q}`;
     }
 
     const originalAsk = q;
@@ -9490,10 +9870,10 @@ function createAgentRuntime(deps) {
         // — those run each step's text instead of the real ask and claim Done
         // having changed nothing. One tool-create / edit-in-venue turn instead.
         if (
-          (looksLikeCreateInToolVenueAsk(originalAsk, {
+          (workDestination.looksLikeWorkInApp(originalAsk, {
             liveUrl: liveTabForIntent,
           }) ||
-            looksLikeEditCurrentInToolAsk(originalAsk, {
+            workDestination.looksLikeEditCurrentInToolAsk(originalAsk, {
               liveUrl: liveTabForIntent,
             })) &&
           !ownedBrowserAct.looksLikeAccountDashboardAsk?.(originalAsk)
@@ -9533,8 +9913,8 @@ function createAgentRuntime(deps) {
     // itself anyway.
     if (
       !preset &&
-      (looksLikeCreateInToolVenueAsk(originalAsk, { liveUrl: liveTabForIntent }) ||
-        looksLikeEditCurrentInToolAsk(originalAsk, { liveUrl: liveTabForIntent }) ||
+      (workDestination.looksLikeWorkInApp(originalAsk, { liveUrl: liveTabForIntent }) ||
+        workDestination.looksLikeEditCurrentInToolAsk(originalAsk, { liveUrl: liveTabForIntent }) ||
         ownedBrowserAct.looksLikeMailComposeTask?.(originalAsk) ||
         ownedBrowserAct.looksLikeMailReplyTask?.(originalAsk)) &&
       !ownedBrowserAct.looksLikeAccountDashboardAsk?.(originalAsk)
@@ -9565,6 +9945,16 @@ function createAgentRuntime(deps) {
     let skill = forceBuild
       ? "build"
       : resolveSkillForPrompt(agent, multi ? steps[0] : q, attachments);
+    // "general" is where the keyword heuristics put everything they could not
+    // place, and it is answered by a model with no browser — so a misplaced
+    // errand becomes "I'm looking into that" and nothing else. Ask a model
+    // what this actually needs. Only for single-step asks: a multi-step plan
+    // has already been shaped by the planner, and only when a tab is open,
+    // which is what makes browser work possible at all.
+    if (!forceBuild && skill === "general" && !multi && liveTabForIntent) {
+      const needsBrowser = await routeNeedsBrowser(agent, q, { liveUrl: liveTabForIntent });
+      if (needsBrowser && gen === agent.generation) skill = "browse";
+    }
     if (
       !forceBuild &&
       agent.lastIntent?.skill === "browse" &&
@@ -9600,6 +9990,7 @@ function createAgentRuntime(deps) {
     }
     agent.partialText = "";
     agent.stepDeliverables = [];
+    resetLiveOutputSteps(agent);
     agent.updatedAt = new Date().toISOString();
 
     const isBrowsePipeline =
@@ -9624,20 +10015,12 @@ function createAgentRuntime(deps) {
     // runs deliberately do NOT dump a plan — the agent narrates each step as
     // it decides it from the live page.
     if (isBrowsePipeline || multi) {
-      const understood = String(agent.lastIntent?.understood || "").trim();
-      const planHeader = multi
-        ? understood
-          ? `**Got it** — ${understood.slice(0, 160)}\n\n**Plan**\n${planLines}`
-          : `**Plan**\n${planLines}`
-        : understood
-          ? `**Got it** — ${understood.slice(0, 160)}`
-          : "";
       sendToAgentChannels(agent.id, "lykn:agent-status", {
         status: multi ? `Plan · ${steps.length} steps` : "Working step by step…",
       });
       sendToAgentChannels(agent.id, "lykn:agent-delta", {
         text: "",
-        status: planHeader ? `${planHeader}\n\nStarting…` : "Starting…",
+        status: multi ? `Plan · ${steps.length} steps` : "Working step by step…",
       });
     } else {
       // Deliverable turns: acknowledge in the response area BEFORE the work
@@ -9774,6 +10157,8 @@ function createAgentRuntime(deps) {
         if (
           multi &&
           (stepSkill === "browse" || stepSkill === "tool-create") &&
+          // A verified completion is not a step that needs finishing.
+          !agent.verifiedComplete &&
           ownedBrowserAct.askStillNeedsAdaptiveWork?.(q) &&
           /^(Opened|I opened|Step done|Finished getting)\b/i.test(
             String(part || "").trim(),
@@ -10022,11 +10407,16 @@ function createAgentRuntime(deps) {
       if (gen !== agent.generation) return { ok: false, error: "superseded" };
 
       // Finish only what is still unmet — never re-run the whole original ask.
-      // Never keep finishing while parked on a login page.
+      // Never keep finishing while parked on a login page. And never at all
+      // when the browser agent has already verified the task complete: this
+      // check reads the page text, and a finished task usually looks nothing
+      // like its own evidence (the dialog it was done in has closed), so it
+      // reported the work as outstanding and started a fresh run to redo it.
       if (
         (lastSkill === "browse" ||
           lastSkill === "tool-create" ||
           browsedInPlan) &&
+        !agent.verifiedComplete &&
         ownedBrowserAct.askStillNeedsAdaptiveWork?.(originalAsk || q) &&
         !stepAwaitsUser(agent.step) &&
         !agent.waitingForSignIn &&
@@ -10207,7 +10597,7 @@ function createAgentRuntime(deps) {
       ) {
         try {
           if (
-            looksLikeCreateInToolVenueAsk(originalAsk || q, {
+            workDestination.looksLikeWorkInApp(originalAsk || q, {
               liveUrl: agent.url || "",
             }) &&
             gen === agent.generation
@@ -10215,11 +10605,7 @@ function createAgentRuntime(deps) {
             sendToAgentChannels(agent.id, "lykn:agent-status", {
               status: "Finishing the document…",
             });
-            const created = await runCreateInToolVenue(
-              agent,
-              originalAsk || q,
-              gen,
-            );
+            const created = await runWorkInNamedApp(agent, originalAsk || q, gen);
             if (created) {
               stepAnswers.push(String(created).trim());
               lastSkill = "tool-create";
@@ -10276,39 +10662,26 @@ function createAgentRuntime(deps) {
         !!agent.pendingPlan?.waitingSignIn;
 
       let answer = waitingUser
-        ? stripInlineWantMeSuggestions(
-            stepAnswers.filter(Boolean).slice(-1)[0] ||
-              "Paused — I need your help in the agent browser before I can continue.",
+        ? renderStepTranscript(agent) ||
+          String(agent.partialText || "").trim() ||
+          stripInlineWantMeSuggestions(
+            stepAnswers.filter(Boolean).slice(-1)[0] || "",
           )
         : multi
           ? formatMultiStepCompletion(agent, steps, stepAnswers)
           : stripInlineWantMeSuggestions(stepAnswers[0] || "");
-      // Browse finishes should teach — never leave a mute "Done". Suggestions
-      // stay in the popup above the chat bar (not inline Want me to…).
       if (
-        answer &&
-        !multi &&
         !waitingUser &&
-        (lastSkill === "browse" ||
-          lastSkill === "browse-summary" ||
-          browsedInPlan)
+        (!Array.isArray(agent.lastSuggestions) || !agent.lastSuggestions.length)
       ) {
-        answer = ensureHelpfulAgentClose(answer, {
-          goal: originalAsk || q,
+        agent.lastSuggestions = suggestNextStepsForBrowse({
+          goal: originalAsk || q || "",
           url: agent.url || "",
           title: agent.lastBrowseTitle || "",
+          pageText: "",
+          skill: lastSkill || agent.skill || "browse",
+          answer,
         });
-        // Ensure suggestions exist even if an early path skipped paintBrowseDone.
-        if (!Array.isArray(agent.lastSuggestions) || !agent.lastSuggestions.length) {
-          agent.lastSuggestions = suggestNextStepsForBrowse({
-            goal: originalAsk || q || "",
-            url: agent.url || "",
-            title: agent.lastBrowseTitle || "",
-            pageText: "",
-            skill: lastSkill || "browse",
-            answer,
-          });
-        }
       }
 
       // Main orchestrator may emit [[lykn_delegate:…|…]] markers to assign work.
@@ -10435,7 +10808,7 @@ function createAgentRuntime(deps) {
         Array.isArray(agent.lastSuggestions) &&
         agent.lastSuggestions.length > 0;
       const finishSuggestions =
-        !waitingUser && !waitingChoice && doneText
+        !waitingUser && !waitingChoice
           ? reusedBrowseTips
             ? agent.lastSuggestions
             : suggestNextStepsForBrowse({
@@ -10469,6 +10842,7 @@ function createAgentRuntime(deps) {
         sendToAgentChannels(agent.id, "lykn:agent-done", {
           text: "",
           final: true,
+          ...(finishSuggestions.length ? { suggestions: finishSuggestions } : {}),
           ...(waitingUser ? { waitingSignIn: true, monitoring: true } : {}),
           ...(choiceOut ? { choice: choiceOut, waitingChoice: true } : {}),
         });
@@ -10612,12 +10986,14 @@ function createAgentRuntime(deps) {
     MAX_WORKER_AGENTS,
     load,
     persist,
+    persistNow,
     createAgent,
     ensureMainAgent,
     getMainAgent,
     switchAgent,
     stopAgent,
     closeAgent,
+    closeAllWorkers,
     resetMainChat,
     setAgentMode,
     send,
@@ -10647,11 +11023,15 @@ function createAgentRuntime(deps) {
 
 module.exports = {
   createAgentRuntime,
+  createAgentTabsAdapter,
+  takePendingQuestion,
+  looksLikeNewTaskAsk,
+  trimStepNote,
+  renderLiveStep,
+  askNeedsFindingFirst,
   classifyAgentSkill,
   looksLikePasteReportIntoSheets,
   looksLikeCreateInGoogleSheetsAsk,
-  looksLikeCreateInToolVenueAsk,
-  matchCreateInToolVenue,
   looksLikeDeliverableEdit,
   looksLikeOpenDeliverableFollowUp,
   MAX_AGENTS,

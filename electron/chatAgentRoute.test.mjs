@@ -29,7 +29,7 @@ const MAILCHIMP_ASK =
 test("the ask that shipped a draft instead of doing the work now reaches the agent", () => {
   const decision = decideChatRoute(MAILCHIMP_ASK);
   assert.equal(decision.route, "agent");
-  assert.match(decision.venue || "", /mailchimp/i, "it should know where to go");
+  assert.match(decision.venue || "", /mail\s*chimp/i, "it should know where to go");
 });
 
 test("work in a named product goes to the browser, whatever the deliverable is called", () => {
@@ -95,7 +95,7 @@ test("an ask with no destination is a conversation, however action-shaped", () =
 test("an explicit URL is a destination even with no product name", () => {
   const decision = decideChatRoute("go to https://example.com and fill out the contact form");
   assert.equal(decision.route, "agent");
-  assert.equal(decision.venue, "", "example.com is not a product we can name");
+  // The address is what the user named, so the address is what they get told.
   assert.match(decision.destination || "", /example\.com/);
 });
 
@@ -108,16 +108,20 @@ test("empty and oversized prompts never route anywhere", () => {
 });
 
 test("the email platforms a marketing task actually names are all recognized", () => {
-  // A product missing from the venue table resolves to no destination, and the
-  // ask silently falls back to chat — which is how "make a flyer in Klaviyo"
-  // became an image in the conversation.
+  // These used to be looked up in a table of products, so a platform missing
+  // from it resolved to no destination and the ask silently fell back to chat —
+  // which is how "make a flyer in Klaviyo" became an image in the conversation.
+  // Now the destination is simply what the user called it, so there is no list
+  // to fall off the end of.
   for (const [ask, expected] of [
     ["open klaviyo and create a campaign", /klaviyo/i],
     ["open brevo and build the email", /brevo/i],
-    ["open convertkit and make a broadcast", /kit\.com/i],
+    ["open convertkit and make a broadcast", /convertkit/i],
     ["open beehiiv and draft the newsletter", /beehiiv/i],
     ["open mailerlite and send the campaign", /mailerlite/i],
-    ["open constant contact and create a campaign", /constantcontact/i],
+    ["open constant contact and create a campaign", /constant\s*contact/i],
+    // Never in any table, and it works the same.
+    ["open loops and draft the launch email", /loops/i],
   ]) {
     const decision = decideChatRoute(ask);
     assert.equal(decision.route, "agent", ask);

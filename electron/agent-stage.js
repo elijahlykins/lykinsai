@@ -597,6 +597,9 @@ function renderTabs() {
         (el) => el.getAttribute("data-id") === openingTabId,
       );
       tab?.classList.add("opening");
+      // Immediate focus while the + click still owns the chrome; main also
+      // re-focuses after the home page paints so Google can't steal the caret.
+      if (openingTabId === state.activeAgentId) focusOmnibox({ clear: true });
     });
   }
   tabsEl.querySelectorAll("img.tab-favicon[data-fallback]").forEach((img) => {
@@ -624,7 +627,10 @@ function applyState(p) {
     chatOpen: typeof p.chatOpen === "boolean" ? p.chatOpen : state.chatOpen,
     recents: Array.isArray(p.recents) ? p.recents : state.recents,
   };
-  if (typeof p.url === "string") urlEl.value = p.url;
+  if (typeof p.url === "string") {
+    // Don't clobber in-progress typing — state pushes while Google home loads.
+    if (document.activeElement !== urlEl) urlEl.value = p.url;
+  }
   // Only the copy docked in the Studio is told so, and only it draws a title
   // bar of its own — the standalone stage window already has one.
   docked = !!p.docked;
@@ -689,6 +695,30 @@ function renderUseLykn() {
 }
 
 window.lyknAgentStage.onState((p) => applyState(p || {}));
+
+/** Chrome-style: caret lands in an empty top search/URL bar on a new tab.
+ *  Google still loads in the page under the chrome; we just don't fill the bar. */
+function focusOmnibox({ clear = false } = {}) {
+  if (!urlEl) return;
+  if (clear) {
+    urlEl.value = "";
+    // Keep suggestions closed until the user types so Google stays visible
+    // behind the empty omnibox (opening the menu raises chrome over the page).
+    urlEl.dataset.skipSuggestOnce = "1";
+    setUrlSuggestOpen(false);
+  }
+  try {
+    urlEl.focus({ preventScroll: true });
+  } catch (_) {
+    try {
+      urlEl.focus();
+    } catch (_) {}
+  }
+}
+
+if (typeof window.lyknAgentStage.onFocusOmnibox === "function") {
+  window.lyknAgentStage.onFocusOmnibox(() => focusOmnibox({ clear: true }));
+}
 
 function showToast(_p) {
   /* Finish notices use the floating glass chip in main — avoid duplicates. */
@@ -883,6 +913,10 @@ urlEl.addEventListener("focus", () => {
     try {
       urlEl.select();
     } catch (_) {}
+    if (urlEl.dataset.skipSuggestOnce) {
+      delete urlEl.dataset.skipSuggestOnce;
+      return;
+    }
     setUrlSuggestOpen(true);
   });
 });

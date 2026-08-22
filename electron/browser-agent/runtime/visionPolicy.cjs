@@ -51,13 +51,20 @@ function countNamedControls(snapshot) {
  *
  * @param {object} args
  * @param {object} args.snapshot current page snapshot
- * @param {boolean} [args.forced] recovery escalated to visual inspection
  * @param {number} [args.roundsSinceShot] rounds since the last screenshot
  * @returns {{ see: boolean, reason: string, everyRound: boolean }}
  */
-function shouldSeePixels({ snapshot, forced = false, roundsSinceShot = Infinity } = {}) {
-  if (forced) {
-    return { see: true, reason: "recovery escalated to visual inspection", everyRound: false };
+function shouldSeePixels({ snapshot, roundsSinceShot = Infinity, always = false } = {}) {
+  // When targets are located visually rather than by element reference, the
+  // screenshot is not a supplement to the element list — it IS the working
+  // view, and there is no round in which the agent can do without it. Default
+  // false, so every heuristic below is untouched in production.
+  if (always) {
+    return {
+      see: true,
+      reason: "this run locates targets visually — the screenshot is the working view",
+      everyRound: true,
+    };
   }
   const url = String(snapshot?.url || "");
   if (VISUAL_EDITOR_URL_RE.test(url)) {

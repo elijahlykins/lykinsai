@@ -8,10 +8,8 @@ import { VAULT_CAP_EVENT } from "@/lib/vault/vaultCapError";
 import { SYNTHESIS_CAP_EVENT } from "@/lib/vault/synthesisCapError";
 import { UPLOAD_RATE_LIMIT_EVENT } from "@/lib/vault/uploadRateLimitError";
 
-// The `blocks-per-grid` cap is enforced at the canvas-store level (see
-// `src/store/lyknChatStore.ts`). When a user hits it the store dispatches this
-// event and the modal picks it up here. Defined as a module-level constant so
-// both emitter and listener share the exact string.
+// Legacy `blocks-per-grid` cap event. The canvas store is gone; this still
+// listens so a stale DB-trigger rejection can open the upgrade modal.
 export const BLOCK_LIMIT_EVENT = "lykn:block-limit-reached";
 
 export function useUsageGate() {

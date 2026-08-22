@@ -92,6 +92,12 @@ contextBridge.exposeInMainWorld("lykn", {
   // Studio panel rect (window-relative CSS px) where the browser should sit.
   setStudioBrowser: (payload) =>
     ipcRenderer.send("lykn:studio-browser-set", payload || { open: false }),
+  // Called as the Browser window starts opening, so the first tab can load
+  // while the frame animates instead of after it has settled.
+  warmStudioBrowser: () => ipcRenderer.send("lykn:studio-browser-warm"),
+  // Red traffic light on the Browser window: retire every tab and agent.
+  // Yellow minimize only parks the views via setStudioBrowser({ open: false }).
+  closeStudioBrowser: () => ipcRenderer.invoke("lykn:studio-browser-close"),
   // A still picture of the docked browser (tab strip + page, captured
   // separately). The Browser window's open/close motion plays over this,
   // because CSS can move a native view but cannot scale or fade one.
@@ -180,6 +186,17 @@ contextBridge.exposeInMainWorld("lykn", {
     ipcRenderer.on("lykn:agent-list", fn);
     return () => ipcRenderer.removeListener("lykn:agent-list", fn);
   },
+  // A parked run asks its question over "lykn:agent-choice" and waits on
+  // resolveChoice. Without these two the main-process handler
+  // ("lykn:agent-choice-resolve", main.cjs) is unreachable from Studio, so the
+  // rail can show the question but never answer it.
+  onAgentChoice: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-choice", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-choice", fn);
+  },
+  agentChoiceResolve: (agentId, choiceId, buttonId) =>
+    ipcRenderer.invoke("lykn:agent-choice-resolve", { agentId, choiceId, buttonId }),
   onAgentProgress: (cb) => {
     const fn = (_e, p) => cb(p || {});
     ipcRenderer.on("lykn:agent-progress", fn);

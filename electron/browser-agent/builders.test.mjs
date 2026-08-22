@@ -34,8 +34,9 @@ test("elements from an embedded editor are usable and marked as embedded", () =>
     url: "https://us21.admin.mailchimp.com/campaigns/edit?id=9",
     title: "Edit campaign",
     catalog: [
-      { id: "el0", tag: "button", label: "Save and Close", clientX: 900, clientY: 40 },
+      { uid: 1, id: "el0", tag: "button", label: "Save and Close", clientX: 900, clientY: 40 },
       {
+        uid: 2,
         id: "f7_el0",
         tag: "div",
         role: "textbox",
@@ -171,7 +172,7 @@ test("a drag can use screenshot coordinates on either end", async () => {
 
 test("drag is rejected without a destination, and accepted with coordinates", () => {
   const snapshot = buildSnapshot({
-    catalog: [{ id: "el0", tag: "div", label: "Block", selector: "#b" }],
+    catalog: [{ uid: 1, id: "el0", tag: "div", label: "Block", selector: "#b" }],
   });
   const sourceOnly = executor.normalizeDecision(
     { kind: "act", action: { type: "drag", target: "e1" } },
@@ -205,7 +206,7 @@ test("dragging is not treated as a consequential action", () => {
   // "Send block" is a real Mailchimp palette item — dragging it into a layout
   // must not read as sending anything.
   const snapshot = buildSnapshot({
-    catalog: [{ id: "el0", tag: "div", label: "Send block", selector: "#s" }],
+    catalog: [{ uid: 1, id: "el0", tag: "div", label: "Send block", selector: "#s" }],
   });
   const risk = executor.classifyActionRisk(
     {
@@ -233,8 +234,8 @@ test("a page that draws itself and names almost nothing gets pixels", () => {
   const snapshot = buildSnapshot({
     url: "https://someeditor.example/app",
     catalog: [
-      { id: "el0", tag: "canvas", label: "", selector: "canvas" },
-      { id: "el1", tag: "button", label: "File", selector: "#file" },
+      { uid: 1, id: "el0", tag: "canvas", label: "", selector: "canvas" },
+      { uid: 2, id: "el1", tag: "button", label: "File", selector: "#file" },
     ],
   });
   assert.equal(visionPolicy.shouldSeePixels({ snapshot }).see, true);
@@ -242,6 +243,7 @@ test("a page that draws itself and names almost nothing gets pixels", () => {
 
 test("an ordinary page does not pay for a screenshot", () => {
   const catalog = Array.from({ length: 14 }, (_, i) => ({
+    uid: i + 1,
     id: `el${i}`,
     tag: "a",
     label: `Story ${i + 1}`,
@@ -270,26 +272,42 @@ test("visual inspection can be used again later in the same task", () => {
   );
 });
 
-test("builder rules load for design tools, campaign editors and drawn pages", () => {
-  assert.ok(
-    contextRouter
-      .routeBrowserModules({ url: "https://www.canva.com/design/X/edit", goal: "make a flyer" })
-      .includes("builders"),
-  );
-  assert.ok(
-    contextRouter
-      .routeBrowserModules({ url: "https://us21.admin.mailchimp.com/campaigns", goal: "write the email" })
-      .includes("builders"),
-  );
-  assert.ok(
-    contextRouter.routeBrowserModules({ url: "https://x.example", hasEmbeddedFrame: true }).includes("builders"),
-  );
-  assert.ok(
-    !contextRouter
-      .routeBrowserModules({ url: "https://news.example.com", goal: "what is the top story" })
-      .includes("builders"),
-    "ordinary browsing should not carry builder rules",
-  );
+test("progress earns recovery budget back; pure failure still exhausts it", () => {
+  const fail = (recovery, ref) =>
+    recovery.nextRecoveryStep({
+      decision: { action: { type: "click", target: ref } },
+      verification: { reason: "no observable page change" },
+    }).mode;
+
+  // A long run with scattered snags it keeps getting PAST: two failures, then
+  // verified progress, over and over. This exact shape used to die at the
+  // finish line — seven lifetime recoveries spent, the ladder's next rung
+  // never reached — while the task was demonstrably working.
+  const working = createRecoveryTracker();
+  let lastMode = "";
+  for (let step = 0; step < 5; step += 1) {
+    lastMode = fail(working, `e${step}`);
+    lastMode = fail(working, `e${step}`);
+    working.noteProgress();
+    working.noteProgress();
+  }
+  assert.notEqual(lastMode, "fail", "a run that keeps advancing must keep its ladder");
+
+  // A run that only ever fails still runs out — the cap exists for it.
+  const stuck = createRecoveryTracker();
+  const modes = [];
+  for (let i = 0; i < 8; i += 1) modes.push(fail(stuck, `e${i}`));
+  assert.ok(modes.includes("fail"), "failure with no progress must still end the run");
+});
+
+test("builder rules are present whatever the page turns out to be", () => {
+  // These rules used to be routed in from the URL and the goal, which meant a
+  // design tool on an unrecognised domain, or a campaign editor reached from a
+  // goal that never mentioned one, got none of them. They ride along now.
+  const system = contextRouter.buildDecisionSystem({ task: { goal: "what is the top story", skills: [] } });
+  assert.ok(system.includes("# Builders and visual editors"));
+  assert.match(system, /dragging is the\s+gesture these products are built around/);
+  assert.match(system, /Never conclude a document is empty because the element list looks empty/);
 });
 
 // ── Not calling correct work a failure ──────────────────────────────────────
@@ -418,6 +436,7 @@ test("scrolling with a target scrolls that container, not the window", async () 
 test("outer page chrome cannot crowd the embedded editor out of the list", () => {
   const catalog = [
     ...Array.from({ length: 120 }, (_, i) => ({
+      uid: i + 1,
       id: `el${i}`,
       tag: "button",
       label: `Chrome control ${i + 1}`,
@@ -425,6 +444,7 @@ test("outer page chrome cannot crowd the embedded editor out of the list", () =>
       inView: true,
     })),
     ...Array.from({ length: 12 }, (_, i) => ({
+      uid: 121 + i,
       id: `f7_el${i}`,
       tag: "div",
       role: "textbox",
@@ -443,7 +463,7 @@ test("outer page chrome cannot crowd the embedded editor out of the list", () =>
 
 test("a scrollable container is pointed out to the model", () => {
   const snapshot = buildSnapshot({
-    catalog: [{ id: "el0", tag: "div", role: "button", label: "Blocks panel", scrollable: true }],
+    catalog: [{ uid: 1, id: "el0", tag: "div", role: "button", label: "Blocks panel", scrollable: true }],
   });
   assert.match(formatSnapshotForModel(snapshot), /scrollable/i);
 });
@@ -451,8 +471,8 @@ test("a scrollable container is pointed out to the model", () => {
 test("disabled controls and open dialogs are called out", () => {
   const snapshot = buildSnapshot({
     catalog: [
-      { id: "el0", tag: "button", label: "Send", disabled: true },
-      { id: "el1", tag: "button", label: "Confirm", inDialog: true },
+      { uid: 1, id: "el0", tag: "button", label: "Send", disabled: true },
+      { uid: 2, id: "el1", tag: "button", label: "Confirm", inDialog: true },
     ],
   });
   const rendered = formatSnapshotForModel(snapshot);
@@ -478,12 +498,26 @@ test("a product playbook reaches every one of its regional hosts", async () => {
 
 test("a playbook is not truncated mid-sentence by the prompt budget", () => {
   const websiteMemory = "# Known about mailchimp.com\n" + "- a useful note about the editor\n".repeat(90);
-  const system = contextRouter.buildDecisionSystem({
-    task: { goal: "write a campaign", plan: [], constraints: [], workingMemory: { facts: [] } },
-    websiteMemory,
-  });
-  const kept = system.split("Known about mailchimp.com")[1] || "";
+  // Memory rides in the user message now (the system prompt stays byte-stable
+  // for prompt caching), so the budget lives in buildMemoryContext.
+  const block = contextRouter.buildMemoryContext({ websiteMemory });
+  const kept = block.split("Known about mailchimp.com")[1] || "";
   assert.ok(kept.length > 2500, `site knowledge was cut to ${kept.length} characters`);
+});
+
+test("the decision system prompt is byte-stable whatever the task remembers", () => {
+  const task = { goal: "write a campaign", plan: [], constraints: [], workingMemory: { facts: [] } };
+  const bare = contextRouter.buildDecisionSystem({ task, skills: [] });
+  const decorated = contextRouter.buildDecisionSystem({
+    task,
+    skills: [],
+    // Legacy keys that used to be spliced into the system prompt — a caller
+    // still passing them must not break the cacheable prefix.
+    userMemory: "likes short emails",
+    websiteMemory: "# Known about x.com\n- a note",
+  });
+  assert.equal(decorated, bare, "memory must never vary the system prompt");
+  assert.doesNotMatch(bare, /Known about x\.com/);
 });
 
 test("learning writes durable notes once and refuses to duplicate them", async () => {
@@ -528,7 +562,9 @@ function makeController({ actuator = {}, catalog = [], url = "https://app.exampl
   return createBrowserController({
     webContents,
     actuator: {
-      getDOMCatalog: async () => ({ ok: true, url, items: catalog }),
+      // The real collector mints a uid per element in page context; these
+      // fixtures predate it, so number them in catalog order.
+      getDOMCatalog: async () => ({ ok: true, url, items: catalog.map((it, i) => ({ uid: i + 1, ...it })) }),
       getPageContext: async () => ({ ok: true, url, title: "App", text: "content" }),
       waitForLoad: async () => {},
       waitForDomSettle: async () => {},

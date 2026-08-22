@@ -38,6 +38,23 @@ const IS_WIN = process.platform === "win32";
 // Chromium otherwise mutes un-gestured audio (the video is muted; the sound
 // rides a separate <audio> element).
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
+// Chromium's popup blocker has nowhere to report itself here: a real browser
+// shows a blocked-popup marker in the omnibox, and we have no such UI, so a
+// blocked window.open is indistinguishable from a dead button. Sign-in flows
+// walk right into it — the ones that do any async work (a token fetch, a config
+// call) before opening lose the user gesture Chromium requires and get dropped
+// silently. Nothing gets to open unchecked regardless: every window.open in the
+// agent browser goes through setWindowOpenHandler, which decides what opens,
+// where, and in which session (see wireAgentBrowserViewEvents).
+app.commandLine.appendSwitch("disable-popup-blocking");
+// Google's sign-in library reaches for FedCM (navigator.credentials.get with an
+// identity provider) before it will fall back to opening a window. FedCM needs
+// an account chooser drawn by the browser itself, which Electron has no
+// implementation of and no API for — so the call never resolves, the library
+// never gets to its popup, and the button does nothing at all with nothing
+// logged. Turning the feature off is what makes it visible to the library as
+// unavailable, so it takes the window.open path we do support.
+app.commandLine.appendSwitch("disable-features", "FedCm");
 // Taskbar grouping + toast attribution on Windows (must match appId).
 if (IS_WIN) {
   try {
@@ -108,7 +125,9 @@ const localStore = require("./localStore/index.cjs");
 const appDock = require("./appDock.cjs");
 const chromeSync = require("./chromeSync.cjs");
 const { createAgentRuntime } = require("./agentRuntime.cjs");
+const agentTabIds = require("./agentTabIds.cjs");
 const { decideChatRoute } = require("./chatAgentRoute.cjs");
+const { buildDiagnosticsReport } = require("./diagnostics.cjs");
 const {
   wrapReportAsStageHtml,
   titleFromMarkdown: titleFromStageMarkdown,
@@ -1542,19 +1561,12 @@ function createMainWindow() {
   });
 
   mainWindow.on("closed", () => {
-    // Undock agent browser views that were living in Studio's stage.
-    if (studioStageEmbedded) {
-      studioStageEmbedded = false;
-      for (const view of agentBrowserViews.values()) {
-        setViewRadius(view, 0);
-        if (agentStageWindow && !agentStageWindow.isDestroyed()) {
-          attachViewToWindow(agentStageWindow, view);
-        }
-      }
-      if (agentStageWindow && !agentStageWindow.isDestroyed()) {
-        layoutAgentStageViews();
-      }
-    }
+    // Agent browser views live on this window from the moment they first dock
+    // — closing the Browser window only hides them — so they have to be handed
+    // over here whether or not the dock is active, or they'd be destroyed
+    // along with it.
+    studioStageEmbedded = false;
+    parkStudioStageViewsOnStage();
     try {
       studioStageChromeView?.webContents?.close?.();
     } catch (_) {}
@@ -3542,11 +3554,34 @@ const AGENT_STAGE_CHROME_DEFAULT = 82;
 let agentStageWindow = null;
 let agentStageChromeHeight = AGENT_STAGE_CHROME_DEFAULT;
 let agentStageActiveId = null;
+
+/**
+ * Is the user currently looking at this agent's tab family (its browse tab, a
+ * sub-tab it owns, or one of its deliverable subtabs)?
+ *
+ * This is the gate on stealing the stage. A finishing agent fronting its own
+ * tab yanked the user away from whatever they were doing in another tab — the
+ * moment a background task completed, their work switched out from under
+ * them. Anything that wants to front a tab WITHOUT the user having asked for
+ * it right now must check here first.
+ */
+function agentTabFamilyActive(ownerId) {
+  const owner = String(ownerId || "").trim();
+  if (!owner) return false;
+  const active = String(agentStageActiveId || "").trim();
+  if (!active) return false;
+  if (active === owner) return true;
+  if (agentTabIds.subTabOwner(active) === owner) return true;
+  return String(agentBrowserMeta.get(active)?.ownerAgentId || "") === owner;
+}
 /** Studio agent chat side panel — closed until "Use LYKN" in browser chrome. */
 let agentChatOpen = false;
 /** Saved-links dropdown open — the chrome surface overlays the page view so
  *  the menu renders in front instead of being buried behind the browser. */
 let agentStageMenuOverlay = false;
+/** Tab id waiting for Chrome-style omnibox focus after a user-opened new tab.
+ *  Cleared once the home page finishes loading (or the user switches away). */
+let agentStagePendingOmniboxFocusId = null;
 /** @type {Map<string, WebContentsView>} */
 const agentBrowserViews = new Map();
 // New native page views stay detached until their first document has painted.
@@ -3754,33 +3789,128 @@ function isAgentIncognito(agentId) {
 
 function agentBrowserPartition(agentId) {
   const id = String(agentId || "").trim();
-  return isAgentIncognito(id)
-    ? `lykn-agent-incognito-${id}`
+  // A sub-tab lives in its OWNER's partition: an agent that signed in on its
+  // first tab must still be signed in on the tab it opens next, and an
+  // incognito agent's sub-tabs must share its incognito session rather than
+  // each minting their own.
+  const owner = agentTabIds.partitionOwner(id);
+  return isAgentIncognito(owner)
+    ? `lykn-agent-incognito-${owner}`
     : AGENT_BROWSER_SHARED_PARTITION;
 }
 
-function loadAgentBrowserWelcome(wc, { incognito = false } = {}) {
+/**
+ * Home page for a fresh agent tab. A real search page (rather than the branded
+ * welcome document) means a new tab is immediately a page the agent can act on,
+ * which keeps the browser + agent loop straightforward to reason about.
+ */
+const AGENT_BROWSER_HOME_URL = "https://www.google.com";
+
+/** Bare Google homepage (new-tab home) — omnibox stays empty so typing starts clean. */
+function isAgentBrowserHomeUrl(url) {
+  try {
+    const u = new URL(String(url || "").trim());
+    if (!/^https?:$/i.test(u.protocol)) return false;
+    const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+    if (host !== "google.com") return false;
+    const path = (u.pathname || "/").replace(/\/+$/, "") || "";
+    return !path && !u.search && !u.hash;
+  } catch (_) {
+    return false;
+  }
+}
+
+function loadAgentBrowserHome(wc) {
+  if (!wc || wc.isDestroyed?.()) return;
+  applyAgentTabEmulation(wc);
+  try {
+    void wc.loadURL(AGENT_BROWSER_HOME_URL);
+  } catch (_) {}
+}
+
+/**
+ * What the page sees in JS about the browser it is running in. The UA string
+ * (app.userAgentFallback) and the Sec-CH-UA headers (wireAgentSessionClientHints)
+ * already read as plain desktop Chrome, but navigator.userAgentData is built
+ * from Chromium's own brand list and still names Electron. Brands here mirror
+ * the header rewriting so both tell the same story.
+ */
+function chromeUserAgentOverride() {
+  const full = String(process.versions.chrome || "").trim();
+  const major = full.split(".")[0] || "";
+  const userAgent = String(app.userAgentFallback || "").trim();
+  if (!major || !userAgent) return null;
+  const brand = (name, version) => ({ brand: name, version });
+  let platformVersion = "";
+  try {
+    platformVersion = String(process.getSystemVersion?.() || "").trim();
+  } catch (_) {}
+  return {
+    userAgent,
+    userAgentMetadata: {
+      brands: [brand("Chromium", major), brand("Google Chrome", major), brand("Not?A_Brand", "99")],
+      fullVersionList: [
+        brand("Chromium", full),
+        brand("Google Chrome", full),
+        brand("Not?A_Brand", "99.0.0.0"),
+      ],
+      platform:
+        process.platform === "win32"
+          ? "Windows"
+          : process.platform === "darwin"
+            ? "macOS"
+            : "Linux",
+      platformVersion,
+      architecture: process.arch === "arm64" ? "arm" : "x86",
+      bitness: "64",
+      model: "",
+      mobile: false,
+      wow64: false,
+    },
+  };
+}
+
+/**
+ * The two things every agent tab has to be told about itself, both over CDP
+ * because Electron has no per-view API for either. Run before the navigation so
+ * the first paint and the first request already carry them.
+ *
+ * Light mode: the shell pins nativeTheme to dark for the glass vibrancy (see
+ * themeSource near the top) and there is no per-view theme source, so Google
+ * and every other site reading prefers-color-scheme loaded dark.
+ *
+ * Client hints: navigator.userAgentData hands the page Electron's brand however
+ * clean the UA string and the headers are, and that is what "Sign in with
+ * Google" reads before it decides whether to open its popup at all. Sites built
+ * on Google Identity Services simply do nothing when they see it — no wall, no
+ * error, a button that doesn't respond — which is why some logins came up and
+ * others never appeared. Overriding the UA here sets the string and the
+ * metadata behind navigator.userAgentData together.
+ *
+ * Idempotent and best-effort: a DevTools session takes over the CDP target and
+ * drops all of it, so this is re-asserted on every navigation.
+ */
+function applyAgentTabEmulation(wc) {
   if (!wc || wc.isDestroyed?.()) return;
   try {
-    void wc.loadFile(path.join(__dirname, "agent-browser-welcome.html"), {
-      query: incognito ? { theme: "incognito" } : { theme: "light" },
-    });
+    if (!wc.debugger.isAttached()) wc.debugger.attach("1.3");
   } catch (_) {
-    try {
-      wc.loadURL(
-        "data:text/html;charset=utf-8," +
-          encodeURIComponent(
-            "<!doctype html><html><head><meta charset=utf-8></head>" +
-              `<body style='margin:0;background:${incognito ? "#1e1e1e" : "#ececeb"};` +
-              `color:${incognito ? "#fafafa" : "#0a0a0a"};` +
-              "display:grid;place-items:center;height:100vh;font:650 22px/1.25 " +
-              "-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'>" +
-              "<div style='text-align:center'>Welcome to the LYKN browser</div>" +
-              "</body></html>",
-          ),
-      );
-    } catch (_) {}
+    return;
   }
+  // sendCommand rejects rather than throwing, so a try/catch around it catches
+  // nothing and the failure surfaces as an unhandled rejection instead. It does
+  // fail in normal use: called on a view that has never navigated, before there
+  // is a CDP target to talk to, it comes back "target closed".
+  const send = (method, params) => {
+    try {
+      wc.debugger.sendCommand(method, params).catch(() => {});
+    } catch (_) {}
+  };
+  const ua = chromeUserAgentOverride();
+  if (ua) send("Emulation.setUserAgentOverride", ua);
+  send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-color-scheme", value: "light" }],
+  });
 }
 
 /**
@@ -3914,6 +4044,12 @@ function wireAgentPopupWindow(childWindow, { parentWc, agentId } = {}) {
     // Same chrome UA as the rest of the app (strip Electron token).
     if (app.userAgentFallback) childWc.setUserAgent(app.userAgentFallback);
   } catch (_) {}
+  // This is the window accounts.google.com actually loads in, and it checks the
+  // browser it's running in as hard as the opener did — the "This browser or app
+  // may not be secure" wall. Re-asserted per navigation: an OAuth flow crosses
+  // several documents in here, some of them in a different process.
+  applyAgentTabEmulation(childWc);
+  childWc.on("did-navigate", () => applyAgentTabEmulation(childWc));
   childWc.setWindowOpenHandler((details) => {
     const u = String(details?.url || "");
     if (!agentStageUrlAllowed(u)) return { action: "deny" };
@@ -3998,6 +4134,10 @@ function agentStageVisible() {
 let studioStageChromeView = null;
 let studioStageBounds = null; // DIP rect within the studio window's content
 let studioStageEmbedded = false;
+// True while the Studio Browser window is being fully closed (red traffic
+// light). Closing the last tab must not spawn a replacement — the next open
+// starts a fresh session. Minimize never sets this.
+let studioBrowserDisposing = false;
 // The browser docks into the body of the Studio's floating Browser window:
 // square along the top, where the window's own title bar sits, and rounded at
 // the bottom to sit concentric with the frame's corners. The renderer owns
@@ -4012,8 +4152,16 @@ function studioStageEmbedActive() {
 
 // WebContentsView attach/detach helpers (BrowserWindow.contentView children;
 // re-adding an attached view moves it to the top of the stack).
+// addChildView re-orders a view that is already attached, which is how the
+// active page gets raised above the chrome. Layout runs on every bounds report
+// — drag, resize, load event — and re-stacking the hierarchy that often makes
+// the browser flicker, so remember what is on top and only restack on change.
+// Any attach/detach from anywhere else drops the memo.
+let agentStageStackKey = "";
+
 function attachViewToWindow(win, view) {
   if (!win || win.isDestroyed() || !view) return;
+  agentStageStackKey = "";
   try {
     win.contentView.addChildView(view);
   } catch (_) {}
@@ -4021,15 +4169,42 @@ function attachViewToWindow(win, view) {
 
 function detachViewFromWindow(win, view) {
   if (!win || win.isDestroyed() || !view) return;
+  agentStageStackKey = "";
   try {
     win.contentView.removeChildView(view);
   } catch (_) {}
 }
 
+function setViewVisible(view, visible) {
+  try {
+    view?.setVisible?.(visible);
+  } catch (_) {}
+}
+
+function raiseAgentStageView(win, view, key) {
+  if (agentStageStackKey === key) return;
+  attachViewToWindow(win, view);
+  agentStageStackKey = key;
+}
+
 function setViewRadius(view, radius) {
   try {
-    view?.setBorderRadius?.(radius);
+    view?.setBorderRadius?.(Math.max(0, Math.round(Number(radius) || 0)));
   } catch (_) {}
+}
+
+/** Place a docked view, then clip it. Electron applies `setBorderRadius`
+ *  against the current box and does not restore it on the next `setBounds`,
+ *  so parking a page at 0×0 until first paint used to wipe the curve and
+ *  leave every later layout square at the window's bottom corners. */
+function setDockedViewBounds(view, bounds, { radius = 0 } = {}) {
+  if (!view || !bounds) return;
+  try {
+    view.setBounds(bounds);
+  } catch (_) {}
+  const w = Math.max(0, Number(bounds.width) || 0);
+  const h = Math.max(0, Number(bounds.height) || 0);
+  if (w >= 2 && h >= 2 && radius > 0) setViewRadius(view, radius);
 }
 
 function ensureStudioStageChromeView() {
@@ -4065,44 +4240,116 @@ function ensureStudioStageChromeView() {
   return studioStageChromeView;
 }
 
+// Out of sight, the docked views sit at the panel's exact size but shifted
+// clear of the Studio window's right edge, which clips them. They stay visible
+// to Chromium there, so each page holds a live frame at the size it will come
+// back at and the reveal is a plain move — nothing to re-render, nothing to
+// reflow. Hiding them instead (View.setVisible) drops those frames, and the
+// page returns as a blurry stretch of the last one until the compositor
+// rebuilds it. Detaching them to the standalone stage window is worse again:
+// that window's layout pass reflows every page into its size and back out, the
+// second reflow landing after the page is on screen, as a jump.
+let studioStageRevealed = false;
+
+/** How far right of the window the parked views sit, in DIP. 0 once revealed. */
+function studioStageParkShift() {
+  if (studioStageRevealed) return 0;
+  let contentW = 0;
+  try {
+    if (studioWindow && !studioWindow.isDestroyed()) {
+      [contentW] = studioWindow.getContentSize();
+    }
+  } catch (_) {}
+  const paneRight = studioStageBounds
+    ? studioStageBounds.x + studioStageBounds.width
+    : 0;
+  return Math.max(contentW, paneRight, 0) + 40;
+}
+
+// The Studio doesn't hand over its final pane rect in one go: the frame reports
+// itself as it opens, and an unplaced frame measures at the desktop's top-left
+// before its geometry lands. A page revealed on the first report wears the tail
+// of that as a pop up to the corner, so a fresh dock stays parked (the
+// renderer's skeleton stands in) until the rect has held still.
+const STUDIO_STAGE_REVEAL_SETTLE_MS = 90;
+let studioStageRevealTimer = null;
+
+function cancelStudioStageReveal() {
+  if (!studioStageRevealTimer) return;
+  clearTimeout(studioStageRevealTimer);
+  studioStageRevealTimer = null;
+}
+
+function revealStudioStageViewsWhenSettled() {
+  cancelStudioStageReveal();
+  studioStageRevealTimer = setTimeout(() => {
+    studioStageRevealTimer = null;
+    if (!studioStageEmbedActive()) return;
+    studioStageRevealed = true;
+    layoutAgentStageViews();
+  }, STUDIO_STAGE_REVEAL_SETTLE_MS);
+}
+
+/**
+ * Hand the views back to the standalone stage window — what happens when the
+ * Studio window itself goes away, taking the only window they were attached to
+ * with it.
+ */
+function parkStudioStageViewsOnStage() {
+  cancelStudioStageReveal();
+  const studio = studioWindow && !studioWindow.isDestroyed() ? studioWindow : null;
+  if (studio) {
+    detachViewFromWindow(studio, studioStageChromeView);
+    for (const view of agentBrowserViews.values()) detachViewFromWindow(studio, view);
+  }
+  // Square corners again, and visible: nothing hides them over there.
+  for (const view of agentBrowserViews.values()) {
+    setViewRadius(view, 0);
+    setViewVisible(view, true);
+    if (agentStageWindow && !agentStageWindow.isDestroyed()) {
+      attachViewToWindow(agentStageWindow, view);
+    }
+  }
+  if (agentStageWindow && !agentStageWindow.isDestroyed()) layoutAgentStageViews();
+}
+
 /** Dock (open) or undock (close) the agent browser inside the Studio window. */
 function setStudioBrowserEmbed({ open, bounds, radius } = {}) {
   if (!open) {
     if (!studioStageEmbedded) return;
+    cancelStudioStageReveal();
+    // Parked before the dock goes inactive, so this layout still runs the
+    // docked branch. Same window, same size, same zoom — only shifted off the
+    // edge, ready to move straight back in.
+    studioStageRevealed = false;
+    layoutAgentStageViews();
     studioStageEmbedded = false;
-    const studio = studioWindow && !studioWindow.isDestroyed() ? studioWindow : null;
-    if (studio) {
-      detachViewFromWindow(studio, studioStageChromeView);
-      for (const view of agentBrowserViews.values()) {
-        detachViewFromWindow(studio, view);
-      }
-    }
-    // Hand the views back to the standalone stage window so agents keep a
-    // surface to render into (it stays hidden until something shows it).
-    // Undocked views go back to square corners.
-    for (const view of agentBrowserViews.values()) {
-      setViewRadius(view, 0);
-      if (agentStageWindow && !agentStageWindow.isDestroyed()) {
-        attachViewToWindow(agentStageWindow, view);
-      }
-    }
-    if (agentStageWindow && !agentStageWindow.isDestroyed()) {
-      layoutAgentStageViews();
-    }
     return;
   }
 
   if (!studioWindow || studioWindow.isDestroyed()) return;
+  let paneMoved = false;
   if (bounds && typeof bounds === "object") {
     // x/y may be negative: the Browser window can be dragged past the desktop's
     // edges, and the window clips whatever hangs off. Pinning them to 0 would
     // slide the page back out from under its own frame.
-    studioStageBounds = {
+    const next = {
       x: Math.round(Number(bounds.x) || 0),
       y: Math.round(Number(bounds.y) || 0),
       width: Math.max(0, Math.round(Number(bounds.width) || 0)),
       height: Math.max(0, Math.round(Number(bounds.height) || 0)),
     };
+    paneMoved =
+      !studioStageBounds ||
+      studioStageBounds.x !== next.x ||
+      studioStageBounds.y !== next.y ||
+      studioStageBounds.width !== next.width ||
+      studioStageBounds.height !== next.height;
+    studioStageBounds = next;
+    // Before the views are attached below: a Studio resized while the browser
+    // was closed re-flows its pages off-screen this way, instead of in front of
+    // the user a frame after they reappear.
+    fitAgentTabsToPane(studioStageBounds.width);
   }
   // The window frame's radius can only reach the views from the renderer, so
   // pick it up here and repaint any that are already docked.
@@ -4116,7 +4363,8 @@ function setStudioBrowserEmbed({ open, bounds, radius } = {}) {
       }
     }
   }
-  if (!studioStageEmbedded) {
+  const freshDock = !studioStageEmbedded;
+  if (freshDock) {
     studioStageEmbedded = true;
     // The browser lives in exactly one window at a time — reclaim the views
     // from the standalone stage window.
@@ -4132,46 +4380,153 @@ function setStudioBrowserEmbed({ open, bounds, radius } = {}) {
       setViewRadius(view, studioStageRadius);
       attachViewToWindow(studioWindow, view);
     }
-    // Recreate tabs for any worker agents restored from disk — tabs and
-    // agents always exist in pairs, so nothing sits in the rail tab-less.
-    try {
-      initAgentRuntime().ensureAgentTabs?.();
-    } catch (_) {}
-    // Docking with no tabs (and no agents) — greet with a fresh new-tab page
-    // instead of an empty strip.
-    if (!agentBrowserViews.size) openFreshStudioBrowserTab();
+    // Tabs wait on the persisted agent list so a raced load() can't add
+    // restored workers on top of the fresh tab warm already created.
+    void whenAgentRuntimeLoaded().then(() => {
+      if (!studioStageEmbedActive()) return;
+      fillEmptyStudioBrowser({ show: false });
+      pushAgentStageState();
+      layoutAgentStageViews();
+    });
     pushAgentStageState();
+    // Parked for the layout below, however they arrived: the pages take the new
+    // panel size off the edge of the window and are done reflowing to it before
+    // anyone sees them. The first dock of the session and every one after it
+    // open the same way.
+    studioStageRevealed = false;
     // Freshly docked: take a picture as soon as the page has settled, so the
     // close that follows has the browser as it actually looks to animate over.
     scheduleStudioStageShot(600);
   }
   layoutAgentStageViews();
+  // Arm the reveal on the dock, and push it back out every time the pane lands
+  // somewhere new — the page appears once, already at its final size, however
+  // many rects the opening window reports on the way there.
+  if (freshDock || (studioStageRevealTimer && paneMoved)) {
+    revealStudioStageViewsWhenSettled();
+  }
+}
+
+/**
+ * Put the caret in the stage omnibox (Search or type a URL), like Chrome on
+ * a fresh tab. Focuses the chrome WebContents first so keystrokes aren't
+ * swallowed by the page view underneath.
+ */
+function focusAgentStageOmnibox() {
+  try {
+    if (
+      studioStageEmbedActive() &&
+      studioStageChromeView?.webContents &&
+      !studioStageChromeView.webContents.isDestroyed()
+    ) {
+      studioStageChromeView.webContents.focus();
+      studioStageChromeView.webContents.send("lykn:agent-stage-focus-omnibox");
+      return;
+    }
+  } catch (_) {}
+  try {
+    if (agentStageWindow && !agentStageWindow.isDestroyed()) {
+      agentStageWindow.webContents.focus();
+      agentStageWindow.webContents.send("lykn:agent-stage-focus-omnibox");
+    }
+  } catch (_) {}
+}
+
+/** Focus the omnibox now and again when this tab's home page finishes loading
+ *  (page views otherwise steal focus once Google paints). */
+function requestOmniboxFocusForTab(agentId) {
+  const id = String(agentId || "").trim();
+  if (!id) return;
+  agentStagePendingOmniboxFocusId = id;
+  focusAgentStageOmnibox();
+  setTimeout(() => {
+    if (agentStagePendingOmniboxFocusId === id) focusAgentStageOmnibox();
+  }, 250);
 }
 
 /** Fresh Studio browser tab. Every tab is agent-backed: a new tab always
  *  brings its own agent into the rail, and closing either side closes both.
  *  Falls back to a plain (agent-less) tab only if the agent cap is hit. */
-function openFreshStudioBrowserTab() {
+function openFreshStudioBrowserTab({ show = true, focusOmnibox = false } = {}) {
   if (agentBrowserMainTabCount() >= MAX_AGENT_BROWSER_TABS) return;
   try {
     const rt = initAgentRuntime();
     if (!rt.isAgentModeOn?.()) rt.setAgentMode?.(true);
-    const res = rt.createAgent({ title: "New agent" });
+    // Silent so createAgent doesn't raise the standalone stage (and so
+    // setAgentMode no longer also spawns a second standby worker).
+    const res = rt.createAgent({ title: "New agent", silent: true, activate: true });
     if (res?.ok && res.agentId) {
-      showAgentBrowserWindow(res.agentId, {
+      ensureAgentBrowserWindow(res.agentId, {
+        show,
         focus: true,
         label: res.agent?.title || "New agent",
       });
+      if (focusOmnibox) requestOmniboxFocusForTab(res.agentId);
       return;
     }
   } catch (_) {}
   try {
-    ensureAgentBrowserWindow(`studio-tab-${Date.now()}`, {
+    const id = `studio-tab-${Date.now()}`;
+    ensureAgentBrowserWindow(id, {
       show: false,
       focus: true,
       label: "New tab",
     });
+    if (focusOmnibox) requestOmniboxFocusForTab(id);
   } catch (_) {}
+}
+
+/**
+ * Get the browser ready before it is ever shown. The Browser window's open
+ * animation runs with the native views undocked, and that is enough time to
+ * load the stage chrome and the first tab's home page — so docking reveals a
+ * painted page instead of leaving the renderer's underlay up through a cold
+ * tab creation plus a network load. Idempotent: warming an already-warm
+ * browser does nothing.
+ */
+function fillEmptyStudioBrowser({ show = false } = {}) {
+  try {
+    initAgentRuntime().ensureAgentTabs?.();
+  } catch (_) {}
+  if (!agentBrowserViews.size) openFreshStudioBrowserTab({ show });
+}
+
+async function warmStudioBrowser() {
+  if (!studioWindow || studioWindow.isDestroyed()) return;
+  try {
+    ensureStudioStageChromeView();
+  } catch (_) {}
+  await whenAgentRuntimeLoaded();
+  if (agentBrowserViews.size) return;
+  fillEmptyStudioBrowser({ show: false });
+}
+
+/** Red traffic light: close the Studio Browser window for real. Tabs go to
+ *  History, agents are retired, views are destroyed. The next press warms a
+ *  fresh session. Minimize never calls this — it only undocks the views. */
+function closeStudioBrowserSession() {
+  const tabIds = [...agentBrowserViews.keys()];
+  const snaps = tabIds.map((id) => snapshotAgentBrowserHistory(id));
+  studioBrowserDisposing = true;
+  try {
+    try {
+      setStudioBrowserEmbed({ open: false });
+    } catch (_) {}
+    try {
+      initAgentRuntime().closeAllWorkers?.();
+    } catch (_) {}
+    for (const id of [...agentBrowserViews.keys()]) {
+      destroyAgentBrowserWindow(id);
+    }
+    for (const snap of snaps) commitAgentBrowserHistory(snap);
+    try {
+      void initAgentRuntime().persistNow?.();
+    } catch (_) {}
+    pushAgentStageState();
+  } finally {
+    studioBrowserDisposing = false;
+  }
+  return { ok: true };
 }
 
 /** Open a manual browser tab already navigated to `url` (used by Chrome sync).
@@ -4465,19 +4820,111 @@ function scheduleStudioStageShot(delay = STAGE_SHOT_DEBOUNCE) {
   );
 }
 
+// Floor for the reference width below, and the room Google and most desktop
+// sites lay out for. A pane narrower than its reference scales the page down to
+// keep that layout rather than letting it reflow into a cramped breakpoint.
+const AGENT_TAB_LAYOUT_WIDTH = 1280;
+const AGENT_TAB_MIN_ZOOM = 0.5;
+// How much of the pane's shortfall against the reference comes off the zoom. At
+// 1 the page is scaled in step with how much of the desktop the window covers —
+// a full-screen layout shrunk to fit, which is the intuition, but it reads far
+// smaller than it needs to: the window is not trying to show a whole desktop's
+// worth of page, only to avoid a cramped one. Well under 1 takes the edge off a
+// narrow pane while keeping the text at a comfortable size. A window covering
+// three quarters of the desktop lands at 84%, against the 74% a plain ratio
+// would give it.
+const AGENT_TAB_ZOOM_FALLOFF = 0.6;
+
+/**
+ * The width a browser filling the desktop would have — what every narrower pane
+ * is judged against. This was a flat 1280, which quietly did nothing on a large
+ * display: the floating window's size is restored from where the user last left
+ * it, and any window dragged past 1280 landed on exactly 100% no matter how
+ * much of the screen it actually covered. Measuring the desktop instead means
+ * "floating" is relative to the screen it floats on.
+ */
+function agentTabReferenceWidth() {
+  let deskW = 0;
+  try {
+    if (studioWindow && !studioWindow.isDestroyed()) [deskW] = studioWindow.getContentSize();
+  } catch (_) {}
+  if (!(deskW > 0)) {
+    try {
+      deskW = screen.getPrimaryDisplay().workAreaSize.width;
+    } catch (_) {}
+  }
+  return Math.max(AGENT_TAB_LAYOUT_WIDTH, Math.round(Number(deskW) || 0));
+}
+
+/** Zoom that fits a desktop layout into `width` DIP of pane, with room over. */
+function agentTabZoomForWidth(width) {
+  const w = Math.round(Number(width) || 0);
+  // Parked background view — no pane to fit yet, and zoom 0 is not a thing.
+  if (w <= 0) return 0;
+  const shortfall = Math.max(0, 1 - w / agentTabReferenceWidth());
+  const factor = Math.round((1 - shortfall * AGENT_TAB_ZOOM_FALLOFF) * 1000) / 1000;
+  // Never magnify past 100%: a pane filling the desktop just shows more.
+  return Math.min(1, Math.max(AGENT_TAB_MIN_ZOOM, factor));
+}
+
+/** Last zoom logged per tab, so a steady pane doesn't repeat itself. */
+const agentTabZoomLogged = new Map();
+
+function applyAgentTabZoom(id, view, width) {
+  // Artifact tabs render our own responsive report HTML — it already fits.
+  if (isAgentArtifactTabId(id)) return;
+  const factor = agentTabZoomForWidth(width);
+  if (!factor) return;
+  const wc = view?.webContents;
+  if (!wc || wc.isDestroyed()) return;
+  try {
+    if (Math.abs(wc.getZoomFactor() - factor) > 0.001) wc.setZoomFactor(factor);
+    // The authoritative record of what zoom this view runs at. Input
+    // coordinates must be scaled by it (ownedBrowserAct.toInputPoint) —
+    // getZoomFactor answers per-origin and can disagree with the view, so the
+    // setter writes down what it actually applied.
+    wc.__lyknZoomFactor = factor;
+  } catch (_) {
+    return;
+  }
+  // Keyed off what we last asked for, not what the view reports: Chromium
+  // scopes zoom per origin and getZoomFactor answers for the origin rather than
+  // this view, so the read above rarely matches and the set runs on every
+  // layout pass — which during a drag is a great many. One line per real change.
+  if (agentTabZoomLogged.get(id) === factor) return;
+  agentTabZoomLogged.set(id, factor);
+  console.log(
+    `[agent-browser] zoom ${Math.round(factor * 100)}% — ${Math.round(Number(width) || 0)}px pane of ${agentTabReferenceWidth()}px desktop`,
+  );
+}
+
+/**
+ * Fit every tab to the pane, not just the visible one. Zooming a tab as it is
+ * raised means it re-flows in front of whoever just switched to it, and a tab
+ * still loading its first document wants the right zoom before it paints, not
+ * after. Re-fitting to the same width is a no-op, so this is cheap to call.
+ */
+function fitAgentTabsToPane(width) {
+  if (!(Number(width) > 0)) return;
+  for (const [id, view] of agentBrowserViews) applyAgentTabZoom(id, view, width);
+}
+
 function layoutAgentStageViews() {
   // Docked in the Studio window — lay everything out inside the panel rect
   // the Studio renderer reported instead of filling the stage window.
   if (studioStageEmbedActive() && studioStageBounds) {
-    const b = studioStageBounds;
+    const shift = studioStageParkShift();
+    const b = shift ? { ...studioStageBounds, x: studioStageBounds.x + shift } : studioStageBounds;
     const chromeH = agentStageChromeH();
     const pageH = Math.max(0, b.height - chromeH);
-    try {
-      // The page view's radius cuts notches into its own top corners at the
-      // seam. Extending the chrome view well below the seam (hidden behind the
-      // page, which stacks on top) fills those notches with the chrome's light
-      // background instead of letting the studio frost bleed through.
-      studioStageChromeView?.setBounds({
+    const r = studioStageRadius;
+    // The page view's radius cuts notches into its own top corners at the
+    // seam. Extending the chrome view well below the seam (hidden behind the
+    // page, which stacks on top) fills those notches with the chrome's light
+    // background instead of letting the studio frost bleed through.
+    setDockedViewBounds(
+      studioStageChromeView,
+      {
         x: b.x,
         y: b.y,
         width: b.width,
@@ -4485,9 +4932,11 @@ function layoutAgentStageViews() {
         // the page (the chrome doc goes transparent outside the bars/menu).
         height: agentStageMenuOverlay
           ? b.height
-          : Math.min(chromeH + studioStageRadius * 2, b.height),
-      });
-    } catch (_) {}
+          : Math.min(chromeH + r * 2, b.height),
+      },
+      { radius: r },
+    );
+    fitAgentTabsToPane(b.width);
     for (const [id, view] of agentBrowserViews) {
       try {
         if (!agentBrowserViewsReady.has(id)) {
@@ -4495,9 +4944,13 @@ function layoutAgentStageViews() {
           continue;
         }
         if (id === agentStageActiveId) {
-          view.setBounds({ x: b.x, y: b.y + chromeH, width: b.width, height: pageH });
+          setDockedViewBounds(
+            view,
+            { x: b.x, y: b.y + chromeH, width: b.width, height: pageH },
+            { radius: r },
+          );
           if (!agentStageMenuOverlay) {
-            attachViewToWindow(studioWindow, view); // re-add = raise above chrome
+            raiseAgentStageView(studioWindow, view, `studio:page:${id}`);
           }
         } else {
           view.setBounds({ x: b.x, y: b.y + chromeH, width: 0, height: 0 });
@@ -4505,17 +4958,22 @@ function layoutAgentStageViews() {
       } catch (_) {}
     }
     if (agentStageMenuOverlay && studioStageChromeView) {
-      try {
-        attachViewToWindow(studioWindow, studioStageChromeView); // chrome on top
-      } catch (_) {}
+      raiseAgentStageView(studioWindow, studioStageChromeView, "studio:chrome");
     }
     return;
   }
   if (!agentStageWindow || agentStageWindow.isDestroyed()) return;
+  // The views land on this window when the Studio one closes, and it stays
+  // hidden. Its size has nothing to do with where they will reappear, so leave
+  // them exactly as the Studio left them: laying them out for a window nobody
+  // is looking at reflows every page into it and then back out again, and the
+  // second reflow lands after the page is on screen, as a jump.
+  if (!agentStageWindow.isVisible()) return;
   const [width, height] = agentStageWindow.getContentSize();
   const chromeH = agentStageChromeH();
   const toastPad = Math.max(0, Math.min(120, agentStageToastReserve || 0));
   const pageH = Math.max(0, height - chromeH - toastPad);
+  fitAgentTabsToPane(width);
   for (const [id, view] of agentBrowserViews) {
     try {
       if (!agentBrowserViewsReady.has(id)) {
@@ -4527,7 +4985,7 @@ function layoutAgentStageViews() {
       // dropdown is open so the menu isn't buried behind the browser.
       if (id === agentStageActiveId && !agentStageMenuOverlay) {
         view.setBounds({ x: 0, y: chromeH, width, height: pageH });
-        attachViewToWindow(agentStageWindow, view); // re-add = raise to top
+        raiseAgentStageView(agentStageWindow, view, `stage:page:${id}`);
       } else {
         // Keep attached for background loads, but park off-stage.
         view.setBounds({ x: 0, y: chromeH, width: 0, height: 0 });
@@ -4623,6 +5081,9 @@ function pushAgentStageState() {
       url = active.webContents.getURL() || "";
       title = active.webContents.getTitle() || "";
       if (ownedBrowserAct.isPlaceholderAgentUrl(url)) url = "";
+      // New-tab home (Google) still loads in the page view, but the omnibox
+      // stays empty so the user can type immediately.
+      else if (isAgentBrowserHomeUrl(url)) url = "";
     }
   } catch (_) {}
   if (
@@ -4792,12 +5253,49 @@ function wireAgentBrowserViewEvents(agentId, view) {
   wc.on("page-title-updated", bump);
   wc.on("did-navigate", bump);
   wc.on("did-navigate-in-page", bump);
+  if (!isArtifact) {
+    // Ahead of whatever this view was made to load: a tab opened straight onto
+    // a URL (omnibox, a link handed over from the app) never passes through the
+    // home-page loader that would otherwise set this up.
+    applyAgentTabEmulation(wc);
+    // A sign-in that fails in here fails quietly — the page catches its own
+    // error and the button simply doesn't respond, which from outside is
+    // indistinguishable from a click that never landed. Repeat what the page
+    // says about its auth libraries and stay out of the way of everything else
+    // a busy site logs.
+    wc.on("console-message", (...args) => {
+      const detail = args.find((a) => a && typeof a === "object" && typeof a.message === "string");
+      const text = detail
+        ? detail.message
+        : String(args.find((a) => typeof a === "string") || "");
+      if (!/gsi|fedcm|oauth|one ?tap|popup|accounts\.google|credential/i.test(text)) return;
+      console.log(`[agent-browser] page said: ${text.slice(0, 300)}`);
+    });
+    // Re-assert the two per-view settings a new document resets: our CDP
+    // emulation is dropped whenever something else (DevTools, a crashed
+    // renderer) takes over the target, and Electron scopes zoom per origin, so
+    // a new site starts back at 100% regardless of how wide the pane is.
+    // Artifact tabs are excluded — exported reports have their own dark theme
+    // and already fit the pane.
+    wc.on("did-navigate", () => {
+      applyAgentTabEmulation(wc);
+      try {
+        applyAgentTabZoom(agentId, view, view.getBounds?.().width);
+      } catch (_) {}
+    });
+  }
   wc.on("did-finish-load", () => {
     bump();
-    // The welcome document is ready to paint now. Only at this point attach
-    // the native page view and let the regular stage layout reveal it.
+    // The document is ready to paint now. Only at this point attach the
+    // native page view and let the regular stage layout reveal it.
     agentBrowserViewsReady.add(agentId);
     layoutAgentStageViews();
+    // New-tab home just painted — reclaim the caret for the omnibox before
+    // the page (e.g. Google) autofocuses its own search box.
+    if (agentStagePendingOmniboxFocusId === agentId) {
+      agentStagePendingOmniboxFocusId = null;
+      setTimeout(() => focusAgentStageOmnibox(), 0);
+    }
   });
   // Canva / Google / Apple login use window.open (often about:blank first).
   // NEVER load those into this tab — that blanks the site after sign-in.
@@ -4805,7 +5303,13 @@ function wireAgentBrowserViewEvents(agentId, view) {
   wc.setWindowOpenHandler((details) => {
     const u = String(details?.url || "");
     const disposition = String(details?.disposition || "");
-    if (u && !agentStageUrlAllowed(u)) return { action: "deny" };
+    if (u && !agentStageUrlAllowed(u)) {
+      // The one branch with no visible outcome: the page asked for a window,
+      // got null back and carries on as if the click never happened. Say so,
+      // or the next sign-in that quietly does nothing has nothing to go on.
+      console.log("[agent-browser] refused window.open for", u.slice(0, 200));
+      return { action: "deny" };
+    }
 
     const isBlank = !u || /^about:blank$/i.test(u);
     const wantsPopup =
@@ -4850,6 +5354,14 @@ function wireAgentBrowserViewEvents(agentId, view) {
     if (!agentStageUrlAllowed(url)) {
       event.preventDefault();
     }
+  });
+  // "Leave site? Changes you made may not be saved." is a native modal, and a
+  // native modal blocks the renderer — so the agent cannot read the page, let
+  // alone click the dialog it is trapped behind. Leaving is what was asked for
+  // in every case that reaches here: the agent only navigates away on purpose,
+  // and the user driving the tab clicked something to get here.
+  wc.on("will-prevent-unload", (event) => {
+    event.preventDefault();
   });
   try {
     if (app.userAgentFallback) wc.setUserAgent(app.userAgentFallback);
@@ -5045,10 +5557,10 @@ function ensureAgentBrowserWindow(agentId, { show = false, focus = true, label }
       },
     });
     try {
-      // Match the welcome page from the very first compositor frame. A
-      // different startup gray briefly read as a white horizontal strip below
-      // the favorites row while the local new-tab document was loading.
-      view.setBackgroundColor(incognito ? "#1e1e1e" : "#f3f2f0");
+      // Match the home page from the very first compositor frame, so the
+      // pre-paint fill never reads as a stray strip below the favorites row.
+      // Incognito included: page content is pinned light either way.
+      view.setBackgroundColor("#ffffff");
     } catch (_) {}
     // A fresh WebContentsView defaults to the window's top-left bounds.
     // Park it before attaching so its initial blank paint cannot flash over
@@ -5061,16 +5573,15 @@ function ensureAgentBrowserWindow(agentId, { show = false, focus = true, label }
     } catch (_) {}
     agentBrowserViews.set(id, view);
     agentBrowserMeta.set(id, {
-      url: "lykn://new-tab",
-      pageTitle: incognito ? "Incognito" : "New tab",
-      kind: "welcome",
+      url: AGENT_BROWSER_HOME_URL,
+      pageTitle: "Google",
+      kind: "browse",
       incognito,
     });
     wireAgentBrowserViewEvents(id, view);
-    // Branded empty-tab welcome until the agent navigates somewhere.
-    loadAgentBrowserWelcome(view.webContents, { incognito });
+    loadAgentBrowserHome(view.webContents);
   } else {
-    // Re-show welcome only for truly empty tabs — never clobber a report/artifact
+    // Re-show the home page only for truly empty tabs — never clobber a report/artifact
     // (those often load as data: URLs, which used to look like placeholders),
     // and never interrupt an in-flight navigation (Studio docking used to call
     // ensure again mid-load and wipe the artifact URL back to welcome).
@@ -5088,17 +5599,11 @@ function ensureAgentBrowserWindow(agentId, { show = false, focus = true, label }
       const loading = !!(wc && !wc.isDestroyed() && wc.isLoading?.());
       if (!isDeliverable && !loading) {
         const cur = wc && !wc.isDestroyed() ? wc.getURL() || "" : "";
-        // A loaded new-tab document is itself a placeholder URL, but it may
-        // now contain an active inline chat. Only load the welcome document
-        // over a truly blank internal surface — never reset its live DOM on
-        // every agent send / tab ensure.
-        const needsWelcome =
+        const needsHome =
           !cur ||
           /^about:blank$/i.test(cur) ||
           /^lykn:\/\/new-tab(?:[/?#]|$)/i.test(cur);
-        if (needsWelcome) {
-          loadAgentBrowserWelcome(wc, { incognito: isAgentIncognito(id) });
-        }
+        if (needsHome) loadAgentBrowserHome(wc);
       }
     } catch (_) {}
   }
@@ -5121,10 +5626,12 @@ function ensureAgentBrowserWindow(agentId, { show = false, focus = true, label }
 
 function destroyAgentBrowserWindow(agentId) {
   const id = String(agentId || "").trim();
-  // Closing an agent tab takes its deliverable subtabs with it.
-  if (id && !isAgentArtifactTabId(id)) {
+  // Closing an agent tab takes every tab it owns with it — deliverable
+  // subtabs and browse sub-tabs alike. Ownership is the meta's ownerAgentId,
+  // whatever kind of tab it is.
+  if (id && !isAgentArtifactTabId(id) && !agentTabIds.isSubTabId(id)) {
     for (const [tabId, meta] of [...agentBrowserMeta.entries()]) {
-      if (tabId !== id && isAgentArtifactTabId(tabId) && meta?.ownerAgentId === id) {
+      if (tabId !== id && meta?.ownerAgentId === id) {
         destroyAgentBrowserWindow(tabId);
       }
     }
@@ -5136,6 +5643,7 @@ function destroyAgentBrowserWindow(agentId) {
   if (!view) return;
   agentBrowserViews.delete(id);
   agentBrowserViewsReady.delete(id);
+  agentTabZoomLogged.delete(id);
   detachViewFromWindow(agentStageWindow, view);
   detachViewFromWindow(studioWindow, view);
   try {
@@ -5155,9 +5663,14 @@ function destroyAgentBrowserWindow(agentId) {
     agentStageWindow.hide();
   } else {
     // Closing the last docked tab leaves the studio browser open — keep a
-    // fresh new-tab in place like a real browser window would.
-    if (!agentBrowserViews.size && studioStageEmbedActive()) {
-      openFreshStudioBrowserTab();
+    // fresh new-tab in place like a real browser window would. Closing the
+    // window itself (not a tab, not minimize) skips that so reopen is empty.
+    if (
+      !studioBrowserDisposing &&
+      !agentBrowserViews.size &&
+      studioStageEmbedActive()
+    ) {
+      openFreshStudioBrowserTab({ focusOmnibox: true });
     }
     layoutAgentStageViews();
     pushAgentStageState();
@@ -5283,7 +5796,7 @@ async function toggleAgentIncognito(agentId) {
     },
   });
   try {
-    newView.setBackgroundColor(next ? "#1e1e1e" : "#ececeb");
+    newView.setBackgroundColor("#ffffff");
   } catch (_) {}
   if (studioStageEmbedActive()) {
     try {
@@ -5302,13 +5815,14 @@ async function toggleAgentIncognito(agentId) {
   const wc = newView.webContents;
   // Start the intended navigation BEFORE waiting, so about:blank can't win.
   if (wc && resumeUrl && /^https?:\/\//i.test(resumeUrl)) {
+    applyAgentTabEmulation(wc);
     try {
       void wc.loadURL(resumeUrl);
     } catch (_) {
-      loadAgentBrowserWelcome(wc, { incognito: next });
+      loadAgentBrowserHome(wc);
     }
   } else {
-    loadAgentBrowserWelcome(wc, { incognito: next });
+    loadAgentBrowserHome(wc);
   }
   await waitForWebContentsLoad(wc, 4000);
 
@@ -5317,11 +5831,9 @@ async function toggleAgentIncognito(agentId) {
   agentBrowserViews.set(id, newView);
   agentBrowserMeta.set(id, {
     ...prevMeta,
-    url: resumeUrl || "lykn://new-tab",
-    pageTitle:
-      prevMeta.pageTitle ||
-      (resumeUrl ? "" : next ? "Incognito" : "New tab"),
-    kind: resumeUrl ? prevMeta.kind || "browse" : "welcome",
+    url: resumeUrl || AGENT_BROWSER_HOME_URL,
+    pageTitle: prevMeta.pageTitle || (resumeUrl ? "" : "Google"),
+    kind: prevMeta.kind === "artifact" && resumeUrl ? "artifact" : "browse",
     incognito: next,
   });
   wireAgentBrowserViewEvents(id, newView);
@@ -5445,6 +5957,12 @@ function openAgentStageArtifact({
   reuseAgentTab = true,
   show = false,
   focus = false,
+  // The user asked for this deliverable right now (clicked a step, ran an
+  // explicit "open in browser" action) — front it regardless of which tab is
+  // visible. Without it, a deliverable arriving from a finished background
+  // task only fronts when the user is already looking at that agent's family;
+  // otherwise the subtab is created quietly and waits in the strip.
+  force = false,
 } = {}) {
   void reuseAgentTab; // deliverables always live in their own subtab now
   let loadUrl = String(url || "").trim();
@@ -5550,18 +6068,22 @@ function openAgentStageArtifact({
     pageTitle: label,
   });
 
-  // Always select this agent's tab when showing a deliverable — otherwise the
-  // HTML can load into a parked 0×0 BrowserView while the welcome tab stays visible.
-  if (show) {
+  // Front the new subtab only when the user's attention is already on this
+  // agent's family (or they explicitly asked — `force`, or nothing is on
+  // stage at all). A background task finishing must not switch the visible
+  // tab out from under whatever the user is doing; its deliverable loads
+  // into the parked subtab and waits in the strip.
+  const front = !!show && (force || agentTabFamilyActive(owner || id) || !agentStageActiveId);
+  if (front) {
     agentStageActiveId = id;
   }
 
   const wrap = ensureAgentBrowserWindow(id, {
-    show: !!show,
-    focus: !!focus,
+    show: front,
+    focus: front && !!focus,
     label: label || agentBrowserLabels.get(id) || "Agent",
   });
-  if (show) {
+  if (front) {
     try {
       showAgentBrowserWindow(id, { focus: focus !== false, label });
     } catch (_) {}
@@ -5632,10 +6154,10 @@ function openAgentStageArtifact({
     paintHtmlFallback();
   });
 
-  agentStageActiveId = id;
+  if (front) agentStageActiveId = id;
   layoutAgentStageViews();
   pushAgentStageState();
-  return { ok: true, id, url: chromeUrl, title: label };
+  return { ok: true, id, url: chromeUrl, title: label, fronted: front };
 }
 
 /**
@@ -6093,9 +6615,102 @@ async function planOwnedBrowserNext(ctx) {
   }
 }
 
+let agentRuntimeLoadPromise = null;
+
+function whenAgentRuntimeLoaded() {
+  initAgentRuntime();
+  return agentRuntimeLoadPromise || Promise.resolve();
+}
+
 function initAgentRuntime() {
   if (agentRuntime) return agentRuntime;
   loadBrowsingHabitsContext();
+  // Browser sub-tabs for one agent — the capability behind the modular
+  // agent's open_tab / close_tab / switch_tab actions. Each sub-tab is one
+  // more entry in agentBrowserViews whose id names its owner
+  // (agentTabIds.cjs), sharing the owner's session partition so a sign-in on
+  // tab one holds on tab two. Visual selection only follows the agent when
+  // the user is already looking at this agent's tab family — an agent working
+  // in the background must not steal the stage from whatever the user is
+  // watching.
+  const agentTabsCapability = {
+    open(ownerId, url) {
+      const owner = String(ownerId || "").trim();
+      if (!owner || !agentBrowserViews.has(owner)) return { ok: false, error: "no_owner_tab" };
+      let n = 1;
+      while (agentBrowserViews.has(agentTabIds.subTabId(owner, n))) n += 1;
+      const id = agentTabIds.subTabId(owner, n);
+      // Partition derivation reads the OWNER's incognito flag (see
+      // agentBrowserPartition); mirroring it onto the sub-tab keeps the meta
+      // and any per-id checks honest too.
+      if (isAgentIncognito(owner)) agentIncognito.set(id, true);
+      const label = `${agentBrowserLabels.get(owner) || "Agent"} · tab ${n + 1}`;
+      const wrap = ensureAgentBrowserWindow(id, { show: false, focus: false, label });
+      if (!wrap) return { ok: false, error: "tab_create_failed" };
+      const meta = agentBrowserMeta.get(id) || {};
+      agentBrowserMeta.set(id, { ...meta, ownerAgentId: owner });
+      const target = String(url || "").trim();
+      if (target && /^https?:\/\//i.test(target)) {
+        try {
+          wrap.webContents.loadURL(target);
+        } catch (_) {}
+      }
+      if (agentTabFamilyActive(owner)) agentStageActiveId = id;
+      layoutAgentStageViews();
+      pushAgentStageState();
+      return { ok: true, tabId: id, url: target };
+    },
+    close(ownerId, tabId) {
+      const owner = String(ownerId || "").trim();
+      const id = String(tabId || "").trim();
+      // Only a sub-tab the agent owns may be closed; the primary tab is the
+      // task's anchor and the user's window into it.
+      if (!id || agentTabIds.subTabOwner(id) !== owner) {
+        return { ok: false, error: id === owner ? "cannot_close_primary_tab" : "not_your_tab" };
+      }
+      if (!agentBrowserViews.has(id)) return { ok: false, error: "unknown_tab" };
+      destroyAgentBrowserWindow(id);
+      if (agentStageActiveId === id) agentStageActiveId = owner;
+      layoutAgentStageViews();
+      pushAgentStageState();
+      return { ok: true, tabId: id };
+    },
+    activate(ownerId, tabId) {
+      const owner = String(ownerId || "").trim();
+      const id = String(tabId || "").trim();
+      const inFamily = id === owner || agentTabIds.subTabOwner(id) === owner;
+      if (!inFamily || !agentBrowserViews.has(id)) return { ok: false, error: "unknown_tab" };
+      if (agentTabFamilyActive(owner)) {
+        agentStageActiveId = id;
+        layoutAgentStageViews();
+        pushAgentStageState();
+      }
+      return { ok: true, tabId: id };
+    },
+    list(ownerId) {
+      const owner = String(ownerId || "").trim();
+      const rows = [];
+      for (const [id, view] of agentBrowserViews) {
+        const mine = id === owner || agentTabIds.subTabOwner(id) === owner;
+        if (!mine) continue;
+        // Deliverable viewers are not pages the agent drives.
+        if ((agentBrowserMeta.get(id) || {}).kind === "artifact") continue;
+        const wc = view?.webContents;
+        rows.push({
+          id,
+          url: wc && !wc.isDestroyed() ? wc.getURL() || "" : "",
+          title: wc && !wc.isDestroyed() ? wc.getTitle() || "" : "",
+        });
+      }
+      return rows;
+    },
+    getWebContents(tabId) {
+      const view = agentBrowserViews.get(String(tabId || "").trim());
+      const wc = view?.webContents;
+      return wc && !wc.isDestroyed() ? wc : null;
+    },
+  };
+
   agentRuntime = createAgentRuntime({
     userDataPath: app.getPath("userData"),
     apiBase: API_BASE,
@@ -6117,8 +6732,11 @@ function initAgentRuntime() {
     notifyAgentFinished,
     getBrowsingContext,
     getActiveBrowseAgentId: () => resolveAgentBrowseTargetId() || agentStageActiveId || null,
+    agentTabs: agentTabsCapability,
   });
-  void agentRuntime.load();
+  agentRuntimeLoadPromise = Promise.resolve(agentRuntime.load()).catch((err) => {
+    console.warn("[agent-runtime] load failed:", err?.message || err);
+  });
   return agentRuntime;
 }
 
@@ -11128,6 +11746,7 @@ function registerOverlayIpc() {
           focus: true,
           label: res.agent?.title || "New agent",
         });
+        requestOmniboxFocusForTab(res.agentId);
       } catch (_) {}
     }
     return res;
@@ -11341,6 +11960,11 @@ function registerOverlayIpc() {
     if (!id) return { ok: false, error: "missing_id" };
     if (!agentBrowserViews.has(id)) return { ok: false, error: "not_found" };
 
+    // Switching away cancels a pending new-tab omnibox focus.
+    if (agentStagePendingOmniboxFocusId && agentStagePendingOmniboxFocusId !== id) {
+      agentStagePendingOmniboxFocusId = null;
+    }
+
     // Correlate stage tab → Glass agent chat. Legacy art-* tabs use ownerAgentId;
     // one-tab-per-agent reuses the agent id even when kind is "artifact".
     const meta = agentBrowserMeta.get(id) || {};
@@ -11370,20 +11994,21 @@ function registerOverlayIpc() {
     if (!id) return { ok: false, error: "missing_id" };
     // Capture the tab for the rail's History section before teardown.
     const historySnap = snapshotAgentBrowserHistory(id);
-    // The tab IS the agent: closing it retires the agent entirely (aborts
-    // the run, removes it from the agent list, tears down its browser view).
-    // Tabs with no agent behind them — artifact previews, manual new-tab
-    // pages, and the pinned Main agent (closeAgent refuses to delete it) —
-    // fall back to just closing the browser surface like before.
+    // The PRIMARY tab is the agent: closing it retires the agent entirely
+    // (aborts the run, removes it from the agent list, tears down its browser
+    // view). Tabs with no agent behind them — artifact previews, agent-owned
+    // browse sub-tabs, manual new-tab pages, and the pinned Main agent
+    // (closeAgent refuses to delete it) — just close the browser surface.
+    const surfaceOnly = isAgentArtifactTabId(id) || agentTabIds.isSubTabId(id);
     let retired = null;
-    if (!isAgentArtifactTabId(id)) {
+    if (!surfaceOnly) {
       try {
         retired = runtime().closeAgent?.(id);
       } catch (_) {}
     }
     if (!retired?.ok) {
       destroyAgentBrowserWindow(id);
-      if (!isAgentArtifactTabId(id)) {
+      if (!surfaceOnly) {
         try {
           runtime().clearBrowserSurface?.(id);
         } catch (_) {}
@@ -11416,6 +12041,7 @@ function registerOverlayIpc() {
       focus: true,
       label: res.agent?.title || "New agent",
     });
+    requestOmniboxFocusForTab(res.agentId);
     return res;
   });
   ipcMain.handle("lykn:agent-stage-toggle-incognito", async () => {
@@ -12045,6 +12671,23 @@ function registerOverlayIpc() {
       console.warn("[studio-browser] embed failed:", err?.message || err);
     }
   });
+  // Sent as the Browser window starts opening, before it can report bounds —
+  // load the chrome and the first tab while the frame animates.
+  ipcMain.on("lykn:studio-browser-warm", () => {
+    void warmStudioBrowser().catch((err) => {
+      console.warn("[studio-browser] warm failed:", err?.message || err);
+    });
+  });
+  // Red traffic light on the Studio Browser window — tear the session down.
+  // Yellow minimize only parks the views via `studio-browser-set { open:false }`.
+  ipcMain.handle("lykn:studio-browser-close", async () => {
+    try {
+      return closeStudioBrowserSession();
+    } catch (err) {
+      console.warn("[studio-browser] close failed:", err?.message || err);
+      return { ok: false, error: err?.message || "close_failed" };
+    }
+  });
   // Studio artifact "Open" → open the URL in the Studio's own browser
   // (never the OS browser) as a fresh AGENT tab, so a new agent lands in
   // the rail and the AI can act on the page. The renderer switches the
@@ -12147,6 +12790,8 @@ function registerOverlayIpc() {
       kind,
       show: docked,
       focus: true,
+      // The user clicked "Open" — fronting is the whole point here.
+      force: true,
     });
     notifyStudioShowBrowser();
     return opened;
@@ -13563,6 +14208,61 @@ function registerOverlayIpc() {
   });
 }
 
+/**
+ * Write a shareable diagnostics report next to wherever the user asks for it.
+ *
+ * Every browser-agent run already writes a detailed JSONL trace under
+ * userData/browser-agent-logs/, and until now there was no way to get anything
+ * out of it: nothing in the app referenced the folder, and the bug-report form
+ * could not attach it. So the most common support question about the agent —
+ * "which runtime did this actually use, and where did it stop?" — had no answer
+ * that did not involve talking someone through Finder.
+ *
+ * What gets written is a summary, never a trace. buildDiagnosticsReport reads
+ * the traces and emits counts; the traces themselves stay on the machine. That
+ * keeps the user's own task text and page content private, and keeps the plans,
+ * skills and models out of a file that is, by design, about to be emailed to
+ * someone.
+ */
+async function saveDiagnosticsReport() {
+  let report = "";
+  try {
+    report = buildDiagnosticsReport({
+      userDataPath: app.getPath("userData"),
+      env: {
+        appVersion: app.getVersion(),
+        platform: process.platform,
+        arch: process.arch,
+        electron: process.versions.electron,
+        packaged: app.isPackaged,
+      },
+    });
+  } catch (e) {
+    dialog.showErrorBox(
+      "Could not build diagnostics",
+      String(e?.message || e).slice(0, 500),
+    );
+    return;
+  }
+
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  const { canceled, filePath } = await dialog.showSaveDialog({
+    title: "Save LYKN Diagnostics",
+    defaultPath: path.join(app.getPath("downloads"), `lykn-diagnostics-${stamp}.txt`),
+    filters: [{ name: "Text", extensions: ["txt"] }],
+  });
+  if (canceled || !filePath) return;
+
+  try {
+    await fs.writeFile(filePath, report, "utf8");
+    // Reveal rather than open: the point is to attach it to something, and a
+    // revealed file is one drag away from an email.
+    shell.showItemInFolder(filePath);
+  } catch (e) {
+    dialog.showErrorBox("Could not save diagnostics", String(e?.message || e).slice(0, 500));
+  }
+}
+
 function buildAppMenu() {
   // macOS: standard app/edit/window menu. Windows: File + Edit so Alt shortcuts
   // and copy/paste still work with autoHideMenuBar.
@@ -13573,6 +14273,19 @@ function buildAppMenu() {
     enabled: app.isPackaged,
     click: (item) => setLoginItemEnabled(item.checked),
   };
+  // TODO(devtools): we want a developer mode here — a `toggleDevTools` role,
+  // gated so it is unreachable on a normal install (an env var we set, or an
+  // internal-account check), plus a raw trace viewer for browser-agent runs.
+  //
+  // It is deliberately absent for now rather than half-built. DevTools on any
+  // LYKN window exposes the whole product: the agent's prompt corpus and skill
+  // files, the IPC surface, the snapshot format the agent builds from a page,
+  // and every request to our own API. Shipping that behind nothing but an
+  // obscure shortcut hands the architecture to anyone who goes looking. When it
+  // is built, the gate is the feature — not the toggle.
+  //
+  // "Save Diagnostics…" below is the supported path in the meantime: it answers
+  // support questions from the same data without exposing any of it.
   const viewMenu = {
     label: "View",
     submenu: [
@@ -13586,10 +14299,29 @@ function buildAppMenu() {
       { role: "togglefullscreen" },
     ],
   };
+  // Diagnostics is an internal tool and is not part of the shipped product.
+  //
+  // Even though the report it writes is counts-only, the menu item itself
+  // advertises that the agent has more than one runtime, that runs have rounds,
+  // recoveries and grounding — the shape of the architecture, handed to anyone
+  // who opens the Help menu. So it exists in dev builds, and in a packaged build
+  // only when someone deliberately launches with LYKN_DIAGNOSTICS=1, which is
+  // how we would walk an internal tester through producing one.
+  //
+  // If this ever needs to reach real users for support, gate it on the account
+  // (the internal-email list the server already keeps) rather than by making it
+  // visible to everybody.
+  const diagnosticsEnabled = !app.isPackaged || process.env.LYKN_DIAGNOSTICS === "1";
   const helpMenu = {
     role: "help",
     submenu: [
       { label: "Set Up LYKN / Permissions…", click: () => createOnboardingWindow() },
+      ...(diagnosticsEnabled
+        ? [
+            { type: "separator" },
+            { label: "Save Diagnostics…", click: () => saveDiagnosticsReport() },
+          ]
+        : []),
     ],
   };
 
@@ -15080,6 +15812,11 @@ function initAutoUpdate() {
 
   claimLyknProtocol();
   startAuthHandoffServer();
+  // Start the agent list load before anyone can open Browser, so a click
+  // doesn't race createAgent against a later restore of leftover workers.
+  try {
+    initAgentRuntime();
+  } catch (_) {}
 
   installPermissionHandler();
   setupSystemAudioCapture();

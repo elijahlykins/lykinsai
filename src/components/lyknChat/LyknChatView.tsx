@@ -3,10 +3,9 @@ import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
   Check, ChevronRight, Copy, Download, FileText,
-  GripVertical, Link2, MoreHorizontal, Music, Pencil, Play, Plus, RefreshCw,
+  MoreHorizontal, Music, Pencil, Play, Plus, RefreshCw,
   Save, Share2, ThumbsDown, ThumbsUp, Trash2, X as XIcon,
 } from "lucide-react";
-import { GridIcon } from "@/components/ui/GridIcon";
 import lyknIconNeutral from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-NEUTRAL-master.png";
 import lyknIconBlue from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-BLUE-master.png";
 import ReactMarkdown from "react-markdown";
@@ -275,17 +274,6 @@ type PromptMessage = {
   aiResponseStats?: import("@/lib/synthesis/loadInUpdates").LoadInUpdatesStats;
 };
 
-type CanvasFileBlock = {
-  id: string;
-  type: string;
-  name: string;
-  url: string;
-  thumbUrl: string;
-  videoId?: string;
-  content?: string;
-  isAi?: boolean;
-};
-
 export interface LyknChatViewProps {
   chatMessages: PromptMessage[];
   isChatLoading: boolean;
@@ -300,13 +288,11 @@ export interface LyknChatViewProps {
   typedWelcome: string;
   /** Optional line under the centered welcome heading (empty-state only). */
   welcomeSubtitle?: React.ReactNode;
-  isMobileGrid: boolean;
   isMobilePhone?: boolean;
 
   isDictating: boolean;
   isTranscribing: boolean;
 
-  canvasFileBlocks: CanvasFileBlock[];
   focusedChatAttachments: FocusedChatAttachment[];
 
   onPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
@@ -334,6 +320,7 @@ export interface LyknChatViewProps {
     storagePath?: string;
   }) => void;
   onSaveLink: (link: string) => void;
+  addChatResponseToGrid?: (text: string) => void;
 
   expandedAiMsgIds: Set<string>;
   toggleAiExpanded: (msgId: string) => void;
@@ -343,17 +330,6 @@ export interface LyknChatViewProps {
 
   copiedMsgId: string | null;
   onCopyMessage: (msgId: string, text: string) => void;
-
-  addChatResponseToGrid: (text: string) => void;
-
-  /**
-   * When true the canvas surface is unmounted (chat-only mode). The
-   * "Add to grid" / "Add this section to grid" buttons and the
-   * canvas-files collage panel are hidden because they'd be no-ops the
-   * user can't see. Passed through from `LyknChat`'s `GRID_DISABLED`
-   * feature flag.
-   */
-  gridDisabled?: boolean;
 
   renderFocusedAttachmentPreview: (att: FocusedChatAttachment) => React.ReactNode;
 
@@ -486,7 +462,6 @@ type MessageItemProps = {
   reaction: "like" | "dislike" | null | undefined;
   isCopied: boolean;
   isMobilePhone: boolean;
-  gridDisabled: boolean;
   savedMediaUrls: Set<string>;
   savedYouTubeIds: Set<string>;
   selectedChunks: Set<string>;
@@ -513,7 +488,7 @@ type MessageItemProps = {
     storagePath?: string;
   }) => void;
   onSaveLink: (link: string) => void;
-  addChatResponseToGrid: (text: string) => void;
+  addChatResponseToGrid?: (text: string) => void;
   handleChunkClick: (e: React.MouseEvent, chunkKey: string, chunkText: string) => void;
   getSelectedText: (fallbackKey: string, fallbackText: string) => string;
   registerChunks: (msgId: string, entries: Array<{ key: string; text: string }>) => void;
@@ -1209,7 +1184,7 @@ const MessageItem = React.memo(function MessageItem({
   hideMessageSources = false,
   isAiExpanded, isUserPromptExpanded,
   reaction, isCopied,
-  isMobilePhone, gridDisabled,
+  isMobilePhone,
   savedMediaUrls, savedYouTubeIds, selectedChunks,
   buildChatMarkdownComponents,
   toggleAiExpanded, toggleUserPromptExpanded, getCollapsedPreview,
@@ -1926,10 +1901,10 @@ const MessageItem = React.memo(function MessageItem({
                 {!inlineThinkingStatus && (
                   <div className="px-3 pb-2 pt-0.5">
                     <ResponseActionsMenu
-                      canAddToGrid={!isMobilePhone && !gridDisabled}
+                      canAddToGrid={!!addChatResponseToGrid && !isMobilePhone}
                       isCopied={isCopied}
                       reaction={reaction}
-                      onAddToGrid={() => addChatResponseToGrid(msg.aiResponse || "")}
+                      onAddToGrid={() => addChatResponseToGrid?.(msg.aiResponse || "")}
                       onShare={() => {
                         const text = msg.aiResponse || "";
                         if (navigator.share) navigator.share({ text }).catch(() => {});
@@ -2164,11 +2139,9 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   onSend,
   typedWelcome,
   welcomeSubtitle,
-  isMobileGrid,
   isMobilePhone = false,
   isDictating,
   isTranscribing,
-  canvasFileBlocks,
   focusedChatAttachments,
   onPaste,
   onResizeInput,
@@ -2182,6 +2155,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   onSaveAiImage,
   onOpenGeneratedImage,
   onSaveLink,
+  addChatResponseToGrid,
   expandedAiMsgIds,
   toggleAiExpanded,
   expandedUserPromptIds,
@@ -2189,8 +2163,6 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   getCollapsedPreview,
   copiedMsgId,
   onCopyMessage,
-  addChatResponseToGrid,
-  gridDisabled = false,
   renderFocusedAttachmentPreview,
   onDragOver,
   onDrop,
@@ -2423,72 +2395,6 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
 
   return (
     <>
-      {/* Left collage panel — canvas files. Hidden in chat-only mode
-          (`gridDisabled`) because the source surface isn't mounted. */}
-      {canvasFileBlocks.length > 0 && !isMobileGrid && !gridDisabled && (
-        <div className="fixed bottom-0 z-[66] w-[13.75rem] overflow-y-auto scrollbar-hide p-3 space-y-2 bg-transparent border-r border-black/5 dark:border-white/5 transition-all duration-300" style={{ top: "var(--header-height-sm, 4.2rem)", left: "var(--sidebar-offset, 0px)" }}>
-          <p className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/40 dark:text-white/40 px-1 mb-1">Grid Files</p>
-          <div className="flex flex-col gap-2">
-            {canvasFileBlocks.map((item) => (
-              <div
-                key={item.id}
-                draggable
-                onDragStart={(e) => {
-                  e.dataTransfer.effectAllowed = "copy";
-                  e.dataTransfer.setData("application/x-grid-file", JSON.stringify(item));
-                  e.dataTransfer.setData("text/plain", item.url);
-                }}
-                className="relative rounded-xl overflow-hidden bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 cursor-grab active:cursor-grabbing hover:ring-2 hover:ring-blue-400/50 transition-all group"
-                title={`Drag to chat: ${item.name}`}
-              >
-                {item.type === "youtube" && item.thumbUrl ? (
-                  <div className="aspect-video relative">
-                    <img src={item.thumbUrl} alt={item.name} className="w-full h-full object-cover" draggable={false} />
-                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                      <div className="w-7 h-5 bg-red-600 rounded flex items-center justify-center"><Play className="w-2.5 h-2.5 text-white ml-px" fill="white" /></div>
-                    </div>
-                  </div>
-                ) : item.type === "image" && item.thumbUrl ? (
-                  <div className="aspect-square">
-                    <img src={item.thumbUrl} alt={item.name} className="w-full h-full object-cover" draggable={false} />
-                  </div>
-                ) : item.type === "video" ? (
-                  <div className="aspect-video bg-black flex items-center justify-center">
-                    <Play className="w-5 h-5 text-white/60" />
-                  </div>
-                ) : item.type === "audio" ? (
-                  <div className="aspect-square flex items-center justify-center bg-white/30 dark:bg-white/10">
-                    <Music className="w-5 h-5 text-black/40 dark:text-white/40" />
-                  </div>
-                ) : item.type === "pdf" ? (
-                  <div className="aspect-square flex items-center justify-center bg-white/30 dark:bg-white/10">
-                    <FileText className="w-5 h-5 text-black/40 dark:text-white/40" />
-                  </div>
-                ) : item.type === "note" ? (
-                  <>
-                    <div className="glass-text-card relative rounded-lg p-2.5 min-h-[3rem]">
-                      {item.isAi && <div className="pointer-events-none absolute inset-0 rounded-lg" style={{ background: "rgba(0,0,0,0.035)" }} />}
-                      <p className="relative text-[0.6875rem] leading-relaxed text-black/80 dark:text-white/80 whitespace-pre-wrap break-words" style={{ display: "-webkit-box", WebkitLineClamp: 8, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.content || ""}</p>
-                    </div>
-                    <div className="px-1.5 py-1">
-                      <span className="text-[9px] text-black/50 dark:text-white/50 leading-tight line-clamp-1 break-all">{item.isAi ? "AI Response" : item.name}</span>
-                    </div>
-                  </>
-                ) : (
-                  <div className="aspect-square flex items-center justify-center bg-white/30 dark:bg-white/10">
-                    <Link2 className="w-5 h-5 text-black/40 dark:text-white/40" />
-                  </div>
-                )}
-                {item.type !== "note" && (
-                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-1.5 pb-1 pt-3">
-                    <span className="text-[9px] text-white leading-tight line-clamp-2 break-all">{item.name}</span>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {chatMessages.length === 0 && !pinComposerToBottom ? (
         /* Empty state: identical to the canvas first-render welcome */
@@ -2496,7 +2402,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
           // overflow-y-auto + my-auto on the column (instead of items-center)
           // so when the docket/attachments make the empty state taller than
           // the viewport it scrolls instead of clipping both ends unreachably.
-          className={`lykn-chat-empty-state ${compactPreview ? "lykn-chat-focused-chat-preview absolute inset-0 z-[65]" : "fixed top-0 right-0 z-[65]"} flex justify-center overflow-y-auto px-4 py-4 transition-all duration-300 ${canvasFileBlocks.length > 0 && !isMobileGrid && !compactPreview ? "pl-[232px]" : ""}`}
+          className={`lykn-chat-empty-state ${compactPreview ? "lykn-chat-focused-chat-preview absolute inset-0 z-[65]" : "fixed top-0 right-0 z-[65]"} flex justify-center overflow-y-auto px-4 py-4 transition-all duration-300`}
           style={
             compactPreview
               ? undefined
@@ -2575,11 +2481,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
             top: isMobilePhone ? "2.75rem" : "var(--header-height-sm, 4.2rem)",
             bottom: "var(--mobile-tabbar-clear, 0px)",
             right: 0,
-            left: isMobilePhone
-              ? 0
-              : canvasFileBlocks.length > 0 && !isMobileGrid
-                ? `calc(220px + var(--sidebar-offset, 0px))`
-                : "var(--sidebar-offset, 0px)",
+            left: isMobilePhone ? 0 : "var(--sidebar-offset, 0px)",
           }}
           onDragOver={onDragOver}
           onDrop={onDrop}
@@ -2619,7 +2521,6 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                     reaction={chatReactions[msg.id]}
                     isCopied={copiedMsgId === msg.id}
                     isMobilePhone={isMobilePhone}
-                    gridDisabled={gridDisabled}
                     savedMediaUrls={savedMediaUrls}
                     savedYouTubeIds={savedYouTubeIds}
                     selectedChunks={selectedChunks}

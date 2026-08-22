@@ -103,7 +103,9 @@ function createFakeBrowser(pages, startUrl = "about:blank") {
       return { ok: true, url: state.url };
     },
     async getDOMCatalog() {
-      return { ok: true, url: state.url, title: page().title, items: page().elements.map((e) => ({ ...e })) };
+      // The real collector mints a uid per element in page context; these
+      // fixtures predate it, so number them in catalog order.
+      return { ok: true, url: state.url, title: page().title, items: page().elements.map((e, i) => ({ uid: i + 1, ...e })) };
     },
     async getPageContext() {
       return { ok: true, url: state.url, title: page().title, text: page().text };
@@ -638,7 +640,34 @@ test("email: draft-only ask fills everything but stops before Send", async () =>
   assert.ok(typeResults.every((h) => h.result === "success"));
 });
 
-test("email: explicit 'send' in the user's ask pre-approves the Send click", async () => {
+test("email: a send the user asked for still confirms before it goes out", async () => {
+  const fake = makeGmailFake();
+  const model = createScriptedModel({
+    plan: { plan: ["Open compose", "Fill the draft", "Send it"], skills: ["communication"] },
+    decisions: gmailComposeDecisions(),
+  });
+  const controller = createBrowserController({ webContents: fake.webContents, actuator: fake.actuator });
+  const result = await runBrowserAgentTask({
+    // The wording asks for a send in as many words. It still does not
+    // authorize one: the user has not seen what was written yet, and the text
+    // reaching this loop is not reliably the user speaking — an instruction
+    // line, or an ask left over from an earlier turn, reads identically. That
+    // is not a hypothetical: a stale "Send a Gmail email to …" folded into a
+    // bare "write an email to elijah@lykn.io" sent a message he never saw.
+    goal:
+      "Send Sarah an email telling her the meeting moved.\n\nEmail task context:\n- Fill recipient, subject, and body completely.",
+    userAsk: "Send Sarah an email telling her the meeting moved",
+    controller,
+    model,
+    maxRounds: 12,
+    userDataPath: path.join(os.tmpdir(), "lykn-browser-agent-test"),
+  });
+  assert.equal(result.status, "waiting_for_user", `expected a confirmation pause, got ${result.status}: ${result.answer}`);
+  assert.equal(result.needsApproval, true);
+  assert.equal(fake.sendClicks, 0, "nothing may be delivered before the user says yes");
+});
+
+test("email: a send the user has just approved goes out without asking twice", async () => {
   const fake = makeGmailFake();
   const model = createScriptedModel({
     plan: { plan: ["Open compose", "Fill the draft", "Send it"], skills: ["communication"] },
@@ -648,7 +677,10 @@ test("email: explicit 'send' in the user's ask pre-approves the Send click", asy
   const result = await runBrowserAgentTask({
     goal:
       "Send Sarah an email telling her the meeting moved.\n\nEmail task context:\n- Fill recipient, subject, and body completely.",
-    userAsk: "Send Sarah an email telling her the meeting moved",
+    // The caller recognised this turn as the user approving the send it just
+    // prepared, which is the only thing that authorizes the committing click.
+    userAsk: "yes, send it",
+    sendPolicy: "approved",
     controller,
     model,
     maxRounds: 12,
@@ -657,6 +689,16 @@ test("email: explicit 'send' in the user's ask pre-approves the Send click", asy
   assert.equal(result.status, "completed", `expected completion, got ${result.status}: ${result.answer}`);
   assert.equal(fake.sendClicks, 1, "Send clicked exactly once");
   assert.match(result.answer, /sent/i);
+});
+
+test("email: an approval reply cannot authorize spending or deletion", async () => {
+  // "approved" releases a delivery and nothing else — money and destruction
+  // always take their own interactive yes.
+  const executor = require("./runtime/executor.cjs");
+  const snapshot = { byRef: new Map([["e1", { label: "Place your order" }]]) };
+  const buy = { action: { type: "click", target: "e1" }, expectedOutcome: "the order is placed" };
+  assert.equal(executor.classifyActionRisk(buy, snapshot), "consequential");
+  assert.equal(executor.goalAuthorizesAction("yes, send it", buy, snapshot), false);
 });
 
 test("email: sendPolicy 'ask' pauses for review even when the ask says send", async () => {
@@ -748,15 +790,111 @@ test("context router: progressive skill loading", () => {
   );
   // Irrelevant skills stay out of context.
   assert.ok(!contextRouter.routeSkills("Send Sarah an email").includes("shopping"));
-  const modules = contextRouter.routeBrowserModules({ lastActionType: "type", recovering: true });
-  assert.ok(modules.includes("forms") && modules.includes("recovery"));
-  assert.ok(!modules.includes("downloads"));
-  // Editing rules load for revision-style goals and while writing.
-  assert.ok(modules.includes("editing"), "editing routed while typing");
+});
+
+// --- unit: the operating rules are never routed away -----------------------------
+//
+// Browser and safety rules used to be selected per round by a heuristic. It
+// routed the navigation rules out on every round after the first click — so
+// the agent kept "never substitute a different product" and lost every rule
+// about when moving on is correct — and it could not reach the download rules
+// under any combination of inputs at all. They are one file each now, always
+// loaded, and this test exists to keep them that way.
+
+test("context router: every operating rule reaches every decision", () => {
+  const task = { goal: "anything at all", skills: [] };
+  const system = contextRouter.buildDecisionSystem({ task });
+  for (const heading of [
+    "# Observation",
+    "# Navigation",
+    "## Leaving the site you are on",
+    "# Interaction",
+    "# Forms",
+    "# Editing existing text",
+    "# Builders and visual editors",
+    "# Tabs",
+    "# Downloads",
+    "# Recovery",
+    "# Permissions",
+    "# Purchases",
+    "# Destructive actions",
+    "# Credentials",
+    "# Priorities",
+  ]) {
+    assert.ok(system.includes(heading), `${heading} must be in every decision prompt`);
+  }
+  // The counterweight to the site constraint has to be there, or the agent is
+  // left with restrictions and no permission.
+  assert.match(system, /Going to another website is ordinary browsing/);
+});
+
+test("planning contract never manufactures a site lock", () => {
+  const planning = contextRouter.buildPlanningSystem();
+  assert.match(planning, /Never write a constraint that forbids visiting other sites/);
   assert.ok(
-    contextRouter.routeBrowserModules({ goal: "Revise the draft to sound friendlier" }).includes("editing"),
+    !/every step happens THERE/i.test(planning),
+    "the instruction that turned a named app into a navigation ban must be gone",
   );
-  assert.ok(!contextRouter.routeBrowserModules({ goal: "Find the cheapest flight" }).includes("editing"));
+});
+
+// --- dead ends are routed around, not handed back -------------------------------
+
+test("a 404 is routed around without asking the user", async () => {
+  // The run that prompted this landed on a not-found page and stopped with
+  // "take it forward one step in the browser". Nothing was broken: the
+  // navigation succeeded, so the retry ladder had no failure to escalate, and
+  // the agent burned its recovery budget hunting for controls on an empty page.
+  // One path segment, so the only place to back out to is the site root — the
+  // fake browser matches unknown paths by host, which would otherwise hand the
+  // dead page straight back and hide what is being tested.
+  const DEAD = "https://shop.example.com/new-campaign";
+  const ROOT = "https://shop.example.com/";
+  const fake = createFakeBrowser({
+    [DEAD]: { title: "Page not found", text: "404 — we can't find that page.", elements: [] },
+    [ROOT]: {
+      title: "Shop",
+      text: "Welcome to Shop. Campaigns Audience Reports",
+      elements: [makeElement({ name: "campaigns", tag: "a", label: "Campaigns", href: `${ROOT}campaigns` })],
+    },
+  });
+
+  const seenByModel = [];
+  const model = createScriptedModel({
+    plan: { plan: ["Open the campaign builder", "Create the campaign"] },
+    decisions: [
+      () => {
+        seenByModel.push(fake.state.url);
+        return {
+          kind: "act",
+          action: { type: "navigate", url: DEAD },
+          expectedOutcome: "the campaign builder",
+        };
+      },
+      () => {
+        seenByModel.push(fake.state.url);
+        return { kind: "finish", answer: "Created the campaign." };
+      },
+    ],
+  });
+
+  const result = await runTask({ fake, model, goal: "Create a campaign in Shop" });
+
+  assert.equal(result.status, "completed", "a dead link must not end the run");
+  // The agent got itself off the dead page on its own: after the round that
+  // walked into it, every later decision was taken from a page that exists.
+  assert.equal(seenByModel[0], "about:blank");
+  assert.ok(seenByModel.length >= 2, "the run must continue past the dead end");
+  assert.deepEqual(
+    [...new Set(seenByModel.slice(1))],
+    [ROOT],
+    `no decision may be taken from the dead page: ${JSON.stringify(seenByModel)}`,
+  );
+  assert.equal(fake.state.url, ROOT);
+  // And it wrote down where the wall was, so it cannot wander back in.
+  assert.ok(
+    result.task.workingMemory.facts.some((f) => f.includes(DEAD) && /dead end/i.test(f)),
+    `the dead end should be recorded: ${JSON.stringify(result.task.workingMemory.facts)}`,
+  );
 });
 
 // --- unit: type verification tolerates editor whitespace rewrites ---------------

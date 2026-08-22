@@ -50,6 +50,10 @@ export const SECRET_RULES = [
   ['BACKFILL_SECRET',           32, true,  'Synthesis-backfill cron bearer'],
   ['DISCOVER_INGEST_SECRET',    32, true,  'Discovery-ingest cron bearer'],
   ['ADMIN_INGEST_SECRET',       32, true,  'Feed/connector-poll cron bearer'],
+  // Dedicated second gate for the vault reconciler's destructive delete mode
+  // (X-Reconciler-Delete-Token). Optional — only needed when running the
+  // reconciler with deletion enabled — but must be ≥32 chars when set.
+  ['VAULT_RECONCILER_DELETE_SECRET', 32, false, 'Vault reconciler destructive-delete secret'],
 
   // === Connector AES key (must be 64 hex chars = 32 bytes for AES-256) ===
   ['CONNECTOR_TOKEN_KEY',       64, true,  'AES-256-GCM key for connector OAuth tokens (64 hex chars)'],
