@@ -1159,84 +1159,8 @@ function closeAgentFinishedPopup() {
   } catch (_) {}
 }
 
-/** Desktop + in-browser popup when an Agent Mode turn finishes. */
-function notifyAgentFinished({
-  agentId,
-  title,
-  skill,
-  text,
-  ok = true,
-  error,
-  alert = false,
-  prompt = "",
-} = {}) {
-  const name = String(title || "Agent").replace(/\s+/g, " ").trim().slice(0, 48) || "Agent";
-  const skillKey = String(skill || "general");
-  const label = alert
-    ? "Monitor alert"
-    : ok
-      ? AGENT_DONE_SKILL_LABEL[skillKey] || "Finished"
-      : "Failed";
-  const promptLine = String(prompt || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 90);
-  const statusLine = ok
-    ? label
-    : `Failed · ${String(error || "Something went wrong.")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 60)}`;
-  const payload = {
-    agentId: String(agentId || ""),
-    title: `LYKN — ${name}`,
-    body: statusLine,
-    prompt: promptLine || name,
-    status: statusLine,
-    ok: !!ok,
-    alert: !!alert,
-    name,
-    label,
-  };
-
-  // One compact glass chip only — no stage toast / overlay / OS duplicates.
-  try {
-    showAgentFinishedPopup(payload);
-  } catch (e) {
-    console.log("[agent] finished popup failed:", e && e.message ? e.message : e);
-  }
-
-  // OS notification only for monitor alerts (user may be away from the browser).
-  if (!alert) return;
-  try {
-    if (!Notification.isSupported()) return;
-    try {
-      if (process.platform === "darwin" && app.dock) app.dock.show();
-    } catch (_) {}
-    const n = new Notification({
-      title: payload.title,
-      body: payload.body,
-      silent: false,
-      urgency: "critical",
-    });
-    n.on("click", () => {
-      try {
-        const id = String(agentId || "").trim();
-        if (id) {
-          try {
-            initAgentRuntime().switchAgent(id);
-          } catch (_) {}
-          showAgentBrowserWindow(id, { focus: true, label: name });
-        }
-        showOverlay();
-        focusOverlayForTyping();
-      } catch (_) {}
-    });
-    n.show();
-  } catch (e) {
-    console.log("[agent] notification failed:", e && e.message ? e.message : e);
-  }
-}
+/** Agent finish notices are off — the result already lands in chat. */
+function notifyAgentFinished(_payload) {}
 
 /**
  * Show the Restart/Later dialog for a downloaded update. Safe to call from
