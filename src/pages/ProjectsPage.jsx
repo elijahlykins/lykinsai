@@ -477,7 +477,7 @@ export default function ProjectsPage() {
           handleCreateOpenChange(open);
         }}
       >
-        <DialogContent className="lykn-new-project-dialog bg-panel border-black/10 dark:border-white/15 text-black dark:text-white max-w-md rounded-2xl backdrop-blur-xl">
+        <DialogContent className="lykn-new-project-dialog max-w-md">
           <DialogHeader>
             <DialogTitle className="font-display text-lg font-semibold tracking-tight">
               New project

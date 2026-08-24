@@ -471,6 +471,38 @@ html.dark {
 }
 
 /* =========================================================
+   GLASS FALLBACK — Intel-Mac GPUs hit a Chromium compositor bug where
+   backdrop-filter renders as fully transparent holes instead of blur. The
+   desktop shell flags those machines (preload `glassFallback` → main.jsx adds
+   this class before first paint) and the material trades its deep blur for a
+   near-opaque tint. Hairlines, radii, shadows and text tokens are untouched,
+   so the app reads as frosted panels — the same posture as macOS's own
+   "Reduce transparency" — instead of see-through holes. Everything routed
+   through --lg-* retunes from this one block.
+   ========================================================= */
+html.lykn-glass-fallback {
+  --lg-tint: rgba(255, 255, 255, 0.95);
+  --lg-tint-strong: rgba(255, 255, 255, 0.95);
+  --lg-menu-tint: rgba(255, 255, 255, 0.95);
+  --lg-menu-tint-strong: rgba(255, 255, 255, 0.95);
+}
+html.lykn-glass-fallback.dark {
+  --lg-tint: rgba(28, 28, 30, 0.95);
+  --lg-tint-strong: rgba(28, 28, 30, 0.95);
+  --lg-menu-tint: rgba(28, 28, 30, 0.95);
+  --lg-menu-tint-strong: rgba(28, 28, 30, 0.95);
+}
+/* The bug corrupts the whole filtered region, so the filter itself must go —
+   including ad-hoc Tailwind backdrop-blur-* surfaces, which keep their own
+   background color and stay readable without the blur. */
+html.lykn-glass-fallback *,
+html.lykn-glass-fallback *::before,
+html.lykn-glass-fallback *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* =========================================================
    CHAT TEXT COLOR — Settings › Appearance › AI chat.
 
    The app's text is `text-black/NN dark:text-white/NN` almost everywhere, and

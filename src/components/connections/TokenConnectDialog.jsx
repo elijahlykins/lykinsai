@@ -236,7 +236,7 @@ export default function TokenConnectDialog({ open, onOpenChange, connector }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg bg-white dark:bg-zinc-950 border border-black/10 dark:border-white/10">
+      <DialogContent className="max-w-lg">
         <DialogHeader className="sr-only">
           <DialogTitle>{connector.name}</DialogTitle>
           <DialogDescription>{connector.summary}</DialogDescription>

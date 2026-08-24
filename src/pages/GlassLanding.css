@@ -912,7 +912,10 @@
 }
 @media (max-width: 960px) {
   .gl-any-inner {
-    grid-template-columns: 1fr;
+    /* minmax(0, …) like the desktop columns above — a bare 1fr can't shrink
+       below the chip row's min-content and drags the page into sideways
+       scroll on phones. */
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -986,6 +989,14 @@
   display: flex;
   gap: clamp(1.75rem, 4vw, 3rem);
 }
+/* Wrap only once the section is single-column: on narrow phones the row's
+   min-content width would otherwise exceed the viewport. Desktop keeps the
+   one-row layout it always had. */
+@media (max-width: 960px) {
+  .gl-any-stats {
+    flex-wrap: wrap;
+  }
+}
 .gl-any-stat dt {
   font-size: 1.05rem;
   font-weight: 700;
@@ -1013,10 +1024,12 @@
   user-select: none;
 }
 
-/* Step chips under the window (reference: language tabs). */
+/* Step chips under the window (reference: language tabs). Wraps so the
+   eight chips fold into rows once the column narrows past their width. */
 .gl-any-chips {
   margin-top: 1rem;
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: 0.4rem;
 }

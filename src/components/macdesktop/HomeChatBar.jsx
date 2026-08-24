@@ -25,6 +25,12 @@ import {
   X,
 } from "lucide-react";
 import {
+  IMAGE_LAYOUT_OPTIONS,
+  imagineLayoutOption,
+  loadImagineAspect,
+  saveImagineAspect,
+} from "@/lib/chat/imagineLayout";
+import {
   RESEARCH_SOURCE_OPTIONS,
   normalizeResearchSourcePref,
 } from "@/lib/ai/researchSourcePrefs";
@@ -180,6 +186,8 @@ export default function HomeChatBar({
   const [typedWelcome, setTypedWelcome] = useState("");
   const [sourcePref, setSourcePref] = useState("all");
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [layoutOpen, setLayoutOpen] = useState(false);
+  const [aspect, setAspect] = useState(loadImagineAspect);
   const [addOpen, setAddOpen] = useState(false);
   const [dictating, setDictating] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -196,9 +204,12 @@ export default function HomeChatBar({
   const addPanelRef = useRef(null);
   const sourcesRef = useRef(null);
   const sourcesPanelRef = useRef(null);
+  const layoutRef = useRef(null);
+  const layoutPanelRef = useRef(null);
   const menuWrapRef = useRef(null);
   const [addPos, setAddPos] = useState({});
   const [sourcesPos, setSourcesPos] = useState({});
+  const [layoutPos, setLayoutPos] = useState({});
   const recorderRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
@@ -318,7 +329,7 @@ export default function HomeChatBar({
   }, []);
 
   useEffect(() => {
-    if (!sourcesOpen && !addOpen) return;
+    if (!sourcesOpen && !addOpen && !layoutOpen) return;
     const onDown = (e) => {
       // Panels hang as siblings of the bar (not children of the trigger) so
       // the glass can blur the wallpaper. Outside-click has to clear both the
@@ -327,6 +338,11 @@ export default function HomeChatBar({
         if (sourcesRef.current?.contains(e.target)) return;
         if (sourcesPanelRef.current?.contains(e.target)) return;
         setSourcesOpen(false);
+      }
+      if (layoutOpen) {
+        if (layoutRef.current?.contains(e.target)) return;
+        if (layoutPanelRef.current?.contains(e.target)) return;
+        setLayoutOpen(false);
       }
       if (addOpen) {
         if (addRef.current?.contains(e.target)) return;
@@ -337,6 +353,7 @@ export default function HomeChatBar({
     const onKey = (e) => {
       if (e.key === "Escape") {
         setSourcesOpen(false);
+        setLayoutOpen(false);
         setAddOpen(false);
       }
     };
@@ -346,10 +363,10 @@ export default function HomeChatBar({
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
     };
-  }, [sourcesOpen, addOpen]);
+  }, [sourcesOpen, addOpen, layoutOpen]);
 
   useLayoutEffect(() => {
-    if (!addOpen && !sourcesOpen) return;
+    if (!addOpen && !sourcesOpen && !layoutOpen) return;
     const place = () => {
       if (addOpen) {
         setAddPos(barMenuOffset(menuWrapRef.current, addRef.current, addPanelRef.current));
@@ -359,14 +376,20 @@ export default function HomeChatBar({
           barMenuOffset(menuWrapRef.current, sourcesRef.current, sourcesPanelRef.current),
         );
       }
+      if (layoutOpen) {
+        setLayoutPos(
+          barMenuOffset(menuWrapRef.current, layoutRef.current, layoutPanelRef.current),
+        );
+      }
     };
     place();
     window.addEventListener("resize", place);
     return () => window.removeEventListener("resize", place);
-  }, [addOpen, sourcesOpen, slate, tall]);
+  }, [addOpen, sourcesOpen, layoutOpen, slate, tall]);
 
   useEffect(() => {
     if (barMode !== "research") setSourcesOpen(false);
+    if (barMode !== "imagine") setLayoutOpen(false);
   }, [barMode]);
 
   useEffect(() => {
@@ -615,6 +638,7 @@ export default function HomeChatBar({
       view: active ? "" : barMode,
       text: t,
       researchSourcePref: sourcePref,
+      imagineAspect: barMode === "imagine" ? aspect : undefined,
       vaultPayloads: attachments.map((a) => a.vaultPayload).filter(Boolean),
     };
     try {
@@ -744,6 +768,7 @@ export default function HomeChatBar({
         type="button"
         onClick={() => {
           setSourcesOpen(false);
+          setLayoutOpen(false);
           setAddOpen((o) => !o);
         }}
         title="Add from Vault or Finder"
@@ -808,12 +833,40 @@ export default function HomeChatBar({
     />
   );
 
+  const layoutOpt = imagineLayoutOption(aspect);
+  const LayoutIcon = layoutOpt.icon;
+  const layoutButton = barMode === "imagine" && (
+    <div ref={layoutRef} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => {
+          setAddOpen(false);
+          setSourcesOpen(false);
+          setLayoutOpen((o) => !o);
+        }}
+        title="Image layout"
+        aria-label="Image layout"
+        aria-expanded={layoutOpen}
+        className={`flex h-8 max-w-[8.25rem] items-center gap-1 rounded-full px-2 text-[0.68rem] font-medium transition-colors ${
+          layoutOpen
+            ? "bg-black/10 text-black/85 dark:bg-white/15 dark:text-white/90"
+            : "text-black/60 hover:bg-black/10 hover:text-black/85 dark:text-white/65 dark:hover:bg-white/15 dark:hover:text-white/90"
+        }`}
+      >
+        <LayoutIcon className="h-3.5 w-3.5 shrink-0 opacity-70" />
+        <span className="truncate">{layoutOpt.shortLabel}</span>
+        <ChevronDown className="h-3 w-3 shrink-0 opacity-40" />
+      </button>
+    </div>
+  );
+
   const sourcesButton = barMode === "research" && (
     <div ref={sourcesRef} className="relative shrink-0">
       <button
         type="button"
         onClick={() => {
           setAddOpen(false);
+          setLayoutOpen(false);
           setSourcesOpen((o) => !o);
         }}
         title="Sources to pull from"
@@ -981,6 +1034,7 @@ export default function HomeChatBar({
                 <div className="flex w-full items-center gap-1.5 px-0.5">
                   {addButton}
                   {sourcesButton}
+                  {layoutButton}
                   <span className="flex-1" />
                   {dictateButton}
                   {voiceButton}
@@ -993,6 +1047,7 @@ export default function HomeChatBar({
                 {finderInput}
                 {field}
                 {sourcesButton}
+                {layoutButton}
                 {dictateButton}
                 {voiceButton}
                 {sendButton}
@@ -1027,6 +1082,38 @@ export default function HomeChatBar({
                 <FolderOpen className="h-3.5 w-3.5 shrink-0 opacity-70" />
                 Finder
               </label>
+            </div>
+          )}
+
+          {barMode === "imagine" && layoutOpen && (
+            <div
+              ref={layoutPanelRef}
+              style={{ ...NO_DRAG, ...layoutPos }}
+              className={`pointer-events-auto absolute z-40 w-52 rounded-[14px] p-1.5 ${BAR_SURFACE}`}
+            >
+              {IMAGE_LAYOUT_OPTIONS.map((opt) => {
+                const Icon = opt.icon;
+                const on = opt.value === aspect;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    data-active={on || undefined}
+                    onClick={() => {
+                      setAspect(saveImagineAspect(opt.value));
+                      setLayoutOpen(false);
+                    }}
+                    className={`lg-menu-row flex w-full items-center gap-2 rounded-[0.5rem] px-2.5 py-1.5 text-left text-[0.75rem] ${
+                      on
+                        ? "font-medium text-black dark:text-white"
+                        : "text-black/70 dark:text-white/75"
+                    }`}
+                  >
+                    <Icon className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                    {opt.label}
+                  </button>
+                );
+              })}
             </div>
           )}
 

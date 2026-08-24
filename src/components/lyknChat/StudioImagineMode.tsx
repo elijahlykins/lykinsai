@@ -9,23 +9,22 @@ import {
   FolderOpen,
   Library,
   Loader2,
-  Monitor,
   MoreHorizontal,
   PenLine,
   Plus,
-  RectangleHorizontal,
-  RectangleVertical,
   RefreshCw,
-  Smartphone,
-  Square as SquareIcon,
   X as XIcon,
-  type LucideIcon,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { API_BASE_URL } from "@/lib/api-config";
 import ChatSendIcon from "@/lib/chatSendIcon";
 import { useAppearance } from "@/lib/useAppearance";
 import { CHAT_REHYPE_PLUGINS, CHAT_REMARK_PLUGINS } from "@/lib/chat/chatMarkdown";
+import {
+  IMAGE_LAYOUT_OPTIONS,
+  loadImagineAspect,
+  saveImagineAspect,
+} from "@/lib/chat/imagineLayout";
 import LyknMediaPop, { MEDIA_POP_PANEL } from "@/components/lyknChat/LyknMediaPop";
 import GeneratedImage from "@/components/lyknChat/GeneratedImage";
 import ImagineMaskCanvas, {
@@ -161,20 +160,6 @@ export type ImagineBatch = {
   slots: ImagineSlot[];
   createdAt: number;
 };
-
-/** Layout picker in the prompt bar — mirrors the research "sources" select. */
-const IMAGE_LAYOUT_OPTIONS: {
-  value: string;
-  label: string;
-  shortLabel: string;
-  icon: LucideIcon;
-}[] = [
-  { value: "1:1", label: "Square · 1:1", shortLabel: "Square", icon: SquareIcon },
-  { value: "3:2", label: "Landscape · 3:2", shortLabel: "Landscape", icon: RectangleHorizontal },
-  { value: "2:3", label: "Portrait · 2:3", shortLabel: "Portrait", icon: RectangleVertical },
-  { value: "16:9", label: "Widescreen · 16:9", shortLabel: "Wide", icon: Monitor },
-  { value: "9:16", label: "Vertical · 9:16", shortLabel: "Vertical", icon: Smartphone },
-];
 
 /* Chrome copied from the desktop's HomeChatBar so Imagine reads as the same
  * rounded pill as normal chat — same surface, icon buttons and menu rows. */
@@ -447,6 +432,7 @@ export type ImagineGenerateInput = {
   text?: string;
   referenceUrls?: string[];
   documents?: { name: string; text: string }[];
+  aspectRatio?: string;
 };
 
 export type ImagineEditInput = {
@@ -489,6 +475,8 @@ export type StudioImagineModeProps = {
   visible?: boolean;
   /** Showcase tile picked on the empty Imagine page — attach to the shared bar. */
   onAttachReference?: (dataUrl: string, name: string) => void;
+  /** Shared-thread: a batch is in flight so the empty headline can hide now. */
+  onBusyChange?: (busy: boolean) => void;
 };
 
 const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps>(function StudioImagineMode({
@@ -502,6 +490,7 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
   hasThread = false,
   visible = true,
   onAttachReference,
+  onBusyChange,
 }, ref) {
   const key = chatKey || "unkeyed";
   const [batches, setBatches] = useState<ImagineBatch[]>(() => hydrateBatches(key, seedBatches || []));
@@ -555,7 +544,7 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
   }, [batches, onCommitBatch]);
 
   const [prompt, setPrompt] = useState("");
-  const [aspect, setAspect] = useState<string>("1:1");
+  const [aspect, setAspect] = useState<string>(() => loadImagineAspect());
   const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
   /** Prompt wrapped past one line — the pill squares off like the Home bar. */
   const [promptTall, setPromptTall] = useState(false);
@@ -684,6 +673,10 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
     () => batches.some((b) => b.slots.some((s) => s.status === "loading")),
     [batches],
   );
+  useEffect(() => {
+    if (!sharedThread) return;
+    onBusyChange?.(anyLoading);
+  }, [sharedThread, anyLoading, onBusyChange]);
 
   const patchSlot = useCallback((batchId: string, slotId: string, patch: Partial<ImagineSlot>) => {
     setBatches((prev) =>
@@ -839,13 +832,15 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
           text: d.text,
         })),
       ];
+      const ratio = saveImagineAspect(input.aspectRatio || aspect);
+      if (ratio !== aspect) setAspect(ratio);
       startBatch({
         label: text || "Image",
         prompt: buildImaginePrompt(text || "Generate an image from the reference.", atts),
         concept: text || "the reference image",
         kind: "generate",
         referenceUrls: refs.length ? refs : undefined,
-        aspectRatio: aspect,
+        aspectRatio: ratio,
       });
       return true;
     },
@@ -1600,7 +1595,7 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
                   type="button"
                   data-active={on || undefined}
                   onClick={() => {
-                    setAspect(opt.value);
+                    setAspect(saveImagineAspect(opt.value));
                     setLayoutMenuOpen(false);
                   }}
                   className={`lg-menu-row flex w-full items-center gap-2 rounded-[0.5rem] px-2.5 py-1.5 text-left text-[0.75rem] ${

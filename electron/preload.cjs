@@ -46,9 +46,23 @@ ipcRenderer.on("lykn:projects-changed", (_event, detail) => {
   }
 });
 
+// Intel-Mac GPUs render CSS backdrop-filter as transparent holes (Chromium
+// IOSurface compositor bug — see GLASS_FALLBACK in main.cjs). The web app
+// reads this flag at boot and swaps liquid glass for a near-opaque tint
+// (html.lykn-glass-fallback). LYKN_GLASS_FALLBACK=1|0 forces it for testing.
+let glassFallback = process.platform === "darwin" && process.arch === "x64";
+try {
+  if (process.env.LYKN_GLASS_FALLBACK != null) {
+    glassFallback = process.env.LYKN_GLASS_FALLBACK === "1";
+  }
+} catch {
+  /* sandboxed env unavailable — keep the arch-based default */
+}
+
 contextBridge.exposeInMainWorld("lykn", {
   desktop: true,
   platform: process.platform,
+  glassFallback,
   version: appVersion,
   // Open a URL in the user's default browser (main validates http/https).
   // Needed for the browser-based Google sign-in: a plain window.open() to our

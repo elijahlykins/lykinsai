@@ -296,10 +296,11 @@ export default function DriveListing({
                 <button
                   type="button"
                   aria-label="Close tag menu"
+                  data-no-tip
                   className="fixed inset-0 z-40 cursor-default"
                   onClick={() => setTagMenu(false)}
                 />
-                <div className="absolute right-0 z-50 mt-1 max-h-72 w-52 overflow-y-auto rounded-xl border border-black/10 bg-white/95 p-1 shadow-xl backdrop-blur dark:border-white/10 dark:bg-neutral-900/95">
+                <div className="lg-menu absolute right-0 z-50 mt-1 max-h-72 w-52 overflow-y-auto p-1">
                   {selectedTags.length > 0 && (
                     <button
                       type="button"
@@ -351,10 +352,11 @@ export default function DriveListing({
               <button
                 type="button"
                 aria-label="Close sort menu"
+                data-no-tip
                 className="fixed inset-0 z-40 cursor-default"
                 onClick={() => setSortMenu(false)}
               />
-              <div className="absolute right-0 z-50 mt-1 w-44 rounded-xl border border-black/10 bg-white/95 p-1 shadow-xl backdrop-blur dark:border-white/10 dark:bg-neutral-900/95">
+              <div className="lg-menu absolute right-0 z-50 mt-1 w-44 p-1">
                 {DRIVE_SORTS.map((option) => (
                   <button
                     key={option.id}
@@ -903,6 +905,7 @@ function DriveFolderContextMenu({ menu, onClose, onOpen }) {
       <button
         type="button"
         aria-label="Close menu"
+        data-no-tip
         className="fixed inset-0 z-40 cursor-default"
         onClick={onClose}
         onContextMenu={(event) => {
@@ -912,7 +915,7 @@ function DriveFolderContextMenu({ menu, onClose, onOpen }) {
       />
       <div
         ref={menuRef}
-        className="fixed z-50 w-52 rounded-xl border border-black/10 bg-white/95 p-1 shadow-xl backdrop-blur dark:border-white/10 dark:bg-neutral-900/95"
+        className="lg-menu fixed z-50 w-52 p-1"
         style={{ left: menu.x, top: menu.y }}
       >
         <button

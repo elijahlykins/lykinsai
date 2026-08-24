@@ -8,6 +8,16 @@ import { applyTheme, readSavedTheme, initThemeWatcher } from '@/lib/theme'
 import { applyAppearance, readAppearance } from '@/lib/appearance'
 
 try {
+  // Intel Macs: Chromium composites backdrop-filter as transparent holes, so
+  // the desktop shell flags a fallback (preload `glassFallback`) and the
+  // glass swaps its blur for a near-opaque tint — see html.lykn-glass-fallback
+  // in index.css. Applied before first paint so glass never flashes broken.
+  if (window.lykn?.glassFallback) {
+    document.documentElement.classList.add('lykn-glass-fallback');
+  }
+} catch {}
+
+try {
   const saved = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
   const fontScales = { small: '0.875', medium: '1', large: '1.125' };
   if (saved.fontSize) document.documentElement.style.setProperty('--font-scale', fontScales[saved.fontSize] || '1');

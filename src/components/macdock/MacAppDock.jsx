@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Pin, PinOff, Search } from "lucide-react";
 import StudioPop from "@/components/macdesktop/StudioPop";
 import { DockContextMenu, openLyknChat } from "@/components/macdock/DockContextMenu";
@@ -60,6 +61,24 @@ export default function MacAppDock() {
   const [query, setQuery] = useState("");
   const [menuFor, setMenuFor] = useState(null);
   const popRef = useRef(null);
+  const moreBtnRef = useRef(null);
+  const stripRef = useRef(null);
+  // Fixed-position coordinates for the "all apps" popover. It portals to
+  // <body> because the dock pill's backdrop-filter forms a CSS backdrop root:
+  // rendered inside it, the popover's own blur could only sample the pill's
+  // box (nothing, above the pill) and the glass read as bare tint.
+  const [popPos, setPopPos] = useState(null);
+
+  useLayoutEffect(() => {
+    if (!moreOpen) return;
+    const rect = stripRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    // Mirrors the old `bottom-full right-0 mb-3` against the strip.
+    setPopPos({
+      right: window.innerWidth - rect.right,
+      bottom: window.innerHeight - rect.top + 12,
+    });
+  }, [moreOpen]);
 
   useEffect(() => {
     if (!api) return;
@@ -91,14 +110,30 @@ export default function MacAppDock() {
     };
   }, [api]);
 
-  // Close the popover on outside click.
+  // Close the popover on outside click, Escape, or the window losing focus
+  // (in the shell, clicking a native browser view never reaches the DOM — the
+  // blur is the only signal). The ⋯ button is excluded from outside-close:
+  // its own onClick toggles, and closing on its pointerdown first would make
+  // the click reopen what it just dismissed.
   useEffect(() => {
     if (!moreOpen) return;
     const onDown = (e) => {
-      if (popRef.current && !popRef.current.contains(e.target)) setMoreOpen(false);
+      if (popRef.current?.contains(e.target)) return;
+      if (moreBtnRef.current?.contains(e.target)) return;
+      setMoreOpen(false);
     };
-    document.addEventListener("pointerdown", onDown);
-    return () => document.removeEventListener("pointerdown", onDown);
+    const onKey = (e) => {
+      if (e.key === "Escape") setMoreOpen(false);
+    };
+    const onBlur = () => setMoreOpen(false);
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("blur", onBlur);
+    };
   }, [moreOpen]);
 
   const closeMenu = useCallback(() => setMenuFor(null), []);
@@ -146,7 +181,7 @@ export default function MacAppDock() {
   if (!apps.length) return null;
 
   return (
-    <div className="relative flex items-center gap-0.5 pl-1">
+    <div ref={stripRef} className="relative flex items-center gap-0.5 pl-1">
       <span className="mx-1 h-5 w-px bg-black/15 dark:bg-white/15" aria-hidden />
       {strip.map((a) => (
         <div key={a.path} className="relative">
@@ -173,6 +208,7 @@ export default function MacAppDock() {
         </div>
       ))}
       <button
+        ref={moreBtnRef}
         type="button"
         onClick={() => {
           setMenuFor(null);
@@ -189,11 +225,14 @@ export default function MacAppDock() {
         &#8943;
       </button>
 
+      {popPos
+        ? createPortal(
       <StudioPop
         ref={popRef}
         open={moreOpen}
         origin="100% 100%"
-        className="lg-menu absolute bottom-full right-0 z-50 mb-3 w-72 p-2"
+        className="lg-menu fixed z-50 w-72 p-2"
+        style={{ right: popPos.right, bottom: popPos.bottom }}
       >
           <div className="mb-1.5 flex items-center gap-2 rounded-xl bg-black/[0.05] px-2.5 py-1.5 dark:bg-white/[0.08]">
             <Search className="h-3.5 w-3.5 shrink-0 text-black/45 dark:text-white/45" />
@@ -254,7 +293,10 @@ export default function MacAppDock() {
               </p>
             )}
           </div>
-      </StudioPop>
+      </StudioPop>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

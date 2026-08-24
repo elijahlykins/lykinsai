@@ -17,7 +17,7 @@ export default function UpgradeModal({ modal, onDismiss }) {
 
   return (
     <Dialog open onOpenChange={onDismiss}>
-      <DialogContent className="sm:max-w-sm bg-white dark:bg-gray-900 border-black/[0.06] dark:border-white/10">
+      <DialogContent className="sm:max-w-sm">
         <DialogHeader>
           <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-900/30 flex items-center justify-center mb-2">
             <Lock className="w-5 h-5 text-amber-500 dark:text-amber-400" />

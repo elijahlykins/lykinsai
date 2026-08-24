@@ -761,10 +761,11 @@ export default function FilesBrowser({
               <button
                 type="button"
                 aria-label="Close sort menu"
+                data-no-tip
                 className="fixed inset-0 z-40 cursor-default"
                 onClick={() => setSortMenu(false)}
               />
-              <div className="absolute right-0 z-50 mt-1 w-44 rounded-xl border border-black/10 bg-white/95 p-1 shadow-xl backdrop-blur dark:border-white/10 dark:bg-neutral-900/95">
+              <div className="lg-menu absolute right-0 z-50 mt-1 w-44 p-1">
                 {SORTS.map((option) => (
                   <button
                     key={option.id}
@@ -1283,6 +1284,7 @@ function ContextMenu({
       <button
         type="button"
         aria-label="Close menu"
+        data-no-tip
         className="fixed inset-0 z-40 cursor-default"
         onClick={onClose}
         onContextMenu={(e) => {
@@ -1292,7 +1294,7 @@ function ContextMenu({
       />
       <div
         ref={menuRef}
-        className="fixed z-50 w-52 rounded-xl border border-black/10 bg-white/95 p-1 shadow-xl backdrop-blur dark:border-white/10 dark:bg-neutral-900/95"
+        className="lg-menu fixed z-50 w-52 p-1"
         style={{ left: menu.x, top: menu.y }}
       >
         {has && item("Open", FolderOpen, onOpen)}

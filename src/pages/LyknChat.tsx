@@ -11,6 +11,13 @@ import {
   normalizeResearchSourcePref,
   type ResearchSourcePref,
 } from "@/lib/ai/researchSourcePrefs";
+import {
+  IMAGE_LAYOUT_OPTIONS,
+  imagineLayoutOption,
+  isImagineAspect,
+  loadImagineAspect,
+  saveImagineAspect,
+} from "@/lib/chat/imagineLayout";
 
 const RESEARCH_SOURCE_ICONS: Record<ResearchSourcePref, LucideIcon> = {
   all: Layers,
@@ -920,6 +927,9 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
   showResearchSourceSelect,
   researchSourcePref,
   onResearchSourcePrefChange,
+  showImagineLayoutSelect,
+  imagineAspect,
+  onImagineAspectChange,
 }: {
   compact?: boolean;
   onSend: () => void | Promise<void>;
@@ -948,9 +958,13 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
   showResearchSourceSelect?: boolean;
   researchSourcePref?: ResearchSourcePref;
   onResearchSourcePrefChange?: (v: ResearchSourcePref) => void;
+  showImagineLayoutSelect?: boolean;
+  imagineAspect?: string;
+  onImagineAspectChange?: (v: string) => void;
 }) {
   const [modelMenuOpen, setModelMenuOpen] = React.useState(false);
   const [sourceMenuOpen, setSourceMenuOpen] = React.useState(false);
+  const [layoutMenuOpen, setLayoutMenuOpen] = React.useState(false);
   const sendDisabled = (!chatInputHasText && !hasAttachments) || isChatLoading || isDictating || isTranscribing;
   const modelTriggerCls = compact
     ? "lykn-chat-neu-chat-toolbar-select-trigger h-8 !w-auto max-w-[7rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-[0.625rem] px-1 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>svg]:w-3 [&>svg]:h-3 [&>svg]:opacity-40 [&>svg]:shrink-0"
@@ -1002,6 +1016,23 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
       blurModelTrigger();
     },
     [onResearchSourcePrefChange, blurModelTrigger],
+  );
+
+  const handleLayoutOpenChange = React.useCallback(
+    (open: boolean) => {
+      setLayoutMenuOpen(open);
+      if (!open) blurModelTrigger();
+    },
+    [blurModelTrigger],
+  );
+
+  const handleLayoutChange = React.useCallback(
+    (value: string) => {
+      setLayoutMenuOpen(false);
+      onImagineAspectChange?.(saveImagineAspect(value));
+      blurModelTrigger();
+    },
+    [onImagineAspectChange, blurModelTrigger],
   );
 
   return (
@@ -1090,6 +1121,47 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
           </SelectContent>
         </Select>
       ) : null}
+      {showImagineLayoutSelect ? (
+        <Select
+          modal={false}
+          open={layoutMenuOpen}
+          onOpenChange={handleLayoutOpenChange}
+          value={imagineAspect || "1:1"}
+          onValueChange={handleLayoutChange}
+        >
+          <SelectTrigger className={sourceTriggerCls} title="Image layout">
+            <SelectValue placeholder="Layout">
+              {(() => {
+                const opt = imagineLayoutOption(imagineAspect);
+                const Icon = opt.icon;
+                return (
+                  <span className="inline-flex min-w-0 items-center gap-1">
+                    <Icon className={`${compact ? "h-3 w-3" : "h-3.5 w-3.5"} shrink-0 opacity-70`} />
+                    <span className="truncate">{opt.shortLabel}</span>
+                  </span>
+                );
+              })()}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent
+            side="top"
+            align="end"
+            className={`${dropdownCls} w-[min(92vw,14rem)]`}
+          >
+            {IMAGE_LAYOUT_OPTIONS.map((opt) => {
+              const Icon = opt.icon;
+              return (
+                <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                  <span className="inline-flex items-center gap-2">
+                    <Icon className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                    {opt.label}
+                  </span>
+                </SelectItem>
+              );
+            })}
+          </SelectContent>
+        </Select>
+      ) : null}
       <LyknChatPlusMenu
         iconBtnCls={iconBtn}
         iconSmCls={iconSm}
@@ -1164,6 +1236,9 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   const [researchSourcePref, setResearchSourcePref] = useState<ResearchSourcePref>("all");
   const researchSourcePrefsRef = useRef<string>("all");
   researchSourcePrefsRef.current = researchSourcePref;
+  const [imagineAspect, setImagineAspect] = useState<string>(() => loadImagineAspect());
+  const imagineAspectRef = useRef(imagineAspect);
+  imagineAspectRef.current = imagineAspect;
   studioModeInstructionsRef.current =
     isGlassChat && studioView !== "chat" ? STUDIO_VIEW_SYSTEM_PROMPTS[studioView] : "";
   // The chat's Studio mode tag, persisted inside the chat snapshot so
@@ -1176,6 +1251,21 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   // setComposerMode; the persistence hook calls through this ref.
   const studioModeHydratedCbRef = useRef<(mode: string | null) => void>(() => {});
   const imagineRef = useRef<StudioImagineHandle | null>(null);
+  // Imagine writes the chat turn only after the batch settles, so the empty
+  // "Generate any image" headline would otherwise sit behind the bar for the
+  // whole generate. Latch as soon as a batch is in flight.
+  const [imagineStarted, setImagineStarted] = useState(false);
+  useEffect(() => {
+    setImagineStarted(false);
+  }, [routeChatId]);
+  useEffect(() => {
+    const onClear = () => setImagineStarted(false);
+    window.addEventListener(IMAGINE_CLEAR_EVENT, onClear);
+    return () => window.removeEventListener(IMAGINE_CLEAR_EVENT, onClear);
+  }, []);
+  const handleImagineBusy = useCallback((busy: boolean) => {
+    if (busy) setImagineStarted(true);
+  }, []);
 
   useEffect(() => {
     // Only for true iframe embeds — the in-document Studio surface must not
@@ -2960,9 +3050,10 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         setChatInput("");
         return;
       }
-      const ok = imagineRef.current?.generate(
-        chatAttachmentsToImagineInput(text, focusedChatAttachments),
-      );
+      const ok = imagineRef.current?.generate({
+        ...chatAttachmentsToImagineInput(text, focusedChatAttachments),
+        aspectRatio: imagineAspectRef.current,
+      });
       if (ok) {
         setChatInput("");
         setFocusedChatAttachments([]);
@@ -3011,11 +3102,13 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
       view?: string;
       text?: string;
       researchSourcePref?: string;
+      imagineAspect?: string;
       vaultPayloads?: Record<string, unknown>[];
     } = {}) => {
       let view = String(fallback.view || "");
       let text = String(fallback.text || "");
       let sourcePref = String(fallback.researchSourcePref || "");
+      let aspectPref = String(fallback.imagineAspect || "");
       let vaultPayloads = Array.isArray(fallback.vaultPayloads) ? fallback.vaultPayloads : [];
       try {
         const raw = sessionStorage.getItem("lykn_pending_home_chat");
@@ -3025,11 +3118,13 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
             view?: string;
             text?: string;
             researchSourcePref?: string;
+            imagineAspect?: string;
             vaultPayloads?: Record<string, unknown>[];
           };
           view = String(p?.view || view);
           text = String(p?.text || text);
           sourcePref = String(p?.researchSourcePref || sourcePref);
+          aspectPref = String(p?.imagineAspect || aspectPref);
           if (Array.isArray(p?.vaultPayloads)) vaultPayloads = p.vaultPayloads;
         }
       } catch {
@@ -3039,6 +3134,11 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         const pref = normalizeResearchSourcePref(sourcePref);
         researchSourcePrefsRef.current = pref;
         setResearchSourcePref(pref);
+      }
+      if (isImagineAspect(aspectPref)) {
+        const next = saveImagineAspect(aspectPref);
+        imagineAspectRef.current = next;
+        setImagineAspect(next);
       }
       text = text.trim();
       // Claimed before the empty-prompt bail so files/folders can't linger
@@ -3098,6 +3198,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         view?: string;
         text?: string;
         researchSourcePref?: string;
+        imagineAspect?: string;
         vaultPayloads?: Record<string, unknown>[];
       });
     window.addEventListener("lykn-home-chat-send", onSend);
@@ -3999,9 +4100,10 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
       }
       if (studioView === "imagine") {
         if (!text) return;
-        const ok = imagineRef.current?.generate(
-          chatAttachmentsToImagineInput(text, focusedChatAttachments),
-        );
+        const ok = imagineRef.current?.generate({
+          ...chatAttachmentsToImagineInput(text, focusedChatAttachments),
+          aspectRatio: imagineAspectRef.current,
+        });
         if (ok) {
           setChatInput("");
           setFocusedChatAttachments([]);
@@ -4744,6 +4846,9 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
       (isGlassChat && studioView === "research") || composerMode === "research",
     researchSourcePref,
     onResearchSourcePrefChange: setResearchSourcePref,
+    showImagineLayoutSelect: isGlassChat && studioView === "imagine",
+    imagineAspect,
+    onImagineAspectChange: setImagineAspect,
   }), [
     chatInputHasText, focusedChatAttachments.length,
     isChatLoading, isDictating, isTranscribing,
@@ -4754,6 +4859,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     composerMode, setComposerMode,
     isGlassChat, studioView,
     researchSourcePref,
+    imagineAspect,
   ]);
 
   const handleCloseSideRail = useCallback(() => {
@@ -5209,6 +5315,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           sharedThread
           hasThread={hasChatTurns}
           visible={studioView === "imagine"}
+          onBusyChange={handleImagineBusy}
           onAttachReference={(dataUrl, name) => {
             addFocusedAttachment({
               id: makeAttId(),
@@ -5232,6 +5339,9 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           chatInputRef={chatInputRef}
           onChatInputChange={handleChatInputChange}
           onSend={studioGuardedSend}
+          pinComposerToBottom={
+            studioView === "imagine" && imagineStarted && chatMessages.length === 0
+          }
           typedWelcome={
             isGlassChat && studioView !== "chat"
               ? STUDIO_VIEW_HEADLINES[studioView]

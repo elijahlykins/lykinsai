@@ -34,6 +34,20 @@ const {
 const IS_MAC = process.platform === "darwin";
 const IS_WIN = process.platform === "win32";
 
+// Intel-Mac GPUs hit a Chromium compositor bug where CSS backdrop-filter's
+// IOSurface texture share silently fails, so every blurred region renders as
+// a fully transparent hole (same class of bug tracked across Electron apps,
+// e.g. openai/codex#23458 — GPU flags do not reliably fix it). Native window
+// vibrancy is macOS-side and unaffected. The shell therefore strips
+// page-level backdrop-filter from every LYKN-owned document on those
+// machines, and the web app compensates with a near-opaque tint
+// (html.lykn-glass-fallback in index.css, flagged through the preload).
+// LYKN_GLASS_FALLBACK=1|0 forces the mode on any machine for testing.
+const GLASS_FALLBACK =
+  process.env.LYKN_GLASS_FALLBACK != null
+    ? process.env.LYKN_GLASS_FALLBACK === "1"
+    : IS_MAC && process.arch === "x64";
+
 // Let the welcome walkthrough play its reveal sound without a prior click —
 // Chromium otherwise mutes un-gestured audio (the video is muted; the sound
 // rides a separate <audio> element).
@@ -169,6 +183,31 @@ const APP_ORIGIN = (() => {
 // LYKN AI backend (the streaming chat endpoint the web app uses). Override with
 // LYKN_API_URL=http://localhost:3001 when testing against a local backend.
 const API_BASE = process.env.LYKN_API_URL || "https://api.lykn.io";
+
+// Intel-Mac glass fallback (see GLASS_FALLBACK above): kill page-level
+// backdrop-filter in every document WE ship — the app itself plus the
+// overlay-family html (bar, menu, picker, live, stage chrome…). External
+// pages in the agent browser are left alone; how a website degrades on this
+// GPU is that site's business, and rewriting its CSS would break real pages.
+if (GLASS_FALLBACK) {
+  app.on("web-contents-created", (_event, contents) => {
+    contents.on("dom-ready", () => {
+      let owned = false;
+      try {
+        const url = contents.getURL() || "";
+        owned = url.startsWith("file:") || new URL(url).origin === APP_ORIGIN;
+      } catch (_) {
+        /* about:blank etc. — skip */
+      }
+      if (!owned) return;
+      contents
+        .insertCSS(
+          "*, *::before, *::after { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }",
+        )
+        .catch(() => {});
+    });
+  });
+}
 
 // ---------------------------------------------------------------------------
 // SSRF guard for main-process fetches of renderer/AI-supplied URLs.
