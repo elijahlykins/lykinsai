@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Download, ExternalLink, LayoutPanelTop, Loader2, Maximize2, Minimize2 } from "lucide-react";
 import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
-import { useThinkingStatus } from "@/hooks/useThinkingStatus";
+import { useBuildThoughtTrail, useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { safeAttachmentUrl, safeHtmlPreviewUrl, preferInlineHtmlPreview } from "@/lib/safeExternalUrl";
 import { openArtifactInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
 import {
@@ -101,18 +101,22 @@ function ArtifactDownloads({ artifact }: { artifact: ChatArtifact }) {
 export function ArtifactBuildingPlaceholder({
   className = "",
   status: statusProp,
+  trail: trailProp,
 }: {
   className?: string;
-  /** Live build narration ("Writing the code… (12k)"). Falls back to a cycling "Building…" lane. */
+  /** Live build narration ("Building out the hero…"). Falls back to a cycling "Building…" lane. */
   status?: string;
+  trail?: string[];
 }) {
   const fallback = useThinkingStatus(true, "Building…");
   const status = (statusProp && statusProp.trim()) || fallback;
+  const localTrail = useBuildThoughtTrail(status, !trailProp);
+  const trail = trailProp || localTrail;
   return (
     <div
       className={`rounded-2xl border border-black/10 dark:border-white/12 bg-white/70 dark:bg-white/[0.04] backdrop-blur-sm px-4 py-3 shadow-none ${className}`}
     >
-      <ThinkingIndicator status={status || "Designing the build…"} />
+      <ThinkingIndicator status={status || "Designing the build…"} trail={trail} />
     </div>
   );
 }

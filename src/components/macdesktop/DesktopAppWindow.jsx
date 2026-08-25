@@ -43,6 +43,16 @@ const MIN_H = 320;
 // sideways, and its title bar never tucked under the dock, which paints above
 // the windows and would swallow the clicks needed to drag it back out.
 const KEEP_VISIBLE = 96;
+// Split-snap only after the window is actually at the desktop edge — not
+// merely near it — and has been held there. Brushing a side while moving
+// a window around shouldn't light the preview or tile on drop.
+const SNAP_HOLD_MS = 1000;
+
+function snapZoneFor(last, box) {
+  if (last.x <= 0) return "left";
+  if (last.x + last.w >= box.w) return "right";
+  return null;
+}
 
 // ── Motion. Windows pop in from slightly small, shrink away as they close,
 // and drop toward the dock when minimized. MOVE_MS also times the wallpaper-
@@ -167,6 +177,10 @@ export default function DesktopAppWindow({
   const winRef = useRef(null);
   const gestureRef = useRef(null);
   const snapHintRef = useRef(null);
+  const snapZoneRef = useRef(null);
+  const snapHoldTimer = useRef(0);
+  const onSnapHintRef = useRef(onSnapHint);
+  onSnapHintRef.current = onSnapHint;
   const [geom, setGeom] = useState(null);
   const [zoomed, setZoomed] = useState(false);
   // Desktop width, for working out which side is nearer to slide off toward.
@@ -379,6 +393,38 @@ export default function DesktopAppWindow({
   }, [covering]);
   useEffect(() => () => zoomCbRef.current?.(false), []);
 
+  const clearSnapHold = () => {
+    clearTimeout(snapHoldTimer.current);
+    snapHoldTimer.current = 0;
+  };
+
+  const publishSnapHint = (hint) => {
+    if (snapHintRef.current === hint) return;
+    snapHintRef.current = hint;
+    onSnapHintRef.current?.(hint);
+  };
+
+  const updateSnapFromGesture = (g) => {
+    if (g.mode !== "move") return;
+    const zone = snapZoneFor(g.last, g.box);
+    if (zone === snapZoneRef.current) return;
+    snapZoneRef.current = zone;
+    clearSnapHold();
+    publishSnapHint(null);
+    if (!zone) return;
+    snapHoldTimer.current = setTimeout(() => {
+      if (snapZoneRef.current === zone) publishSnapHint(zone);
+    }, SNAP_HOLD_MS);
+  };
+
+  useEffect(
+    () => () => {
+      clearTimeout(snapHoldTimer.current);
+      onSnapHintRef.current?.(null);
+    },
+    [],
+  );
+
   const startGesture = (mode) => (e) => {
     if (e.button !== 0 || zoomed || !geom) return;
     const box = parentBox();
@@ -408,37 +454,20 @@ export default function DesktopAppWindow({
         ? clampGeom({ ...b, x: b.x + dx, y: b.y + dy }, g.box)
         : resizeGeom(b, g.mode, dx, dy, g.box);
     setGeom(g.last);
-    if (g.mode === "move" && onSnapHint) {
-      const edge = 28;
-      const hint =
-        g.last.x <= edge
-          ? "left"
-          : g.last.x + g.last.w >= g.box.w - edge
-            ? "right"
-            : null;
-      if (hint !== snapHintRef.current) {
-        snapHintRef.current = hint;
-        onSnapHint(hint);
-      }
-    }
+    updateSnapFromGesture(g);
   };
 
   const endGesture = () => {
     const g = gestureRef.current;
     gestureRef.current = null;
-    onSnapHint?.(null);
-    snapHintRef.current = null;
+    const armed = snapHintRef.current;
+    clearSnapHold();
+    snapZoneRef.current = null;
+    publishSnapHint(null);
     if (!g?.last) return;
-    if (g.mode === "move" && onTile) {
-      const edge = 28;
-      if (g.last.x <= edge) {
-        onTile("left");
-        return;
-      }
-      if (g.last.x + g.last.w >= g.box.w - edge) {
-        onTile("right");
-        return;
-      }
+    if (g.mode === "move" && onTile && (armed === "left" || armed === "right")) {
+      onTile(armed);
+      return;
     }
     persist(g.last);
   };
@@ -483,6 +512,7 @@ export default function DesktopAppWindow({
         if (!g) return;
         g.last = clampGeom({ ...g.base, x: g.base.x + dx, y: g.base.y + dy }, g.box);
         setGeom(g.last);
+        updateSnapFromGesture(g);
       },
       dragEnd: endGesture,
     };

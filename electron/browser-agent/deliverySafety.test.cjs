@@ -27,7 +27,12 @@ const path = require("node:path");
 
 const executor = require("./runtime/executor.cjs");
 const { looksLikeShareCurrentPageAsk } = require("../ownedBrowserAct.cjs");
-const { runBrowserAgentTask, createBrowserController } = require("./index.cjs");
+const {
+  runBrowserAgentTask,
+  createBrowserController,
+  looksLikePermissionQuestion,
+  permissionAskIsConsequential,
+} = require("./index.cjs");
 
 const TMP = path.join(os.tmpdir(), "lykn-delivery-safety");
 
@@ -239,10 +244,61 @@ test("the control that actually sends is still consequential, described or not",
   );
 });
 
+test("opening a composer is not sending, even when the label mentions send", () => {
+  assert.equal(risk({ type: "click", target: "e1", label: "Reply" }), "low");
+  assert.equal(risk({ type: "click", target: "e1", label: "Forward" }), "low");
+  assert.equal(
+    risk({
+      type: "click_coord",
+      x: 1,
+      y: 1,
+      label: "the Compose button so I can send an email to elijah@lykn.io",
+    }),
+    "low",
+    "send in the purpose of the click is not the click",
+  );
+  assert.equal(
+    risk({ type: "click_coord", x: 1, y: 1, label: "Compose button to send email" }),
+    "low",
+  );
+});
+
+test("permission questions about mid-flow clicks are not treated as commits", () => {
+  assert.equal(looksLikePermissionQuestion("Is it ok if I click Compose?"), true);
+  assert.equal(permissionAskIsConsequential("Is it ok if I click Compose?"), false);
+  assert.equal(permissionAskIsConsequential("Should I click Reply to start the email?"), false);
+  assert.equal(permissionAskIsConsequential("Can I click the Inbox button?"), false);
+  assert.equal(permissionAskIsConsequential("Is it ok if I click Send?"), true);
+  assert.equal(permissionAskIsConsequential("Are you ready for me to send it?"), true);
+  assert.equal(permissionAskIsConsequential("Shall I go ahead and share the folder?"), true);
+});
+
 test("Enter inside a recipient field still counts as the send it is", () => {
   assert.equal(
     risk({ type: "type_coord", x: 1, y: 1, text: "sam@example.com", label: "To recipients", pressEnter: true }),
     "consequential",
+  );
+});
+
+test("clicking a composer field is never a send, whatever the model expects", () => {
+  // The exact prompt the user got: the model wrote "the message is sent" as
+  // the outcome of focusing Gmail's To box, and the gate asked Yes/No.
+  assert.equal(
+    clickRisk("To recipients", "combobox", "the message is sent"),
+    "low",
+    "Gmail To recipients must not ask for approval",
+  );
+  assert.equal(clickRisk("Subject", "textbox", "the email is sent"), "low");
+  assert.equal(clickRisk("Message Body", "textbox", "the message is sent"), "low");
+  assert.equal(clickRisk("To", "combobox", "the email will be sent"), "low");
+  assert.equal(
+    risk({ type: "click_coord", x: 1, y: 1, label: "To recipients" }, "the message is sent"),
+    "low",
+  );
+  assert.equal(
+    clickRisk("Send", "button", "the message is sent"),
+    "consequential",
+    "the real Send still pauses",
   );
 });
 
@@ -382,6 +438,35 @@ for (const question of [
     assert.ok(
       result.task.round > 1,
       "the agent must be pushed to act before the ask is escalated",
+    );
+  });
+}
+
+for (const question of [
+  "Is it ok if I click Compose?",
+  "Can I click the Inbox button?",
+  "Should I click Reply to start the email?",
+]) {
+  test(`mid-flow click permission never reaches the user: ${question.slice(0, 28)}…`, async () => {
+    const fake = makeComposeFake();
+    const result = await runBrowserAgentTask({
+      goal: "send the email",
+      userAsk: "send the email",
+      controller: createBrowserController({ webContents: fake.webContents, actuator: fake.actuator }),
+      model: permissionAskingModel(question),
+      maxRounds: 5,
+      userDataPath: TMP,
+    });
+    await result.learning;
+    assert.notEqual(
+      result.needsApproval,
+      true,
+      "Compose / Reply / Inbox are the agent's job — do not ask the user",
+    );
+    assert.notEqual(
+      result.status,
+      "waiting_for_user",
+      "a mid-flow permission ask must not stop the run for a yes/no",
     );
   });
 }

@@ -17,6 +17,8 @@ interface ThinkingIndicatorProps {
    */
   paused?: boolean;
   className?: string;
+  /** Earlier build thoughts ("Designing the hero") shown above the live line. */
+  trail?: string[];
 }
 
 /**
@@ -31,19 +33,41 @@ export default function ThinkingIndicator({
   tone = "brand",
   paused = false,
   className = "",
+  trail,
 }: ThinkingIndicatorProps) {
   const text = status && status.trim() ? status : "Thinking…";
   const gapClass = compact ? "gap-2" : "gap-3";
+  const prior = (trail || []).filter((line) => line && line !== text).slice(-3);
 
   return (
     <div
-      className={`flex items-center ${gapClass} ${
+      className={`flex flex-col ${compact ? "gap-1" : "gap-1.5"} ${
         tone === "inherit" ? "lykn-mark-inherit" : ""
       } ${className}`}
       aria-live="polite"
     >
-      <LyknOutlineSpinner size={compact ? 16 : 24} paused={paused} />
-      <span className={paused ? "" : "lykn-chat-thinking-text"}>{text}</span>
+      {prior.length > 0 ? (
+        <ul className="space-y-0.5 pl-0.5" aria-label="What LYKN has been building">
+          {prior.map((line) => (
+            <li
+              key={line}
+              className={`leading-snug truncate ${
+                compact ? "text-[11px]" : "text-[12px]"
+              } ${
+                tone === "inherit"
+                  ? "opacity-50"
+                  : "text-black/40 dark:text-white/35"
+              }`}
+            >
+              {line.replace(/[.…]+$/g, "")}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <div className={`flex items-center ${gapClass}`}>
+        <LyknOutlineSpinner size={compact ? 16 : 24} paused={paused} />
+        <span className={paused ? "" : "lykn-chat-thinking-text"}>{text}</span>
+      </div>
     </div>
   );
 }

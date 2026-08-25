@@ -14,6 +14,7 @@ import { uploadFileToStorage } from "@/lib/vault/uploadFileToStorage";
 import { openStudioTab } from "@/lib/studioTabs";
 import { openLyknMediaPop } from "@/lib/lyknMediaPop";
 import { arrangeDesktop } from "@/components/macdesktop/desktopArrange";
+import { STUDIO_SHOW_BROWSER_EVENT } from "@/lib/lyknChat/openInStudioBrowser";
 
 /**
  * Read-class tools don't change anything on disk, but browsing someone's
@@ -180,6 +181,63 @@ function organizeDesktopResult(result: LocalToolResult): LocalToolResult {
   return { ...result, icons: moved, note: `${result.note} ${moved} icons were lined up.` };
 }
 
+type AgentBridge = {
+  agentCreate?: (payload: { goal?: string }) => Promise<{ ok?: boolean; agentId?: string } | null>;
+  studioAgentSend?: (
+    text: string,
+    attachments: unknown[],
+    agentId: string,
+    opts?: Record<string, unknown>,
+  ) => Promise<unknown>;
+};
+
+/**
+ * local_browser_agent — the model decided this turn's work belongs in the
+ * browser. Create a browser agent (its own tab), start the task, and move the
+ * user to the browser so they can watch. No classifier, no offer round-trip:
+ * the model read the tool description and made the call.
+ */
+async function startBrowserAgentTask(args: Record<string, unknown>): Promise<LocalToolResult> {
+  const task = typeof args.task === "string" ? args.task.trim() : "";
+  const url = typeof args.url === "string" ? args.url.trim() : "";
+  if (!task) return { ok: false, error: "No task was provided for the browser agent." };
+  const api = (globalThis as { lykn?: AgentBridge }).lykn;
+  if (!api || typeof api.studioAgentSend !== "function") {
+    return { ok: false, error: "The browser agent is only available in the desktop app." };
+  }
+  const goal = url ? `${task}\n\nStart at: ${url}` : task;
+  // Agents and tabs pair one-to-one, so give the task its own agent. An empty
+  // id falls back to the active agent — a shared tab beats refusing the task.
+  let agentId = "";
+  if (typeof api.agentCreate === "function") {
+    try {
+      const created = await api.agentCreate({ goal });
+      if (created?.ok && created.agentId) agentId = String(created.agentId);
+    } catch {
+      /* fall through to the active agent */
+    }
+  }
+  try {
+    // Resolves when the whole browser run finishes — must not be awaited, or
+    // this chat turn would block for the length of the browser task.
+    void api.studioAgentSend(goal, [], agentId, {}).catch(() => {});
+  } catch {
+    return { ok: false, error: "Couldn't start the browser agent." };
+  }
+  try {
+    window.dispatchEvent(new CustomEvent(STUDIO_SHOW_BROWSER_EVENT));
+  } catch {
+    /* the agent still runs; only the automatic reveal is lost */
+  }
+  return {
+    ok: true,
+    note:
+      "The browser agent is now running the task in its own tab, and the user has been " +
+      "moved to the browser to watch. Tell them it's underway there and they can take over " +
+      "the tab anytime. Do NOT describe steps as if you performed them yourself.",
+  };
+}
+
 /**
  * Run one local tool call and report the result to the server. Safe to call
  * fire-and-forget; never throws.
@@ -192,6 +250,14 @@ export async function executeAwaitingLocalTool(
   const name = tc.name;
   const args = (tc.args || {}) as Record<string, unknown>;
   if (!streamId) return;
+
+  // The browser handoff never touches the filesystem — it runs entirely
+  // through the agent bridge, so it skips the local read/write machinery.
+  if (name === "local_browser_agent") {
+    const result = await startBrowserAgentTask(args);
+    await postResult(apiBase, streamId, tc.id, result);
+    return;
+  }
 
   // First file access of the session — ask before touching anything.
   if (READ_TOOLS.has(name) && !isReadGranted()) {

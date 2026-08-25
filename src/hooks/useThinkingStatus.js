@@ -16,11 +16,11 @@ const THINK_PHASES = [
 
 // Build / Create turns: match research-mode narrativity so a long code-gen
 // wait doesn't freeze on a bare "Building…". Detail-rich overrides
-// ("Building Landing page…", "Writing the code… (12k)") still win.
+// ("Building out the hero…", "Writing the code… (12k)") still win.
 const BUILD_PHASES = [
   { text: "Designing the build…",         duration: 1800 },
   { text: "Sketching the layout…",        duration: 2000 },
-  { text: "Writing the code…",            duration: 2200 },
+  { text: "Building out the sections…",   duration: 2200 },
   { text: "Wiring the interactions…",     duration: 2400 },
   { text: "Assembling the pieces…",       duration: 2600 },
   { text: "Polishing the details…",       duration: 3000 },
@@ -37,11 +37,11 @@ const GENERIC_THINK_RE =
 // Bare build statuses (no title / byte-count detail). Keep title-bearing lines
 // like "Building Landing page…" and progress ticks like "Writing the code… (12k)".
 const GENERIC_BUILD_RE =
-  /^(building(?:\sthe\s(?:app|page|artifact))?|running\stools|designing\sthe\sbuild|sketching\sthe\slayout|writing\sthe\scode|wiring\sthe\sinteractions|assembling\sthe\spieces|drafting\sthe\sdocument|composing\sthe\svideo|laying\sout\sthe\sspreadsheet|almost\sready|putting\son\sthe\sfinishing\stouches)[\s.…]*$/i;
+  /^(building(?:\sthe\s(?:app|page|artifact|sections))?|running\stools|designing\sthe\sbuild|sketching\sthe\slayout|building\sout\sthe\ssections|writing\sthe\scode|wiring\sthe\sinteractions|assembling\sthe\spieces|drafting\sthe\sdocument|composing\sthe\svideo|laying\sout\sthe\sspreadsheet|almost\sready|putting\son\sthe\sfinishing\stouches)[\s.…]*$/i;
 
-/** Live build/create narration — title lines, byte ticks, and the rotating phrases. */
+/** Live build/create narration — title lines, section thoughts, byte ticks. */
 const LIVE_BUILD_STATUS_RE =
-  /^(building|designing|drafting|composing|writing the|laying out|wiring|assembling|sketching|polishing|almost ready|putting on the finishing|creating the|rendering|filling in)/i;
+  /^(building|designing|drafting|composing|writing|laying out|wiring|assembling|sketching|polishing|almost ready|putting (on the finishing|together)|creating the|rendering|filling in|figuring out)/i;
 
 /**
  * True when `status` is a live build/create activity line (including
@@ -54,6 +54,11 @@ export function isLiveBuildStatus(status) {
   if (!t) return false;
   if (GENERIC_THINK_RE.test(t)) return false;
   return GENERIC_BUILD_RE.test(t) || LIVE_BUILD_STATUS_RE.test(t);
+}
+
+/** Bare rotation / orchestrator lines — not a specific section being written. */
+export function isGenericBuildStatus(status) {
+  return GENERIC_BUILD_RE.test(String(status || "").trim());
 }
 
 /**
@@ -129,4 +134,34 @@ export function useThinkingStatus(active, override, preferBuild = false) {
   if (!active) return "";
   if (specificOverride) return specificOverride;
   return phases[Math.min(index, phases.length - 1)].text;
+}
+
+/**
+ * Accumulates distinct section-level build lines while a turn is in flight
+ * so the placeholder can show what LYKN already did, not just the current
+ * phrase. Generic rotation ("Designing the build…") is skipped.
+ */
+export function useBuildThoughtTrail(status, active) {
+  const [trail, setTrail] = useState([]);
+  const lastRef = useRef("");
+
+  useEffect(() => {
+    if (!active) {
+      setTrail([]);
+      lastRef.current = "";
+      return;
+    }
+    const t = String(status || "").trim();
+    if (!t || t === lastRef.current) return;
+    if (GENERIC_THINK_RE.test(t) || GENERIC_BUILD_RE.test(t)) return;
+    if (!LIVE_BUILD_STATUS_RE.test(t)) return;
+    lastRef.current = t;
+    setTrail((prev) => {
+      if (prev[prev.length - 1] === t) return prev;
+      const next = [...prev, t];
+      return next.length > 8 ? next.slice(-8) : next;
+    });
+  }, [status, active]);
+
+  return trail;
 }

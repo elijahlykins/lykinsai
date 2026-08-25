@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>New tab</title>
+    <style>
+      * { box-sizing: border-box; }
+      * { scrollbar-width: none !important; }
+      *::-webkit-scrollbar { display: none !important; }
+
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: #fff;
+        color: #202124;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        overflow: hidden;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      .stage {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 0 24px 9vh;
+      }
+
+      .brand {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        margin-bottom: 40px;
+      }
+
+      .mark {
+        position: relative;
+        width: 176px;
+        height: 176px;
+        cursor: crosshair;
+        touch-action: none;
+      }
+      .mark canvas {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      .mark svg {
+        position: relative;
+        z-index: 1;
+        display: block;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+        pointer-events: none;
+      }
+      .lykn-outline {
+        fill: none;
+        stroke: url(#lykn-prism);
+        stroke-width: 4.2;
+        stroke-linejoin: round;
+        stroke-linecap: round;
+        stroke-dasharray: 1;
+        stroke-dashoffset: 1;
+        filter:
+          drop-shadow(0 0 5px rgba(41, 125, 255, 0.85))
+          drop-shadow(0 0 14px rgba(41, 125, 255, 0.28));
+        animation: lykn-outline-draw 1.8s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+      }
+      @keyframes lykn-outline-draw {
+        from { stroke-dashoffset: 1; }
+        to   { stroke-dashoffset: 0; }
+      }
+
+      .search {
+        width: min(840px, 92vw);
+      }
+      .bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 70px;
+        padding: 0 14px 0 22px;
+        border: 1px solid #dfe1e5;
+        border-radius: 35px;
+        background: #fff;
+        box-shadow: 0 1px 3px rgba(32, 33, 36, 0.06);
+        transition: box-shadow 160ms ease, border-color 160ms ease;
+      }
+      .bar:hover,
+      .bar:focus-within {
+        border-color: transparent;
+        box-shadow: 0 1px 6px rgba(32, 33, 36, 0.18);
+      }
+      .bar input {
+        flex: 1;
+        min-width: 0;
+        height: 100%;
+        border: 0;
+        outline: none;
+        background: transparent;
+        color: #202124;
+        font: 20px/1.4 inherit;
+        user-select: text;
+        -webkit-user-select: text;
+      }
+      .icon-btn {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        border: 0;
+        border-radius: 50%;
+        background: transparent;
+        color: #5f6368;
+        cursor: pointer;
+      }
+      .icon-btn:hover { background: #f1f3f4; color: #202124; }
+      .icon-btn svg { width: 24px; height: 24px; }
+      .icon-btn.is-live { color: #1a4ee2; background: #e8f0fe; }
+
+      .ai-mode {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        height: 44px;
+        padding: 0 16px 0 12px;
+        border: 1px solid #1a4ee2;
+        border-radius: 22px;
+        background: #1a4ee2;
+        color: #fff;
+        font-size: 15px;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .ai-mode:hover { background: #1746c8; border-color: #1746c8; }
+      .ai-mode svg { width: 28px; height: 28px; color: #fff; }
+
+      .home-msg {
+        margin: 10px 2px 0;
+        font-size: 13px;
+        color: #d93025;
+      }
+      .home-msg[hidden] { display: none; }
+
+      /* A floating pane used to enlarge this cluster; that read a size too
+         big once the start page stopped shrinking with the window. Keep one
+         size, and ease it down a little when the pane is clearly not a
+         desktop. */
+      @media (max-width: 1440px) {
+        .mark { width: 160px; height: 160px; }
+        .brand { margin-bottom: 32px; }
+        .search { width: min(760px, 88vw); }
+        .bar { height: 64px; border-radius: 32px; padding: 0 12px 0 18px; }
+        .bar input { font: 18px/1.4 inherit; }
+        .icon-btn { width: 40px; height: 40px; }
+        .icon-btn svg { width: 22px; height: 22px; }
+        .ai-mode { height: 40px; padding: 0 14px 0 10px; font-size: 14px; }
+        .ai-mode svg { width: 24px; height: 24px; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .lykn-outline { animation: none; stroke-dashoffset: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage">
+      <div class="brand">
+        <div class="mark" id="mark">
+          <canvas id="wash" aria-hidden="true"></canvas>
+          <svg viewBox="0 0 204.29 204.29" role="img" aria-label="LYKN" id="lykn-orb">
+            <defs>
+              <linearGradient id="lykn-prism" x1="0" y1="0.08" x2="1" y2="0.92">
+                <stop offset="0" stop-color="#d9f4ff" />
+                <stop offset="0.2" stop-color="#48c7ff" />
+                <stop offset="0.48" stop-color="#146eff" />
+                <stop offset="0.72" stop-color="#0e4fd2" />
+                <stop offset="1" stop-color="#9cddff" />
+              </linearGradient>
+            </defs>
+            <path
+              class="lykn-outline"
+              pathLength="1"
+              d="M167.39,60.26l-.86-.39c-9.83-4.41-17.7-12.28-22.12-22.12l-.39-.86c-1.77-3.94-7.36-3.94-9.13,0l-.39.86c-4.41,9.83-12.28,17.71-22.12,22.12l-.86.39c-3.94,1.77-3.94,7.36,0,9.13l.86.39c9.83,4.41,17.7,12.28,22.12,22.12l.39.86c1.77,3.94,7.36,3.94,9.13,0l.39-.86c4.41-9.83,12.28-17.7,22.12-22.12l.86-.39c3.94-1.77,3.94-7.36,0-9.13ZM134.87,116.05c-14.73,2.8-17.97,18.72-32.73,18.72-8.11,0-12.75-4.81-17.72-9.61-1.8-1.73-3.56-3.5-5.29-5.29-4.8-4.98-9.62-9.61-9.62-17.73,0-14.76,15.93-18,18.72-32.73,2.66-14.03-7.74-27.55-21.99-28.38-13.8-.8-25.24,10.16-25.24,23.79,0,18.8,19.14,21.14,19.14,37.32s-19.14,18.52-19.14,37.32c0,13.16,10.67,23.83,23.83,23.83,18.8,0,21.14-19.14,37.32-19.14s18.52,19.14,37.32,19.14c13.63,0,24.58-11.44,23.78-25.24-.82-14.25-14.35-24.66-28.38-21.99Z"
+            />
+          </svg>
+        </div>
+      </div>
+
+      <form class="search" id="search-form" action="#" autocomplete="off">
+        <div class="bar">
+          <button type="submit" class="icon-btn" id="search" title="Search" aria-label="Search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5" stroke-linecap="round"/></svg>
+          </button>
+          <input
+            id="q"
+            name="q"
+            type="text"
+            spellcheck="false"
+            autocorrect="off"
+            autocapitalize="off"
+            placeholder="Search the web"
+            aria-label="Search the web"
+          />
+          <button type="button" class="icon-btn" id="mic" title="Dictate" aria-label="Dictate">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
+          </button>
+          <button type="button" class="ai-mode" id="ai-mode" title="Open the LYKN agent">
+            <svg viewBox="0 0 204.29 204.29" fill="currentColor" aria-hidden="true">
+              <path d="M167.39,60.26l-.86-.39c-9.83-4.41-17.7-12.28-22.12-22.12l-.39-.86c-1.77-3.94-7.36-3.94-9.13,0l-.39.86c-4.41,9.83-12.28,17.71-22.12,22.12l-.86.39c-3.94,1.77-3.94,7.36,0,9.13l.86.39c9.83,4.41,17.7,12.28,22.12,22.12l.39.86c1.77,3.94,7.36,3.94,9.13,0l.39-.86c4.41-9.83,12.28-17.7,22.12-22.12l.86-.39c3.94-1.77,3.94-7.36,0-9.13ZM134.87,116.05c-14.73,2.8-17.97,18.72-32.73,18.72-8.11,0-12.75-4.81-17.72-9.61-1.8-1.73-3.56-3.5-5.29-5.29-4.8-4.98-9.62-9.61-9.62-17.73,0-14.76,15.93-18,18.72-32.73,2.66-14.03-7.74-27.55-21.99-28.38-13.8-.8-25.24,10.16-25.24,23.79,0,18.8,19.14,21.14,19.14,37.32s-19.14,18.52-19.14,37.32c0,13.16,10.67,23.83,23.83,23.83,18.8,0,21.14-19.14,37.32-19.14s18.52,19.14,37.32,19.14c13.63,0,24.58-11.44,23.78-25.24-.82-14.25-14.35-24.66-28.38-21.99Z"/>
+            </svg>
+            AI Mode
+          </button>
+        </div>
+        <p class="home-msg" id="home-msg" hidden></p>
+      </form>
+    </div>
+    <script>
+      (function () {
+        const MARK_D =
+          "M167.39,60.26l-.86-.39c-9.83-4.41-17.7-12.28-22.12-22.12l-.39-.86c-1.77-3.94-7.36-3.94-9.13,0l-.39.86c-4.41,9.83-12.28,17.71-22.12,22.12l-.86.39c-3.94,1.77-3.94,7.36,0,9.13l.86.39c9.83,4.41,17.7,12.28,22.12,22.12l.39.86c1.77,3.94,7.36,3.94,9.13,0l.39-.86c4.41-9.83,12.28-17.7,22.12-22.12l.86-.39c3.94-1.77,3.94-7.36,0-9.13ZM134.87,116.05c-14.73,2.8-17.97,18.72-32.73,18.72-8.11,0-12.75-4.81-17.72-9.61-1.8-1.73-3.56-3.5-5.29-5.29-4.8-4.98-9.62-9.61-9.62-17.73,0-14.76,15.93-18,18.72-32.73,2.66-14.03-7.74-27.55-21.99-28.38-13.8-.8-25.24,10.16-25.24,23.79,0,18.8,19.14,21.14,19.14,37.32s-19.14,18.52-19.14,37.32c0,13.16,10.67,23.83,23.83,23.83,18.8,0,21.14-19.14,37.32-19.14s18.52,19.14,37.32,19.14c13.63,0,24.58-11.44,23.78-25.24-.82-14.25-14.35-24.66-28.38-21.99Z";
+        const VIEW = 204.29;
+
+        const qEl = document.getElementById("q");
+        const form = document.getElementById("search-form");
+        const mic = document.getElementById("mic");
+        const ai = document.getElementById("ai-mode");
+        const msgEl = document.getElementById("home-msg");
+        const homeApi = () => window.lyknBrowserHome || {};
+        const mark = document.getElementById("mark");
+        const canvas = document.getElementById("wash");
+        const ctx = canvas.getContext("2d", { alpha: true });
+        const clipPath = new Path2D(MARK_D);
+
+        const target = { x: VIEW / 2, y: VIEW / 2 };
+        const head = { x: VIEW / 2, y: VIEW / 2 };
+        const wet = { x: VIEW / 2, y: VIEW / 2 };
+        const drip = { x: VIEW / 2, y: VIEW / 2 };
+        let last = { x: VIEW / 2, y: VIEW / 2 };
+        let armed = false;
+        let hovering = false;
+        let fadeLeft = 0;
+        let raf = 0;
+
+        function sizeCanvas() {
+          const dpr = Math.min(2, window.devicePixelRatio || 1);
+          const css = mark.clientWidth || 176;
+          canvas.width = Math.round(css * dpr);
+          canvas.height = Math.round(css * dpr);
+          ctx.setTransform((dpr * css) / VIEW, 0, 0, (dpr * css) / VIEW, 0, 0);
+        }
+
+        function localPoint(e) {
+          const r = mark.getBoundingClientRect();
+          if (!r.width || !r.height) return null;
+          return {
+            x: ((e.clientX - r.left) / r.width) * VIEW,
+            y: ((e.clientY - r.top) / r.height) * VIEW,
+          };
+        }
+
+        function wash(x, y, radius, rgb, alpha) {
+          const g = ctx.createRadialGradient(x, y, 0, x, y, radius);
+          g.addColorStop(0, `rgba(${rgb},${alpha})`);
+          g.addColorStop(0.28, `rgba(${rgb},${alpha * 0.55})`);
+          g.addColorStop(0.62, `rgba(${rgb},${alpha * 0.16})`);
+          g.addColorStop(1, `rgba(${rgb},0)`);
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(x, y, radius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        function fadeWash(amount) {
+          if (amount <= 0) return;
+          ctx.save();
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.globalCompositeOperation = "destination-out";
+          ctx.fillStyle = `rgba(0,0,0,${amount})`;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.restore();
+        }
+
+        function strokeAt(x, y, speed) {
+          const t = performance.now() * 0.001;
+          const still = Math.max(0, 1 - Math.min(speed, 10) / 10);
+          const bloom = 22 + still * 26;
+          const n1 = Math.sin(t * 1.8 + x * 0.04) * (6 + still * 5);
+          const n2 = Math.cos(t * 1.35 + y * 0.03) * (5 + still * 4);
+          wash(x, y, bloom * 0.52, "41,151,255", 0.22 + still * 0.12);
+          wash(x + n1 * 0.35, y + n2 * 0.35, bloom, "23,104,230", 0.1 + still * 0.06);
+          wash(wet.x + n2 * 0.5, wet.y + n1 * 0.4, bloom * 1.28, "125,211,255", 0.07 + still * 0.05);
+          wash(drip.x + n1, drip.y + n2, bloom * 1.5, "14,79,210", 0.045 + still * 0.03);
+        }
+
+        function tick() {
+          head.x += (target.x - head.x) * 0.2;
+          head.y += (target.y - head.y) * 0.2;
+          wet.x += (head.x - wet.x) * 0.085;
+          wet.y += (head.y - wet.y) * 0.085;
+          drip.x += (wet.x - drip.x) * 0.045;
+          drip.y += (wet.y - drip.y) * 0.045;
+
+          const dx = head.x - last.x;
+          const dy = head.y - last.y;
+          const dist = Math.hypot(dx, dy);
+          const steps = Math.max(1, Math.min(14, Math.ceil(dist / 2.4)));
+
+          if (hovering || dist > 0.2) {
+            ctx.save();
+            ctx.clip(clipPath);
+            ctx.globalCompositeOperation = "source-over";
+            for (let i = 1; i <= steps; i++) {
+              const p = i / steps;
+              strokeAt(last.x + dx * p, last.y + dy * p, dist);
+            }
+            ctx.restore();
+          }
+
+          // Fade after painting so the live stroke stays visible, then evaporates.
+          fadeWash(hovering ? 0.012 : 0.055);
+
+          last.x = head.x;
+          last.y = head.y;
+          if (!hovering && fadeLeft > 0) fadeLeft -= 1;
+
+          const chasing = Math.hypot(target.x - drip.x, target.y - drip.y) > 0.35;
+          raf = hovering || chasing || fadeLeft > 0 ? requestAnimationFrame(tick) : 0;
+        }
+
+        function aim(e, start) {
+          const p = localPoint(e);
+          if (!p) return;
+          target.x = p.x;
+          target.y = p.y;
+          if (start || !armed) {
+            head.x = wet.x = drip.x = last.x = p.x;
+            head.y = wet.y = drip.y = last.y = p.y;
+            armed = true;
+          }
+          if (!raf) raf = requestAnimationFrame(tick);
+        }
+
+        sizeCanvas();
+        mark.addEventListener("pointerenter", (e) => {
+          hovering = true;
+          aim(e, true);
+        });
+        mark.addEventListener("pointermove", (e) => {
+          hovering = true;
+          aim(e, false);
+        });
+        mark.addEventListener("pointerleave", () => {
+          hovering = false;
+          fadeLeft = 90;
+          if (!raf) raf = requestAnimationFrame(tick);
+        });
+
+        function omniboxToUrl(input) {
+          const q = String(input || "").trim();
+          if (!q) return "";
+          if (/^https?:\/\//i.test(q)) return q;
+          const hostish =
+            !/\s/.test(q) &&
+            (/^localhost(:\d+)?([/?#]|$)/i.test(q) ||
+              /^\d{1,3}(\.\d{1,3}){3}(:\d+)?([/?#]|$)/.test(q) ||
+              /^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?([/?#]|$)/i.test(q));
+          if (hostish) return `https://${q}`;
+          return "https://www.google.com/search?q=" + encodeURIComponent(q);
+        }
+
+        let recorder = null;
+        let mediaStream = null;
+        let audioChunks = [];
+        let dictating = false;
+        let transcribing = false;
+        const SEARCH_PLACEHOLDER = "Search the web";
+        const RECORD_MIME = (() => {
+          try {
+            return MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+              ? "audio/webm;codecs=opus"
+              : "audio/webm";
+          } catch (_) {
+            return "audio/webm";
+          }
+        })();
+
+        function showMsg(text) {
+          if (!text) {
+            msgEl.hidden = true;
+            msgEl.textContent = "";
+            return;
+          }
+          msgEl.hidden = false;
+          msgEl.textContent = text;
+        }
+
+        function setMicState() {
+          mic.classList.toggle("is-live", dictating);
+          mic.disabled = transcribing;
+          mic.title = dictating ? "Stop recording" : transcribing ? "Transcribing…" : "Dictate";
+          mic.setAttribute("aria-label", mic.title);
+          if (dictating) qEl.placeholder = "Listening…";
+          else if (transcribing) qEl.placeholder = "Transcribing…";
+          else qEl.placeholder = SEARCH_PLACEHOLDER;
+        }
+
+        async function sendToAgent() {
+          const api = homeApi();
+          if (!api.openAiMode) return false;
+          const text = qEl.value;
+          const res = await api.openAiMode(text);
+          if (res?.ok) {
+            if (text.trim()) qEl.value = "";
+            showMsg("");
+            return true;
+          }
+          return false;
+        }
+
+        function go() {
+          const url = omniboxToUrl(qEl.value);
+          if (!url) {
+            qEl.focus();
+            return;
+          }
+          location.assign(url);
+        }
+
+        form.addEventListener("submit", (e) => {
+          e.preventDefault();
+          go();
+        });
+        qEl.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            go();
+          }
+        });
+
+        ai.addEventListener("click", () => {
+          void sendToAgent();
+        });
+
+        function stopDictation() {
+          try {
+            if (recorder && recorder.state !== "inactive") recorder.stop();
+          } catch (_) {}
+        }
+
+        async function startDictation() {
+          if (dictating || transcribing) return;
+          const api = homeApi();
+          if (!api.ensureMic || !api.transcribe || typeof MediaRecorder === "undefined") {
+            showMsg("Dictation needs the LYKN desktop app.");
+            return;
+          }
+          showMsg("");
+          const allowed = await api.ensureMic();
+          if (!allowed) {
+            showMsg("Enable LYKN under System Settings → Privacy & Security → Microphone, then try again.");
+            return;
+          }
+          let stream;
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          } catch (_) {
+            showMsg("Couldn't start the microphone. Check System Settings and try again.");
+            return;
+          }
+          mediaStream = stream;
+          audioChunks = [];
+          recorder = new MediaRecorder(stream, { mimeType: RECORD_MIME });
+          recorder.ondataavailable = (e) => {
+            if (e.data && e.data.size > 0) audioChunks.push(e.data);
+          };
+          recorder.onstop = async () => {
+            try { mediaStream && mediaStream.getTracks().forEach((t) => t.stop()); } catch (_) {}
+            mediaStream = null;
+            recorder = null;
+            dictating = false;
+            const blob = new Blob(audioChunks, { type: RECORD_MIME });
+            audioChunks = [];
+            if (blob.size < 2000) {
+              setMicState();
+              return;
+            }
+            transcribing = true;
+            setMicState();
+            try {
+              const buf = await blob.arrayBuffer();
+              const res = await api.transcribe(buf, RECORD_MIME, qEl.value);
+              if (res?.error) {
+                showMsg(res.error);
+              } else {
+                const text = res && res.text ? String(res.text).trim() : "";
+                if (text) {
+                  const cur = qEl.value.trim();
+                  qEl.value = cur ? `${cur} ${text}` : text;
+                } else {
+                  showMsg("Couldn't pick up any speech. Try again.");
+                }
+              }
+            } catch (_) {
+              showMsg("Transcription failed. Try again.");
+            }
+            transcribing = false;
+            setMicState();
+            qEl.focus();
+          };
+          recorder.onerror = () => {
+            dictating = false;
+            transcribing = false;
+            setMicState();
+          };
+          recorder.start();
+          dictating = true;
+          setMicState();
+        }
+
+        mic.addEventListener("click", () => {
+          if (transcribing) return;
+          if (dictating) stopDictation();
+          else void startDictation();
+        });
+
+        qEl.focus();
+      })();
+    </script>
+  </body>
+</html>

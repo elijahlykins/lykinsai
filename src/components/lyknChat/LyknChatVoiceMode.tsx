@@ -1,8 +1,8 @@
-import React, { useEffect } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import React from "react";
 import { useRealtimeVoice, type RealtimeVoiceState } from "@/hooks/useRealtimeVoice";
 import { isElevenLabsVoice } from "@/lib/voice/voiceConfig";
 import LyknChatVoiceModeEleven from "./LyknChatVoiceModeEleven";
+import VoiceModePopup from "./VoiceModePopup";
 import VoiceTechOrb from "./VoiceTechOrb";
 
 interface LyknChatVoiceModeProps {
@@ -53,61 +53,36 @@ function LyknChatVoiceModeOpenAI({ open, onClose, chatId, voice, buildInstructio
   const { state, micLevel, errorText, interrupt, retry } =
     useRealtimeVoice({ active: open, chatId, voice, buildInstructions, onUserTranscript, onAssistantReply, onDisplayDocument });
 
-  // Esc still exits, even with no visible close button.
-  useEffect(() => {
-    if (!open) return undefined;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-
   return (
-    <AnimatePresence>
-      {open && (
-        <motion.div
-          key="voice-mode"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.2 }}
-          // Sits above the chat/canvas content but BELOW the app chrome
-          // (sidebar z-70/z-80, top panel z-70) so those stay visible and
-          // the top-panel Voice button can toggle this off.
-          className="lykn-voice-overlay fixed inset-0 z-[67] flex flex-col items-center justify-center bg-background"
-          role="dialog"
-          aria-modal="false"
-          aria-label="Voice Mode"
-        >
+    <VoiceModePopup open={open} onClose={onClose}>
+      <button
+        type="button"
+        onClick={interrupt}
+        className="relative flex items-center justify-center outline-none"
+        style={{ width: 148, height: 148 }}
+        title={state === "speaking" ? "Tap to interrupt" : undefined}
+        aria-label="Voice orb"
+      >
+        <VoiceTechOrb state={state} micLevel={micLevel} size={148} />
+      </button>
+
+      {/* Status only — live transcript/reply are intentionally hidden here
+          (they read as confusing/glitchy mid-turn). The full conversation
+          is persisted to the chat thread instead. */}
+      <div className="mt-1 flex flex-col items-center gap-1.5 text-center px-2">
+        <span className="text-foreground/75 text-sm font-medium">
+          {state === "error" ? (errorText || STATUS_COPY.error) : STATUS_COPY[state]}
+        </span>
+        {state === "error" && (
           <button
             type="button"
-            onClick={interrupt}
-            className="relative flex items-center justify-center outline-none"
-            style={{ width: 320, height: 320 }}
-            title={state === "speaking" ? "Tap to interrupt" : undefined}
-            aria-label="Voice orb"
+            onClick={() => void retry()}
+            className="mt-0.5 px-3 py-1 rounded-full bg-foreground/10 hover:bg-foreground/15 text-foreground/80 text-xs transition-colors"
           >
-            <VoiceTechOrb state={state} micLevel={micLevel} size={320} />
+            Try again
           </button>
-
-          {/* Status only — live transcript/reply are intentionally hidden here
-              (they read as confusing/glitchy mid-turn). The full conversation
-              is persisted to the chat thread instead. */}
-          <div className="mt-10 flex flex-col items-center gap-2 text-center max-w-xl px-6">
-            <span className="text-foreground/80 text-base font-medium">
-              {state === "error" ? (errorText || STATUS_COPY.error) : STATUS_COPY[state]}
-            </span>
-            {state === "error" && (
-              <button
-                type="button"
-                onClick={() => void retry()}
-                className="mt-1 px-4 py-1.5 rounded-full bg-foreground/10 hover:bg-foreground/15 text-foreground/80 text-sm transition-colors"
-              >
-                Try again
-              </button>
-            )}
-          </div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+        )}
+      </div>
+    </VoiceModePopup>
   );
 }

@@ -1,7 +1,8 @@
 /**
  * Route http(s) clicks from chat (artifacts, sources, markdown links) into
  * the LYKN in-app browser — each open creates a new agent tab so the AI can
- * act on that page independently.
+ * act on that page independently. The native agent side chat opens with
+ * that tab — not the home Chat / Build / Imagine / Research composer.
  *
  * Preference order:
  *  1. studioOpenUrl — fresh labeled agent tab + Studio Browser tab switch
@@ -13,22 +14,36 @@
  * preventDefault); false means fall back to the default <a> / window.open.
  */
 
+import { getActiveThreadChatId } from "@/lib/chat/chatThreadRuntime";
+import {
+  bindBrowserTabChat,
+  markPendingBrowserChat,
+} from "@/lib/lyknChat/browserChatAttach";
+
 export const STUDIO_SHOW_BROWSER_EVENT = "lykn-studio-show-browser";
 
+type OpenResult = { ok?: boolean; id?: string; agentId?: string };
+
 type LyknStudioBridge = {
-  studioOpenUrl?: (url: string, title?: string) => Promise<unknown>;
+  studioOpenUrl?: (
+    url: string,
+    title?: string,
+    opts?: { chatId?: string },
+  ) => Promise<OpenResult | unknown>;
   studioOpenArtifact?: (payload: {
     url?: string;
     html?: string;
     title?: string;
     kind?: string;
-  }) => Promise<unknown>;
+    chatId?: string;
+  }) => Promise<OpenResult | unknown>;
   openExternal?: (url: string, title?: string) => void;
 };
 
 /** @deprecated Kept for call-site compatibility; every open is a new agent now. */
 export type OpenInStudioBrowserOptions = {
   newTab?: boolean;
+  chatId?: string;
 };
 
 function lyknBridge(): LyknStudioBridge | undefined {
@@ -36,10 +51,42 @@ function lyknBridge(): LyknStudioBridge | undefined {
   return (window as unknown as { lykn?: LyknStudioBridge }).lykn;
 }
 
-function showStudioBrowserTab() {
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent(STUDIO_SHOW_BROWSER_EVENT));
+function activeChatId(explicit?: string): string {
+  return String(explicit || getActiveThreadChatId() || "").trim();
+}
+
+export type ShowStudioBrowserDetail = {
+  chatId?: string;
+  agentId?: string;
+  url?: string;
+  title?: string;
+  openRail?: boolean;
+};
+
+function showStudioBrowserTab(detail: ShowStudioBrowserDetail = {}) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent(STUDIO_SHOW_BROWSER_EVENT, { detail }),
+  );
+}
+
+function showOpenedTab(
+  result: OpenResult | unknown,
+  meta: { url?: string; title?: string; chatId?: string },
+) {
+  const payload = result && typeof result === "object" ? (result as OpenResult) : {};
+  const agentId = String(payload.id || payload.agentId || "").trim();
+  // The tab id is known now — pair it with the conversation that opened it,
+  // so the browser rail shows that chat instead of a fresh agent thread.
+  if (agentId && meta.chatId) {
+    bindBrowserTabChat(agentId, meta.chatId, { url: meta.url, title: meta.title });
   }
+  showStudioBrowserTab({
+    agentId: agentId || undefined,
+    url: meta.url,
+    title: meta.title,
+    openRail: true,
+  });
 }
 
 /** True when the desktop app can open URLs in the LYKN browser. */
@@ -59,22 +106,38 @@ export function studioBrowserAvailable(): boolean {
 export function openInStudioBrowser(
   url: string,
   title?: string,
-  _opts?: OpenInStudioBrowserOptions,
+  opts?: OpenInStudioBrowserOptions,
 ): boolean {
   const target = String(url || "").trim();
   if (!/^https?:\/\//i.test(target)) return false;
   const lykn = lyknBridge();
   if (!lykn) return false;
+  const chatId = activeChatId(opts?.chatId);
 
   try {
     // Prefer studioOpenUrl so each link/artifact gets its own labeled agent.
     if (typeof lykn.studioOpenUrl === "function") {
-      void lykn.studioOpenUrl(target, title);
-      showStudioBrowserTab();
+      // Park the chat id before the tab id exists — the rail claims it the
+      // moment the new tab reports in, even if that beats the open's reply.
+      if (chatId) markPendingBrowserChat(chatId);
+      showStudioBrowserTab({
+        url: target,
+        title,
+        openRail: true,
+      });
+      void Promise.resolve(
+        lykn.studioOpenUrl(target, title, {
+          chatId: chatId || undefined,
+        }),
+      )
+        .then((res) => showOpenedTab(res, { url: target, title, chatId }))
+        .catch(() => {});
       return true;
     }
     if (typeof lykn.openExternal === "function") {
+      if (chatId) markPendingBrowserChat(chatId);
       lykn.openExternal(target, title);
+      showStudioBrowserTab({ url: target, title, openRail: true });
       return true;
     }
   } catch {
@@ -94,7 +157,7 @@ export function openArtifactInStudioBrowser(artifact: {
   srcDoc?: string | null;
   title?: string | null;
   kind?: string | null;
-}): boolean {
+}, opts?: OpenInStudioBrowserOptions): boolean {
   const lykn = lyknBridge();
   if (!lykn) return false;
 
@@ -102,22 +165,33 @@ export function openArtifactInStudioBrowser(artifact: {
   const html = typeof artifact.srcDoc === "string" ? artifact.srcDoc : "";
   const title = String(artifact.title || "Artifact").trim() || "Artifact";
   const kind = String(artifact.kind || "artifact").trim() || "artifact";
+  const chatId = activeChatId(opts?.chatId);
 
   if (!/^https?:\/\//i.test(url) && !html.trim()) return false;
 
   try {
     if (typeof lykn.studioOpenArtifact === "function") {
-      void lykn.studioOpenArtifact({
-        url: /^https?:\/\//i.test(url) ? url : undefined,
-        html: html.trim() || undefined,
+      if (chatId) markPendingBrowserChat(chatId);
+      showStudioBrowserTab({
+        url: url || undefined,
         title,
-        kind,
+        openRail: true,
       });
-      showStudioBrowserTab();
+      void Promise.resolve(
+        lykn.studioOpenArtifact({
+          url: /^https?:\/\//i.test(url) ? url : undefined,
+          html: html.trim() || undefined,
+          title,
+          kind,
+          chatId: chatId || undefined,
+        }),
+      )
+        .then((res) => showOpenedTab(res, { url: url || undefined, title, chatId }))
+        .catch(() => {});
       return true;
     }
     if (/^https?:\/\//i.test(url)) {
-      return openInStudioBrowser(url, title);
+      return openInStudioBrowser(url, title, opts);
     }
   } catch {
     return false;

@@ -14,7 +14,9 @@ Procedure:
    not automatically a Gmail task. Only fall back to the user's mail client
    when no other product was named.
 2. Identify recipient(s), the message's purpose, and any content the user
-   specified verbatim.
+   specified verbatim. If the request named who to write but not what to say,
+   ask that once and write from the answer. Do not interview them — no
+   follow-up about tone, subject, or when it should go out.
 3. When the request refers to a past message, template or "the usual format",
    go find it — open the sent folder, the campaign archive, or the saved
    template and read it before writing. Do not ask the user to describe it.

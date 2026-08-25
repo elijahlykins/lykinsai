@@ -1,22 +1,29 @@
 /**
- * Cross-mode ask detection for the Studio's sticky mode pages (Build /
- * Imagine / Research). Explicit deliverable requests route down the active
- * page's pipeline, so a clearly out-of-lane commission ("generate an image
- * of a dog" on Research) must be caught BEFORE dispatch. Ordinary questions
- * remain conversational in every mode. Phrase lists are trimmed-down mirrors
- * of lib/imageGenIntent.cjs and lib/artifactBuildIntent.cjs.
+ * Cross-mode ask detection for the Studio's sticky mode pages (Chat /
+ * Build / Imagine / Research). Explicit deliverable requests route down
+ * the active page's pipeline, so a clearly out-of-lane commission
+ * ("generate an image of a dog" on Chat or Research) must be caught
+ * BEFORE dispatch. Ordinary questions remain conversational in every
+ * mode. Phrase lists are trimmed-down mirrors of lib/imageGenIntent.cjs
+ * and lib/artifactBuildIntent.cjs.
  */
 
-export type StudioStickyMode = "build" | "imagine" | "research";
+export type StudioStickyMode = "chat" | "build" | "imagine" | "research";
 
 const COMMISSION_VERB_RE =
   /\b(?:make|build|create|generate|design|draft|produce|prepare|compose|put together|whip up|mock up|draw up|draw|give|need|want|do)\b(?:\s+(?:me|us))?\s+(?:a|an|the|some|my|another|one)\s+/gi;
 
 const IMAGE_NOUN = String.raw`(?:images?|pictures?|photos?|photographs?|pics?|logos?|illustrations?|icons?|wallpapers?|art ?works?|drawings?|sketch(?:es)?|portraits?|avatars?|thumbnails?|stickers?|posters?|banners?|memes?|graphics?|visuals?|collages?)`;
 const IMAGE_NOUN_RE = new RegExp(String.raw`^(?:${IMAGE_NOUN})\b`, "i");
-/** "an image of a dog" / "picture of ..." with no commissioning verb. */
-const IMAGE_NOUN_LEAD_RE = new RegExp(
-  String.raw`\b${IMAGE_NOUN}\s+(?:of|for|with|showing|depicting)\b`,
+/**
+ * A bare Imagine-style prompt — the message IS the description ("an image of
+ * a dog on a bike", "picture of the northern lights"). Anchored to the start
+ * on purpose: "who painted the picture of the girl with the pearl earring"
+ * and "tell me about the image of earth" mention an image mid-sentence and
+ * are questions ABOUT one, not requests FOR one.
+ */
+const IMAGE_NOUN_PROMPT_RE = new RegExp(
+  String.raw`^(?:(?:a|an|the|some)\s+)?${IMAGE_NOUN}\s+(?:of|for|with|showing|depicting)\b`,
   "i",
 );
 
@@ -37,6 +44,26 @@ const RESEARCH_NOUN_RE = new RegExp(String.raw`^(?:${RESEARCH_NOUN})\b`, "i");
 const RESEARCH_PHRASE_RE =
   /\b(?:deep\s+research|research\s+(?:report|paper)|literature\s+review|market\s+research|research\s+(?:on|about|into)\s)\b/i;
 
+/** "summarize this image" / "describe the picture" — vision, not generation. */
+const IMAGE_ANALYSIS_LEAD_RE =
+  /^(?:can you|could you|would you|please|hey|ok|okay|so|now|then|and)?[,\s]*(?:summari[sz]e|explain|describe|analy[sz]e|review|read|look at|tell me about|improve|fix|edit|update|revise|shorten|expand|lengthen|critique|proofread|rewrite|reword)\b/i;
+
+/**
+ * Wh- and aux-led questions ("what do you think of this picture of my dog",
+ * "how do I make an image transparent", "is this a good photo for LinkedIn")
+ * ask ABOUT an image and want an answer in the conversation. A commission
+ * phrased as a question addresses us instead — "can you make a picture of a
+ * sunset" — so leads followed by "you" are not treated as questions.
+ */
+const QUESTION_LEAD_RE =
+  /^(?:hey|ok(?:ay)?|so|now|then|and|but|also|please|hmm+|um+|uh+)?[,\s!.-]*(?:what|what's|whats|who|who's|whos|whose|which|where|where's|when|why|how|is|are|was|were|am|does|do|did|has|have|had|should|shouldn't|isn't|aren't|don't|doesn't|didn't|can't|couldn't|won't|wouldn't)\b(?!\s+you\b)/i;
+
+/** "I attached a photo of my garden…" — the image already exists. */
+const EXISTING_IMAGE_RE = new RegExp(
+  String.raw`\b(?:attached|attaching|uploaded|uploading|sent you|sharing|shared)\b.{0,40}\b${IMAGE_NOUN}\b`,
+  "i",
+);
+
 /** True when a commissioning verb's direct object matches `nounRe`. */
 function commissioned(text: string, nounRe: RegExp): boolean {
   const re = new RegExp(COMMISSION_VERB_RE.source, "gi");
@@ -49,8 +76,13 @@ function commissioned(text: string, nounRe: RegExp): boolean {
 }
 
 export function detectImageAsk(text: string): boolean {
-  if (commissioned(text, IMAGE_NOUN_RE) || IMAGE_NOUN_LEAD_RE.test(text)) return true;
-  return ART_VERB_ASK_RE.test(text) && !BUILD_NOUN_ANYWHERE_RE.test(text);
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (IMAGE_ANALYSIS_LEAD_RE.test(t)) return false;
+  if (QUESTION_LEAD_RE.test(t)) return false;
+  if (EXISTING_IMAGE_RE.test(t)) return false;
+  if (commissioned(t, IMAGE_NOUN_RE) || IMAGE_NOUN_PROMPT_RE.test(t)) return true;
+  return ART_VERB_ASK_RE.test(t) && !BUILD_NOUN_ANYWHERE_RE.test(t);
 }
 
 export function detectBuildAsk(text: string): boolean {
@@ -69,7 +101,7 @@ export function detectResearchAsk(text: string): boolean {
 export function detectStudioModeRedirect(
   text: string,
   mode: StudioStickyMode,
-): { target: StudioStickyMode; label: string } | null {
+): { target: Exclude<StudioStickyMode, "chat">; label: string } | null {
   const t = String(text || "").trim();
   if (!t || t.length > 600) return null;
 
@@ -77,6 +109,10 @@ export function detectStudioModeRedirect(
   const wantsBuild = detectBuildAsk(t);
   const wantsResearch = detectResearchAsk(t);
 
+  if (mode === "chat") {
+    if (wantsImage) return { target: "imagine", label: "Imagine" };
+    return null;
+  }
   if (mode === "imagine") {
     if (wantsImage) return null;
     if (wantsBuild) return { target: "build", label: "Build" };
@@ -97,4 +133,12 @@ export function detectStudioModeRedirect(
     return { target: "research", label: "Research" };
   }
   return null;
+}
+
+/** Instant Chat-mode reply when the user asks for an image off Imagine. */
+export function imagineSwitchNotice(): string {
+  return (
+    "Image generation lives in Imagine. Switch to **Imagine** using the pills at the top of the page " +
+    "and send it again — I'll take it from there."
+  );
 }

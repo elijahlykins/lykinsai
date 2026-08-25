@@ -115,6 +115,7 @@ protocol.registerSchemesAsPrivileged([
 // theme — in which case they get LYKN's dark-first default, which matches.
 nativeTheme.themeSource = "dark";
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 const fs = require("node:fs/promises");
 const fsSync = require("node:fs");
 const crypto = require("node:crypto");
@@ -140,7 +141,6 @@ const appDock = require("./appDock.cjs");
 const chromeSync = require("./chromeSync.cjs");
 const { createAgentRuntime } = require("./agentRuntime.cjs");
 const agentTabIds = require("./agentTabIds.cjs");
-const { decideChatRoute } = require("./chatAgentRoute.cjs");
 const { buildDiagnosticsReport } = require("./diagnostics.cjs");
 const {
   wrapReportAsStageHtml,
@@ -2166,19 +2166,22 @@ function setOverlayClickThrough(enabled) {
 /** Re-key the glass bar for typing after another app (or the agent stage) stole focus. */
 function focusOverlayForTyping() {
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  // Working the agents from the Studio's docked browser with Glass hidden —
-  // don't pop Glass open; the keyboard belongs to the Studio's agent rail.
-  if (!overlayWindow.isVisible() && studioStageEmbedActive()) {
-    try {
-      if (studioWindow.isVisible()) studioWindow.focus();
-    } catch (_) {}
+  // Glass is its own feature and appears ONLY when the user summons it
+  // (⌘/Ctrl+L or an explicit "Open LYKN Glass"). If it's hidden, this
+  // must never show it — hand the keyboard to the Studio rail if that's
+  // where the work is, otherwise do nothing.
+  if (!overlayWindow.isVisible()) {
+    if (studioStageEmbedActive()) {
+      try {
+        if (studioWindow.isVisible()) studioWindow.focus();
+      } catch (_) {}
+    }
     return;
   }
   try {
     healOverlayGeometry(false);
   } catch (_) {}
   try {
-    if (!overlayWindow.isVisible()) overlayWindow.show();
     // Panel windows often accept the click but never become key after Cursor/etc.
     if (process.platform === "darwin") {
       try {
@@ -3551,6 +3554,12 @@ const agentBrowserViews = new Map();
 // Attaching a blank WebContentsView lets macOS briefly paint its white default
 // surface over the browser page, even when its bounds are immediately parked.
 const agentBrowserViewsReady = new Set();
+// Bots currently armed for a user-approved browser run. Their hidden tabs must
+// keep a REAL-sized, attached surface (parked fully offscreen) — a detached or
+// zero-sized WebContentsView stops producing compositor frames, and frames are
+// exactly what the tiny live viewport above the chat bar captures every beat.
+// Updated by the agent runtime via setBotShotAgents.
+const agentBotShotIds = new Set();
 const agentBrowserLabels = new Map();
 /** Hard ceiling on open browser tabs — matches MAX_WORKER_AGENTS (each
  *  worker agent owns a tab), keeping tab count and agent count capped
@@ -3763,21 +3772,88 @@ function agentBrowserPartition(agentId) {
 }
 
 /**
- * Home page for a fresh agent tab. A real search page (rather than the branded
- * welcome document) means a new tab is immediately a page the agent can act on,
- * which keeps the browser + agent loop straightforward to reason about.
+ * Home page for a fresh agent tab. The LYKN start page looks like a classic
+ * search landing and keeps the omnibox empty so typing starts clean.
  */
-const AGENT_BROWSER_HOME_URL = "https://www.google.com";
+const AGENT_BROWSER_HOME_URL = pathToFileURL(
+  path.join(__dirname, "agent-browser-home.html"),
+).href;
 
-/** Bare Google homepage (new-tab home) — omnibox stays empty so typing starts clean. */
+/** LYKN start page (new-tab home) — omnibox stays empty so typing starts clean. */
 function isAgentBrowserHomeUrl(url) {
+  return ownedBrowserAct.isAgentBrowserHomeDocument(url);
+}
+
+/** Home-page IPC only — the same preload is injected into every agent tab. */
+function agentBrowserHomeSender(event) {
+  const sender = event?.sender;
+  if (!sender || sender.isDestroyed?.()) return null;
+  try {
+    if (!ownedBrowserAct.isAgentBrowserHomeDocument(sender.getURL?.() || "")) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  return sender;
+}
+
+function sanitizeHomeAttachments(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw.slice(0, 6)) {
+    if (!item || typeof item !== "object") continue;
+    const name = String(item.name || "file").slice(0, 200);
+    if (item.kind === "image") {
+      const dataUrl = String(item.dataUrl || "");
+      if (!/^data:image\/[\w+.-]+;base64,/i.test(dataUrl)) continue;
+      if (dataUrl.length > 8_000_000) continue;
+      out.push({ kind: "image", name, dataUrl });
+      continue;
+    }
+    const text = String(item.text || "").slice(0, 200_000);
+    if (!text) continue;
+    out.push({ kind: "text", name, text });
+  }
+  return out;
+}
+
+async function attachmentsFromPickedPaths(filePaths) {
+  const out = [];
+  for (const p of (filePaths || []).slice(0, 6)) {
+    try {
+      const name = path.basename(p);
+      const ext = path.extname(p).toLowerCase();
+      const imgMime = IMAGE_MIME_BY_EXT[ext];
+      if (imgMime) {
+        const buf = await fs.readFile(p);
+        out.push({
+          kind: "image",
+          name,
+          dataUrl: `data:${imgMime};base64,${buf.toString("base64")}`,
+        });
+      } else if (TEXT_FILE_RE.test(name)) {
+        const text = await fs.readFile(p, "utf8");
+        out.push({ kind: "text", name, text });
+      } else {
+        out.push({ kind: "text", name, text: `(Attached file: ${name})` });
+      }
+    } catch {
+      /* skip unreadable file */
+    }
+  }
+  return out;
+}
+
+/** Tabs that were still sitting on the old Google homepage should become LYKN home. */
+function isLegacyGoogleHomeUrl(url) {
   try {
     const u = new URL(String(url || "").trim());
     if (!/^https?:$/i.test(u.protocol)) return false;
     const host = u.hostname.replace(/^www\./i, "").toLowerCase();
     if (host !== "google.com") return false;
-    const path = (u.pathname || "/").replace(/\/+$/, "") || "";
-    return !path && !u.search && !u.hash;
+    const rest = (u.pathname || "/").replace(/\/+$/, "") || "";
+    return !rest && !u.search && !u.hash;
   } catch (_) {
     return false;
   }
@@ -4041,13 +4117,7 @@ function wireAgentPopupWindow(childWindow, { parentWc, agentId } = {}) {
   childWc.on("will-navigate", (event, url) => {
     if (!agentStageUrlAllowed(url)) event.preventDefault();
   });
-  childWc.session?.setPermissionRequestHandler?.((_w, permission, callback) => {
-    const allow =
-      permission === "fullscreen" ||
-      permission === "clipboard-sanitized-write" ||
-      permission === "clipboard-read";
-    callback(allow);
-  });
+  wireAgentSessionPermissions(childWc.session);
   // OAuth runs in this popup — it needs the same Chrome-looking client hints.
   wireAgentSessionClientHints(childWc.session);
   // If the opener navigates the popup after about:blank, re-raise it once.
@@ -4836,10 +4906,21 @@ const agentTabZoomLogged = new Map();
 function applyAgentTabZoom(id, view, width) {
   // Artifact tabs render our own responsive report HTML — it already fits.
   if (isAgentArtifactTabId(id)) return;
-  const factor = agentTabZoomForWidth(width);
-  if (!factor) return;
   const wc = view?.webContents;
   if (!wc || wc.isDestroyed()) return;
+  // The start page is our layout, not a 1280-wide website. Scaling it with
+  // the pane is what made a floating window look like a tiny Google clone
+  // in the middle of a lot of white. Keep it at 100% and let the page size
+  // itself; real sites still get the fit-to-pane zoom below.
+  let home = false;
+  try {
+    const url = wc.getURL?.() || "";
+    home =
+      isAgentBrowserHomeUrl(url) ||
+      ownedBrowserAct.isPlaceholderAgentUrl(url);
+  } catch (_) {}
+  const factor = home ? 1 : agentTabZoomForWidth(width);
+  if (!factor) return;
   try {
     if (Math.abs(wc.getZoomFactor() - factor) > 0.001) wc.setZoomFactor(factor);
     // The authoritative record of what zoom this view runs at. Input
@@ -4872,6 +4953,120 @@ function fitAgentTabsToPane(width) {
   for (const [id, view] of agentBrowserViews) applyAgentTabZoom(id, view, width);
 }
 
+/**
+ * Where a Bot's hidden-but-working tab parks: hanging off the host window's
+ * bottom-right corner at a real page size, with a 2×2 px corner of the
+ * surface still ON the window.
+ *
+ * The overlap is the load-bearing part. A view with NO on-window
+ * intersection stops being composited by macOS if it has never been shown —
+ * capturePage returns empty images and even CDP Page.captureScreenshot gets
+ * no frame, which left the mini viewport on "Opening the browser…" until the
+ * user revealed the tab by hand. (Fully-offscreen parks at edge+40 and at
+ * x=20000 were both tried and both starved; the docked pane's own edge+40
+ * park survives only because that view was already on screen once.) Two
+ * pixels of the page's top-left corner peeking into the window corner keep
+ * the layer live for a view straight from creation, and are imperceptible.
+ *
+ * The measurement must come from the window the view is ATTACHED to: an
+ * earlier version measured the hidden stage window while the view sat on the
+ * (wider) Studio window, and the "offscreen" park landed inside it as a big
+ * floating page. Callers pass the host; the park is also re-asserted on
+ * every shot tick, so a window resize can misplace it for at most one
+ * capture beat before it is pushed back into the corner.
+ */
+function botShotParkBounds(host) {
+  let hostW = 0;
+  let hostH = 0;
+  try {
+    if (host && !host.isDestroyed()) [hostW, hostH] = host.getContentSize();
+  } catch (_) {}
+  const width = Math.max(720, Math.min(1280, studioStageBounds?.width || hostW || 1024));
+  const height = Math.max(520, Math.min(960, studioStageBounds?.height || hostH || 720));
+  return { x: Math.max(hostW - 2, 0), y: Math.max(hostH - 2, 0), width, height };
+}
+
+/** The window a hidden Bot tab should live on for capture. */
+function botShotHostWindow() {
+  if (studioStageEmbedActive()) return studioWindow;
+  if (agentStageWindow && !agentStageWindow.isDestroyed() && agentStageWindow.isVisible()) {
+    return agentStageWindow;
+  }
+  if (studioWindow && !studioWindow.isDestroyed()) return studioWindow;
+  if (agentStageWindow && !agentStageWindow.isDestroyed()) return agentStageWindow;
+  return null;
+}
+
+/**
+ * Make a Bot's hidden tab capturable right now: attach it to a live window
+ * and park it offscreen at real size. ensureAgentBrowserWindow creates
+ * headless tabs detached and zero-sized ("park before attaching"), and a view
+ * in that state never paints — capturePage returns empty images forever,
+ * which is why the mini viewport used to sit on "Opening the browser…" until
+ * the user revealed the tab once by hand. Called when a run arms and on every
+ * shot tick (cheap: attach happens only when the view is not already on the
+ * host; re-parking tracks the live window size across resizes and the
+ * dock/undock transfers that re-parent every view).
+ */
+function prepareBotShotSurface(agentId) {
+  const id = String(agentId || "").trim();
+  const view = agentBotShotView(id);
+  if (!view) return;
+  const host = botShotHostWindow();
+  if (!host) return;
+  let attached = false;
+  try {
+    attached = host.contentView?.children?.includes?.(view) === true;
+  } catch (_) {}
+  if (!attached) {
+    // Views live on one window at a time — release the other host first, the
+    // same way the dock/undock transfers do. Top-of-stack is fine: all but a
+    // 2×2 px corner of the park sits outside the window's content.
+    if (host !== agentStageWindow) detachViewFromWindow(agentStageWindow, view);
+    if (host !== studioWindow) detachViewFromWindow(studioWindow, view);
+    attachViewToWindow(host, view);
+    setViewVisible(view, true);
+  }
+  try {
+    view.setBounds(botShotParkBounds(host));
+  } catch (_) {}
+}
+
+/** The armed tab's view — unless that tab is actually on screen right now,
+ *  in which case the real layout owns it and we must not touch it. */
+function agentBotShotView(id) {
+  const view = agentBrowserViews.get(id);
+  if (!view) return null;
+  const onScreen =
+    id === agentStageActiveId &&
+    ((studioStageEmbedActive() && studioStageRevealed) ||
+      (agentStageWindow && !agentStageWindow.isDestroyed() && agentStageWindow.isVisible()));
+  return onScreen ? null : view;
+}
+
+/** The agent runtime reports which Bots hold a browser go-ahead; layout keeps
+ *  those tabs' surfaces alive offscreen instead of parking them at zero size. */
+function setBotShotAgents(ids = []) {
+  const next = new Set(
+    (Array.isArray(ids) ? ids : []).map((x) => String(x || "").trim()).filter(Boolean),
+  );
+  let changed = next.size !== agentBotShotIds.size;
+  if (!changed) {
+    for (const id of next) {
+      if (!agentBotShotIds.has(id)) {
+        changed = true;
+        break;
+      }
+    }
+  }
+  if (!changed) return;
+  agentBotShotIds.clear();
+  for (const id of next) agentBotShotIds.add(id);
+  for (const id of next) prepareBotShotSurface(id);
+  // Disarmed tabs fall back to the regular 0×0 park on this pass.
+  layoutAgentStageViews();
+}
+
 function layoutAgentStageViews() {
   // Docked in the Studio window — lay everything out inside the panel rect
   // the Studio renderer reported instead of filling the stage window.
@@ -4902,6 +5097,13 @@ function layoutAgentStageViews() {
     fitAgentTabsToPane(b.width);
     for (const [id, view] of agentBrowserViews) {
       try {
+        // A Bot working an approved browser run keeps a real-sized surface
+        // parked outside the window, so the mini viewport keeps getting
+        // frames — the 0×0 park below stops the compositor cold.
+        if (id !== agentStageActiveId && agentBotShotIds.has(id)) {
+          view.setBounds(botShotParkBounds(studioWindow));
+          continue;
+        }
         if (!agentBrowserViewsReady.has(id)) {
           view.setBounds({ x: b.x, y: b.y + chromeH, width: 0, height: 0 });
           continue;
@@ -4939,6 +5141,12 @@ function layoutAgentStageViews() {
   fitAgentTabsToPane(width);
   for (const [id, view] of agentBrowserViews) {
     try {
+      // Armed Bot tab: real-sized offscreen park so its shot feed keeps
+      // painting (see the docked branch above).
+      if (id !== agentStageActiveId && agentBotShotIds.has(id)) {
+        view.setBounds(botShotParkBounds(agentStageWindow));
+        continue;
+      }
       if (!agentBrowserViewsReady.has(id)) {
         view.setBounds({ x: 0, y: chromeH, width: 0, height: 0 });
         continue;
@@ -5044,8 +5252,8 @@ function pushAgentStageState() {
       url = active.webContents.getURL() || "";
       title = active.webContents.getTitle() || "";
       if (ownedBrowserAct.isPlaceholderAgentUrl(url)) url = "";
-      // New-tab home (Google) still loads in the page view, but the omnibox
-      // stays empty so the user can type immediately.
+      // New-tab home still loads in the page view, but the omnibox stays
+      // empty so the user can type immediately.
       else if (isAgentBrowserHomeUrl(url)) url = "";
     }
   } catch (_) {}
@@ -5253,11 +5461,17 @@ function wireAgentBrowserViewEvents(agentId, view) {
     // native page view and let the regular stage layout reveal it.
     agentBrowserViewsReady.add(agentId);
     layoutAgentStageViews();
-    // New-tab home just painted — reclaim the caret for the omnibox before
-    // the page (e.g. Google) autofocuses its own search box.
+    // New-tab home just painted. Leave the caret in the page search box
+    // (Google-style). Only reclaim the omnibox after leaving the start page.
     if (agentStagePendingOmniboxFocusId === agentId) {
       agentStagePendingOmniboxFocusId = null;
-      setTimeout(() => focusAgentStageOmnibox(), 0);
+      let pageUrl = "";
+      try {
+        pageUrl = wc.getURL() || "";
+      } catch (_) {}
+      if (!isAgentBrowserHomeUrl(pageUrl)) {
+        setTimeout(() => focusAgentStageOmnibox(), 0);
+      }
     }
   });
   // Canva / Google / Apple login use window.open (often about:blank first).
@@ -5329,15 +5543,41 @@ function wireAgentBrowserViewEvents(agentId, view) {
   try {
     if (app.userAgentFallback) wc.setUserAgent(app.userAgentFallback);
   } catch (_) {}
-  wc.session.setPermissionRequestHandler((_wc, permission, callback) => {
-    const allow =
-      permission === "fullscreen" ||
-      permission === "clipboard-sanitized-write" ||
-      permission === "clipboard-read";
-    callback(allow);
-  });
+  wireAgentSessionPermissions(wc.session);
   wireAgentSessionClientHints(wc.session);
   wireAgentSessionDownloads(wc.session);
+}
+
+// Agent tabs share a partition. One session handler so a later OAuth popup
+// cannot strip microphone access from the start page. Media is allowed only
+// while that tab is actually on the bundled home document.
+const permissionWiredSessions = new WeakSet();
+function agentBrowserAllowsPermission(webContents, permission) {
+  if (
+    permission === "fullscreen" ||
+    permission === "clipboard-sanitized-write" ||
+    permission === "clipboard-read"
+  ) {
+    return true;
+  }
+  if (permission === "media") {
+    try {
+      return ownedBrowserAct.isAgentBrowserHomeDocument(webContents?.getURL?.());
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+function wireAgentSessionPermissions(sess) {
+  if (!sess || permissionWiredSessions.has(sess)) return;
+  permissionWiredSessions.add(sess);
+  sess.setPermissionRequestHandler((webContents, permission, callback) => {
+    callback(agentBrowserAllowsPermission(webContents, permission));
+  });
+  sess.setPermissionCheckHandler((webContents, permission) =>
+    agentBrowserAllowsPermission(webContents, permission),
+  );
 }
 
 // Overriding app.userAgentFallback is only half the disguise: Chromium keeps
@@ -5537,7 +5777,7 @@ function ensureAgentBrowserWindow(agentId, { show = false, focus = true, label }
     agentBrowserViews.set(id, view);
     agentBrowserMeta.set(id, {
       url: AGENT_BROWSER_HOME_URL,
-      pageTitle: "Google",
+      pageTitle: "New tab",
       kind: "browse",
       incognito,
     });
@@ -5565,7 +5805,8 @@ function ensureAgentBrowserWindow(agentId, { show = false, focus = true, label }
         const needsHome =
           !cur ||
           /^about:blank$/i.test(cur) ||
-          /^lykn:\/\/new-tab(?:[/?#]|$)/i.test(cur);
+          /^lykn:\/\/new-tab(?:[/?#]|$)/i.test(cur) ||
+          isLegacyGoogleHomeUrl(cur);
         if (needsHome) loadAgentBrowserHome(wc);
       }
     } catch (_) {}
@@ -5606,6 +5847,7 @@ function destroyAgentBrowserWindow(agentId) {
   if (!view) return;
   agentBrowserViews.delete(id);
   agentBrowserViewsReady.delete(id);
+  agentBotShotIds.delete(id);
   agentTabZoomLogged.delete(id);
   detachViewFromWindow(agentStageWindow, view);
   detachViewFromWindow(studioWindow, view);
@@ -5728,7 +5970,8 @@ async function toggleAgentIncognito(agentId) {
   if (
     !resumeUrl ||
     ownedBrowserAct.isPlaceholderAgentUrl(resumeUrl) ||
-    /agent-browser-welcome\.html/i.test(resumeUrl)
+    ownedBrowserAct.isAgentBrowserHomeDocument(resumeUrl) ||
+    isLegacyGoogleHomeUrl(resumeUrl)
   ) {
     resumeUrl = "";
   } else if (/^lykn:\/\//i.test(resumeUrl) || prevMeta.kind === "artifact") {
@@ -5795,7 +6038,7 @@ async function toggleAgentIncognito(agentId) {
   agentBrowserMeta.set(id, {
     ...prevMeta,
     url: resumeUrl || AGENT_BROWSER_HOME_URL,
-    pageTitle: prevMeta.pageTitle || (resumeUrl ? "" : "Google"),
+    pageTitle: prevMeta.pageTitle || (resumeUrl ? "" : "New tab"),
     kind: prevMeta.kind === "artifact" && resumeUrl ? "artifact" : "browse",
     incognito: next,
   });
@@ -6386,11 +6629,11 @@ async function openUrlPreferAgentBrowser(url, { title } = {}) {
 }
 
 /** Tell the Studio renderer to switch to its Browser tab (harmless if not mounted). */
-function notifyStudioShowBrowser() {
+function notifyStudioShowBrowser(detail = {}) {
   try {
     const win = studioWindowRef();
     if (win && !win.isDestroyed()) {
-      win.webContents.send("lykn:studio-show-browser");
+      win.webContents.send("lykn:studio-show-browser", detail || {});
     }
   } catch (_) {}
 }
@@ -6696,6 +6939,11 @@ function initAgentRuntime() {
     getBrowsingContext,
     getActiveBrowseAgentId: () => resolveAgentBrowseTargetId() || agentStageActiveId || null,
     agentTabs: agentTabsCapability,
+    // Bot mini-viewport support: which hidden tabs must keep painting for
+    // capturePage, and a nudge to rebuild a surface when a capture comes
+    // back empty (fresh tab, or a dock/undock re-parented the view).
+    setBotShotAgents,
+    prepareBotShotSurface,
   });
   agentRuntimeLoadPromise = Promise.resolve(agentRuntime.load()).catch((err) => {
     console.warn("[agent-runtime] load failed:", err?.message || err);
@@ -11333,8 +11581,8 @@ function registerOverlayIpc() {
           label: switched?.agent?.title || "Agent",
         });
       }
-      showOverlay();
-      focusOverlayForTyping();
+      // Glass only appears on an explicit summon (⌘L / "Open LYKN Glass") —
+      // clicking a finish notice raises the agent's browser, nothing else.
     } catch (_) {}
   });
   ipcMain.on("lykn:reset-overlay-position", () => {
@@ -11703,7 +11951,9 @@ function registerOverlayIpc() {
   ipcMain.handle("lykn:agent-create", async (_e, payload = {}) => {
     // "New agent" from the rail = new tab too: agents and tabs are paired.
     const res = runtime().createAgent(payload || {});
-    if (res?.ok && res.agentId) {
+    // Silent creation (LYKN Bots building a Bot) still gets its paired tab
+    // from the runtime, but must not raise the browser window or steal focus.
+    if (res?.ok && res.agentId && !payload?.silent) {
       try {
         showAgentBrowserWindow(res.agentId, {
           focus: true,
@@ -11713,6 +11963,11 @@ function registerOverlayIpc() {
       } catch (_) {}
     }
     return res;
+  });
+  // LYKN Bots adopting an agent created before the headless flag existed:
+  // mark it so the runtime stops raising the browser window for its runs.
+  ipcMain.handle("lykn:agent-set-headless", async (_e, { agentId, headless } = {}) => {
+    return runtime().setAgentHeadless?.(agentId, headless !== false) || { ok: false };
   });
   ipcMain.handle("lykn:agent-list", async () => {
     const rt = runtime();
@@ -12479,7 +12734,7 @@ function registerOverlayIpc() {
    * is the folder picker — it names the file and chooses the folder in one
    * step, and it is the panel people already know for "put this over there".
    */
-  ipcMain.handle("lykn:save-file-as", async (e, { name, bytes } = {}) => {
+  ipcMain.handle("lykn:save-file-as", async (e, { name, bytes, filters } = {}) => {
     try {
       const buf = Buffer.from(bytes || []);
       if (!buf.length) return { ok: false, error: "empty" };
@@ -12489,6 +12744,7 @@ function registerOverlayIpc() {
         undefined;
       const res = await dialog.showSaveDialog(parent, {
         defaultPath: path.join(app.getPath("downloads"), String(name || "file")),
+        filters: Array.isArray(filters) && filters.length ? filters : undefined,
         properties: ["createDirectory", "showOverwriteConfirmation"],
       });
       if (res.canceled || !res.filePath) return { ok: false, canceled: true };
@@ -12657,13 +12913,14 @@ function registerOverlayIpc() {
   // Studio to its Browser tab right after this call, which docks the
   // views — so when the browser isn't docked yet the tab is selected
   // quietly instead of flashing the standalone stage window.
-  ipcMain.handle("lykn:studio-open-url", async (_e, { url, title } = {}) => {
+  ipcMain.handle("lykn:studio-open-url", async (_e, { url, title, chatId, attachChat } = {}) => {
     const target = String(url || "").trim();
     if (!/^https?:\/\//i.test(target)) return { ok: false, error: "bad_url" };
     if (agentBrowserMainTabCount() >= MAX_AGENT_BROWSER_TABS) {
       return { ok: false, error: `max_tabs_${MAX_AGENT_BROWSER_TABS}` };
     }
     const label = String(title || "").trim().slice(0, 48);
+    const sourceChatId = String(chatId || "").trim();
     const docked = studioStageEmbedActive();
     const studioOpen = !!(studioWindow && !studioWindow.isDestroyed());
     // Quiet create when Studio is open but Browser isn't docked yet — the
@@ -12678,7 +12935,19 @@ function registerOverlayIpc() {
       }) || openStudioBrowserTabWithUrl(target, { focus: docked });
     if (!id) return { ok: false, error: "open_failed" };
     if (label) agentBrowserLabels.set(id, label);
-    notifyStudioShowBrowser();
+    if (sourceChatId) {
+      agentBrowserMeta.set(id, {
+        ...(agentBrowserMeta.get(id) || {}),
+        sourceChatId,
+      });
+    }
+    setAgentChatOpen(true, id);
+    notifyStudioShowBrowser({
+      agentId: id,
+      url: target,
+      title: label || undefined,
+      openRail: true,
+    });
     if (docked) {
       showAgentBrowserWindow(id, { focus: true, label: label || undefined });
     } else {
@@ -12698,6 +12967,7 @@ function registerOverlayIpc() {
     const html = typeof payload.html === "string" ? payload.html : "";
     const label = String(payload.title || "Artifact").trim().slice(0, 48) || "Artifact";
     const kind = String(payload.kind || "artifact").trim() || "artifact";
+    const sourceChatId = String(payload.chatId || "").trim();
     if (!url && !html.trim()) return { ok: false, error: "empty" };
 
     const docked = studioStageEmbedActive();
@@ -12722,6 +12992,7 @@ function registerOverlayIpc() {
         ownerAgentId: ownerId,
         url: url || "lykn://artifact",
         pageTitle: label,
+        ...(sourceChatId ? { sourceChatId } : {}),
       });
       ensureAgentBrowserWindow(ownerId, {
         show: docked,
@@ -12734,7 +13005,13 @@ function registerOverlayIpc() {
         title: label,
         kind,
       });
-      notifyStudioShowBrowser();
+      setAgentChatOpen(true, ownerId);
+      notifyStudioShowBrowser({
+        agentId: ownerId,
+        url: url || undefined,
+        title: label,
+        openRail: true,
+      });
       if (docked) {
         showAgentBrowserWindow(ownerId, { focus: true, label });
       } else {
@@ -12756,28 +13033,21 @@ function registerOverlayIpc() {
       // The user clicked "Open" — fronting is the whole point here.
       force: true,
     });
-    notifyStudioShowBrowser();
+    notifyStudioShowBrowser({
+      url: url || undefined,
+      title: label,
+      openRail: true,
+    });
     return opened;
   });
-  // Does this prompt belong to the browser agent rather than the chat model?
-  //
-  // The chat surface cannot answer this itself. Knowing that "open up Mailchimp
-  // and build the campaign" is browser work — and that "what is Mailchimp good
-  // for?" is not — takes the whole venue table and the skill classifier, which
-  // live here in main. Without asking, the chat can only do what a chat can do:
-  // it writes the campaign into the conversation and tells the user to paste it
-  // into Mailchimp themselves, which is the exact thing they asked not to do.
-  ipcMain.handle("lykn:agent-route-check", async (_e, { text } = {}) => {
-    try {
-      return decideChatRoute(text);
-    } catch (_) {
-      return { route: "chat" };
-    }
-  });
+  // The pre-send browser-route classifier and its offer flow are gone: the
+  // chat model now sees local_browser_agent in its tool schemas and decides
+  // for itself when a task belongs in the browser (see mcp-tools/localTools.js
+  // and src/lib/ai/localToolExecutor.ts).
 
   // Studio agent rail chat bar → Main orchestrator. Enables Agent Mode
   // quietly (no floating sidebar window — the rail is already showing).
-  ipcMain.handle("lykn:studio-bar-send", async (_e, { text, attachments, agentId, fromSuggestion } = {}) => {
+  ipcMain.handle("lykn:studio-bar-send", async (_e, { text, attachments, agentId, fromSuggestion, bot } = {}) => {
     const rt = runtime();
     try {
       if (!rt.isAgentModeOn?.()) rt.setAgentMode?.(true);
@@ -12786,12 +13056,118 @@ function registerOverlayIpc() {
     // runtime's active agent. With no target at all, the runtime creates a
     // fresh agent (and its paired tab) for the prompt.
     const target = String(agentId || "").trim() || rt.getActiveId?.() || "";
-    return rt.send(target, { text, attachments, fromSuggestion: !!fromSuggestion });
+    return rt.send(target, { text, attachments, fromSuggestion: !!fromSuggestion, bot: bot || null });
   });
 
   // Empty browser-tab composer → the browser agent. The preload exists on all
   // agent pages, so verify this is our bundled welcome document and identify
   // its paired agent from the sender before accepting the prompt.
+  ipcMain.handle("lykn:agent-browser-ai-mode", async (event, { text, attachments } = {}) => {
+    const sender = agentBrowserHomeSender(event);
+    if (!sender) return { ok: false, error: "invalid_sender" };
+    let agentId = "";
+    for (const [id, view] of agentBrowserViews) {
+      if (view?.webContents === sender) {
+        agentId = id;
+        break;
+      }
+    }
+    if (!agentId) return { ok: false, error: "unknown_browser_tab" };
+    const rt = runtime();
+    try {
+      if (!rt.isAgentModeOn?.()) rt.setAgentMode?.(true);
+    } catch (_) {}
+    setAgentChatOpen(true, agentId);
+    const goal = String(text || "").trim();
+    const atts = sanitizeHomeAttachments(attachments);
+    if (goal || atts.length) {
+      void rt.send(agentId, {
+        text: goal,
+        attachments: atts,
+        fromSuggestion: false,
+      }).catch(() => {});
+    }
+    return { ok: true };
+  });
+
+  ipcMain.handle("lykn:agent-browser-ensure-mic", async (event) => {
+    if (!agentBrowserHomeSender(event)) return false;
+    try {
+      const status = microphoneStatus();
+      if (status === "granted") return true;
+      if (IS_MAC) {
+        if (status === "not-determined") {
+          return await withPermissionPrompt("microphone", () =>
+            systemPreferences.askForMediaAccess("microphone"),
+          );
+        }
+        openMicrophoneSettings();
+        return false;
+      }
+      if (status === "denied" || status === "restricted") {
+        openMicrophoneSettings();
+        return false;
+      }
+      return true;
+    } catch {
+      return !IS_MAC;
+    }
+  });
+
+  ipcMain.handle("lykn:agent-browser-transcribe", async (event, { audio, mimeType, prompt } = {}) => {
+    if (!agentBrowserHomeSender(event)) return { error: "invalid_sender" };
+    try {
+      const token = await getAuthToken();
+      if (!token) return { error: "Sign in to LYKN first to use dictation." };
+
+      const buf = Buffer.from(audio || []);
+      if (!buf || buf.length < 2000) return { text: "" };
+
+      const fd = new FormData();
+      fd.append("audio", new Blob([buf], { type: mimeType || "audio/webm" }), "dictation.webm");
+      fd.append("model", "whisper-1");
+      fd.append("language", "en");
+      if (prompt) fd.append("prompt", String(prompt).split(/\s+/).slice(-12).join(" "));
+
+      const res = await fetch(`${API_BASE}/api/ai/transcribe`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { error: `Transcription failed (${res.status}).` };
+      return {
+        text: String(data?.text || "").trim(),
+        noSpeech: Number(data?.no_speech_prob) || 0,
+      };
+    } catch (e) {
+      return { error: `Transcription failed: ${e && e.message ? e.message : e}` };
+    }
+  });
+
+  ipcMain.handle("lykn:agent-browser-pick-files", async (event) => {
+    const sender = agentBrowserHomeSender(event);
+    if (!sender) return [];
+    try {
+      const parent =
+        BrowserWindow.fromWebContents(sender) ||
+        (studioWindow && !studioWindow.isDestroyed() ? studioWindow : undefined) ||
+        BrowserWindow.getFocusedWindow() ||
+        undefined;
+      const res = await dialog.showOpenDialog(parent, {
+        title: "Attach files",
+        buttonLabel: "Add",
+        properties: ["openFile", "multiSelections"],
+      });
+      if (res.canceled || !Array.isArray(res.filePaths) || !res.filePaths.length) {
+        return [];
+      }
+      return attachmentsFromPickedPaths(res.filePaths);
+    } catch {
+      return [];
+    }
+  });
+
   ipcMain.handle("lykn:agent-browser-welcome-send", async (event, { text, requestId } = {}) => {
     const goal = String(text || "").trim();
     if (!goal) return { ok: false, error: "empty_prompt" };
@@ -14715,7 +15091,10 @@ function registerWelcomeIpc() {
       return chromeSync.detectBrowsers().map((browser) => ({
         id: browser.id,
         name: browser.name,
-        profiles: chromeSync.listProfiles(browser).length,
+        profiles: chromeSync.listProfiles(browser).map((p) => ({
+          dir: p.dir,
+          name: p.name,
+        })),
       }));
     }
     return [];
@@ -14752,7 +15131,14 @@ function registerWelcomeIpc() {
   // Import stage "Next": remember the chosen source browser — the actual
   // import runs later, once that feature lands.
   ipcMain.handle("lykn:welcome-import", (_e, browser) => {
-    mergeWelcomeProfile({ importBrowser: String(browser || "") });
+    if (browser && typeof browser === "object") {
+      mergeWelcomeProfile({
+        importBrowser: String(browser.id || browser.browser || ""),
+        importProfileDir: String(browser.profileDir || ""),
+      });
+    } else {
+      mergeWelcomeProfile({ importBrowser: String(browser || "") });
+    }
     return { ok: true };
   });
 
@@ -15336,14 +15722,100 @@ function registerWelcomeIpc() {
     return { ok: true };
   });
 
-  // Make LYKN Yours: theme + layout picks from the customization slides.
-  ipcMain.handle("lykn:welcome-prefs", (_e, prefs = {}) => {
+  // Make LYKN Yours: theme, response, and chat-color picks. IDs match
+  // Settings › Appearance / Assistant (`src/lib/appearance.js`).
+  const WELCOME_ACCENTS = new Set([
+    "snow", "sand", "sage", "mist", "ocean",
+    "periwinkle", "orchid", "clay", "graphite",
+  ]);
+  const WELCOME_INKS = new Set([
+    "default", "accent", "white", "ivory", "silver", "graphite", "charcoal",
+    "blue", "sky", "teal", "green", "yellow", "orange", "red", "pink", "purple",
+    "navy", "forest", "crimson", "rust", "plum",
+  ]);
+  const sanitizeWelcomeDesign = (prefs = {}) => {
     const patch = {};
-    if (typeof prefs.accent === "string" && /^#[0-9a-f]{6}$/i.test(prefs.accent)) patch.accent = prefs.accent;
-    if (["dark", "light", "auto"].includes(prefs.appearance)) patch.appearance = prefs.appearance;
-    if (["top", "sidebar"].includes(prefs.tabLayout)) patch.tabLayout = prefs.tabLayout;
-    if (["studio", "chat", "browser"].includes(prefs.startView)) patch.startView = prefs.startView;
-    mergeWelcomeProfile(patch);
+    if (WELCOME_ACCENTS.has(prefs.accent)) patch.accent = prefs.accent;
+    // Older walkthroughs stored a hex swatch — keep it so a mid-upgrade
+    // profile still writes, but the renderer only applies named ids.
+    if (typeof prefs.accent === "string" && /^#[0-9a-f]{6}$/i.test(prefs.accent)) {
+      patch.accent = prefs.accent;
+    }
+    if (["dark", "light", "system", "auto"].includes(prefs.appearance)) {
+      patch.appearance = prefs.appearance === "auto" ? "system" : prefs.appearance;
+    }
+    if (["concise", "medium", "detailed"].includes(prefs.responseLength)) {
+      patch.responseLength = prefs.responseLength;
+    }
+    if (typeof prefs.userPrompt === "string") patch.userPrompt = prefs.userPrompt.slice(0, 1500);
+    if (WELCOME_INKS.has(prefs.chatUserTextColor)) patch.chatUserTextColor = prefs.chatUserTextColor;
+    if (WELCOME_INKS.has(prefs.chatBubbleColor)) patch.chatBubbleColor = prefs.chatBubbleColor;
+    if (WELCOME_INKS.has(prefs.chatAiTextColor)) patch.chatAiTextColor = prefs.chatAiTextColor;
+    if (["small", "default", "large", "xlarge"].includes(prefs.chatUserTextSize)) {
+      patch.chatUserTextSize = prefs.chatUserTextSize;
+    }
+    if (["small", "default", "large", "xlarge"].includes(prefs.chatAiTextSize)) {
+      patch.chatAiTextSize = prefs.chatAiTextSize;
+    }
+    if (["small", "default", "large", "xlarge"].includes(prefs.chatBarSize)) {
+      patch.chatBarSize = prefs.chatBarSize;
+    }
+    if (["tail", "round", "pill", "rectangle", "leaf"].includes(prefs.chatBubbleShape)) {
+      patch.chatBubbleShape = prefs.chatBubbleShape;
+    }
+    if (["soft", "rectangle", "slate", "leaf"].includes(prefs.chatBarShape)) {
+      patch.chatBarShape = prefs.chatBarShape;
+    }
+    if (["arrow", "arrowRight", "plane", "return", "chevron", "sparkle"].includes(prefs.chatSendIcon)) {
+      patch.chatSendIcon = prefs.chatSendIcon;
+    }
+    if (["default", "circle", "squircle", "rounded", "square"].includes(prefs.chatSendShape)) {
+      patch.chatSendShape = prefs.chatSendShape;
+    }
+    return patch;
+  };
+  const readWelcomeDesign = () => {
+    try {
+      const profile = readWelcomeProfile();
+      return {
+        ok: true,
+        stamp: Number(profile.welcomeDesignStamp) || 0,
+        prefs: {
+          accent: profile.accent,
+          appearance: profile.appearance,
+          responseLength: profile.responseLength,
+          userPrompt: profile.userPrompt,
+          chatUserTextColor: profile.chatUserTextColor,
+          chatBubbleColor: profile.chatBubbleColor,
+          chatAiTextColor: profile.chatAiTextColor,
+          chatUserTextSize: profile.chatUserTextSize,
+          chatAiTextSize: profile.chatAiTextSize,
+          chatBarSize: profile.chatBarSize,
+          chatBubbleShape: profile.chatBubbleShape,
+          chatBarShape: profile.chatBarShape,
+          chatSendIcon: profile.chatSendIcon,
+          chatSendShape: profile.chatSendShape,
+        },
+      };
+    } catch {
+      return { ok: true, stamp: 0, prefs: {} };
+    }
+  };
+  const broadcastWelcomeDesign = (payload) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      try {
+        if (!win.isDestroyed()) {
+          win.webContents.send("lykn:welcome-design-changed", payload);
+        }
+      } catch (_) {}
+    }
+  };
+  ipcMain.handle("lykn:welcome-design-get", () => readWelcomeDesign());
+  ipcMain.handle("lykn:welcome-prefs", (_e, prefs = {}) => {
+    const patch = sanitizeWelcomeDesign(prefs);
+    const stamp = Date.now();
+    mergeWelcomeProfile({ ...patch, welcomeDesignStamp: stamp });
+    broadcastWelcomeDesign({ prefs: { ...readWelcomeDesign().prefs }, stamp });
     return { ok: true };
   });
 

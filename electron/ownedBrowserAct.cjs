@@ -8013,12 +8013,19 @@ function looksLikeRetargetSearchToSite(text) {
   );
 }
 
+function isAgentBrowserHomeDocument(url) {
+  const u = String(url || "");
+  if (/^lykn:\/\/new-tab\b/i.test(u)) return true;
+  if (/agent-browser-home\.html(?:[?#]|$)/i.test(u)) return true;
+  if (/agent-browser-welcome\.html(?:[?#]|$)/i.test(u)) return true;
+  return false;
+}
+
 function isPlaceholderAgentUrl(url) {
   const u = String(url || "");
   if (!u || /^about:blank$/i.test(u)) return true;
-  // Empty agent tab welcome page (file://…/agent-browser-welcome.html or lykn://new-tab).
-  if (/^lykn:\/\/new-tab\b/i.test(u)) return true;
-  if (/agent-browser-welcome\.html(?:[?#]|$)/i.test(u)) return true;
+  // Empty agent tab: the LYKN start page (or the older welcome document).
+  if (isAgentBrowserHomeDocument(u)) return true;
   // Report/artifact tabs use data:text/html;base64,… — those are real pages.
   // Only treat tiny non-base64 data URLs (legacy welcome fallback) as empty.
   if (/^data:/i.test(u)) {
@@ -12640,6 +12647,7 @@ module.exports = {
   looksLikeBrowseSiteClarification,
   priorAskedForSiteClarification,
   isStockBrowseIntent,
+  isAgentBrowserHomeDocument,
   isPlaceholderAgentUrl,
   looksLikeCurrentTabTask,
   looksLikePageQuestionAsk,

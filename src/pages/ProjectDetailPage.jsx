@@ -36,25 +36,17 @@ import {
   FolderKanban,
   ListTodo,
   MapPin,
-  Moon,
   Pause,
   Play,
   Library,
   Plus,
   Trash2,
-  UserPlus,
   Users,
   X,
 } from "lucide-react";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { supabase } from "@/lib/supabase";
 import { toast } from "@/components/ui/use-toast";
-import {
-  inviteProjectMember,
-  listProjectMembers,
-  removeProjectMember,
-  setMemberRole,
-} from "@/lib/projectMembers";
 import {
   addNeuronsToProject,
   deleteUserProject,
@@ -63,15 +55,10 @@ import {
   listProjectPushEvents,
   listProjectStateUpdates,
   listUserProjects,
-  removeNeuronFromProject,
   setActiveProjectId,
   setUserProjectStatus,
 } from "@/lib/userProjects";
-import { findMorningBrief, isFreshMorningBrief } from "@/lib/morningBrief";
-import MorningBriefCard from "@/components/projects/MorningBriefCard";
-import StewardKanban from "@/components/projects/StewardKanban";
 import TasksBoard from "@/components/projects/TasksBoard";
-import { listStewardItems } from "@/lib/stewardQueue";
 import {
   createProjectEvent,
   updateProjectEvent,
@@ -98,7 +85,6 @@ import {
   relativeTime,
   splitMembers,
 } from "@/components/projects/projectShared";
-import VaultDocumentViewer from "@/components/lyknChat/VaultDocumentViewer";
 import DatePickerPopover from "@/components/ui/DatePickerPopover";
 import MenuSelectPopover from "@/components/ui/MenuSelectPopover";
 import TimePickerPopover, { formatTimeLabel } from "@/components/ui/TimePickerPopover";
@@ -1239,222 +1225,6 @@ function EventsPanel({ userId, projectId, events, onChanged, filterDay = null, o
 }
 
 // ---------------------------------------------------------------------------
-// Members — the project's collaborators (lykn_project_members, 109/110).
-// Owner can invite by email, change roles (editor/viewer), and remove people.
-// Everyone else sees a read-only roster. Neuron clustering stays personal;
-// what's shared is the project's state, tasks, and calendar.
-// ---------------------------------------------------------------------------
-const ROLE_BADGE = {
-  owner: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-  editor: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-  viewer: "bg-black/[0.06] dark:bg-white/[0.08] text-black/55 dark:text-white/55",
-};
-
-function initialFor(email) {
-  const s = String(email || "?").trim();
-  return (s[0] || "?").toUpperCase();
-}
-
-function MembersCard({ userId, projectId, isOwner }) {
-  const queryClient = useQueryClient();
-  const [email, setEmail] = useState("");
-  const [role, setRole] = useState("editor");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-
-  const { data: members = [], isLoading } = useQuery({
-    queryKey: ["lykn_project_members", userId || "guest", projectId],
-    queryFn: () => listProjectMembers(userId, projectId),
-    enabled: !!userId && !!projectId,
-    staleTime: 30 * 1000,
-  });
-
-  const refetch = useCallback(
-    () =>
-      queryClient.invalidateQueries({
-        queryKey: ["lykn_project_members", userId || "guest", projectId],
-      }),
-    [queryClient, userId, projectId],
-  );
-
-  const handleInvite = async () => {
-    if (busy) return;
-    setError("");
-    setNotice("");
-    setBusy(true);
-    const res = await inviteProjectMember(userId, projectId, email, role);
-    setBusy(false);
-    if (!res.ok) {
-      setError(res.error || "Could not send the invite.");
-      return;
-    }
-    setEmail("");
-    const addr = email.trim().toLowerCase();
-    if (res.status === "added") {
-      setNotice(
-        res.emailSent
-          ? `${addr} has a LYKN account — they're on the project now (we emailed them too).`
-          : `${addr} has a LYKN account — they're on the project now.`,
-      );
-    } else if (res.status === "already_member") {
-      setNotice(`${addr} is already on this project.`);
-    } else if (res.status === "already_invited") {
-      setNotice(`${addr} already has a pending invite.`);
-    } else {
-      setNotice(
-        res.emailSent
-          ? `Invite emailed to ${addr} — they'll get access when they sign up with that email.`
-          : `Invite added for ${addr} — they'll get access when they sign in with that email.`,
-      );
-    }
-    refetch();
-  };
-
-  const handleRole = async (m, nextRole) => {
-    await setMemberRole(userId, m.id, nextRole);
-    refetch();
-  };
-
-  const handleRemove = async (m) => {
-    const who = m.email || "this collaborator";
-    if (!window.confirm(`Remove ${who} from this project?`)) return;
-    await removeProjectMember(userId, m.id);
-    refetch();
-  };
-
-  const collaborators = members.length;
-
-  return (
-    <div className={`${CARD} p-4 sm:p-5`}>
-      <div className="flex items-center gap-2 mb-3">
-        <Users className="w-4 h-4 text-black/45 dark:text-white/45" />
-        <h2 className="text-base font-semibold tracking-tight text-black/90 dark:text-white/90">
-          People
-        </h2>
-        <span className="text-[0.6875rem] text-black/40 dark:text-white/40">
-          {collaborators} {collaborators === 1 ? "person" : "people"}
-        </span>
-      </div>
-
-      {isOwner && (
-        <div className="flex flex-col gap-2 pb-3 mb-3 border-b border-black/[0.06] dark:border-white/[0.07]">
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  void handleInvite();
-                }
-              }}
-              placeholder="Invite by email…"
-              className="flex-1 min-w-[12rem] text-sm px-3 py-2 rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/[0.04] outline-none focus:border-blue-500/40 placeholder:text-black/35 dark:placeholder:text-white/35"
-            />
-            <select
-              value={role}
-              onChange={(e) => setRole(e.target.value)}
-              className="text-[0.75rem] px-2 py-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-zinc-800 text-black/70 dark:text-white/70 outline-none focus:border-blue-500/40 cursor-pointer"
-              title="Access level"
-            >
-              <option value="editor">Editor</option>
-              <option value="viewer">Viewer</option>
-            </select>
-            <button
-              type="button"
-              disabled={busy || !email.trim()}
-              onClick={handleInvite}
-              className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-black text-white hover:bg-black/85 dark:bg-white dark:text-black dark:hover:bg-white/85 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              <UserPlus className="w-3.5 h-3.5" />
-              Invite
-            </button>
-          </div>
-          {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
-          {notice && <p className="text-xs text-emerald-600 dark:text-emerald-400">{notice}</p>}
-          <p className="text-[0.625rem] text-black/40 dark:text-white/40">
-            Editors can add and edit this project's tasks, calendar, and AI working memory. Viewers
-            can only read. Each person's private vault and beliefs stay their own.
-          </p>
-        </div>
-      )}
-
-      {isLoading ? (
-        <p className="text-xs text-black/40 dark:text-white/40">Loading people…</p>
-      ) : members.length === 0 ? (
-        <p className="text-xs text-black/40 dark:text-white/40">
-          Just you so far.{isOwner ? " Invite someone by email to collaborate." : ""}
-        </p>
-      ) : (
-        <div className="flex flex-col gap-1">
-          {members.map((m) => {
-            const pending = !m.acceptedAt;
-            const label = m.email || (m.userId ? "Member" : "Invited");
-            const canManage = isOwner && m.role !== "owner";
-            return (
-              <div
-                key={m.id}
-                className="group flex items-center gap-2.5 px-2 py-1.5 rounded-xl hover:bg-black/[0.03] dark:hover:bg-white/[0.03] transition-colors"
-              >
-                <div
-                  className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-[0.6875rem] font-semibold ${
-                    pending
-                      ? "bg-black/[0.05] dark:bg-white/[0.08] text-black/40 dark:text-white/40"
-                      : "bg-blue-500/15 text-blue-600 dark:text-blue-300"
-                  }`}
-                >
-                  {initialFor(label)}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm text-black/85 dark:text-white/85 truncate">
-                    {label}
-                    {m.isSelf && <span className="text-black/40 dark:text-white/40"> (you)</span>}
-                  </div>
-                  {pending && (
-                    <div className="text-[0.625rem] text-amber-600 dark:text-amber-500">
-                      Invite pending
-                    </div>
-                  )}
-                </div>
-                {canManage ? (
-                  <select
-                    value={m.role}
-                    onChange={(e) => handleRole(m, e.target.value)}
-                    className="text-[0.6875rem] px-1.5 py-1 rounded-md border border-black/10 dark:border-white/10 bg-white/60 dark:bg-zinc-800 text-black/65 dark:text-white/65 outline-none focus:border-blue-500/40 cursor-pointer"
-                    title="Change access level"
-                  >
-                    <option value="editor">Editor</option>
-                    <option value="viewer">Viewer</option>
-                  </select>
-                ) : (
-                  <span
-                    className={`text-[0.625rem] px-1.5 py-0.5 rounded-full capitalize ${ROLE_BADGE[m.role] || ROLE_BADGE.viewer}`}
-                  >
-                    {m.role}
-                  </span>
-                )}
-                {canManage && (
-                  <button
-                    type="button"
-                    onClick={() => handleRemove(m)}
-                    className="shrink-0 w-6 h-6 rounded flex items-center justify-center hover-reveal hover:bg-red-500/10 text-black/40 dark:text-white/40 hover:text-red-500 transition-all"
-                    title="Remove from project"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 // In a floating app window the frame is the viewport, so the page fills its
@@ -1471,8 +1241,6 @@ export default function ProjectDetailPage({ windowed = false }) {
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
   const [selectedDay, setSelectedDay] = useState(null);
-  /** In-project vault reader — same pull-up viewer as chat / vault. */
-  const [vaultViewer, setVaultViewer] = useState(null);
   const dark = useIsDark();
 
   const { data: projects = [], isLoading } = useQuery({
@@ -1520,18 +1288,6 @@ export default function ProjectDetailPage({ windowed = false }) {
     staleTime: 15 * 1000,
   });
 
-  const { data: stewardItems = [] } = useQuery({
-    queryKey: ["lykn_steward_items", userId || "guest", projectId],
-    queryFn: () => listStewardItems(userId, projectId),
-    enabled: !!userId && !!projectId,
-    staleTime: 10 * 1000,
-  });
-
-  const refetchSteward = useCallback(
-    () => queryClient.invalidateQueries({ queryKey: ["lykn_steward_items", userId || "guest", projectId] }),
-    [queryClient, userId, projectId],
-  );
-
   // Vault note ids in this project (members stored as `vault_<id>`), used to
   // tally the "What's inside" wheel by file type.
   const vaultNoteIds = useMemo(() => {
@@ -1572,14 +1328,9 @@ export default function ProjectDetailPage({ windowed = false }) {
     return out;
   }, [project, vaultTypeCounts, dark]);
 
-  const morningBrief = useMemo(() => findMorningBrief(updates), [updates]);
-  const showMorningBrief = useMemo(
-    () => isFreshMorningBrief(morningBrief),
-    [morningBrief],
-  );
   const displayUpdates = useMemo(
-    () => (showMorningBrief ? updates.filter((u) => u.stateKey !== "morning_brief") : updates),
-    [updates, showMorningBrief],
+    () => updates.filter((u) => u.stateKey !== "morning_brief"),
+    [updates],
   );
 
   const refetchProjects = useCallback(() => {
@@ -1616,14 +1367,9 @@ export default function ProjectDetailPage({ windowed = false }) {
         { event: "*", schema: "public", table: "lykn_events", filter: `project_id=eq.${projectId}` },
         () => refetchEvents(),
       )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "lykn_steward_items", filter: `project_id=eq.${projectId}` },
-        () => refetchSteward(),
-      )
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
-  }, [userId, projectId, refetchTodos, refetchEvents, refetchSteward]);
+  }, [userId, projectId, refetchTodos, refetchEvents]);
 
   useEffect(() => {
     const onChange = () => refetchProjects();
@@ -1642,18 +1388,6 @@ export default function ProjectDetailPage({ windowed = false }) {
     const upcomingEvents = events.filter((e) => e.startsAt >= now && e.startsAt <= now + 7 * DAY_MS).length;
     return { open: open.length, overdue, doneThisWeek, upcomingEvents };
   }, [todos, events, now]);
-
-  const handleRemoveMember = async (nodeId) => {
-    const ok = await removeNeuronFromProject(userId, projectId, nodeId);
-    if (!ok) {
-      toast({
-        title: "Couldn't remove item",
-        description: "The knowledge item is still linked. Please try again.",
-        variant: "destructive",
-      });
-    }
-    refetchProjects();
-  };
 
   // The vault side panel returns the full selected set (baseline + new) as raw
   // note ids. We add only the ones not already clustered, resolving titles so
@@ -1742,7 +1476,6 @@ export default function ProjectDetailPage({ windowed = false }) {
   const role = project.role || "owner";
   const isOwner = role === "owner";
   const canEdit = role === "owner" || role === "editor";
-  const groups = splitMembers(project.members);
 
   const handleToggleStatus = async () => {
     if (busy) return;
@@ -1950,115 +1683,6 @@ export default function ProjectDetailPage({ windowed = false }) {
           <TasksPanel userId={userId} projectId={projectId} todos={todos} onChanged={refetchTodos} canEdit={canEdit} />
         </div>
 
-        {/* People — collaborators on this project */}
-        <div className="mt-3">
-          <MembersCard userId={userId} projectId={projectId} isOwner={isOwner} />
-        </div>
-
-        {/* Knowledge / members */}
-        <div className={`mt-3 ${CARD} p-4 sm:p-5`}>
-          <SectionLabel>Knowledge in this project</SectionLabel>
-          {project.members.length === 0 ? (
-            <p className="text-xs text-black/40 dark:text-white/40 mt-2">
-              Nothing saved into this project yet — add vault items above.
-            </p>
-          ) : (
-            <div className="mt-2">
-              {Object.entries(KIND_META).map(([key, { title, icon: Icon }]) => {
-                const items = groups[key];
-                if (items.length === 0) return null;
-                return (
-                  <div key={key} className="mb-3">
-                    <SectionLabel>{title}</SectionLabel>
-                    <div className="mt-1 flex flex-col gap-0.5">
-                      {items.map((m) => {
-                        const isVault =
-                          key === "vault" ||
-                          m.kind === "vault" ||
-                          String(m.nodeId || "").startsWith("vault_");
-                        const noteId = isVault
-                          ? String(m.nodeId || "").replace(/^vault_/, "")
-                          : "";
-                        const openVault = () => {
-                          if (!noteId) return;
-                          setVaultViewer({
-                            ok: true,
-                            kind: "vault",
-                            node_id: `vault_${noteId}`,
-                            note: {
-                              id: noteId,
-                              title: m.label || "Untitled",
-                              content: "",
-                            },
-                          });
-                        };
-                        return (
-                          <div
-                            key={m.nodeId}
-                            className="group flex items-center gap-2 rounded-md px-2 py-1 hover:bg-blue-500/[0.06] transition-colors"
-                          >
-                            <Icon className="w-3.5 h-3.5 flex-shrink-0 text-black/40 dark:text-white/40" />
-                            {isVault ? (
-                              <button
-                                type="button"
-                                onClick={openVault}
-                                className="flex-1 min-w-0 truncate text-left text-xs text-black/70 dark:text-white/70 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer"
-                                title="Open vault item"
-                              >
-                                {m.label || m.nodeId}
-                              </button>
-                            ) : (
-                              <span className="flex-1 min-w-0 truncate text-xs text-black/70 dark:text-white/70">
-                                {m.label || m.nodeId}
-                              </span>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveMember(m.nodeId)}
-                              className="flex-shrink-0 w-5 h-5 rounded flex items-center justify-center hover-reveal hover:bg-red-500/10 text-black/40 dark:text-white/40 hover:text-red-500 transition-all"
-                              title="Remove from project"
-                            >
-                              <X className="w-3 h-3" />
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Night Shift — morning brief + overnight queue */}
-        <div className={`mt-3 ${CARD} p-4 sm:p-5`}>
-          <div className="flex items-center gap-2 mb-3">
-            <Moon className="w-4 h-4 text-black/45 dark:text-white/45" />
-            <h2 className="text-base font-semibold tracking-tight text-black/90 dark:text-white/90">
-              Night Shift
-            </h2>
-          </div>
-          {showMorningBrief && morningBrief ? (
-            <>
-              <MorningBriefCard
-                embedded
-                brief={morningBrief}
-                projectName={project?.name}
-              />
-              <div className="my-4 border-b border-black/[0.06] dark:border-white/[0.07]" />
-            </>
-          ) : null}
-          <StewardKanban
-            embedded
-            userId={userId}
-            projectId={projectId}
-            items={stewardItems}
-            canEdit={canEdit}
-            onChanged={refetchSteward}
-          />
-        </div>
-
         {/* Footer */}
         {isOwner && (
           <div className="mt-5 flex justify-end">
@@ -2073,14 +1697,6 @@ export default function ProjectDetailPage({ windowed = false }) {
           </div>
         )}
       </div>
-
-      {vaultViewer ? (
-        <VaultDocumentViewer
-          payload={vaultViewer}
-          open={!!vaultViewer}
-          onClose={() => setVaultViewer(null)}
-        />
-      ) : null}
     </div>
   );
 }

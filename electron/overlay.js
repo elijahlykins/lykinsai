@@ -66,7 +66,7 @@ const THINK_PHASES = [
 const BUILD_PHASES = [
   { text: "Designing the build…", duration: 1800 },
   { text: "Sketching the layout…", duration: 2000 },
-  { text: "Writing the code…", duration: 2200 },
+  { text: "Building out the sections…", duration: 2200 },
   { text: "Wiring the interactions…", duration: 2400 },
   { text: "Assembling the pieces…", duration: 2600 },
   { text: "Polishing the details…", duration: 3000 },
@@ -76,7 +76,7 @@ const BUILD_PHASES = [
 const GENERIC_THINK_RE =
   /^(thinking|working(?:\son\sit)?|loading|please\swait|one\smoment|responding)[\s.…]*$/i;
 const GENERIC_BUILD_RE =
-  /^(building(?:\sthe\s(?:app|page|artifact))?|running\stools|designing\sthe\sbuild|sketching\sthe\slayout|writing\sthe\scode|wiring\sthe\sinteractions|assembling\sthe\spieces|drafting\sthe\sdocument|composing\sthe\svideo|laying\sout\sthe\sspreadsheet|almost\sready|putting\son\sthe\sfinishing\stouches)[\s.…]*$/i;
+  /^(building(?:\sthe\s(?:app|page|artifact|sections))?|running\stools|designing\sthe\sbuild|sketching\sthe\slayout|building\sout\sthe\ssections|writing\sthe\scode|wiring\sthe\sinteractions|assembling\sthe\spieces|drafting\sthe\sdocument|composing\sthe\svideo|laying\sout\sthe\sspreadsheet|almost\sready|putting\son\sthe\sfinishing\stouches)[\s.…]*$/i;
 
 let statusRotateTimer = null;
 let statusRotateIndex = 0;
@@ -143,7 +143,7 @@ function maybeRotateFromStatus(text) {
   if (!t) return;
   if (
     GENERIC_BUILD_RE.test(t) ||
-    /^(building|designing|drafting|composing|writing\sthe|laying\sout)/i.test(t)
+    /^(building|designing|drafting|composing|writing|laying\sout|wiring|assembling|putting\stogether)/i.test(t)
   ) {
     if (GENERIC_BUILD_RE.test(t)) {
       startStatusRotation("build");

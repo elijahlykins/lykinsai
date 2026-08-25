@@ -35,6 +35,68 @@ const deadEnd = require("./runtime/deadEnd.cjs");
 
 const DEFAULT_MAX_ROUNDS = 24;
 
+/**
+ * Page-level proof a delivery already went out. Gmail's toast is "Message sent";
+ * Drive says "Access updated". An old subject line containing the word "sent"
+ * must not count.
+ */
+const DELIVERY_COMPLETE_PAGE_RE =
+  /\b(?:message sent|your message has been sent|email sent|invitation sent|access updated|successfully (?:sent|shared|published)|undo send)\b/i;
+
+const START_OVER_LABEL_RE =
+  /^\W*(?:compose|new message|new mail|reply(?:\s+all)?|forward|new)\b/i;
+
+function pageShowsDeliveryComplete(snapshot) {
+  const text = `${snapshot?.visibleText || ""} ${snapshot?.title || ""}`;
+  return DELIVERY_COMPLETE_PAGE_RE.test(text);
+}
+
+function looksLikeRestartingDelivery(decision, snapshot) {
+  const action = decision?.action || {};
+  const type = String(action.type || "");
+  const label = String(
+    snapshot?.byRef?.get?.(String(action.target || ""))?.label || action.label || "",
+  );
+  const url = String(action.url || "");
+  if (type === "navigate" && /(?:mail\.google|outlook\.live|compose=new)/i.test(url)) return true;
+  if ((type === "click" || type === "click_coord") && START_OVER_LABEL_RE.test(label)) return true;
+  return executor.classifyActionRisk(decision, snapshot) === "consequential";
+}
+
+/**
+ * One-outcome asks. "buy X and then email the receipt" is two jobs — and so is
+ * "email Alice and text Bob", which carries no "then" at all. Getting this
+ * wrong in the single direction is expensive: after the first delivery the
+ * loop marks the remaining plan done and refuses further deliveries as
+ * restarts, so the second half of a two-part ask silently never happens.
+ *
+ * An outcome verb only counts when it OPENS the goal or follows a joiner
+ * (and / then / also / plus / a comma) — "go to gmail and send an email"
+ * commits one send, "send the report and post it on Slack" commits two.
+ * Noun usages ("an email", "Sam's message") are masked out first so they can
+ * never count as a second job.
+ */
+// The bridge words between the article and the noun must never cross a
+// joiner: "the report and text Bob" is an article, a noun, and a SECOND JOB,
+// and letting {0,2} words span the "and" masked the verb out with the noun.
+const OUTCOME_NOUN_RE =
+  /\b(?:a|an|the|my|your|his|her|their|our|this|that|any|some|\w+'s)\s+(?:(?!(?:and|then|or|also|plus)\b)\w+\s+){0,2}(?:e-?mails?|messages?|texts?|posts?|replies|reply|invites?|invitations?|orders?|bookings?|reservations?)\b/gi;
+
+const OUTCOME_VERB_AT_JOINER_RE =
+  /(?:^|\b(?:and|then|also|plus)\b|[,;])\W*(?:(?:please|then|also|now|go)\s+){0,2}(?:send|resend|e-?mail|text|message|dm|post|publish|share|invite|forward|reply|submit|book|reserve|order|buy|purchase|pay|schedule|upload|print|delete|cancel)\b/gi;
+
+function countRequestedOutcomes(goal) {
+  const first = String(goal || "").split("\n")[0];
+  const masked = first.replace(OUTCOME_NOUN_RE, " ");
+  return (masked.match(OUTCOME_VERB_AT_JOINER_RE) || []).length;
+}
+
+function isSingleOutcomeGoal(goal) {
+  const first = String(goal || "").split("\n")[0];
+  if (/\b(?:and then|after that|; then|, then)\b/i.test(first)) return false;
+  return countRequestedOutcomes(first) < 2;
+}
+
 /** Extra rounds granted each time the user unblocks the task by hand. */
 const RESUME_ROUND_BONUS = 6;
 
@@ -48,7 +110,6 @@ const SHOULD_CHANGE_SOMETHING = new Set([
   "press_key",
   "select",
   "drag",
-  "submit",
   "type",
   // Grounded typing is still typing — a page that ignored it deserves the
   // same second look before the verifier calls it a dead action.
@@ -104,7 +165,7 @@ const HUMAN_ONLY_QUESTION_RE =
  * open.
  */
 const CONTENT_QUESTION_RE =
-  /\b(?:what|which|how)\b[^?]{0,80}\b(?:say|said|write|written|include|includes?|contain|cover|mention|word(?:ing)?|message|body|content|subject|tone|topic|point across)\b|\bwhat (?:should|shall|do you want|would you like|are we|is this)\b/i;
+  /\b(?:what|which|how)\b[^?]{0,80}\b(?:say|said|write|written|include|includes?|contain|cover|mention|word(?:ing)?|message|body|content|subject|tone|topic|point across)\b|\bwhat (?:should|shall|do you want|would you like|are we|is this)\b|\bwhen (?:should|shall|do you want|would you like)\b/i;
 
 /**
  * A question the user answers by DOING something in the browser — signing in,
@@ -116,8 +177,27 @@ const CONTENT_QUESTION_RE =
 const ANSWERED_IN_BROWSER_RE =
   /\b(password|passcode|passphrase|2fa|two[- ]factor|mfa|otp|one[- ]time (?:code|password)|verification code|security code|auth(?:entication)? code|sign[- ]?in|log[- ]?in|logged[- ]?in|credential|captcha|paywall|subscribe|unlock|which account)\b/i;
 
+/**
+ * Asking WHO or WHERE something should go is asking for a fact that exists
+ * only in the user's head — no page can name the recipient the user meant.
+ *
+ * Phrased naturally these read as permission asks ("Who should I send this
+ * to?" contains "should I"), and the permission push-back then told the agent
+ * to go click Send with nobody in the To field — and after three refusals the
+ * word "send" escalated the question onto the Yes/No approval buttons, where
+ * a typed name was the only possible answer. Recipient questions are input
+ * questions, never punts, and never suppressed as repeats.
+ */
+const RECIPIENT_QUESTION_RE =
+  /\bwho(?:m)?\b[^?]{0,12}\b(?:should|shall|do|does|would|will|to)\b[^?]{0,40}\b(?:send|sent|share|invite|email|mail|text|message|forward|address|go)\b|\b(?:what|which|whose)\b[^?]{0,50}\b(?:e-?mail address(?:es)?|phone number|recipients?|contact (?:info|information|details|address))\b|\bwhere\b[^?]{0,30}\bshould\b[^?]{0,40}\b(?:send|share|post|upload|save|deliver)\b/i;
+
+function isRecipientQuestion(question) {
+  return RECIPIENT_QUESTION_RE.test(String(question || ""));
+}
+
 function requiresHumanInput(question) {
   const text = String(question || "");
+  if (isRecipientQuestion(text)) return true;
   if (looksLikePermissionQuestion(text)) return false;
   return HUMAN_ONLY_QUESTION_RE.test(text) || CONTENT_QUESTION_RE.test(text);
 }
@@ -135,7 +215,7 @@ function answeredInBrowser(question) {
  * by asking to do something it should simply have done.
  */
 const ASKING_PERMISSION_RE =
-  /^\W*(?:do you want|would you like|should i|shall i|may i|can i|is it (?:ok|okay|alright)|are you (?:ok|happy|ready|sure)|ready for me|let me know if|would you prefer|which (?:would|do) you|confirm (?:that|if|whether)|please confirm)\b/i;
+  /^\W*(?:do you want|would you like|should i|shall i|may i|can i|is it (?:ok|okay|alright)|are you (?:ok|happy|ready|sure)|ready for me|let me know if|would you prefer|which (?:would|do) you|confirm (?:that|if|whether)|please confirm|mind if i)\b/i;
 
 /**
  * A question that is really a request for permission to go ahead — however it
@@ -148,11 +228,139 @@ const ASKING_PERMISSION_RE =
  * task from the beginning instead of clicking Send.
  */
 const PERMISSION_QUESTION_RE =
-  /\b(?:want me to|ready (?:for me )?to|shall i|should i|may i|ok(?:ay)? (?:for me )?to|permission to|go ahead and|would you like me to|do you want me to)\b|\b(?:ready|ok(?:ay)?|good) to (?:send|share|post|publish|submit|delete)\b/i;
+  /\b(?:want me to|ready (?:for me )?to|shall i|should i|may i|ok(?:ay)? (?:for me )?to|ok(?:ay)? if i|alright if i|fine if i|permission to|go ahead and|would you like me to|do you want me to|mind if i)\b|\b(?:ready|ok(?:ay)?|good) to (?:send|share|post|publish|submit|delete)\b/i;
 
 function looksLikePermissionQuestion(question) {
   const text = String(question || "");
+  // "Who should I send this to?" carries "should I" but requests a fact, not
+  // a go-ahead — it must reach the user as a question, not be refused as a punt.
+  if (RECIPIENT_QUESTION_RE.test(text)) return false;
   return ASKING_PERMISSION_RE.test(text) || PERMISSION_QUESTION_RE.test(text);
+}
+
+function isContentQuestion(question) {
+  return CONTENT_QUESTION_RE.test(String(question || ""));
+}
+
+function isCredentialQuestion(question) {
+  const text = String(question || "");
+  if (looksLikePermissionQuestion(text) || isContentQuestion(text)) return false;
+  return HUMAN_ONLY_QUESTION_RE.test(text);
+}
+
+/**
+ * How an answered question comes back: the host folds the reply onto the
+ * original ask so the next run can actually start. The assistant's question
+ * itself often never makes it into chat history (the finish path stored the
+ * step transcript and dropped the ask), so this line is the one reliable
+ * signal that they already told us.
+ */
+const USER_GUIDANCE_RE = /additional guidance from the user:/i;
+
+function normalizeAsk(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Same ask restated, or sitting at the end of a longer step transcript. */
+function questionsSimilar(a, b) {
+  const na = normalizeAsk(a);
+  const nb = normalizeAsk(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  if (na.length >= 16 && nb.includes(na)) return true;
+  if (nb.length >= 16 && na.includes(nb)) return true;
+  return false;
+}
+
+function historyHasUserGuidance(history, extra = "") {
+  if (USER_GUIDANCE_RE.test(String(extra || ""))) return true;
+  return (Array.isArray(history) ? history : []).some((m) =>
+    USER_GUIDANCE_RE.test(String(m?.content || "")),
+  );
+}
+
+/**
+ * The user already told us what a message should say. Asking again — about
+ * tone, subject, timing, or the same body in different words — is how a
+ * simple email turns into a stack of different-looking question boxes.
+ *
+ * `extra` is the current goal / userAsk, where a folded reply shows up even
+ * when chat history never recorded the question.
+ */
+function contentAlreadyAnswered(history, extra = "") {
+  if (historyHasUserGuidance(history, extra)) return true;
+  let sawAsk = false;
+  for (const m of Array.isArray(history) ? history : []) {
+    const role = m?.role === "assistant" ? "assistant" : "user";
+    const text = String(m?.content || "");
+    if (role === "assistant" && isContentQuestion(text)) sawAsk = true;
+    else if (role === "user" && sawAsk && text.trim()) return true;
+  }
+  return false;
+}
+
+/** This exact ask (or a rephrase of it) already got a reply. */
+function alreadyAskedAndAnswered(question, history) {
+  const msgs = Array.isArray(history) ? history : [];
+  for (let i = 0; i < msgs.length; i++) {
+    const role = msgs[i]?.role === "assistant" ? "assistant" : "user";
+    if (role !== "assistant") continue;
+    if (!questionsSimilar(question, msgs[i]?.content)) continue;
+    for (let j = i + 1; j < msgs.length; j++) {
+      const nextRole = msgs[j]?.role === "assistant" ? "assistant" : "user";
+      if (nextRole === "user" && String(msgs[j]?.content || "").trim()) return true;
+    }
+  }
+  return false;
+}
+
+/** Repeat writing questions after the user already answered. Credentials pass. */
+function shouldSkipRepeatQuestion(question, history, extra = "") {
+  if (isCredentialQuestion(question)) return false;
+  if (alreadyAskedAndAnswered(question, history)) return true;
+  // A recipient is a fact only the user has. Telling them what a message
+  // should say does not tell us who it goes to, so this ask must survive the
+  // one-question rule — suppressing it leaves the agent inventing an address.
+  if (isRecipientQuestion(question)) return false;
+  if (!contentAlreadyAnswered(history, extra)) return false;
+  if (isContentQuestion(question)) return true;
+  if (looksLikePermissionQuestion(question)) return false;
+  return !requiresHumanInput(question);
+}
+
+/**
+ * Asking "is it ok if I click Compose?" is not the same as asking to send.
+ * Only a permission question about a real commit — send, share, pay, delete —
+ * should ever become Yes/No buttons. Everything else the agent can just do.
+ */
+const COMMIT_CLICK_IN_ASK_RE =
+  /\bclick(?:ing)?\s+(?:on\s+|the\s+)?(?:["“']?(?:send|share|publish|post|delete|pay|buy|purchase|invite)\b)/i;
+
+const MID_FLOW_CLICK_IN_ASK_RE =
+  /\bclick(?:ing)?\s+(?:on\s+|the\s+)?(?:compose|inbox|next|continue|confirm(?!\s+(?:and|&)\s+pay)|save|done|allow|connect|new(?:\s+message)?|draft|reply(?:\s+all)?|forward|recipient|subject|body|search)\b/i;
+
+const COMMIT_VERB_IN_ASK_RE =
+  /\b(?:send|share|publish|post|invite|delete|erase|wipe|trash|discard|pay|purchase|buy|order now|place (?:the |your |my )?order|subscribe|unsubscribe|donate)\b/i;
+
+const QUOTED_CLICK_RE = /\bclick(?:ing)?\s+(?:on\s+|the\s+)?["“']([^"”']+)["”']/i;
+
+function permissionAskIsConsequential(question) {
+  const text = String(question || "");
+  if (COMMIT_CLICK_IN_ASK_RE.test(text)) return true;
+  const quoted = text.match(QUOTED_CLICK_RE);
+  if (quoted) {
+    const name = String(quoted[1] || "");
+    if (/^\W*(?:compose|reply|forward|new message|draft|inbox|next|continue|save)\b/i.test(name)) {
+      return false;
+    }
+    return /\b(?:send|share|publish|post|delete|pay|buy|purchase|invite)\b/i.test(name);
+  }
+  if (MID_FLOW_CLICK_IN_ASK_RE.test(text)) return false;
+  return COMMIT_VERB_IN_ASK_RE.test(text);
 }
 
 /**
@@ -255,6 +463,12 @@ async function runTask({
 }) {
   const restored = resumeTask ? taskState.restoreTask(resumeTask, { conversationHistory }) : null;
   const task = restored || taskState.createTask({ goal, conversationHistory });
+  // Whether this ask commits ONE delivery or several. Judged once — it gates
+  // both the "already delivered, do not start over" conversion and the
+  // auto-completion of leftover plan steps after a send, and a two-part ask
+  // ("email Alice and text Bob") must keep both of those switched off or its
+  // second half never happens.
+  const singleOutcome = isSingleOutcomeGoal(userAsk || task.goal);
   const debug = createDebugLog({ userDataPath, taskId: task.id });
   if (__holdDebug) __holdDebug.debug = debug;
   const recovery = createRecoveryTracker();
@@ -411,6 +625,9 @@ async function runTask({
     recovery.reset();
     roundBudget = Math.min(maxRoundBudget, roundBudget + RESUME_ROUND_BONUS);
     taskState.addFact(task, note);
+    // The user acting in the browser is real progress — it may underwrite a
+    // finish (they signed in, they cleared the wall, they clicked the thing).
+    harvestedFacts += 1;
     onProgress({ phase: "working", resumedAfterUser: true });
     return note;
   };
@@ -449,12 +666,18 @@ async function runTask({
       const planned = await timer.time("plan", () =>
         planner.planTask({ model, task, snapshot, userMemory, websiteMemory: initialWebsiteMemory, signal }));
       if (planned.clarification) {
-        return finish("waiting_for_user", planned.clarification, {
-          needsUser: true,
-          // Tappable answers, when the planner proposed any — the host turns
-          // these into one-tap chips beside the answer box.
-          answerOptions: planned.clarificationOptions || [],
-        });
+        if (shouldSkipRepeatQuestion(planned.clarification, conversationHistory, `${goal}\n${userAsk}`)) {
+          debug.log("clarification_skipped", {
+            question: String(planned.clarification || "").slice(0, 200),
+          });
+        } else {
+          return finish("waiting_for_user", planned.clarification, {
+            needsUser: true,
+            // Tappable answers, when the planner proposed any — the host turns
+            // these into one-tap chips beside the answer box.
+            answerOptions: planned.clarificationOptions || [],
+          });
+        }
       }
       approach = String(planned.approach || "");
     } catch (e) {
@@ -505,6 +728,13 @@ async function runTask({
   // open-steps question ever being asked.
   let evidencePushbacks = 0;
   let openStepsPushbacks = 0;
+  // One reminder that a finished plan is a reason to stop, not keep browsing.
+  let planCompleteNudges = 0;
+  // Facts the MODEL reported (plus user hand-back notes) — the loop's own
+  // bookkeeping facts (a dismissed cookie wall, a dead-end URL) also live in
+  // working memory, and counting those as progress let a run that had only
+  // hit a 404 pass the finish-evidence check with an invented answer.
+  let harvestedFacts = restored ? task.workingMemory.facts.length : 0;
   // Times the agent has asked permission instead of acting. Bounded, because
   // refusing without a limit is its own loop: it asks, we say go ahead, it
   // looks at the page, it asks again — for the whole round budget.
@@ -715,6 +945,7 @@ async function runTask({
 
     // Harvest discoveries regardless of what happens next.
     for (const fact of decision.factsLearned) taskState.addFact(task, fact);
+    harvestedFacts += decision.factsLearned.length;
     for (const c of decision.candidateResults) {
       if (!task.workingMemory.candidateResults.includes(c)) {
         task.workingMemory.candidateResults.push(c);
@@ -771,6 +1002,55 @@ async function runTask({
     }
     invalidDecisions = 0;
 
+    // Already delivered — do not start the same task over. The model often
+    // tries to finish, gets told plan steps are still open, and answers by
+    // clicking Compose again. The send already happened. Only for one-outcome
+    // asks: a two-delivery goal's SECOND delivery is consequential too, and
+    // converting it to finish here is how "email Alice and text Bob" shipped
+    // half done.
+    if (
+      decision.kind === "act" &&
+      singleOutcome &&
+      taskState.hasCommittedDelivery(task) &&
+      (pageShowsDeliveryComplete(snapshot) || looksLikeRestartingDelivery(decision, snapshot))
+    ) {
+      debug.log("finish_instead_of_repeat", {
+        round: task.round,
+        action: decision.action,
+        pageDone: pageShowsDeliveryComplete(snapshot),
+      });
+      decision = {
+        ...decision,
+        kind: "finish",
+        action: null,
+        answer:
+          String(decision.answer || decision.narration || "").trim() ||
+          "Done — that already went out.",
+        reason: "goal already satisfied; not repeating the delivery",
+      };
+    }
+
+    // Every planned step is done and the model is still browsing. Deliveries
+    // have their own guard above; everything else — research, builds, edits —
+    // gets one nudge to either finish with the answer or say what genuinely
+    // remains. Once, because the plan can honestly have been too coarse and
+    // the model may know of real work the plan never named.
+    if (
+      decision.kind === "act" &&
+      planCompleteNudges < 1 &&
+      task.plan.length > 0 &&
+      task.plan.every((p) => p.done)
+    ) {
+      planCompleteNudges += 1;
+      debug.log("plan_complete_nudge", { round: task.round, action: decision.action?.type });
+      recovering = true;
+      recoveryHint =
+        "Every planned step is already marked done. If the goal is achieved, decide `finish` now with your " +
+        "evidence-backed answer — do not keep browsing after the goal is met. If real work genuinely remains, " +
+        "`replan` with only what is left.";
+      continue;
+    }
+
     // 3. Terminal decisions.
     if (decision.kind === "finish") {
       // Completion verification: what did the user ask for, and what evidence
@@ -790,7 +1070,7 @@ async function runTask({
           !EVIDENCE_FREE_ACTIONS.has(String(a.action?.type || "")),
       );
       const hasEvidence =
-        task.workingMemory.facts.length > 0 ||
+        harvestedFacts > 0 ||
         task.workingMemory.candidateResults.length > 0 ||
         substantive.length > 0;
       // No round cap on this. The old `round <= 2` meant the requirement simply
@@ -817,15 +1097,24 @@ async function runTask({
         );
       }
       // Quitting with plan steps still open is the most common way a task ends
-      // half-done. Make the agent account for them once before accepting it.
+      // half-done. Make the agent account for them once before accepting it —
+      // unless the committing action already succeeded. Pushing back after a
+      // real send is how the agent reopened Compose and ran the task again.
       const openSteps = task.plan.filter((p) => !p.done).map((p) => p.step);
-      if (openSteps.length && openStepsPushbacks < 1) {
+      // A completed delivery only excuses open steps on a ONE-outcome ask.
+      // On "email Alice and text Bob", the first send must not wave through a
+      // finish that leaves the text unsent.
+      const alreadyDelivered =
+        singleOutcome &&
+        (taskState.hasCommittedDelivery(task) || pageShowsDeliveryComplete(snapshot));
+      if (openSteps.length && openStepsPushbacks < 1 && !alreadyDelivered) {
         openStepsPushbacks += 1;
         recovering = true;
         recoveryHint =
           `These planned steps are not marked done yet: ${openSteps.join("; ")}. ` +
           "If any of them still needs doing, do it now — the user asked for the whole task, not the first part of it. " +
-          "Only finish if every step is genuinely complete or no longer applies, and say so in your answer.";
+          "If the work is already on the page (Message sent, Access updated, compose closed), finish now and say so. " +
+          "Do not start the task over.";
         debug.log("finish_pushback", { round: task.round, openSteps });
         continue;
       }
@@ -842,16 +1131,19 @@ async function runTask({
       // go and do the thing, and the gate will ask properly.
       if (looksLikePermissionQuestion(decision.question)) {
         permissionRefusals += 1;
+        const aboutCommit = permissionAskIsConsequential(decision.question);
         debug.log("permission_question_refused", {
           question: String(decision.question || "").slice(0, 200),
           refusals: permissionRefusals,
+          aboutCommit,
         });
-        // Twice is a preference; a third time is a standoff. An agent that
-        // keeps asking instead of clicking usually cannot work out how to
-        // press the control — and refusing again just spends the round budget
-        // on a conversation the user never sees. Hand them the yes/no they
-        // were being asked for, with buttons, and let their answer release it.
-        if (permissionRefusals > 2) {
+        // A standoff about Send / Delete / Pay is a real decision for the user.
+        // A standoff about Compose / Next / a field is not — handing them a
+        // Yes/No for every mid-flow click is how the agent trained people to
+        // wave the gate through, and then the actual send looked like more of
+        // the same. Keep telling it to click. The round budget ends the loop
+        // if it never will.
+        if (permissionRefusals > 2 && aboutCommit) {
           debug.log("permission_question_escalated", { round: task.round });
           return finish("waiting_for_user", decision.question, {
             needsUser: true,
@@ -859,18 +1151,33 @@ async function runTask({
           });
         }
         recovering = true;
-        recoveryHint =
-          `You asked the user for permission: "${String(decision.question || "").slice(0, 200)}". Do not ask that way — ` +
-          "you cannot act on the answer, and it stops the task. Perform the action instead. If it genuinely commits " +
-          "something (sends, shares, publishes, deletes, spends), you will be asked to confirm at the moment it " +
-          "happens, with the details in front of the user — that check is automatic and is not your job.\n" +
-          "If you are asking because you cannot work out how to press the control: it is in the element list — click " +
-          "it by its reference rather than by eye. A dialog's main button is usually the last one in it, and pressing " +
-          "Enter in the dialog's own field commits many of them. Take a screenshot only if you have not already looked.";
+        recoveryHint = aboutCommit
+          ? `You asked the user for permission: "${String(decision.question || "").slice(0, 200)}". Do not ask that way — ` +
+            "you cannot act on the answer, and it stops the task. Perform the action instead. If it genuinely commits " +
+            "something (sends, shares, publishes, deletes, spends), you will be asked to confirm at the moment it " +
+            "happens, with the details in front of the user — that check is automatic and is not your job.\n" +
+            "If you are asking because you cannot work out how to press the control: it is in the element list — click " +
+            "it by its reference rather than by eye. A dialog's main button is usually the last one in it, and pressing " +
+            "Enter in the dialog's own field commits many of them. Take a screenshot only if you have not already looked."
+          : `You asked the user for permission: "${String(decision.question || "").slice(0, 200)}". That click does not ` +
+            "send, spend, or delete anything — do it now, without asking. The user is only asked about the committing " +
+            "click (Send, Share, Publish, Delete, Pay), automatically, when you take it. Find the control in the " +
+            "element list and click it by its reference.";
         continue;
       }
       // Only stop for something the user alone can supply. Asking permission
       // to proceed, or which obvious option to pick, abandons the task.
+      if (shouldSkipRepeatQuestion(decision.question, conversationHistory, `${goal}\n${userAsk}`)) {
+        debug.log("ask_user_repeat_skipped", {
+          question: String(decision.question || "").slice(0, 200),
+        });
+        recovering = true;
+        recoveryHint =
+          `You asked the user again: "${String(decision.question || "").slice(0, 200)}". They already answered what this ` +
+          "message should say. Do not ask again — not about tone, subject, timing, or wording. Write the message from " +
+          "their answer, pick any remaining details yourself, and continue. One question per task.";
+        continue;
+      }
       if (!requiresHumanInput(decision.question) && askUserDeferrals < 1) {
         askUserDeferrals += 1;
         debug.log("ask_user_deferred", { question: decision.question });
@@ -1221,6 +1528,7 @@ async function runTask({
       // A deferred verdict was taken on faith, not shown — it must not later
       // stand in as proof the work happened (see the finish evidence check).
       ...(verification.deferred === true ? { deferred: true } : {}),
+      ...(verification.success && risk === "consequential" ? { committed: true } : {}),
       observedOutcome: verification.evidence || verification.reason || diff.summary,
       retries: recovery.retriesFor(decision),
     });
@@ -1238,6 +1546,11 @@ async function runTask({
       // spent (see recovery.noteProgress).
       recovery.noteProgress();
       if (decision.planStepCompleted) taskState.markStepDone(task);
+      // A verified send/share/pay is the outcome. Leftover "Open Gmail" /
+      // "Compose" rows must not send the agent around the loop again.
+      if (risk === "consequential" && singleOutcome) {
+        taskState.markRemainingStepsDone(task);
+      }
       // The action ran but the page could not confirm it. Show the agent the
       // screen next round so it verifies by looking instead of by assuming.
       if (verification.unverified) {
@@ -1462,4 +1775,13 @@ module.exports = {
   createMemoryStore,
   AgentModelUnavailableError,
   executeBatch,
+  looksLikePermissionQuestion,
+  permissionAskIsConsequential,
+  isContentQuestion,
+  isRecipientQuestion,
+  contentAlreadyAnswered,
+  shouldSkipRepeatQuestion,
+  questionsSimilar,
+  isSingleOutcomeGoal,
+  requiresHumanInput,
 };

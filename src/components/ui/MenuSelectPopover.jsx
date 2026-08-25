@@ -26,6 +26,8 @@ export default function MenuSelectPopover({
   disabled = false,
   className = "",
   contentClassName = "",
+  /** Optional custom trigger. When omitted, a compact bordered chip is used. */
+  trigger = null,
   /** When set, controls blue “selected” trigger styling. Defaults to non-empty / non-default. */
   active: activeProp,
 }) {
@@ -55,24 +57,32 @@ export default function MenuSelectPopover({
   }, [open, options.length]);
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
+    <Popover.Root
+      open={disabled ? false : open}
+      onOpenChange={(next) => {
+        if (disabled) return;
+        setOpen(next);
+      }}
+    >
       <Popover.Trigger asChild>
-        <button
-          type="button"
-          disabled={disabled}
-          title={title || label}
-          className={`inline-flex items-center gap-1.5 max-w-[11rem] px-2.5 py-1.5 rounded-lg border text-[0.75rem] transition-colors disabled:opacity-50 ${
-            open || active
-              ? "border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400"
-              : "border-black/10 dark:border-white/10 bg-black/[0.04] dark:bg-white/5 text-black/60 dark:text-white/60 hover:border-blue-500/40 hover:text-black/80 dark:hover:text-white/80"
-          } ${className}`}
-        >
-          {icon ? <span className="shrink-0 opacity-80">{icon}</span> : null}
-          <span className="truncate">{label}</span>
-          <ChevronDown
-            className={`w-3 h-3 shrink-0 opacity-50 transition-transform ${open ? "rotate-180" : ""}`}
-          />
-        </button>
+        {trigger || (
+          <button
+            type="button"
+            disabled={disabled}
+            title={title || label}
+            className={`inline-flex items-center gap-1.5 max-w-[11rem] px-2.5 py-1.5 rounded-lg border text-[0.75rem] transition-colors disabled:opacity-50 ${
+              open || active
+                ? "border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                : "border-black/10 dark:border-white/10 bg-black/[0.04] dark:bg-white/5 text-black/60 dark:text-white/60 hover:border-blue-500/40 hover:text-black/80 dark:hover:text-white/80"
+            } ${className}`}
+          >
+            {icon ? <span className="shrink-0 opacity-80">{icon}</span> : null}
+            <span className="truncate">{label}</span>
+            <ChevronDown
+              className={`w-3 h-3 shrink-0 opacity-50 transition-transform ${open ? "rotate-180" : ""}`}
+            />
+          </button>
+        )}
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content

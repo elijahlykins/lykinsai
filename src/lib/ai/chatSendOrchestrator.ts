@@ -386,6 +386,8 @@ export type PromptMessage = {
     aspect: string;
     kind: "generate" | "refine" | "variations";
     concept?: string;
+    batchId?: string;
+    pending?: boolean;
   };
   aiYouTubeUrls?: { url: string; videoId: string }[];
   aiWebLinks?: string[];

@@ -31,12 +31,12 @@ contextBridge.exposeInMainWorld("lyknWelcome", {
   resendCode: (email) => ipcRenderer.invoke("lykn:welcome-resend", { email: String(email || "") }),
   /**
    * Import stage: browsers installed on this machine.
-   * Resolves [{ id, name, profiles? }].
+   * Resolves [{ id, name, profiles?: { dir, name }[] }].
    */
   getBrowsers: () => ipcRenderer.invoke("lykn:welcome-browsers"),
   /**
-   * Import stage "Next": remember which browser to import from.
-   * @param {string} browser e.g. "chrome" | "safari"
+   * Import stage "Next": remember which browser (and optional profile) to
+   * import from. Accepts a browser id string or { id, profileDir }.
    */
   setImportBrowser: (browser) => ipcRenderer.invoke("lykn:welcome-import", browser),
   /**
@@ -88,9 +88,24 @@ contextBridge.exposeInMainWorld("lyknWelcome", {
    */
   setFavoriteApps: (apps) => ipcRenderer.invoke("lykn:welcome-apps", apps),
   /**
-   * Make LYKN Yours: theme + layout preferences from the customization
-   * slides.
-   * @param {{ accent?: string, appearance?: string, tabLayout?: string, startView?: string }} prefs
+   * Make LYKN Yours: theme, response, and chat-color picks from the
+   * customization slides. Values match Settings (`lykinsai_settings`).
+   * @param {{
+   *   accent?: string,
+   *   appearance?: string,
+   *   responseLength?: string,
+   *   userPrompt?: string,
+   *   chatUserTextColor?: string,
+   *   chatBubbleColor?: string,
+   *   chatAiTextColor?: string,
+   *   chatUserTextSize?: string,
+   *   chatAiTextSize?: string,
+   *   chatBarSize?: string,
+   *   chatBubbleShape?: string,
+   *   chatBarShape?: string,
+   *   chatSendIcon?: string,
+   *   chatSendShape?: string,
+   * }} prefs
    */
   setPrefs: (prefs) => ipcRenderer.invoke("lykn:welcome-prefs", prefs),
   /**

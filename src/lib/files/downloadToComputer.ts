@@ -71,13 +71,18 @@ export async function saveFileToChosenFolder(
   data: Blob | string,
   filename: string,
   mime = "application/octet-stream",
+  opts?: { filters?: { name: string; extensions: string[] }[] },
 ): Promise<string | null> {
   const save = bridge()?.saveFileAs;
   if (typeof save !== "function") return null;
   const blob = typeof data === "string" ? new Blob([data], { type: mime }) : data;
   try {
     const bytes = new Uint8Array(await blob.arrayBuffer());
-    const result = await save({ name: filename || "file", bytes });
+    const result = await save({
+      name: filename || "file",
+      bytes,
+      filters: opts?.filters,
+    });
     return result?.ok && result.path ? String(result.path) : null;
   } catch {
     return null;

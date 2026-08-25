@@ -60,6 +60,18 @@ import AppSourceStrip, {
   requestDismissAppEdit,
   useHomeAppSourceStrip,
 } from "@/components/lyknChat/AppSourceStrip";
+import {
+  BotTargetTrigger,
+  BotTargetMenu,
+  BotWorkStrip,
+  BotBrowserPeek,
+} from "@/components/bots/BotChatDock";
+import {
+  botAttachmentsFromChips,
+  setPendingBotChatAttachments,
+} from "@/lib/bots/botAttachments";
+import { botsAvailable, revealBotBrowser, useBots } from "@/lib/bots/botsClient";
+import { botForAgent } from "@/lib/bots/botStore";
 
 /**
  * Home-desktop chat entry — the same chat bar + Chat / Build / Imagine /
@@ -179,6 +191,15 @@ export default function HomeChatBar({
   name = "",
   surfaceView = "",
   contained = false,
+  /** Sit inside the browser rail instead of floating over the desktop. */
+  embedded = false,
+  /** Override the mode placeholder (e.g. "Or reply directly..." on a question). */
+  placeholder: placeholderOverride = "",
+  /** Increment to focus the field — used when the user picks Other. */
+  focusNonce = 0,
+  /** Browser-rail tab id. When set, the Bot dropdown follows whoever owns
+   *  that screen instead of an independent pick. */
+  screenAgentId = "",
 }) {
   const finderInputId = useId();
   const [view, setView] = useState("chat");
@@ -189,6 +210,10 @@ export default function HomeChatBar({
   const [layoutOpen, setLayoutOpen] = useState(false);
   const [aspect, setAspect] = useState(loadImagineAspect);
   const [addOpen, setAddOpen] = useState(false);
+  // Who the bar talks to: "" is LYKN itself, otherwise a Bot from the shared
+  // roster (same botsClient state the Bots window renders).
+  const [botsOpen, setBotsOpen] = useState(false);
+  const [targetBotId, setTargetBotId] = useState("");
   const [dictating, setDictating] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [attachments, setAttachments] = useState([]);
@@ -206,10 +231,13 @@ export default function HomeChatBar({
   const sourcesPanelRef = useRef(null);
   const layoutRef = useRef(null);
   const layoutPanelRef = useRef(null);
+  const botsBtnRef = useRef(null);
+  const botsPanelRef = useRef(null);
   const menuWrapRef = useRef(null);
   const [addPos, setAddPos] = useState({});
   const [sourcesPos, setSourcesPos] = useState({});
   const [layoutPos, setLayoutPos] = useState({});
+  const [botsPos, setBotsPos] = useState({});
   const recorderRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
@@ -235,8 +263,19 @@ export default function HomeChatBar({
       ? surfaceView
       : view;
   const busy = dictating || transcribing || dropping;
-  // A file on its own is a valid turn. In Imagine it lands on that bar as a
-  // reference and waits there for the prompt it belongs to.
+  // Bots — the bar can target a Bot instead of LYKN. Shared singleton state,
+  // so the Bots window and this dropdown always agree.
+  const showBots = botsAvailable();
+  const { bots, agentStates, live: botsLive, shots: botShots } = useBots();
+  const screenBot = screenAgentId ? botForAgent(bots, screenAgentId) : null;
+  const targetBot = showBots
+    ? screenAgentId
+      ? screenBot
+      : bots.find((b) => b.id === targetBotId) || null
+    : null;
+  // A file on its own is a valid turn — for LYKN and for a Bot alike. In
+  // Imagine it lands on that bar as a reference and waits there for the
+  // prompt it belongs to.
   const canSend = Boolean(text.trim()) || attachments.length > 0;
   const sourceOpt =
     RESEARCH_SOURCE_OPTIONS.find((o) => o.value === sourcePref) ||
@@ -258,6 +297,11 @@ export default function HomeChatBar({
     // Slate is in the deps because it changes the field's padding and type, so
     // the height has to be taken again rather than carried across the switch.
   }, [text, slate]);
+
+  useEffect(() => {
+    if (!focusNonce) return;
+    inputRef.current?.focus?.();
+  }, [focusNonce]);
 
   // AI Drive's Chat action lands on this externally-hosted composer. Mirror
   // the selected Vault item here so the attachment is visible before sending;
@@ -283,6 +327,23 @@ export default function HomeChatBar({
     };
     window.addEventListener("lykn-chat-vault-add", onVaultAdd);
     return () => window.removeEventListener("lykn-chat-vault-add", onVaultAdd);
+  }, []);
+
+  // Suggestion pills sit just under this bar on Build / Research. When an
+  // attachment makes the bar grow they would be covered, so tell the page
+  // to put them away until the tray is empty again.
+  useEffect(() => {
+    const attached = attachments.length > 0;
+    document.documentElement.toggleAttribute("data-home-bar-attached", attached);
+    window.dispatchEvent(
+      new CustomEvent("lykn-home-bar-attachments", { detail: { attached } }),
+    );
+  }, [attachments.length]);
+  useEffect(() => () => {
+    document.documentElement.removeAttribute("data-home-bar-attached");
+    window.dispatchEvent(
+      new CustomEvent("lykn-home-bar-attachments", { detail: { attached: false } }),
+    );
   }, []);
 
   // Same typewriter as the empty chat page. Only while the desktop is idle —
@@ -329,7 +390,7 @@ export default function HomeChatBar({
   }, []);
 
   useEffect(() => {
-    if (!sourcesOpen && !addOpen && !layoutOpen) return;
+    if (!sourcesOpen && !addOpen && !layoutOpen && !botsOpen) return;
     const onDown = (e) => {
       // Panels hang as siblings of the bar (not children of the trigger) so
       // the glass can blur the wallpaper. Outside-click has to clear both the
@@ -349,12 +410,18 @@ export default function HomeChatBar({
         if (addPanelRef.current?.contains(e.target)) return;
         setAddOpen(false);
       }
+      if (botsOpen) {
+        if (botsBtnRef.current?.contains(e.target)) return;
+        if (botsPanelRef.current?.contains(e.target)) return;
+        setBotsOpen(false);
+      }
     };
     const onKey = (e) => {
       if (e.key === "Escape") {
         setSourcesOpen(false);
         setLayoutOpen(false);
         setAddOpen(false);
+        setBotsOpen(false);
       }
     };
     window.addEventListener("mousedown", onDown);
@@ -363,10 +430,10 @@ export default function HomeChatBar({
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
     };
-  }, [sourcesOpen, addOpen, layoutOpen]);
+  }, [sourcesOpen, addOpen, layoutOpen, botsOpen]);
 
   useLayoutEffect(() => {
-    if (!addOpen && !sourcesOpen && !layoutOpen) return;
+    if (!addOpen && !sourcesOpen && !layoutOpen && !botsOpen) return;
     const place = () => {
       if (addOpen) {
         setAddPos(barMenuOffset(menuWrapRef.current, addRef.current, addPanelRef.current));
@@ -381,11 +448,16 @@ export default function HomeChatBar({
           barMenuOffset(menuWrapRef.current, layoutRef.current, layoutPanelRef.current),
         );
       }
+      if (botsOpen) {
+        setBotsPos(
+          barMenuOffset(menuWrapRef.current, botsBtnRef.current, botsPanelRef.current),
+        );
+      }
     };
     place();
     window.addEventListener("resize", place);
     return () => window.removeEventListener("resize", place);
-  }, [addOpen, sourcesOpen, layoutOpen, slate, tall]);
+  }, [addOpen, sourcesOpen, layoutOpen, botsOpen, slate, tall]);
 
   useEffect(() => {
     if (barMode !== "research") setSourcesOpen(false);
@@ -618,6 +690,42 @@ export default function HomeChatBar({
 
   const send = async () => {
     if (!canSend || busy) return;
+    // Talking to a Bot: the turn still lives in the regular chat — the
+    // payload just carries the Bot id so the chat surface routes it to the
+    // Bot's worker agent instead of the chat model. Attachments convert to
+    // the runtime's shape here (image data URLs / extracted text) and park
+    // for the chat surface to claim — File bytes don't fit in sessionStorage.
+    if (targetBot) {
+      let t = text.trim();
+      if (attachments.length) {
+        setDropping(true);
+        let converted = [];
+        try {
+          converted = await botAttachmentsFromChips(attachments);
+        } finally {
+          setDropping(false);
+        }
+        setPendingBotChatAttachments(converted);
+        if (!t) {
+          t =
+            attachments.length > 1
+              ? "Take a look at what I attached."
+              : `Take a look at ${attachments[0].name || "what I attached"}.`;
+        }
+      }
+      const payload = { view: "", text: t, botId: targetBot.id };
+      try {
+        sessionStorage.setItem("lykn_pending_home_chat", JSON.stringify(payload));
+      } catch {
+        /* the event below still covers a warm chat surface */
+      }
+      window.dispatchEvent(new CustomEvent("lykn-home-chat-send", { detail: payload }));
+      setText("");
+      attachments.forEach(revokePreview);
+      setAttachments([]);
+      if (!embedded) onOpen?.("chat");
+      return;
+    }
     const fileList = attachments.map((a) => a.file).filter(Boolean);
     if (fileList.length) setPendingHomeChatFiles(fileList);
     const folders = attachments.filter((a) => a.kind === "folder" && a.path);
@@ -650,7 +758,24 @@ export default function HomeChatBar({
     setText("");
     attachments.forEach(revokePreview);
     setAttachments([]);
-    onOpen?.("chat");
+    if (!embedded) onOpen?.("chat");
+  };
+
+  // Jump the chat surface to a Bot's own thread. A warm surface hops on the
+  // event; a cold one (chat window closed) picks up the parked hop when it
+  // mounts — same cold/warm hand-off the sends use.
+  const openBotChat = (bot, { openWindow = false } = {}) => {
+    if (!bot) return;
+    const detail = { botId: bot.id, chatId: bot.chatId || "", at: Date.now() };
+    if (openWindow) {
+      try {
+        sessionStorage.setItem("lykn_pending_bot_open", JSON.stringify(detail));
+      } catch {
+        /* the event below still covers a warm chat surface */
+      }
+    }
+    window.dispatchEvent(new CustomEvent("lykn-bot-chat-open", { detail }));
+    if (openWindow && !embedded) onOpen?.("chat");
   };
 
   // Idle pill mode click — reveal the real mode page (Build / Imagine /
@@ -658,14 +783,16 @@ export default function HomeChatBar({
   // the first send. Same cold/warm hand-off as sends.
   const pickMode = (id) => {
     setView(id);
-    if (id === "chat") return; // plain chat: stay on the clean desktop
+    // Idle desktop: Chat stays put. Embedded rail: every pill switches the
+    // live conversation, including back to Chat.
+    if (!embedded && id === "chat") return;
     try {
       sessionStorage.setItem("lykn_pending_home_view", id);
     } catch {
       /* the event below still covers a warm chat surface */
     }
     window.dispatchEvent(new CustomEvent("lykn-home-view", { detail: { view: id } }));
-    onOpen?.("chat");
+    if (!embedded) onOpen?.("chat");
   };
 
   // Voice Mode — same hand-off pattern as sends: stash for a cold chat
@@ -762,6 +889,56 @@ export default function HomeChatBar({
     else startDictation();
   };
 
+  // Who am I talking to — LYKN or one of the Bots. Sits leftmost in the bar.
+  // In the browser rail this is the Bot whose worker owns the current tab.
+  const botsButton = showBots ? (
+    <div ref={botsBtnRef} className="relative shrink-0">
+      <BotTargetTrigger
+        bot={targetBot}
+        agent={targetBot ? agentStates[targetBot.agentId] : null}
+        live={targetBot ? botsLive[targetBot.agentId] : null}
+        open={botsOpen}
+        title={
+          screenAgentId && targetBot
+            ? `${targetBot.name} is working on this screen — switch`
+            : undefined
+        }
+        label={
+          screenAgentId && targetBot
+            ? `${targetBot.name} is working on this screen`
+            : undefined
+        }
+        onClick={() => {
+          setAddOpen(false);
+          setSourcesOpen(false);
+          setLayoutOpen(false);
+          setBotsOpen((o) => !o);
+        }}
+      />
+    </div>
+  ) : null;
+
+  // Busy teammates' faces, inline just right of the plus button — yellow dot
+  // while working, green when done, red when failed. Click one to jump back
+  // into its chat; the work never stopped.
+  const botWorkStrip = showBots ? (
+    <BotWorkStrip
+      bots={bots}
+      agentStates={agentStates}
+      live={botsLive}
+      excludeBotId={targetBot?.id || ""}
+      onOpen={(bot) => {
+        setBotsOpen(false);
+        if (screenAgentId && bot.agentId) {
+          revealBotBrowser(bot);
+          return;
+        }
+        setTargetBotId(bot.id);
+        openBotChat(bot, { openWindow: true });
+      }}
+    />
+  ) : null;
+
   const addButton = (
     <div ref={addRef} className="relative shrink-0">
       <button
@@ -820,7 +997,11 @@ export default function HomeChatBar({
             ? "Listening..."
             : transcribing
               ? "Transcribing..."
-              : PLACEHOLDERS[barMode]
+              : targetBot
+                ? botsLive[targetBot.agentId]?.waiting?.waiting
+                  ? `Answer ${targetBot.name}...`
+                  : `Message ${targetBot.name}...`
+                : placeholderOverride || PLACEHOLDERS[barMode]
       }
       autoComplete="off"
       // flex-auto rather than flex-1 under Slate: the field's own grown height
@@ -932,9 +1113,12 @@ export default function HomeChatBar({
     <>
       {/* Mode pill — same look/position as the chat page's floating pill.
           Hidden once a conversation is live: the chat surface's own pill
-          (identical, same spot) takes over. */}
-      {!active && (
-        <div className={`pointer-events-none absolute inset-x-0 top-3 flex justify-center ${LAYER_Z}`}>
+          (identical, same spot) takes over. The browser-rail copy stays
+          visible so Chat / Build / Imagine / Research can still switch. */}
+      {(embedded || !active) && (
+        <div className={embedded
+          ? "mb-1 flex justify-center"
+          : `pointer-events-none absolute inset-x-0 top-3 flex justify-center ${LAYER_Z}`}>
           <div
             style={NO_DRAG}
             className="pointer-events-auto flex items-center gap-0.5 rounded-full border border-black/10 bg-white/55 p-1 shadow-lg backdrop-blur-2xl dark:border-white/15 dark:bg-black/35"
@@ -965,7 +1149,7 @@ export default function HomeChatBar({
       {/* Idle desktop: the empty-chat "Welcome back" headline, pinned just
           above the centered bar so load matches New chat without minting a
           conversation. Hidden once the chat surface is up (it has its own). */}
-      {!active && (
+      {!active && !embedded && (
         <div
           className={`pointer-events-none absolute inset-x-0 flex -translate-y-full justify-center px-8 ${LAYER_Z}`}
           // 2.875rem of air above the bar's top edge, wherever that edge is —
@@ -980,22 +1164,32 @@ export default function HomeChatBar({
 
       {/* Chat bar — centered on the idle desktop and on fresh mode pages,
           docked just above the bottom dock once a conversation has content.
-          Same rounded pill either way. */}
+          Same rounded pill either way. Embedded in the browser rail it is
+          just a block at the bottom of that panel. */}
       <div
-        className={`pointer-events-none absolute inset-x-0 flex justify-center px-8 transition-all duration-300 ${LAYER_Z} ${
-          docked
-            ? contained
-              ? "bottom-4"
-              : "bottom-[5.5rem]"
-            : "top-1/2 -translate-y-1/2"
-        }`}
+        className={
+          embedded
+            ? "relative flex w-full justify-center"
+            : `pointer-events-none absolute inset-x-0 flex justify-center px-8 transition-all duration-300 ${LAYER_Z} ${
+                docked
+                  ? contained
+                    ? "bottom-4"
+                    : "bottom-[5.5rem]"
+                  : "top-1/2 -translate-y-1/2"
+              }`
+        }
       >
         {/* The bar blurs its own backdrop, which makes it a backdrop root:
             anything nested inside it can only blur what the bar itself paints,
             so a popover hanging above the bar would blur nothing and show the
             wallpaper straight through. The Sources panel is therefore a
             sibling of the bar, not a child of its trigger. */}
-        <div ref={menuWrapRef} className="pointer-events-none relative flex w-full max-w-xl justify-center">
+        <div
+          ref={menuWrapRef}
+          className={`pointer-events-none relative flex w-full justify-center ${
+            embedded ? "" : "max-w-xl"
+          }`}
+        >
           <div
             ref={setBar}
             style={NO_DRAG}
@@ -1032,7 +1226,9 @@ export default function HomeChatBar({
                 {/* Controls along the bottom: the two that shape the prompt on
                     the left, the ones that send it on the right. */}
                 <div className="flex w-full items-center gap-1.5 px-0.5">
+                  {botsButton}
                   {addButton}
+                  {botWorkStrip}
                   {sourcesButton}
                   {layoutButton}
                   <span className="flex-1" />
@@ -1043,7 +1239,9 @@ export default function HomeChatBar({
               </>
             ) : (
               <div className="flex w-full items-center gap-1.5">
+                {botsButton}
                 {addButton}
+                {botWorkStrip}
                 {finderInput}
                 {field}
                 {sourcesButton}
@@ -1054,6 +1252,53 @@ export default function HomeChatBar({
               </div>
             )}
           </div>
+
+          {/* Tiny live viewport of a Bot working the browser (approved task).
+              Its tab is hidden; this floats above the bar and a click reveals
+              the real tab it's working in. */}
+          {showBots ? (
+            <BotBrowserPeek
+              bots={bots}
+              agentStates={agentStates}
+              shots={botShots}
+              excludeAgentId={screenAgentId}
+              onOpen={(bot) => revealBotBrowser(bot)}
+            />
+          ) : null}
+
+          {botsOpen && (
+            <BotTargetMenu
+              bots={bots}
+              agentStates={agentStates}
+              live={botsLive}
+              targetBotId={targetBot?.id || ""}
+              screenOwnerId={screenAgentId ? (screenBot?.id || "") : null}
+              onPick={(id) => {
+                setBotsOpen(false);
+                if (screenAgentId) {
+                  // Browser rail: the face is whoever owns this tab. Picking
+                  // another Bot jumps to their screen (and their chat).
+                  if (!id || id === (screenBot?.id || "")) return;
+                  const bot = bots.find((b) => b.id === id);
+                  if (bot?.agentId) revealBotBrowser(bot);
+                  return;
+                }
+                setTargetBotId(id);
+                if (id) {
+                  // Every Bot keeps its own thread — an open chat surface
+                  // hops there right away so you land mid-conversation.
+                  openBotChat(bots.find((b) => b.id === id));
+                  inputRef.current?.focus();
+                }
+              }}
+              onNewBot={() => {
+                setBotsOpen(false);
+                onOpen?.("bots");
+              }}
+              panelRef={botsPanelRef}
+              style={{ ...NO_DRAG, ...botsPos }}
+            />
+          )}
 
           {addOpen && (
             <div

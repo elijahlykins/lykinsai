@@ -10,6 +10,7 @@ import { fetchMostRecentLyknChat } from "@/lib/lyknChat/fetchLyknChatsWithContex
 import { notifyLyknChatsChanged } from "@/lib/lyknChat/chatsChanged";
 import { getThreadSnapshot, shouldPreferRuntimeSnapshot } from "@/lib/chat/chatThreadRuntime";
 import { isDemoLyknChatId, getDemoLyknChatSnapshot } from "@/lib/demoLyknChats";
+import { sanitizeImagineTurnForPersist } from "@/lib/chat/imagineThread";
 
 const SNAPSHOT_VERSION = 2;
 
@@ -165,6 +166,10 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
   });
   const [chatId, setChatId] = useState<string | null>(null);
   const chatIdRef = useRef<string | null>(null);
+  // True from the moment a board switch starts until its thread is applied.
+  // The chat clears to empty mid-load, and surfaces that key off "has turns"
+  // (like the docked chat bar) need to know that emptiness is transient.
+  const [boardLoading, setBoardLoading] = useState(false);
 
   /* ------------------------------------------------------------------ */
   /*  Refs                                                               */
@@ -409,7 +414,7 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
           if (typeof cleaned.aiResponse === "string" && cleaned.aiResponse.length > 50_000) {
             cleaned.aiResponse = cleaned.aiResponse.slice(0, 50_000);
           }
-          return cleaned;
+          return sanitizeImagineTurnForPersist(cleaned);
         })
       : [];
 
@@ -680,6 +685,7 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
     // baked in client-side, nothing gets read from (or written to) Supabase.
     // Works for both guests and signed-in users; saves are gated elsewhere.
     if (routeChatId && isDemoLyknChatId(routeChatId)) {
+      setBoardLoading(true);
       (async () => {
         hydratedRef.current = false;
         userRenamedRef.current = false;
@@ -697,12 +703,16 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
         if (snapshot) applySnapshotRef.current(snapshot, routeChatId);
         // applySnapshot hydrates chat from the explicit board id passed
         // above — no manual branch needed here.
-        if (!cancelled) hydratedRef.current = true;
+        if (!cancelled) {
+          hydratedRef.current = true;
+          setBoardLoading(false);
+        }
       })();
       return () => { cancelled = true; };
     }
 
     if (!userId) {
+      setBoardLoading(false);
       return () => { cancelled = true; };
     }
     // Signed-in `/app` — LyknChat's resume effect owns board selection
@@ -995,11 +1005,15 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
         restorePreferredRuntimeChat(id, []);
       }
       hydratedRef.current = true;
+      // Only the run that still owns this board flips loading off — a
+      // superseded run finishing late must not unmask the newer load.
+      if (!cancelled) setBoardLoading(false);
 
       if (id && boardRowExistsRef.current) {
         notifyLyknChatsChanged();
       }
     };
+    setBoardLoading(true);
     loadBoard();
     return () => {
       cancelled = true;
@@ -1202,6 +1216,7 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
   /* ------------------------------------------------------------------ */
   return {
     chatId,
+    boardLoading,
     title,
     setTitle: setTitleTracked,
     titleRef,

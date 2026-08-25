@@ -7,7 +7,7 @@
 // MemoryRouter so internal navigation stays inside the panel while the window
 // URL stays on /studio). Browser / Projects / Vault / Files / Calendar /
 // To-dos / Settings pop up as floating windows on Home.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUp,
@@ -40,6 +40,8 @@ import {
   Link as LinkIcon,
   X,
 } from "lucide-react";
+import { BotMark } from "@/components/bots/BotAvatar";
+import BrowserMark from "@/components/macdesktop/BrowserMark";
 import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-NEUTRAL-master.png";
 import lyknIconBlueUrl from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-BLUE-master.png";
 import LyknCalendarPage from "@/components/calendar/LyknCalendarPage";
@@ -105,6 +107,7 @@ import {
   useHomeWidgetOn,
   useWelcomeWidgetSync,
 } from "@/components/macdesktop/DesktopWidgets";
+import { useWelcomeDesignSync } from "@/lib/welcomeDesignPrefs";
 import { useDesktopVisibility } from "@/components/macdesktop/desktopVisibility";
 import {
   DesktopLayerProvider,
@@ -134,7 +137,18 @@ import {
 import StudioPop from "@/components/macdesktop/StudioPop";
 import StudioSplit from "@/components/macdesktop/StudioSplit";
 import HomeChatBar from "@/components/macdesktop/HomeChatBar";
+import AttachedChatThread from "@/components/lyknChat/AttachedChatThread";
+import AgentQuestionCard from "@/components/lyknChat/AgentQuestionCard";
+import {
+  bindBrowserTabChat,
+  consumePendingBrowserChat,
+  getAttachedChatId,
+  subscribeBrowserChatAttach,
+} from "@/lib/lyknChat/browserChatAttach";
+import { botForAgent } from "@/lib/bots/botStore";
+import { useBots } from "@/lib/bots/botsClient";
 import MacDesktopMirror from "@/components/macdesktop/MacDesktopMirror";
+import BotsPage from "@/components/bots/BotsPage";
 import WidgetCanvas from "@/components/macdesktop/WidgetCanvas";
 
 // Pages that open as macOS-style floating windows over the Home desktop
@@ -145,7 +159,7 @@ import WidgetCanvas from "@/components/macdesktop/WidgetCanvas";
 const WINDOW_APPS = {
   browser: {
     label: "Browser",
-    icon: Globe,
+    icon: BrowserMark,
     native: true,
     width: 1040,
     height: 700,
@@ -195,6 +209,18 @@ const WINDOW_APPS = {
     width: 940,
     height: 620,
   },
+  // LYKN Bots — always-on agents you build once and message like coworkers.
+  // Each Bot is a durable persona wrapped around a worker agent (with its own
+  // browser tab) plus a task queue, so work dispatches the moment the
+  // previous task finishes. First open lands on the build-your-first-Bot
+  // screen.
+  bots: {
+    label: "Bots",
+    icon: BotMark,
+    src: "/bots",
+    width: 960,
+    height: 680,
+  },
 };
 
 const SECTIONS = [
@@ -205,7 +231,8 @@ const SECTIONS = [
   { id: "projects", label: "Projects", icon: FolderKanban },
   { id: "vault", label: "Vault", icon: Folder },
   { id: "files", label: "Files", icon: Folder },
-  { id: "browser", label: "Browser", icon: Globe },
+  { id: "browser", label: "Browser", icon: BrowserMark },
+  { id: "bots", label: "Bots", icon: BotMark },
   { id: "calendar", label: "Calendar", icon: CalendarDays },
   { id: "todos", label: "To-dos", icon: ListTodo },
   { id: "settings", label: "Settings", icon: Settings },
@@ -241,7 +268,8 @@ const NAV_ITEMS = [
   // No Chat entry — Home IS the chat page: the desktop hosts the chat
   // surface and its rounded bar. Chats open there via openTab("chat", …).
   { id: "dashboard", label: "Home", icon: Home, action: "tab" },
-  { id: "browser", label: "Browser", icon: Globe, action: "tab" },
+  { id: "browser", label: "Browser", icon: BrowserMark, action: "tab" },
+  { id: "bots", label: "Bots", icon: BotMark, action: "tab" },
   { id: "projects", label: "Projects", icon: FolderKanban, action: "tab" },
   { id: "vault", label: "Vault", icon: Folder, action: "tab" },
   { id: "files", label: "Files", icon: Folder, action: "tab" },
@@ -396,6 +424,7 @@ function StudioSurface({ entry, windowed = false }) {
                   these render bare (no centered frost card of their own). */}
               <Route path="/calendar" element={<LyknCalendarPage windowed={windowed} />} />
               <Route path="/todos" element={<LyknTodosPage windowed={windowed} />} />
+              <Route path="/bots" element={<BotsPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="*" element={null} />
             </Routes>
@@ -603,7 +632,11 @@ function CircleIconButton({
             : "text-white/65 hover:bg-white/15"
         }`}
       >
-        <Icon className="h-[1.05rem] w-[1.05rem] flex-shrink-0" />
+        <Icon
+          className={`${
+            Icon === BrowserMark ? "h-6 w-6" : "h-[1.05rem] w-[1.05rem]"
+          } flex-shrink-0`}
+        />
         {/* Always mounted so the label slides/fades with the width animation
             instead of popping in mid-transition. */}
         <span
@@ -772,7 +805,17 @@ function StudioBrowserSkeleton({ chromeHeight }) {
  *  the native agent-browser views onto (tab strip, toolbar and page all
  *  render inside `hostRef`'s rect), with the agent rail beside it. The window
  *  frame supplies the card, so this fills it edge to edge. */
-function StudioBrowserBody({ hostRef, desktop, shot, docked, chromeHeight }) {
+function StudioBrowserBody({
+  hostRef,
+  desktop,
+  shot,
+  docked,
+  chromeHeight,
+  homeChatLive,
+  homeView,
+  name,
+  onAttachedBarChange,
+}) {
   // The picture is strictly for leaving: the native views can't be scaled or
   // faded, so they step aside and this animates out in their place. It has to
   // expire with the animation that needed it, though. A window that leaves by
@@ -819,7 +862,7 @@ function StudioBrowserBody({ hostRef, desktop, shot, docked, chromeHeight }) {
         <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-white text-black/45">
           {!desktop && (
             <>
-              <Globe className="h-9 w-9" />
+              <BrowserMark className="h-9 w-9" />
               <p className="max-w-sm text-center text-sm">
                 The LYKN browser is available in the desktop app.
               </p>
@@ -856,7 +899,14 @@ function StudioBrowserBody({ hostRef, desktop, shot, docked, chromeHeight }) {
           </div>
         )}
       </div>
-      <StudioAgentRail desktop={desktop} />
+      <StudioAgentRail
+        desktop={desktop}
+        homeChatLive={homeChatLive}
+        homeView={homeView}
+        name={name}
+        visible={docked}
+        onAttachedBarChange={onAttachedBarChange}
+      />
     </div>
   );
 }
@@ -1625,7 +1675,18 @@ function readAgentChatWidth() {
   return AGENT_CHAT_WIDTH_DEFAULT;
 }
 
-function StudioAgentRail({ desktop }) {
+function StudioAgentRail({
+  desktop,
+  homeChatLive = false,
+  homeView = "chat",
+  name = "",
+  /** The browser window is actually on screen (not minimized / peeked away).
+   *  Minimizing hides the native views but never unmounts this rail, so
+   *  without this the rail would keep claiming the attached chat bar and the
+   *  desktop's own bar would stay hidden with nothing on screen. */
+  visible = true,
+  onAttachedBarChange,
+}) {
   const [open, setOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [agents, setAgents] = useState([]);
@@ -1635,6 +1696,13 @@ function StudioAgentRail({ desktop }) {
   const [agentMenu, setAgentMenu] = useState("");
   const [sectionMore, setSectionMore] = useState({});
   const [activeId, setActiveId] = useState(null);
+  const [attachedChatId, setAttachedChatId] = useState(null);
+  const { bots } = useBots();
+  const screenBot = botForAgent(bots, activeId);
+  // A Bot's own board pairs with its tab on first paint, before the bind
+  // subscription catches up — otherwise the rail would flash the native
+  // agent thread instead of that Bot's chat.
+  const railChatId = attachedChatId || screenBot?.chatId || null;
   // Active agent's conversation: prompts + finished answers, plus the
   // in-flight streaming draft and a live status line while it works.
   const [thread, setThread] = useState([]);
@@ -1646,8 +1714,7 @@ function StudioAgentRail({ desktop }) {
   // rebuilt from restored state would resolve to "no_pending_choice".
   const [agentChoice, setAgentChoice] = useState(null);
   const [choiceBusy, setChoiceBusy] = useState(false);
-  // Draft answer for the question card pinned over the chat bar.
-  const [answerDraft, setAnswerDraft] = useState("");
+  const [homeBarFocus, setHomeBarFocus] = useState(0);
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
   // Custom post-finish chips for the active agent (runtime + LLM). Cleared on send.
@@ -1665,6 +1732,21 @@ function StudioAgentRail({ desktop }) {
   useEffect(() => {
     activeIdRef.current = activeId;
   }, [activeId]);
+  useLayoutEffect(() => {
+    if (screenBot?.agentId && screenBot.chatId) {
+      bindBrowserTabChat(screenBot.agentId, screenBot.chatId);
+    }
+  }, [screenBot?.agentId, screenBot?.chatId]);
+  useEffect(() => {
+    if (activeId) consumePendingBrowserChat(activeId);
+    const sync = () => setAttachedChatId(getAttachedChatId(activeId));
+    sync();
+    return subscribeBrowserChatAttach(sync);
+  }, [activeId]);
+  useEffect(() => {
+    onAttachedBarChange?.(!!(open && railChatId && visible));
+    return () => onAttachedBarChange?.(false);
+  }, [open, railChatId, visible, onAttachedBarChange]);
   useEffect(() => {
     chatWidthRef.current = chatWidth;
   }, [chatWidth]);
@@ -2038,7 +2120,6 @@ function StudioAgentRail({ desktop }) {
     // Any send answers/supersedes an open question — drop the card at once
     // rather than waiting for the runtime's next waiting:false event.
     setAgentWaiting(null);
-    setAnswerDraft("");
     const targetId = activeIdRef.current;
     const fromSuggestion = !!opts?.fromSuggestion;
     // Thread shows the short chip label; runtime still gets the grounded prompt.
@@ -2109,10 +2190,9 @@ function StudioAgentRail({ desktop }) {
   // A paused run has to look paused even when this rail never caught the
   // agent-waiting event — mounted late, reloaded, or was on another tab.
   const waitingRow = agentWaitingRow(active, agentWaiting);
-  // The agent asked a free-text question — it gets a dedicated answer card
-  // pinned over the chat bar, so the answer goes exactly where the question is.
+  // Liquid-glass question card sits above the regular chat bar. The bar
+  // never changes — you type the answer there.
   const questionRow = waitingRow?.kind === "question" ? waitingRow : null;
-  // Only ever the active agent's own live question.
   const choiceRow =
     agentChoice && active?.id === agentChoice.agentId ? agentChoice : null;
 
@@ -2137,6 +2217,26 @@ function StudioAgentRail({ desktop }) {
     },
     [choiceRow, choiceBusy],
   );
+  const questionCard =
+    questionRow || choiceRow ? (
+      <AgentQuestionCard
+        question={questionRow?.detail || questionRow?.label || choiceRow?.message || ""}
+        options={questionRow?.options}
+        buttons={choiceRow?.buttons}
+        disabled={choiceBusy}
+        onAnswer={(answer) => void send(answer)}
+        onButton={(id) => void resolveAgentChoice(id)}
+      />
+    ) : null;
+  const questionKey = questionRow?.detail || choiceRow?.choiceId || "";
+  useEffect(() => {
+    if (!questionKey) return;
+    if (railChatId) {
+      setHomeBarFocus((n) => n + 1);
+      return;
+    }
+    taRef.current?.focus?.();
+  }, [questionKey, railChatId]);
   // Topic + visibility for post-finish suggestions (mirrors Build / Research).
   const latestAgentTopic = (() => {
     for (let i = thread.length - 1; i >= 0; i--) {
@@ -2282,6 +2382,24 @@ function StudioAgentRail({ desktop }) {
             </AgentRailIcon>
           </div>
 
+          {railChatId ? (
+            <>
+              <AttachedChatThread chatId={railChatId} />
+              <div className="flex flex-shrink-0 flex-col gap-2 border-t border-white/15 px-3 pb-2.5 pt-2">
+                {questionCard}
+                <HomeChatBar
+                  embedded
+                  active
+                  live={homeChatLive}
+                  surfaceView={homeView}
+                  name={name}
+                  focusNonce={homeBarFocus}
+                  screenAgentId={activeId || ""}
+                />
+              </div>
+            </>
+          ) : (
+            <>
           {/* Thread — the active agent's prompts + answers, streaming live. */}
           <div
             ref={threadRef}
@@ -2335,106 +2453,26 @@ function StudioAgentRail({ desktop }) {
                 <ThinkingIndicator status={liveStep} compact tone="inherit" />
               </div>
             )}
-            {waitingRow && (
+            {waitingRow && !questionCard && (
               // Parked on the user: the mark rests on its solid frame and the
-              // label stops shimmering. Motion here would read as "still
-              // inferencing" and rush the person we are waiting on — the agent
-              // is holding the task, and the next move is theirs.
+              // label stops shimmering. The question itself lives on the glass
+              // card over the chat bar — repeating it here would say it twice.
               <div className="min-w-0 text-[0.72rem] text-white/70">
                 <ThinkingIndicator status={waitingRow.label} compact tone="inherit" paused />
-                {/* A question's text lives in the answer card over the chat
-                    bar — repeating it here would just say everything twice. */}
-                {waitingRow.detail && !questionRow && (
+                {waitingRow.detail ? (
                   <p className="mt-1 break-words pl-6 text-[0.68rem] leading-snug text-white/55">
                     {waitingRow.detail}
                   </p>
-                )}
-              </div>
-            )}
-            {choiceRow && (
-              // The affordance the pause was missing: until now Studio could
-              // show the question but had no way to answer it, because preload
-              // never bridged "lykn:agent-choice-resolve".
-              <div className="mt-2 flex flex-wrap gap-2 pl-6">
-                {choiceRow.buttons.map((b) => (
-                  <button
-                    key={b.id}
-                    type="button"
-                    disabled={choiceBusy}
-                    onClick={() => void resolveAgentChoice(b.id)}
-                    className={`rounded-full px-3 py-1 text-[0.7rem] font-medium transition disabled:opacity-40 ${
-                      b.primary
-                        ? "bg-[#3b78ff] text-white hover:bg-[#5b8fff]"
-                        : "border border-white/20 text-white/75 hover:bg-white/10"
-                    }`}
-                  >
-                    {b.label}
-                  </button>
-                ))}
+                ) : null}
               </div>
             )}
           </div>
 
-          {/* Question card — pinned over the chat bar whenever the agent is
-              waiting on a free-text answer. The answer goes exactly where the
-              question is: its own input, submitted straight into the run. */}
-          {questionRow && (
-            <div className="flex-shrink-0 border-t border-[#3b78ff]/40 bg-[#3b78ff]/[0.12] px-3 py-2.5">
-              <p className="mb-2 flex items-start gap-2 text-[0.76rem] font-medium leading-snug text-white/95">
-                <MessageCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-[#7fa8ff]" />
-                <span className="min-w-0 break-words">
-                  {questionRow.detail || questionRow.label}
-                </span>
-              </p>
-              {/* Answers the agent proposed — one tap sends it. The input
-                  below stays open for anything else, so these are shortcuts,
-                  never the only way through. */}
-              {questionRow.options?.length > 0 && (
-                <div className="mb-2 flex flex-wrap gap-1.5">
-                  {questionRow.options.map((opt) => (
-                    <button
-                      key={opt}
-                      type="button"
-                      title={opt}
-                      onClick={() => void send(opt)}
-                      className="max-w-full truncate rounded-full border border-white/25 bg-white/[0.10] px-2.5 py-1 text-[0.7rem] text-white/85 transition hover:border-[#5b8fff]/70 hover:bg-white/[0.18] hover:text-white"
-                    >
-                      {opt}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const answer = answerDraft.trim();
-                  if (!answer) return;
-                  void send(answer);
-                }}
-                className="flex items-center gap-2"
-              >
-                <input
-                  autoFocus
-                  value={answerDraft}
-                  onChange={(e) => setAnswerDraft(e.target.value)}
-                  placeholder="Type your answer…"
-                  autoComplete="off"
-                  className="min-w-0 flex-1 rounded-xl border border-white/20 bg-white/[0.08] px-2.5 py-1.5 text-[0.76rem] text-white/95 outline-none ring-0 placeholder:text-white/35 focus:border-[#5b8fff]/70 focus:outline-none"
-                />
-                <button
-                  type="submit"
-                  disabled={!answerDraft.trim()}
-                  className="flex-shrink-0 rounded-full bg-[#3b78ff] px-3.5 py-1.5 text-[0.72rem] font-medium text-white transition hover:bg-[#5b8fff] disabled:opacity-40"
-                >
-                  Answer
-                </button>
-              </form>
-            </div>
-          )}
-
-          {/* Chat bar — same glass as the thread, split by a hairline. */}
+          {/* Chat bar — same glass every time. A live question sits in a
+              liquid-glass card just above it. */}
           <div className="flex-shrink-0 border-t border-white/15 px-3 pb-2.5 pt-2">
-            {(agentSuggestions.length > 0 || agentSourceLinks.length > 0) && (
+            {questionCard ? <div className="mb-2">{questionCard}</div> : null}
+            {!questionCard && (agentSuggestions.length > 0 || agentSourceLinks.length > 0) && (
               <div className="mb-2 rounded-2xl border border-white/15 bg-white/[0.06] px-2.5 py-2">
                 {agentSourceLinks.length > 0 && (
                   <div className={agentSuggestions.length > 0 ? "mb-2" : ""}>
@@ -2559,6 +2597,8 @@ function StudioAgentRail({ desktop }) {
               </div>
             </div>
           </div>
+            </>
+          )}
     </div>
 
     {agentsOpen ? (
@@ -2698,9 +2738,6 @@ export default function Studio() {
   // restores that conversation. Clicking Home while already on Home dismisses
   // it to the clean desktop.
   const [homeChat, setHomeChat] = useState(false);
-  // Voice overlay state, broadcast by the chat surface — the rounded home
-  // bar hides while the full-screen voice UI is up.
-  const [homeVoice, setHomeVoice] = useState(false);
   // Whether the surfaced conversation actually has content (chat turns /
   // Imagine batches) — the rounded bar stays centered on fresh mode pages
   // and only docks to the bottom once this flips on.
@@ -2709,11 +2746,15 @@ export default function Studio() {
   // prompt bar (aspect ratios, reference images), so the rounded home bar
   // steps aside while it's up.
   const [homeView, setHomeView] = useState("chat");
+  // Browser rail is showing the same LyknChat bar — hide the desktop copy
+  // so the two don't both take attachments / keystrokes.
+  const [railAttachedOpen, setRailAttachedOpen] = useState(false);
   // The desktop's widgets live in their own layout (position and size per
   // widget); the walkthrough's picks are seeded into it on first run. The
   // Files and Vault desktop folders are still plain on/offs, because they're
   // icons rather than widgets.
   useWelcomeWidgetSync();
+  useWelcomeDesignSync();
   const [{ hideFolders }] = useDesktopVisibility();
   const showFilesWidget = useHomeWidgetOn("files") && !hideFolders;
   const showVaultFolder = useHomeWidgetOn("vaultFolder") && !hideFolders;
@@ -2822,15 +2863,12 @@ export default function Studio() {
   // Edit mode: widgets lift off the desktop to be moved, resized and added.
   const [widgetsEditing, setWidgetsEditing] = useState(false);
   useEffect(() => {
-    const onVoice = (e) => setHomeVoice(!!e?.detail?.on);
     const onActivity = (e) => setHomeChatLive(!!e?.detail?.active);
     const onViewChanged = (e) => setHomeView(String(e?.detail?.view || "chat"));
-    window.addEventListener("lykn-voice-mode-changed", onVoice);
     window.addEventListener("lykn-chat-activity-changed", onActivity);
     window.addEventListener("lykn-studio-view-changed", onViewChanged);
     window.addEventListener("lykn-home-view", onViewChanged);
     return () => {
-      window.removeEventListener("lykn-voice-mode-changed", onVoice);
       window.removeEventListener("lykn-chat-activity-changed", onActivity);
       window.removeEventListener("lykn-studio-view-changed", onViewChanged);
       window.removeEventListener("lykn-home-view", onViewChanged);
@@ -2996,7 +3034,10 @@ export default function Studio() {
   // process docks them over the body of the floating Browser window (left of
   // the agent rail). Report that body's window-relative rect and keep it fresh
   // as the window is dragged, resized, zoomed, or the rail collapses.
-  const browserHostRef = useRef(null);
+  const [browserHostEl, setBrowserHostEl] = useState(null);
+  const browserHostRef = useCallback((node) => {
+    setBrowserHostEl((prev) => (prev === node ? prev : node));
+  }, []);
   const sendBrowserBounds = useRef(null);
   // Stable so the window frame's geometry effect doesn't re-fire every render.
   const reportBrowserBounds = useCallback(() => sendBrowserBounds.current?.(), []);
@@ -3032,8 +3073,11 @@ export default function Studio() {
   useEffect(() => {
     if (dockHidden) setChatsOpen(false);
   }, [dockHidden]);
+  // A split pane is at rest the moment it mounts. Waiting on the hidden
+  // floating frame's settle clock left the native page on the old rect, then
+  // undocked it — the glitch instead of a snap.
   const browserDocked = splitHasBrowser
-    ? browserSettled
+    ? tab === "dashboard" && !desktopPeek
     : tab === "dashboard" &&
       browserOpen &&
       !minimized.browser &&
@@ -3052,9 +3096,17 @@ export default function Studio() {
     // painted page to reveal rather than a cold tab.
     window.lykn?.warmStudioBrowser?.();
   }, [browserOpen]);
-  useEffect(() => {
-    if (!browserDocked || !window.lykn?.setStudioBrowser) return undefined;
-    const el = browserHostRef.current;
+  useLayoutEffect(() => {
+    if (!window.lykn?.setStudioBrowser) return undefined;
+    if (!browserDocked) {
+      sendBrowserBounds.current = null;
+      window.lykn.setStudioBrowser({ open: false });
+      return undefined;
+    }
+    const el = browserHostEl;
+    // Floating ↔ split remounts the host. Closing the dock here parks the
+    // page off-screen and reveals it again — that's the glitch. Hold the
+    // last rect until the new pane is measured, then snap.
     if (!el) return undefined;
     const send = () => {
       const r = el.getBoundingClientRect();
@@ -3083,9 +3135,8 @@ export default function Studio() {
       sendBrowserBounds.current = null;
       ro.disconnect();
       window.removeEventListener("resize", send);
-      window.lykn.setStudioBrowser({ open: false });
     };
-  }, [browserDocked]);
+  }, [browserDocked, browserHostEl]);
 
   // The picture the window animates over while its native views are away (see
   // StudioBrowserBody). Main refreshes it as the browser changes and keeps the
@@ -3143,13 +3194,20 @@ export default function Studio() {
     });
   }, []);
 
-  // Artifact "Open" inside a Studio chat surface routes the URL into the
-  // Studio browser (lykn:studio-open-url) and fires this event so the
-  // Studio pops the Browser window up over Home, where the new tab is docked.
+  // Artifact "Open" / a chat link routes the URL into the Studio browser
+  // and docks that window. The native agent rail opens so they can talk
+  // about the page — not the home Chat / Build / Imagine / Research bar.
   useEffect(() => {
-    const onShowBrowser = () => {
+    const onShowBrowser = (event) => {
       setTab("dashboard");
       focusAppWindow("browser");
+      const d = event?.detail || {};
+      const agentId = String(d.agentId || "").trim();
+      try {
+        window.lykn?.agentChatSet?.({ open: true, agentId: agentId || undefined });
+      } catch {
+        /* rail still opens from main's setAgentChatOpen */
+      }
     };
     window.addEventListener("lykn-studio-show-browser", onShowBrowser);
     // "Ask AI" in the Mac Files surface hands the prompt to the chat surface
@@ -4086,6 +4144,10 @@ export default function Studio() {
                       shot={browserShot}
                       docked={browserDocked}
                       chromeHeight={browserChromeH}
+                      homeChatLive={homeChatLive}
+                      homeView={homeView}
+                      name={user ? firstName : ""}
+                      onAttachedBarChange={setRailAttachedOpen}
                     />
                   ) : id === "settings" ? (
                     <SettingsModal
@@ -4132,6 +4194,11 @@ export default function Studio() {
                     hostRef={browserHostRef}
                     desktop={desktop}
                     shot={browserShot}
+                    docked={browserDocked}
+                    homeChatLive={homeChatLive}
+                    homeView={homeView}
+                    name={user ? firstName : ""}
+                    onAttachedBarChange={setRailAttachedOpen}
                   />
                 );
               }
@@ -4177,13 +4244,13 @@ export default function Studio() {
           />
         )}
         {/* Rounded chat bar + idle mode pill — window-anchored siblings of
-            the chat layer so idle and live states line up exactly. Hidden
-            while the full-screen voice overlay is up. Imagine shares this
+            the chat layer so idle and live states line up exactly. Voice
+            Mode is a popup, so this bar stays put. Imagine shares this
             bar with the other modes so typed text and attachments stay. */}
         {tab === "dashboard" &&
           !split &&
           !coveringZoom &&
-          !homeVoice && (
+          !railAttachedOpen && (
           <HomeChatBar
             active={homeChat}
             live={homeChatLive}

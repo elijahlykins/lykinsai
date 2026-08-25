@@ -25,6 +25,10 @@ import { useAuth } from "@/lib/SupabaseAuth";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
 import { listUserProjects } from "@/lib/userProjects";
+import DatePickerPopover from "@/components/ui/DatePickerPopover";
+import TimePickerPopover, { formatTimeLabel } from "@/components/ui/TimePickerPopover";
+import MenuSelectPopover from "@/components/ui/MenuSelectPopover";
+import { Switch } from "@/components/ui/switch";
 
 // ────────────────────────────────────────────────────────────────────────
 // LyknCalendarPage — Calendar as a Studio (and standalone) popup page.
@@ -98,6 +102,20 @@ function sameDay(a, b) {
 }
 function fmtTime(d) {
   return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+/** Friendly label for a "YYYY-MM-DD" value ("Wed, August 26"). */
+function formatEventDate(ymd) {
+  if (!ymd) return "Pick a date";
+  const [y, m, d] = ymd.split("-").map((n) => parseInt(n, 10));
+  if (!y || !m || !d) return "Pick a date";
+  const date = new Date(y, m - 1, d);
+  if (Number.isNaN(date.getTime())) return "Pick a date";
+  return date.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "long",
+    day: "numeric",
+  });
 }
 
 // The 42-cell (6-week) grid that covers a month, starting on Sunday.
@@ -634,7 +652,14 @@ export default function LyknCalendarPage({ windowed = false }) {
   };
 
   const inputCls =
-    "w-full px-3 py-2 text-sm bg-panel border border-black/10 dark:border-white/10 text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 rounded-lg focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20";
+    "w-full px-3 py-2 text-sm bg-transparent border border-black/10 dark:border-white/15 text-black dark:text-white placeholder:text-black/35 dark:placeholder:text-white/35 rounded-lg focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20";
+  const eventFieldCls =
+    "w-full bg-transparent border-0 px-0 py-0 text-[0.9375rem] text-black dark:text-white placeholder:text-black/35 dark:placeholder:text-white/35 focus:outline-none disabled:opacity-70";
+  const eventPickerCls =
+    "min-h-[2.25rem] -mx-1.5 px-1.5 rounded-lg inline-flex items-center text-[0.9375rem] font-medium tabular-nums text-black dark:text-white hover:bg-black/[0.04] dark:hover:bg-white/[0.07] transition-colors disabled:opacity-60 disabled:hover:bg-transparent text-left";
+  const eventRowCls = "flex items-center gap-3 min-h-[2.75rem]";
+  const eventIconCls = "w-4 h-4 flex-shrink-0 text-black/45 dark:text-white/50";
+  const eventHairline = "h-px bg-black/[0.08] dark:bg-white/[0.12]";
 
   /* In a floating window the calendar owns the whole frame: the month grid
    * stretches to fill it (so zooming the window doesn't leave a short grid
@@ -1039,7 +1064,7 @@ export default function LyknCalendarPage({ windowed = false }) {
               </div>
             )}
 
-            <form onSubmit={handleSave} className={`flex flex-col gap-3 ${paneScroll}`}>
+            <form onSubmit={handleSave} className={`flex flex-col ${paneScroll}`}>
               <input
                 autoFocus={!form.readOnly}
                 type="text"
@@ -1047,105 +1072,146 @@ export default function LyknCalendarPage({ windowed = false }) {
                 value={form.title}
                 disabled={form.readOnly}
                 onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-                className={`${inputCls} disabled:opacity-70`}
+                className="w-full bg-transparent border-0 px-0 py-2 text-[1.125rem] font-medium text-black dark:text-white placeholder:text-black/35 dark:placeholder:text-white/35 focus:outline-none disabled:opacity-70"
               />
 
-              <label className="flex items-center gap-2 text-sm text-black/70 dark:text-white/70 select-none">
-                <input
-                  type="checkbox"
-                  checked={form.allDay}
-                  disabled={form.readOnly}
-                  onChange={(e) => setForm((f) => ({ ...f, allDay: e.target.checked }))}
-                  className="rounded border-gray-300 dark:border-gray-600"
-                />
-                All day
-              </label>
+              <div className={`${eventHairline} mt-1 mb-1`} />
 
-              <div className="flex flex-wrap gap-2">
-                <div className="flex-1 min-w-[8rem]">
-                  <label className="block text-[0.625rem] uppercase tracking-wider text-black/40 dark:text-white/40 mb-1">Date</label>
-                  <input
-                    type="date"
+              <div className={eventRowCls}>
+                <CalendarClock className={eventIconCls} />
+                <div className="min-w-0 flex-1">
+                  <DatePickerPopover
                     value={form.date}
-                    disabled={form.readOnly}
-                    onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
-                    className={`${inputCls} [color-scheme:dark] disabled:opacity-70`}
+                    onChange={(date) => setForm((f) => ({ ...f, date }))}
+                    allowClear={false}
+                    trigger={
+                      <button
+                        type="button"
+                        disabled={form.readOnly}
+                        className={`${eventPickerCls} w-full truncate`}
+                        title="Event date"
+                      >
+                        {formatEventDate(form.date)}
+                      </button>
+                    }
                   />
                 </div>
-                {!form.allDay && (
-                  <>
-                    <div className="w-24">
-                      <label className="block text-[0.625rem] uppercase tracking-wider text-black/40 dark:text-white/40 mb-1">Start</label>
-                      <input
-                        type="time"
-                        value={form.startTime}
-                        disabled={form.readOnly}
-                        onChange={(e) => setForm((f) => ({ ...f, startTime: e.target.value }))}
-                        className={`${inputCls} [color-scheme:dark] disabled:opacity-70`}
-                      />
-                    </div>
-                    <div className="w-24">
-                      <label className="block text-[0.625rem] uppercase tracking-wider text-black/40 dark:text-white/40 mb-1">End</label>
-                      <input
-                        type="time"
-                        value={form.endTime}
-                        disabled={form.readOnly}
-                        onChange={(e) => setForm((f) => ({ ...f, endTime: e.target.value }))}
-                        className={`${inputCls} [color-scheme:dark] disabled:opacity-70`}
-                      />
-                    </div>
-                  </>
-                )}
+                <div className="flex items-center gap-2 flex-shrink-0 select-none">
+                  <span className="text-[0.8125rem] font-medium text-black dark:text-white">All day</span>
+                  <Switch
+                    checked={form.allDay}
+                    disabled={form.readOnly}
+                    onCheckedChange={(checked) => setForm((f) => ({ ...f, allDay: checked }))}
+                  />
+                </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                <MapPin className="w-4 h-4 text-black/40 dark:text-white/40 flex-shrink-0" />
+              {!form.allDay && (
+                <div className="flex items-center gap-2 min-h-[2.5rem] pl-7">
+                  <TimePickerPopover
+                    value={form.startTime}
+                    onChange={(startTime) => setForm((f) => ({ ...f, startTime: startTime || "09:00" }))}
+                    trigger={
+                      <button
+                        type="button"
+                        disabled={form.readOnly}
+                        className={eventPickerCls}
+                        title="Start time"
+                      >
+                        {form.startTime ? formatTimeLabel(form.startTime) : "Start"}
+                      </button>
+                    }
+                  />
+                  <span className="text-black/25 dark:text-white/30 text-sm px-0.5" aria-hidden>
+                    –
+                  </span>
+                  <TimePickerPopover
+                    value={form.endTime}
+                    onChange={(endTime) => setForm((f) => ({ ...f, endTime }))}
+                    allowClear
+                    clearLabel="No end"
+                    trigger={
+                      <button
+                        type="button"
+                        disabled={form.readOnly}
+                        className={eventPickerCls}
+                        title="End time"
+                      >
+                        {form.endTime ? formatTimeLabel(form.endTime) : "End"}
+                      </button>
+                    }
+                  />
+                </div>
+              )}
+
+              <div className={`${eventHairline} my-1`} />
+
+              <div className={eventRowCls}>
+                <MapPin className={eventIconCls} />
                 <input
                   type="text"
-                  placeholder="Location or link (optional)"
+                  placeholder="Add location or link"
                   value={form.location}
                   disabled={form.readOnly}
                   onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))}
-                  className={`${inputCls} disabled:opacity-70`}
+                  className={eventFieldCls}
                 />
               </div>
 
               {(projects.length > 0 || form.projectId) && (
-                <div className="flex items-center gap-2">
-                  <FolderClosed className="w-4 h-4 text-black/40 dark:text-white/40 flex-shrink-0" />
-                  <select
-                    value={form.projectId}
-                    disabled={form.readOnly}
-                    onChange={(e) => setForm((f) => ({ ...f, projectId: e.target.value }))}
-                    className={`${inputCls} disabled:opacity-70`}
-                    title="Assign to a project"
-                  >
-                    <option value="">No project</option>
-                    {form.projectId && !projectsById.has(form.projectId) ? (
-                      <option value={form.projectId}>Current project</option>
-                    ) : null}
-                    {projects.map((p) => (
-                      <option key={p.id} value={p.id}>{p.name}</option>
-                    ))}
-                  </select>
-                </div>
+                <>
+                  <div className={eventHairline} />
+                  <div className={eventRowCls}>
+                    <FolderClosed className={eventIconCls} />
+                    <div className="min-w-0 flex-1">
+                      <MenuSelectPopover
+                        value={form.projectId}
+                        disabled={form.readOnly}
+                        onChange={(projectId) => setForm((f) => ({ ...f, projectId }))}
+                        title="Assign to a project"
+                        options={[
+                          { value: "", label: "No project" },
+                          ...(form.projectId && !projectsById.has(form.projectId)
+                            ? [{ value: form.projectId, label: "Current project" }]
+                            : []),
+                          ...projects.map((p) => ({ value: p.id, label: p.name })),
+                        ]}
+                        trigger={
+                          <button
+                            type="button"
+                            disabled={form.readOnly}
+                            className={`${eventPickerCls} w-full`}
+                          >
+                            <span className="truncate">
+                              {form.projectId
+                                ? (projectsById.get(form.projectId) || "Current project")
+                                : "No project"}
+                            </span>
+                          </button>
+                        }
+                      />
+                    </div>
+                  </div>
+                </>
               )}
 
+              <div className={`${eventHairline} my-1`} />
+
               <textarea
-                placeholder="Notes (optional)"
+                placeholder="Notes"
                 value={form.description}
                 disabled={form.readOnly}
                 onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
                 rows={3}
-                className={`${inputCls} resize-none disabled:opacity-70`}
+                className={`${eventFieldCls} resize-none py-2.5`}
               />
 
-              {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+              {error && <p className="text-xs text-red-600 dark:text-red-400 pt-1">{error}</p>}
 
-              <div className="flex items-center justify-between pt-1">
+              <div className="flex items-center justify-between pt-4">
                 {form.readOnly ? (
                   <>
-                    <span className="text-[0.625rem] text-black/40 dark:text-white/40">
+                    <span className="text-[0.75rem] text-black/55 dark:text-white/55">
                       {PROVIDER_LABEL[form.provider] || "Synced calendar"}
                     </span>
                     <button
@@ -1168,8 +1234,8 @@ export default function LyknCalendarPage({ windowed = false }) {
                         <Trash2 className="w-3.5 h-3.5" /> Delete
                       </button>
                     ) : (
-                      <span className="text-[0.625rem] text-black/40 dark:text-white/40 inline-flex items-center gap-1">
-                        <Clock className="w-3 h-3" /> {LOCAL_TZ || "local time"}
+                      <span className="text-[0.75rem] text-black/55 dark:text-white/55 inline-flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5" /> {LOCAL_TZ || "local time"}
                       </span>
                     )}
                     <button

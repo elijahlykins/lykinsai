@@ -142,6 +142,46 @@ const OUTBOUND_LABEL_EXEMPT_RE =
   /^\W*(new|compose|write|create|draft|start)\b|\b(settings|options|preferences|history|log|list|report|analytics|template|draft(?:s)?)\s*$/i;
 
 /**
+ * Reply / Forward open a composer. They never deliver anything by themselves
+ * — the Send control inside the composer does. Matching them as outbound
+ * asked the user to approve starting the email, then asked again to send it.
+ *
+ * Exact labels only: "Reply and send" is a real commit and must still pause.
+ */
+const COMPOSE_OPENER_LABEL_RE = /^\W*(?:reply(?:\s+all)?|forward)\s*$/i;
+
+/**
+ * Prose labels often name the TASK after the control: "the Compose button so
+ * I can send an email to elijah@lykn.io". The word "send" is the reason for
+ * the click, not the click. Strip that tail before judging.
+ */
+const PURPOSE_CLAUSE_RE =
+  /\b(?:so (?:that )?(?:i|we) can|in order to|to (?:send|share|publish|post|email|mail|invite|deliver|message))\b[\s\S]*$/i;
+
+/** "the Compose button", "Inbox link" — the named control is an opener. */
+const NAMED_OPENER_CONTROL_RE =
+  /\b(?:compose|new message|draft|inbox|recipient|subject|body|to field)\s+(?:button|btn|field|box|input|control|icon|link)\b/i;
+
+/** "the blue Send button" — the named control is the commit. */
+const NAMED_COMMIT_CONTROL_RE =
+  /\b(?:send|share|publish|post|invite|delete|pay|buy)\s+(?:button|btn|control|icon|link|menu item)\b/i;
+
+/**
+ * Does this label name a control that delivers something — or does it only
+ * mention delivery as the reason for a mid-flow click?
+ */
+function labelLooksOutbound(label) {
+  const text = String(label || "").trim();
+  if (!text) return false;
+  if (COMPOSE_OPENER_LABEL_RE.test(text) || OUTBOUND_LABEL_EXEMPT_RE.test(text)) return false;
+  if (NAMED_OPENER_CONTROL_RE.test(text) && !NAMED_COMMIT_CONTROL_RE.test(text)) return false;
+  const judged = text.replace(PURPOSE_CLAUSE_RE, "").trim() || text;
+  if (COMPOSE_OPENER_LABEL_RE.test(judged) || OUTBOUND_LABEL_EXEMPT_RE.test(judged)) return false;
+  if (NAMED_OPENER_CONTROL_RE.test(judged) && !NAMED_COMMIT_CONTROL_RE.test(judged)) return false;
+  return OUTBOUND_LABEL_RE.test(judged) && !OUTBOUND_LABEL_EXEMPT_RE.test(judged);
+}
+
+/**
  * A target described as somewhere you PUT something, not something that sends
  * it: "the Add people field in the FINAL sharing dialog", "the recipient input
  * at the top of the Share dialog".
@@ -155,6 +195,58 @@ const OUTBOUND_LABEL_EXEMPT_RE =
  */
 const TARGET_IS_A_FIELD_RE =
   /\b(field|input|textbox|text box|search ?box|combobox|entry box|address bar)\b/i;
+
+/**
+ * Gmail's To box is a combobox labelled "To recipients" — no word "field".
+ * Clicking it, or any other composer chrome, commits nothing. Enter inside
+ * it still can, and that case is handled separately.
+ */
+const COMPOSER_FIELD_LABEL_RE =
+  /^\W*(?:to|cc|bcc)(?:\s+recipients?)?\s*$|^\W*(?:to\s+)?recipients?\s*$|^\W*(?:subject|body|message body|add people|add guests|add recipients?|enter recipients?)\b/i;
+
+const FIELD_ROLE_RE = /^(textbox|searchbox|combobox|spinbutton)$/i;
+
+const MID_FLOW_PROGRESS_RE =
+  /^\W*(?:confirm|save(?:\s+changes)?|continue|next|done|finish|apply|allow|connect|link|ok|close|cancel|back|search)\b/i;
+
+function isComposerField(label, role) {
+  if (FIELD_ROLE_RE.test(String(role || ""))) return true;
+  const text = String(label || "");
+  return TARGET_IS_A_FIELD_RE.test(text) || COMPOSER_FIELD_LABEL_RE.test(text);
+}
+
+/**
+ * A control that advances a flow and cannot itself send, spend, or delete.
+ * The model often writes the *task* as expectedOutcome ("the message is
+ * sent") for these, and trusting that is how "To recipients" asked for a
+ * Yes/No.
+ */
+function isMidFlowControl(label, role) {
+  if (isComposerField(label, role)) return true;
+  const text = String(label || "").trim();
+  if (!text) return false;
+  if (COMPOSE_OPENER_LABEL_RE.test(text)) return true;
+  // "Compose" / "New message" / "Draft" — not "Start trial", not "Delete history".
+  if (
+    /^\W*(new|compose|write|create|draft)\b/i.test(text) &&
+    !SPENDS_MONEY_RE.test(text) &&
+    !DESTROYS_DATA_RE.test(text) &&
+    !STRONG_COMMIT_LABEL_RE.test(text)
+  ) {
+    return true;
+  }
+  if (NAMED_OPENER_CONTROL_RE.test(text) && !NAMED_COMMIT_CONTROL_RE.test(text)) return true;
+  if (
+    MID_FLOW_PROGRESS_RE.test(text) &&
+    !STRONG_COMMIT_LABEL_RE.test(text) &&
+    !labelLooksOutbound(text) &&
+    !SPENDS_MONEY_RE.test(text) &&
+    !DESTROYS_DATA_RE.test(text)
+  ) {
+    return true;
+  }
+  return false;
+}
 
 /**
  * The label patterns above are broad because a button label is short. Prose is
@@ -568,10 +660,17 @@ function consequenceKind(decision, snapshot) {
   }
   const el = snapshot?.byRef?.get(String(action.target || ""));
   const rawLabel = targetLabel(decision, snapshot);
+  const typing = type === "type" || type === "type_coord";
+  const enterSends = typing && action.pressEnter === true;
+  // Composer fields, Reply, Next, "To recipients" — the model routinely
+  // writes the whole task as expectedOutcome ("the message is sent") for
+  // these. That sentence is not evidence. Only Enter-in-a-composer-field
+  // can commit from a mid-flow control.
+  if (isMidFlowControl(rawLabel, el?.role) && !enterSends) return "";
   // A container's name is a list of what it holds, and judging a click by it
   // asks about actions this click does not take. What the action is EXPECTED
-  // to do still counts — that is the agent's own account of the consequence,
-  // and it stays trustworthy whatever was clicked.
+  // to do still counts when we do not know the control — an unlabeled icon,
+  // a menu blob — not when we already know it cannot commit.
   const label = isSingleControlLabel(rawLabel, el?.role) ? rawLabel : "";
   const outcome = String(decision.expectedOutcome || "");
 
@@ -586,13 +685,12 @@ function consequenceKind(decision, snapshot) {
   if (OUTBOUND_OUTCOME_RE.test(outcome)) return "outbound";
   // Putting text somewhere delivers nothing. Only committing it does — which
   // is the Enter case handled below, or a separate click on a Send control.
-  const typing = type === "type" || type === "type_coord";
-  if (!typing && label && OUTBOUND_LABEL_RE.test(label) && !OUTBOUND_LABEL_EXEMPT_RE.test(label)) {
+  if (!typing && label && labelLooksOutbound(label)) {
     // …unless what is being aimed at is a place to type, described in prose.
     if (!TARGET_IS_A_FIELD_RE.test(label)) return "outbound";
   }
   // Pressing Enter in a composer commits the send with no button involved.
-  if (typing && action.pressEnter === true && SUBMITS_ON_ENTER_RE.test(label)) {
+  if (enterSends && SUBMITS_ON_ENTER_RE.test(label || rawLabel)) {
     return "outbound";
   }
   return "";

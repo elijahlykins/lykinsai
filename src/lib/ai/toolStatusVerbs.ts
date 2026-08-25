@@ -72,11 +72,13 @@ const TOOL_RUNNING_STATUS: Record<string, string> = {
   local_search_files: "Searching your files…",
   local_pull_file: "Pulling it into the chat…",
   local_write_file: "Writing the file…",
+  local_edit_file: "Editing the file…",
   local_run_command: "Running it on your Mac…",
   local_synced_folders: "Checking your synced folders…",
   local_running_apps: "Checking your open apps…",
   local_read_app: "Reading the app…",
   local_open_app: "Opening the app…",
+  local_browser_agent: "Sending it to the browser agent…",
   local_open_path: "Opening it…",
   local_organize_desktop: "Tidying your desktop…",
 };
@@ -157,6 +159,7 @@ function toolDetailStatus(name: string, args?: Record<string, unknown>): string 
   if (
     name === "local_read_file" ||
     name === "local_write_file" ||
+    name === "local_edit_file" ||
     name === "local_list_dir" ||
     name === "local_pull_file" ||
     name === "local_open_path"
@@ -165,6 +168,7 @@ function toolDetailStatus(name: string, args?: Record<string, unknown>): string 
     if (!path) return "";
     const leaf = path.split("/").filter(Boolean).pop() || path;
     if (name === "local_write_file") return `Writing ${truncateForStatus(leaf, 40)}…`;
+    if (name === "local_edit_file") return `Editing ${truncateForStatus(leaf, 40)}…`;
     if (name === "local_read_file") return `Reading ${truncateForStatus(leaf, 40)}…`;
     if (name === "local_pull_file") return `Pulling in ${truncateForStatus(leaf, 40)}…`;
     return `Opening ${truncateForStatus(leaf, 40)}…`;

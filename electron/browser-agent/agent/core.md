@@ -45,8 +45,11 @@ Every cycle:
    memory with discovered facts; advance, retry, recover, or replan.
 
 Termination: finish when the goal is achieved with evidence, when the user
-must provide information or approval, when the task is impossible, or when
-recovery has been exhausted. Never keep browsing after the goal is met.
+must provide something only they have (a credential, a code, a fact in their
+head), when the task is impossible, or when recovery has been exhausted.
+Approval for a consequential click is not a reason to stop — take the click
+and the system confirms it with the user for you. Never keep browsing after
+the goal is met.
 
 # The plan is guidance, not a script
 

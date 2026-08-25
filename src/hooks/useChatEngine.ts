@@ -24,12 +24,12 @@ import {
   isInsistFreshBuildAsk,
   isRedesignAsk,
   isTypedNewDeliverableAsk,
+  isVagueBuildAsk,
 } from "@/lib/ai/artifactBuildIntent";
-import { detectImageAsk } from "@/lib/ai/studioModeIntent";
+import { detectImageAsk, imagineSwitchNotice } from "@/lib/ai/studioModeIntent";
 import { toast } from "@/components/ui/use-toast";
 import { micErrorMessage, requestMicStream } from "@/lib/voice/micAccess";
 import { AI_TEMPORARY_FAILURE_TEXT, AI_GUEST_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
-import { handOffAskToBrowserAgent } from "@/lib/ai/agentHandoff";
 import { forgetAppEdit } from "@/lib/apps/editApp";
 import {
   addOpenThread,
@@ -980,19 +980,17 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     if (lastSendSigRef.current.text === sig && now - lastSendSigRef.current.at < 900) return;
     lastSendSigRef.current = { text: sig, at: now };
 
-    // "Open Mailchimp and build the campaign" is work, not a question — but
-    // being moved into the browser uninvited is worse than being asked, so the
-    // first browser-shaped ask gets offered rather than acted on, and only a yes
-    // hands it over. Both outcomes settle before any streaming state exists, so
-    // there is nothing to unwind; the prompt is recorded in the thread either
-    // way, so the conversation still shows what was asked and where it went.
-    const handoff = await handOffAskToBrowserAgent(text, {
-      hasAttachments: hasAttachment,
-      chatId: streamChatId,
-    });
-    if (handoff.handed || handoff.asked) {
+    // Browser work is the MODEL's call now, not a classifier's. The model sees
+    // local_browser_agent (name + description) in its tool schemas and decides
+    // for itself when a task belongs in the browser — no pre-send intercept,
+    // no keyword walls, no offer round-trip. Chat answers everything else.
+
+    // Chat (and any non-Imagine send) must not generate images. Instant
+    // redirect so "make me a logo" never reaches the stream — Imagine
+    // is the only lane that arms lykn_generate_image / the batch canvas.
+    if (sendMode !== "image" && detectImageAsk(text)) {
+      const notice = imagineSwitchNotice();
       setChatInput("");
-      setComposerMode("none");
       bindThreadStateCallbacks(streamChatId, {
         setChatStatusText,
         setChatMessages,
@@ -1004,15 +1002,12 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         content: text,
         kind: "prompt",
         createdAt: new Date().toISOString(),
-        aiResponse: handoff.note || "",
+        aiResponse: notice,
       }]);
-      // These turns never reach the model, so nothing else writes them into the
-      // thread it reads. Without this a "no, stay here" arrives as the first
-      // thing the model has ever seen, with the ask it is refusing missing.
       try {
         const snap = ensureThreadSnapshot(streamChatId);
         snap.aiThread.push({ role: "user", content: text });
-        if (handoff.note) snap.aiThread.push({ role: "assistant", content: handoff.note });
+        snap.aiThread.push({ role: "assistant", content: notice });
         if (snap.aiThread.length > 40) snap.aiThread.splice(0, snap.aiThread.length - 40);
       } catch { /* the thread is a convenience; never fail a send over it */ }
       return;
@@ -1172,7 +1167,9 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           message.role === "assistant" &&
           /!\[[^\]]*\]\(https?:\/\/[^)]+\)/i.test(String(message.content || "")),
       );
+      const vagueBuildAsk = isVagueBuildAsk(text);
       const directBuildAction =
+        !vagueBuildAsk &&
         directCreateQuestion &&
         (typedNewDeliverableAsk ||
           artifactBelongsHere ||
@@ -1181,7 +1178,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
             normalizedModeAsk,
           ));
       const buildModeAction =
-        directBuildAction ||
+        !vagueBuildAsk &&
+        (directBuildAction ||
         desiredStateModeAction ||
         (!discussionQuestion &&
           (typedNewDeliverableAsk ||
@@ -1193,7 +1191,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
               /\b(?:make|build|create|generate|design|draw|code|render)\b/i.test(
                 normalizedModeAsk,
               )) ||
-            bareBuildBrief));
+            bareBuildBrief)));
       // The composer chip is cleared after every send and re-armed by the
       // Studio view on the next render. A fast follow-up can therefore arrive
       // with sendMode="none" even though the user is still in Build and is

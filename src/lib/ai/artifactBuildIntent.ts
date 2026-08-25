@@ -89,6 +89,34 @@ export function isInsistFreshBuildAsk(text: string): boolean {
   return INSIST_FRESH_BUILD_RE.test(String(text || ""));
 }
 
+const VAGUE_BUILD_OBJECT_RE =
+  /\b(?:something|anything|whatever|stuff|a thing|some stuff|a surprise|anything you want|whatever you want)\b/i;
+
+const BARE_BUILD_RE =
+  /^(?:(?:hey|hi|ok(?:ay)?|please|so|um+|uh)\s+)*(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:just\s+)?(?:build|make|create|whip up|put together)(?:\s+(?:me|us))?(?:\s+(?:something|anything|whatever))?[.!?…]*$/i;
+
+/** "Build me something" — they asked to build, but not what. Ask first. */
+export function isVagueBuildAsk(text: string): boolean {
+  const raw = String(text || "").replace(/\s+/g, " ").trim();
+  if (!raw) return false;
+  if (raw.length > 240) return false;
+  if (TYPED_BUILD_NOUN_RE.test(raw)) return false;
+  if (isHypotheticalOrBrainstormBuildMention(raw)) return false;
+  if (
+    /\b(?:something|anything|whatever)\s+(?:for|about|on)\s+(?:(?:my|our|the|a|an|this|that)\s+)?[a-z][a-z0-9-]{2,}/i.test(
+      raw,
+    )
+  ) {
+    return false;
+  }
+  if (/^surprise me[.!?…]*$/i.test(raw)) return true;
+  if (BARE_BUILD_RE.test(raw)) return true;
+  return (
+    /\b(?:build|make|create|whip up|put together|design)\b/i.test(raw) &&
+    VAGUE_BUILD_OBJECT_RE.test(raw)
+  );
+}
+
 export function isTypedNewDeliverableAsk(text: string): boolean {
   const raw = String(text || "").trim();
   if (!raw) return false;

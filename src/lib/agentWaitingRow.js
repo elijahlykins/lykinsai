@@ -35,7 +35,7 @@ export function agentWaitingRow(agent, fromEvent = null) {
     return {
       label: String(fromEvent.label).trim(),
       detail: String(fromEvent.detail || "").trim(),
-      // "question" gets its own answer card over the chat bar; everything
+      // "question" gets the glass answer card (type-in on the card); everything
       // else renders as the plain waiting row.
       kind: String(fromEvent.kind || "").trim(),
       options: answerOptions(fromEvent.options),

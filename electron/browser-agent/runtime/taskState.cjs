@@ -19,6 +19,11 @@ function createTask({ goal, conversationHistory = [] } = {}) {
     skills: [],
     knownFacts: {},
     constraints: [],
+    // The task brief beyond the goal: when the work is DONE (observable, page-
+    // checkable) and the adjacent actions the literal request does not license.
+    // Written by the planner; rendered around the goal every decide round.
+    successCondition: "",
+    doNot: [],
     workingMemory: {
       facts: [],
       candidateResults: [],
@@ -35,12 +40,23 @@ function createTask({ goal, conversationHistory = [] } = {}) {
   };
 }
 
-function setPlan(task, { plan = [], constraints = [], knownFacts = {}, skills = [] } = {}) {
+function setPlan(
+  task,
+  { plan = [], constraints = [], knownFacts = {}, skills = [], successCondition, doNot } = {},
+) {
   task.plan = plan.map((step) => ({ step: String(step), done: false }));
   task.currentStep = 0;
   task.constraints = constraints.map(String);
   task.knownFacts = { ...task.knownFacts, ...knownFacts };
   task.skills = [...new Set([...(task.skills || []), ...skills.map(String)])];
+  // The brief survives replans unless the replanner explicitly rewrote it —
+  // a mid-task route change does not change what "done" means.
+  if (String(successCondition || "").trim()) {
+    task.successCondition = String(successCondition).trim();
+  }
+  if (Array.isArray(doNot) && doNot.length) {
+    task.doNot = doNot.map(String).filter(Boolean);
+  }
   task.status = "working";
 }
 
@@ -90,14 +106,55 @@ function markStepDone(task) {
   }
 }
 
-/** Compact, model-facing rendering of the task state. */
+/** The outcome already happened — leftover plan rows are history, not work. */
+function markRemainingStepsDone(task) {
+  if (!Array.isArray(task.plan)) return;
+  for (const step of task.plan) step.done = true;
+  task.currentStep = task.plan.length;
+}
+
+function hasCommittedDelivery(task) {
+  return (task.recentActions || []).some(
+    (a) => a.result === "success" && a.committed === true && a.deferred !== true,
+  );
+}
+
+/**
+ * Compact, model-facing rendering of the task state.
+ *
+ * The task is a full brief, not a bare goal line: what done looks like, the
+ * scope wall, the adjacent actions this request does not license, and the
+ * order to stop the moment the success condition holds. Agents given only a
+ * goal drift into "useful" extra work — organizing the inbox they were asked
+ * to check — and browse past the end of the task.
+ */
 function formatTaskForModel(task) {
-  const lines = [`GOAL: ${task.goal}`];
+  const doNot = [
+    ...(task.doNot || []),
+    "Continue looking for additional useful work.",
+  ];
+  const lines = [
+    "TASK:",
+    task.goal,
+    "",
+    "SUCCESS CONDITION:",
+    task.successCondition ||
+      "The user's literal request has been satisfied, with the outcome visible on the page.",
+    "",
+    "SCOPE:",
+    "Perform only actions strictly necessary to satisfy the user's literal request.",
+    "",
+    "DO NOT:",
+    ...doNot.map((d) => `- ${d}`),
+    "",
+    "STOP RULE:",
+    "As soon as the success condition is satisfied, finish. Do not perform optional follow-up work.",
+  ];
   if (task.constraints.length) {
-    lines.push(`CONSTRAINTS: ${task.constraints.join("; ")}`);
+    lines.push("", `CONSTRAINTS: ${task.constraints.join("; ")}`);
   }
   if (task.plan.length) {
-    lines.push("PLAN:");
+    lines.push("", "PLAN:");
     task.plan.forEach((p, i) => {
       const marker = p.done ? "[done]" : i === task.currentStep ? "[now]" : "[later]";
       lines.push(`  ${marker} ${p.step}`);
@@ -105,12 +162,12 @@ function formatTaskForModel(task) {
   }
   const facts = task.workingMemory.facts;
   if (facts.length) {
-    lines.push("FACTS LEARNED:");
+    lines.push("", "FACTS LEARNED:");
     for (const f of facts.slice(-15)) lines.push(`  - ${f}`);
   }
   const candidates = task.workingMemory.candidateResults;
   if (candidates.length) {
-    lines.push("CANDIDATE RESULTS:");
+    lines.push("", "CANDIDATE RESULTS:");
     for (const c of candidates.slice(-8)) {
       lines.push(`  - ${typeof c === "string" ? c : JSON.stringify(c).slice(0, 200)}`);
     }
@@ -156,6 +213,8 @@ function serializeTask(task) {
     skills: [...task.skills],
     knownFacts: { ...task.knownFacts },
     constraints: [...task.constraints],
+    successCondition: task.successCondition,
+    doNot: [...(task.doNot || [])],
     workingMemory: {
       facts: [...task.workingMemory.facts],
       candidateResults: [...task.workingMemory.candidateResults],
@@ -190,6 +249,8 @@ function restoreTask(data, { conversationHistory = [] } = {}) {
   task.skills = Array.isArray(data.skills) ? data.skills.map(String) : [];
   task.knownFacts = data.knownFacts && typeof data.knownFacts === "object" ? { ...data.knownFacts } : {};
   task.constraints = Array.isArray(data.constraints) ? data.constraints.map(String) : [];
+  task.successCondition = String(data.successCondition || "").trim();
+  task.doNot = Array.isArray(data.doNot) ? data.doNot.map(String).filter(Boolean) : [];
   const wm = data.workingMemory && typeof data.workingMemory === "object" ? data.workingMemory : {};
   for (const key of ["facts", "candidateResults", "openQuestions", "completedSteps"]) {
     task.workingMemory[key] = Array.isArray(wm[key]) ? wm[key].map(String) : [];
@@ -213,6 +274,8 @@ module.exports = {
   recordAction,
   addFact,
   markStepDone,
+  markRemainingStepsDone,
+  hasCommittedDelivery,
   formatTaskForModel,
   formatHistoryForModel,
   serializeTask,

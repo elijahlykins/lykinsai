@@ -691,6 +691,53 @@ test("email: a send the user has just approved goes out without asking twice", a
   assert.match(result.answer, /sent/i);
 });
 
+test("email: after a verified send, leftover plan steps do not restart compose", async () => {
+  const fake = makeGmailFake();
+  const model = createScriptedModel({
+    plan: { plan: ["Open Gmail", "Click Compose", "Fill the draft", "Send it"], skills: ["communication"] },
+    decisions: [
+      ...gmailComposeDecisions().slice(0, -1),
+      // The model "forgets" it already sent and starts the task over.
+      { kind: "act", action: { type: "click", target: "e1" }, expectedOutcome: "the compose window opens" },
+      { kind: "act", action: { type: "click", target: "e5" }, expectedOutcome: "the message is sent" },
+      { kind: "finish", answer: "Sent it again." },
+    ],
+  });
+  const result = await runBrowserAgentTask({
+    goal: "Send Sarah an email telling her the meeting moved.",
+    userAsk: "yes, send it",
+    sendPolicy: "approved",
+    controller: createBrowserController({ webContents: fake.webContents, actuator: fake.actuator }),
+    model,
+    maxRounds: 14,
+    userDataPath: path.join(os.tmpdir(), "lykn-browser-agent-test"),
+  });
+  assert.equal(result.status, "completed", `expected completion, got ${result.status}: ${result.answer}`);
+  assert.equal(fake.sendClicks, 1, "must not send a second time after the first succeeded");
+});
+
+test("email: a finish after Send is accepted even with unmarked plan steps", async () => {
+  const fake = makeGmailFake();
+  const model = createScriptedModel({
+    plan: { plan: ["Open Gmail", "Compose", "Fill", "Send"], skills: ["communication"] },
+    decisions: [
+      ...gmailComposeDecisions().slice(0, -1),
+      { kind: "finish", answer: "Email sent — Gmail showed Message sent." },
+    ],
+  });
+  const result = await runBrowserAgentTask({
+    goal: "Send Sarah an email telling her the meeting moved.",
+    userAsk: "yes, send it",
+    sendPolicy: "approved",
+    controller: createBrowserController({ webContents: fake.webContents, actuator: fake.actuator }),
+    model,
+    maxRounds: 12,
+    userDataPath: path.join(os.tmpdir(), "lykn-browser-agent-test"),
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(fake.sendClicks, 1);
+});
+
 test("email: an approval reply cannot authorize spending or deletion", async () => {
   // "approved" releases a delivery and nothing else — money and destruction
   // always take their own interactive yes.
@@ -915,4 +962,54 @@ test("verifier: typed text verifies despite contenteditable newline inflation", 
   });
   assert.equal(result.success, true, result.reason);
   assert.equal(result.method, "deterministic");
+});
+
+// --- unit: the task is a full brief, not a bare goal line ------------------------
+
+test("task state renders as TASK / SUCCESS CONDITION / SCOPE / DO NOT / STOP RULE", () => {
+  const taskState = require("./runtime/taskState.cjs");
+  const task = taskState.createTask({ goal: "Check the user's email." });
+  taskState.setPlan(task, {
+    plan: ["Open the inbox", "Read the unread messages"],
+    successCondition: "The inbox has been accessed and the requested email state has been observed.",
+    doNot: ["Draft replies.", "Send messages.", "Organize or modify the inbox."],
+  });
+
+  const rendered = taskState.formatTaskForModel(task);
+  assert.match(rendered, /^TASK:\nCheck the user's email\./);
+  assert.match(rendered, /SUCCESS CONDITION:\nThe inbox has been accessed/);
+  assert.match(rendered, /SCOPE:\nPerform only actions strictly necessary to satisfy the user's literal request\./);
+  assert.match(rendered, /DO NOT:\n- Draft replies\.\n- Send messages\.\n- Organize or modify the inbox\./);
+  // The standing wall against scope creep is always present, even with a
+  // task-specific list above it.
+  assert.match(rendered, /- Continue looking for additional useful work\./);
+  assert.match(rendered, /STOP RULE:\nAs soon as the success condition is satisfied, finish\./);
+});
+
+test("the brief has fallbacks, survives a silent replan, and round-trips persistence", () => {
+  const taskState = require("./runtime/taskState.cjs");
+
+  // No planner output at all (plan call failed): generic but complete brief.
+  const bare = taskState.createTask({ goal: "book a table" });
+  taskState.setPlan(bare, { plan: ["Work toward: book a table"] });
+  const fallback = taskState.formatTaskForModel(bare);
+  assert.match(fallback, /SUCCESS CONDITION:\nThe user's literal request has been satisfied/);
+  assert.match(fallback, /STOP RULE:/);
+
+  // A replan that says nothing about the brief must not erase it — the route
+  // changed, not what "done" means.
+  const task = taskState.createTask({ goal: "g" });
+  taskState.setPlan(task, {
+    plan: ["a"],
+    successCondition: "The table is booked and the confirmation screen shows it.",
+    doNot: ["Book anything else."],
+  });
+  taskState.setPlan(task, { plan: ["b — different route"] });
+  assert.equal(task.successCondition, "The table is booked and the confirmation screen shows it.");
+  assert.deepEqual(task.doNot, ["Book anything else."]);
+
+  // And it survives an app restart with the rest of the task.
+  const restored = taskState.restoreTask(JSON.parse(JSON.stringify(taskState.serializeTask(task))));
+  assert.equal(restored.successCondition, task.successCondition);
+  assert.deepEqual(restored.doNot, task.doNot);
 });

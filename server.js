@@ -207,7 +207,7 @@ import { EXTERIOR_TOOLS_BY_NAME } from './mcp-tools/exterior/index.js';
 import { generateChatImage } from './lib/exterior/generateImage.js';
 import { communicateWithModelTool } from './mcp-tools/communicateWithModel.js';
 import { CHAT_TOOLS, buildChatToolCtx, providerForModel, resolveChatModelLabel, supportsTools } from './mcp-tools/chatTools.js';
-import { LOCAL_TOOL_NAMES, looksLikeLocalSystemAsk } from './mcp-tools/localTools.js';
+import { LOCAL_TOOL_NAMES, looksLikeLocalSystemAsk, mightBeBrowserTaskAsk } from './mcp-tools/localTools.js';
 import {
   formatBoundProjectGuidance,
   loadWritableProject,
@@ -5902,14 +5902,14 @@ const LYKN_CHAT_PERSONA_STATIC = [
   "- Never manufacture limitations on things you CAN do (browse, live research, embed YouTube, Vault, generate images via Imagine mode, build via Build mode / Create). If they ask whether you can generate an image or build something, answer yes — and if the matching mode isn't active, tell them to click Imagine or Build at the top of the page, or use \"+\" → Generate image / Build mode.",
   "",
   "WRITING STYLE:",
-  "- Match how the user thinks, not how a general audience reads. Direct. Match response length to complexity — short Q gets a short A.",
+  "- Match how the user thinks, not how a general audience reads. Direct. Match response length to complexity — a quick factual ask gets a quick answer, but a substantive question deserves a developed, generous one. Never clip a real answer down to a couple of sentences. When a [RESPONSE_LENGTH] section is present, it wins over everything here.",
   "- BANNED phrases: 'dive into', 'delve', 'navigate the complexities of', 'it's important to note', 'it's worth mentioning', 'certainly', 'without further ado', 'have you ever wondered'. No 'it's not just X, it's Y' parallelism. No colon-titled headers. No blogging sign-offs.",
   "- Mix sentence lengths deliberately. Short sentences land harder.",
   "- Don't hedge unless genuinely uncertain — then say what specifically is uncertain.",
   "- Lists only when content is genuinely list-like. Never open a response with a list.",
   "- Em dashes: at most one per response; otherwise rewrite.",
   "- Structure: when a reply has 2+ distinct topics or sections, use Markdown ## / ### headings to label them. Short one-paragraph answers and casual greetings don't need headings; substantive multi-part answers should. Use real Markdown headings (# syntax), not bold/colon-titled pseudo-headers.",
-  "- Tone: direct. No throat-clearing, no preamble, no restating the question. Start on the answer. Speak to the user, not at them.",
+  "- Tone: warm and direct. Friendly, personable, invested — a sharp teammate who's glad to be in it with the user, not a terse operator. No throat-clearing, no preamble, no restating the question. Start on the answer. Speak to the user, not at them. Warmth means being human and engaged — never filler, never flattery.",
   "- For greetings / \"what's up\" / \"how are you\": brief, grounded, in your own words. Not a stock script, not a personality read, not poetic atmosphere (no \"quiet evening\", \"just thinking about…\"). Not a WHO_I_AM/project brief. Do NOT lead with their first name.",
   "",
   "OUTPUT RULES (chat mode, no actions):",
@@ -5992,14 +5992,14 @@ const LYKN_STREAM_PERSONA_STATIC = [
   "- Never manufacture limitations on things you CAN do (browse, live research, embed YouTube, Vault, generate images via Imagine mode, build via Build mode / Create). If they ask whether you can generate an image or build something, answer yes — and if the matching mode isn't active, tell them to click Imagine or Build at the top of the page, or use \"+\" → Generate image / Build mode.",
   "",
   "WRITING STYLE:",
-  "- Match how the user thinks. Direct. Match response length to complexity — short Q → short A.",
+  "- Match how the user thinks. Direct. Match response length to complexity — a quick factual ask gets a quick answer, but a substantive question deserves a developed, generous one. Never clip a real answer down to a couple of sentences. When a [RESPONSE_LENGTH] section is present, it wins over everything here.",
   "- BANNED phrases: 'dive into', 'delve', 'navigate the complexities of', 'it's important to note', 'it's worth mentioning', 'certainly', 'without further ado', 'have you ever wondered'. No 'it's not just X, it's Y'. No colon-titled headers. No blogging sign-offs.",
   "- Mix sentence lengths. Short sentences land harder.",
   "- Don't hedge unless genuinely uncertain — then say what specifically is uncertain.",
   "- Lists only when content is genuinely list-like. Never open a response with a list.",
   "- Em dashes: at most one per response; otherwise rewrite.",
   "- Structure: when a reply has 2+ distinct topics or sections, use Markdown ## / ### headings to label them. Short one-paragraph answers and casual greetings don't need headings; substantive multi-part answers should. Use real Markdown headings (# syntax), not bold/colon-titled pseudo-headers.",
-  "- Tone: direct, no throat-clearing, no preamble, no restating the question. Start on the answer.",
+  "- Tone: warm and direct. Friendly, personable, invested — a sharp teammate who's glad to be in it with the user, not a terse operator. No throat-clearing, no preamble, no restating the question. Start on the answer. Warmth means being human and engaged — never filler, never flattery.",
   "- For greetings / \"what's up\" / \"how are you\": brief, grounded, in your own words. Not a stock script, not a personality read, not poetic atmosphere (no \"quiet evening\", \"just thinking about…\"). Not a WHO_I_AM/project brief. Do NOT lead with their first name.",
   "",
   "OUTPUT RULES (chat mode, NO actions):",
@@ -6415,8 +6415,8 @@ const LYKN_CHAT_STREAM_PERSONA_SLIM = [
   '',
   LYKN_VOICE_DIRECT,
   '',
-  'PRIORITY: answer from this message / [CONVERSATION] first. Be direct and useful.',
-  'Markdown: short ## headers, bullets, **bold** when helpful. Match length to the ask — short Q → short A.',
+  'PRIORITY: answer from this message / [CONVERSATION] first. Be direct, useful, and warm — a friendly teammate who\'s glad to dig in, not a terse operator. Warmth means being human and engaged, never filler or flattery.',
+  'Markdown: short ## headers, bullets, **bold** when helpful. Length: follow the [RESPONSE_LENGTH] section. Substantive questions get developed, multi-paragraph answers — never clipped to a line or two. Only greetings, quick facts, and simple confirmations stay short.',
   'Do NOT invent URLs, dump vault/project briefings, or offer to "add this to a project" unprompted.',
   'Vault: only if they asked for something saved. Projects: only if this chat is scoped or they asked.',
   'You CAN live-search the web from regular chat — no Web / Deep research mode required. Capability questions (\"can you do live research?\", \"can you search the web?\", \"can you read from a specific source?\") get a clear YES. When they name an outlet (Fox News, CNN, …) or say \"top headlines\", search that source immediately — NEVER ask for a homepage link or screenshot. Never say live web access is disabled. When tools are available and they need live facts or actions, use them — never invent.',
@@ -6424,6 +6424,26 @@ const LYKN_CHAT_STREAM_PERSONA_SLIM = [
   '',
   LYKN_NO_VENDOR_DISCLOSURE,
 ].join('\n');
+
+// ---------------------------------------------------------------------------
+// Response length — the Settings → Chat "Response length" control.
+// ---------------------------------------------------------------------------
+// The persona's style rules ("direct", "short Q → short A") pull every reply
+// toward brevity, which is exactly right ONLY at the Concise setting. Balanced
+// (the default — the client omits responseLength for it) has to push back
+// explicitly, or every answer lands as a two-line reply. Included on every
+// chat turn, invoke and stream alike, so the setting actually does something.
+function buildResponseLengthNote(responseLength) {
+  const setting = String(responseLength || '').trim().toLowerCase();
+  if (setting === 'concise') {
+    return '[RESPONSE_LENGTH]\nThe user set response length to CONCISE. Keep replies short — a few sentences when possible, never more than one short paragraph. Answer directly and stop; skip headings and lists unless the content truly demands them.';
+  }
+  if (setting === 'detailed') {
+    return '[RESPONSE_LENGTH]\nThe user set response length to DETAILED. Be thorough and in-depth: cover the topic fully, break multi-part answers into ## sections, and include concrete examples, trade-offs, and specifics. Long, complete answers are expected — never compress to a summary.';
+  }
+  // Balanced — the default.
+  return '[RESPONSE_LENGTH]\nThe user set response length to BALANCED. Substantive questions get developed answers: several paragraphs (or a few short sections) with real reasoning, relevant specifics, and an example where it helps — typically 150-400 words, more when the topic genuinely calls for it. Do NOT compress a real answer into one or two sentences — at this setting that reads as dismissive. This overrides any generic "keep it short" or "be direct" style guidance about length. Only greetings, quick facts, and simple confirmations stay short.';
+}
 
 // ---------------------------------------------------------------------------
 // Local Mode — pending client-executed tool calls.
@@ -6868,8 +6888,10 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '  already on a forced build turn ([BUILD_ARTIFACT] absent / no builder',
   '  tool firing), tell them to click Build at the top of the page and',
   '  resend — never claim you can\'t build, and never dump a long code/HTML',
-  '  sketch in chat as a substitute. When [BUILD_ARTIFACT] IS present, build',
-  '  immediately — do NOT tell them to arm Build mode.',
+  '  sketch in chat as a substitute. When [BUILD_CLARIFY] is present, ask',
+  '  what to build — do NOT invent a deliverable and do NOT tell them to',
+  '  arm Build. When [BUILD_ARTIFACT] IS present, build immediately — do',
+  '  NOT tell them to arm Build mode.',
   '  LYKN does not connect to outside apps (email, Notion, Gmail, Slack, …).',
   '  If they ask you to send mail or act inside a third-party app, say so',
   '  plainly and offer to draft the content here instead. Do not pretend the',
@@ -7050,6 +7072,8 @@ const TOOL_GUIDANCE_VISUAL = [
   '    coded app/dashboard/page) and [BUILD_ARTIFACT] is absent, tell them to',
   '    click Build at the top of the page',
   '    and resend — do NOT dump a code/HTML sketch in chat as the deliverable.',
+  '    Exception: when [BUILD_CLARIFY] is present, Build is already on — ask',
+  '    what to make; do not invent a mini-game or tell them to arm Build.',
   '  Do NOT put emojis in any built document, deck, worksheet, or PDF',
   '  (titles, headings, body, notes) — keep them clean and professional.',
   '  After the tool returns, give a brief summary in prose — the artifact',
@@ -7288,17 +7312,13 @@ function detectArtifactIntent(message, opts = {}) {
 // FOLLOW-UP EDIT PARITY: right after an image is generated, the natural next
 // message is a tweak with no image noun in it at all — "do the exact same
 // thing but use the ⌘ symbol", "make it darker", "now remove the text".
-// detectImageIntent can't see those (nothing image-shaped in the words), and
-// image mode disarms after every send, so the model landed with an image ask
-// and no image tool — and reached for lykn_generate_diagram / a markdown
-// mermaid dump with fake download links instead. If the LAST assistant turn
-// contains a generated image and the new message reads like a modification of
-// "that", it IS an image request — re-force the tool exactly like the armed
-// mode would.
-//
-// Generated images arrive in assistant text as a standalone markdown image
-// line; the "lykn-artifact:" alt prefix marks React-artifact previews, which
-// are NOT images and must not arm this path.
+// detectImageIntent can't see those (nothing image-shaped in the words).
+// Regular chat used to re-force lykn_generate_image on those turns; that is
+// retired — image gen is Imagine-only. This detector stays for diagnostics
+// (would-have-inferred logs) and Agent Mode skill routing. Generated images
+// arrive in assistant text as a standalone markdown image line; the
+// "lykn-artifact:" alt prefix marks React-artifact previews, which are NOT
+// images and must not arm this path.
 const GENERATED_IMAGE_IN_REPLY_RE =
   /!\[(?!lykn[-_]artifact:)[^\]]*\]\(https?:\/\/[^\s)]+\)/i;
 // Nouns that mean the follow-up is about some OTHER surface even though it
@@ -13226,11 +13246,7 @@ ${t}
         ? `[ATTACHED_IMAGES]\n${imageUrls.length} image(s) attached as actual pixel data — describe / reference them as needed.`
         : "";
 
-      const responseLengthNote = responseLength === "concise"
-        ? "[RESPONSE_LENGTH]\nKeep this response short (1-3 sentences when possible)."
-        : responseLength === "detailed"
-        ? "[RESPONSE_LENGTH]\nProvide a thorough, detailed response with examples."
-        : "";
+      const responseLengthNote = buildResponseLengthNote(responseLength);
 
       const userPromptSection = userPrompt && String(userPrompt).trim()
         ? `[USER_PREFERENCES]\nThe user has set these personal instructions — always follow them:\n${String(userPrompt).trim().slice(0, AI_BUDGETS.userPrompt)}`
@@ -14818,43 +14834,32 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     }
     const hasActiveArtifactBody = !!activeArtifact && !activeArtifactDiscussOnly;
 
-    // Image parity first: "generate an image of a dog" typed into the chat
-    // forces lykn_generate_image exactly like the armed "+" → Generate image
-    // mode. Checked before artifact inference so an explicit image ask never
-    // falls through to a document/chart builder (or worse, to a model with
-    // no image tool at all, which used to reply with nothing).
-    // Skipped in research/web/translate — those modes stay in-lane.
+    // Images are Imagine-only (or an explicit "+" / overlay "Create an image"
+    // arm). Regular chat used to auto-force lykn_generate_image from wording
+    // ("generate an image of a dog") and from follow-up tweaks — that raced
+    // the mode pills and skipped the "switch to Imagine" redirect. Mirror
+    // Create: never infer. Client-armed forceImage still generates.
     const hasAttachedImage = Array.isArray(imageUrls) && imageUrls.length > 0;
-    if (
-      !forceImage &&
-      !forceArtifact &&
-      !hasActiveArtifactBody &&
-      !lockOutArtifactBuilds &&
-      (detectImageIntent(text || '', { hasAttachedImage }) ||
-        detectReferenceImageAsk(text || '', hasAttachedImage))
-    ) {
-      forceImage = true;
-      console.log('🖼 Stream: inferred image-generation intent from message — forcing lykn_generate_image like the "+" → Generate image mode');
-    } else if (
-      !forceImage &&
-      !forceArtifact &&
-      !hasActiveArtifactBody &&
-      !lockOutArtifactBuilds &&
-      detectImageFollowUpIntent(text || '', conversation)
-    ) {
-      // The previous assistant turn generated an image and this message is a
-      // tweak of it ("do the exact same thing but…") — image mode disarms
-      // after every send, so re-force the tool or the model answers with a
-      // diagram/mermaid substitute instead of a new image.
-      forceImage = true;
-      console.log('🖼 Stream: follow-up edit to the just-generated image — re-forcing lykn_generate_image');
-    } else if (!forceImage && IMAGE_INTENT_NOUN_RE.test(String(text || ''))) {
-      // Diagnostic: the message mentions an image noun but the intent detector
-      // said no — log what we actually saw so misses are debuggable from the
-      // server log instead of guessing at the client's phrasing.
-      console.log(
-        `🖼 Stream: image-ish message did NOT trip inference (forceArtifact=${forceArtifact}, activeArtifact=${hasActiveArtifactBody}) — text[0..160]=${JSON.stringify(String(text || '').slice(0, 160))}`,
-      );
+    if (!forceImage) {
+      const wouldHaveInferred =
+        !forceArtifact &&
+        !hasActiveArtifactBody &&
+        !lockOutArtifactBuilds &&
+        (detectImageIntent(text || '', { hasAttachedImage }) ||
+          detectReferenceImageAsk(text || '', hasAttachedImage) ||
+          detectImageFollowUpIntent(text || '', conversation));
+      if (wouldHaveInferred) {
+        console.log(
+          '🔒 Stream: regular chat — refusing image auto-infer; user must switch to Imagine',
+        );
+      } else if (IMAGE_INTENT_NOUN_RE.test(String(text || ''))) {
+        // Diagnostic: the message mentions an image noun but the intent detector
+        // said no — log what we actually saw so misses are debuggable from the
+        // server log instead of guessing at the client's phrasing.
+        console.log(
+          `🖼 Stream: image-ish message did NOT trip inference (forceArtifact=${forceArtifact}, activeArtifact=${hasActiveArtifactBody}) — text[0..160]=${JSON.stringify(String(text || '').slice(0, 160))}`,
+        );
+      }
     }
     // Iterative image refinement: when this image turn follows a generated
     // image, pull that image's URL out of the last assistant reply so the
@@ -15247,13 +15252,30 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         );
       }
     }
+    // "can you build me something" — they commissioned a build with no kind
+    // and no topic. Forcing the React builder used to invent a mini-game.
+    const vagueBuildAsk =
+      !forceImage &&
+      !lockOutArtifactBuilds &&
+      artifactBuildIntent.isVagueBuildAsk(askText);
+    if (vagueBuildAsk) {
+      if (artifactBuildSpec || artifactToolName) {
+        console.log(
+          '🎨 Stream: vague build ask — asking what to build instead of inventing a deliverable',
+        );
+      }
+      artifactBuildSpec = null;
+      artifactToolName = null;
+      artifactAutoInferred = false;
+    }
     // Style rematch of the OPEN template: keep it editable but authorize a
     // full sections rewrite (allowFullRewrite below).
     const activeArtifactEditable =
       Boolean(activeArtifact) &&
       activeArtifactHasSource &&
       !artifactBuildSpec &&
-      !buildModeFresh;
+      !buildModeFresh &&
+      !vagueBuildAsk;
     // Chat-bar "+" → Projects: a LYKN project the user explicitly scoped this
     // chat to. Unlike `projectId` (which can be a board-linked Omnia project),
     // this is always a `lykn_projects` row, so we load its [CURRENT_PROJECT]
@@ -15541,7 +15563,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       !forceArtifact &&
       artifactBuildIntent.isHypotheticalOrBrainstormBuildMention(String(text || ''));
     const stripMakers =
-      !allowNewArtifactBuild || lockOutArtifactBuilds || brainstormBuildMention;
+      !allowNewArtifactBuild || lockOutArtifactBuilds || brainstormBuildMention || vagueBuildAsk;
     if (stripMakers && Array.isArray(streamChatToolNames)) {
       const keepEditTool =
         activeArtifactEditable && activeArtifact?.toolName
@@ -15794,6 +15816,16 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           ? `[USER_PREFERENCES]\nThe user has set these personal instructions — always follow them:\n${String(input.userPrompt).trim().slice(0, AI_BUDGETS.userPrompt)}`
           : '';
 
+      // The Settings → Chat response-length choice. This was read off the
+      // request but never reached the streamed prompt, so Concise / Balanced /
+      // Detailed all produced the same clipped replies. Skipped for Glass
+      // overlay asks and forced image turns, where reply length is not the
+      // user-facing product.
+      const responseLengthSection =
+        input?.overlayAsk || input?.forceImage || agentMode
+          ? ''
+          : buildResponseLengthNote(responseLength);
+
       // Studio mode session (Build / Imagine / Research page in LYKN Studio):
       // the client ships the mode's system prompt on every turn while the
       // session is active so the whole conversation stays in-lane.
@@ -15837,6 +15869,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         // splitPromptForProvider — uncached, varies per call).
         assistantIdentitySection,
         userPromptSection,
+        responseLengthSection,
         activeModeSection,
         installedAppsSection,
         macAppsSection,
@@ -15890,7 +15923,12 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // but they need the tool loop so the local file/terminal tools get
     // offered. Only computed when the desktop sent localMode: true.
     const streamLocalIntent =
-      streamLocalMode && looksLikeLocalSystemAsk(streamPureUserMessage || text);
+      streamLocalMode &&
+      (looksLikeLocalSystemAsk(streamPureUserMessage || text) ||
+        // Browser-shaped asks must keep their tools too, so the MODEL gets to
+        // decide whether to call local_browser_agent. Loose on purpose — a
+        // false positive only means schemas ride along on one turn.
+        mightBeBrowserTaskAsk(streamPureUserMessage || text));
     if (streamLocalIntent) {
       console.log('🖥️ Stream: local-mode ask detected — keeping tools on');
     }
@@ -16349,12 +16387,20 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     } else if (overlayAsk && forcePageFetch && electronPageTextRich) {
       console.log('🌐 Stream: Glass full-page — using Electron scroll scrape (skip HTTP shell fetch)');
     }
-    if (artifactBuildSpec) {
+    if (vagueBuildAsk) {
+      prompt +=
+        `\n\n[BUILD_CLARIFY — Build/Create mode is already on, but the user did not name what to build. ` +
+        `Do NOT call lykn_build_react_artifact, lykn_build_template, lykn_build_spreadsheet, lykn_render_video, or any other builder this turn. ` +
+        `Do NOT invent a mini-game, landing page, dashboard, or any other deliverable. ` +
+        `Do NOT tell them to arm or click Build. ` +
+        `Ask ONE short question: what should I build? Offer 2–4 concrete options (a playable mini-game, a landing page, a dashboard, a small utility). Wait for their pick.]`;
+    } else if (artifactBuildSpec) {
       prompt +=
         `\n\n[BUILD_ARTIFACT — Build/Create mode is ALREADY ARMED for this message; you are building a ${artifactBuildSpec.label} (a claude.ai-style Artifact). ` +
         `Never tell the user to arm/enable/turn on Build mode or Create — it is already on. ` +
         `Never tell the user to close, clear, or dismiss an open artifact panel — just call the tool and build. ` +
         `Do NOT narrate a plan or describe what you would build instead of calling the tool. ` +
+        `The user sees live status of each part as you write — pass \`todos\` with short human labels (Hero, Pricing, Footer) and mark the current one in_progress. ` +
         `You MUST call the ${artifactBuildSpec.tool} tool on this turn to produce it` +
         (artifactBuildSpec.templateType ? ` with template_type "${artifactBuildSpec.templateType}"` : '') +
         (artifactBuildSpec.tool === 'lykn_build_spreadsheet' ? ` with output_format "xlsx" (a real downloadable spreadsheet), passing headers + rows` : '') +
@@ -17747,8 +17793,12 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           'Local Mode is ON for this turn. You HAVE live access to the user\'s Mac through the ' +
           'local_* tools: local_list_dir, local_read_file, local_search_files, local_pull_file ' +
           '(brings any file — including images — into the chat), local_write_file, ' +
-          'local_run_command, local_synced_folders, local_running_apps, local_read_app, and ' +
-          'local_open_app, local_open_path, and local_organize_desktop. Your filesystem ' +
+          'local_edit_file, local_run_command, local_synced_folders, local_running_apps, ' +
+          'local_read_app, and local_open_app, local_open_path, and local_organize_desktop. ' +
+          'To CHANGE a file the user already has, prefer local_edit_file — it replaces an ' +
+          'exact snippet and leaves the rest of the file untouched; read the file first so ' +
+          'oldText matches verbatim. Use local_write_file only for new files or full ' +
+          'rewrites. Your filesystem ' +
           'access is scoped to the folders the user synced with LYKN — call ' +
           'local_synced_folders first when you are unsure what you can reach, or when a tool ' +
           'reports a path is not synced. local_running_apps tells you which apps are open on ' +
@@ -17774,7 +17824,18 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           'If the user does not say where a file lives, assume their local machine (especially ' +
           'when this conversation has been about their local files). When local_pull_file succeeds, the file is automatically shown ' +
           'to the user as a card in the chat — NEVER write its URL into your reply (hand-copied ' +
-          'signed URLs corrupt and break); just mention the file by name.'
+          'signed URLs corrupt and break); just mention the file by name.' +
+          '\n\n[BROWSER AGENT — AVAILABLE]\n' +
+          'You also have local_browser_agent: it hands a task to LYKN\'s browser agent, which ' +
+          'opens a real tab on the user\'s desktop and operates websites while they watch — ' +
+          'navigating, clicking, typing, filling forms, working inside web apps. YOU decide ' +
+          'when a task belongs there: use it when the user asks you to go DO something on a ' +
+          'website or in a web product ("open mailchimp and create the campaign", "check my ' +
+          'email and reply to Sarah", "fill out the form on that site"). Answer questions ' +
+          'yourself; draft content in chat when they want words; use lykn_web_search / ' +
+          'lykn_web_fetch when you just need to read the web. Never claim you cannot operate ' +
+          'websites, and never fake having done browser work — if the task belongs in the ' +
+          'browser, call the tool and tell the user it\'s running there.'
         : rawAgentSys;
       if (streamLocalToolsEnabled) {
         console.log(

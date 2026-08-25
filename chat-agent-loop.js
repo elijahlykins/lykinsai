@@ -41,6 +41,7 @@ import {
   buildAnthropicTools,
   buildGeminiTools,
 } from './mcp-tools/chatTools.js';
+import { inferNewBuildActivities } from './lib/ai/buildNarration.js';
 
 const MAX_HOPS = 6;
 /** Complex coding / multi-file artifact builds get a longer tool loop. */
@@ -545,7 +546,9 @@ function makeToolCallRecorder(onToolCall, allToolCalls) {
 // sits on a single line for a minute+. The narrator turns that arg stream
 // into live, deep-research-style progress: an opening beat when the tool
 // is first named, the artifact's title as soon as it can be parsed out of
-// the partial JSON, then throttled "Writing the code… (12k)" ticks.
+// the partial JSON, then the section / file / todo currently being written
+// ("Building out the hero…"), with throttled "Writing the code… (12k)"
+// ticks only when no part can be inferred yet.
 const ARG_STREAM_START_LINES = {
   lykn_build_react_artifact: 'Designing the build…',
   lykn_build_template: 'Drafting the document…',
@@ -572,7 +575,9 @@ function makeToolArgNarrator(onStatus) {
   if (typeof onStatus !== 'function') return () => {};
   const announced = new Set();
   const titled = new Set();
+  const seenParts = new Set();
   let lastProgressAt = 0;
+  let lastPartAt = 0;
   return function narrate(name, argsBuf = '') {
     if (!name) return;
     try {
@@ -588,11 +593,18 @@ function makeToolArgNarrator(onStatus) {
         if (title) {
           titled.add(name);
           onStatus(`Building ${title.slice(0, 60)}…`);
-          return;
         }
       }
+      const fresh = inferNewBuildActivities(name, argsBuf, seenParts);
+      if (fresh.length) {
+        lastPartAt = Date.now();
+        onStatus(fresh[fresh.length - 1].line);
+        return;
+      }
       const now = Date.now();
-      if (argsBuf.length >= 400 && now - lastProgressAt >= 800) {
+      // Byte ticks only fill gaps — once a section is on screen, keep it
+      // until the next part appears so the bubble reads as thinking.
+      if (argsBuf.length >= 400 && now - lastProgressAt >= 1800 && now - lastPartAt >= 2800) {
         lastProgressAt = now;
         const kb = argsBuf.length >= 1000 ? `${Math.round(argsBuf.length / 100) / 10}k` : `${argsBuf.length}`;
         onStatus(`${verb}… (${kb})`);

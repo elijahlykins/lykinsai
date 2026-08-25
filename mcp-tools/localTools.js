@@ -18,6 +18,7 @@ export const LOCAL_TOOL_NAMES = [
   'local_search_files',
   'local_pull_file',
   'local_write_file',
+  'local_edit_file',
   'local_run_command',
   'local_synced_folders',
   'local_running_apps',
@@ -25,6 +26,7 @@ export const LOCAL_TOOL_NAMES = [
   'local_open_app',
   'local_open_path',
   'local_organize_desktop',
+  'local_browser_agent',
 ];
 
 export const LOCAL_CHAT_TOOLS = [
@@ -48,8 +50,9 @@ export const LOCAL_CHAT_TOOLS = [
   {
     name: 'local_read_file',
     description:
-      'Read the contents of a text file on the user\'s Mac. Read-only; runs immediately. ' +
-      'Large files are truncated and binary files are refused.',
+      'Read a file on the user\'s Mac. Read-only; runs immediately. Text files return as-is; ' +
+      'documents — PDF, Word (docx/doc/rtf/odt), Excel (xlsx), PowerPoint (pptx) — are extracted ' +
+      'to text page by page or sheet by sheet. Large files are truncated; other binary files are refused.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -105,6 +108,33 @@ export const LOCAL_CHAT_TOOLS = [
         content: { type: 'string', description: 'Full file contents to write.' },
       },
       required: ['path', 'content'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local_edit_file',
+    description:
+      'Edit an existing file on the user\'s Mac by replacing an exact snippet of its ' +
+      'current text with new text. PREFER this over local_write_file when changing part of a ' +
+      'file — the rest of the file is left untouched. Read the file first with ' +
+      'local_read_file: oldText must match the file contents EXACTLY, including whitespace ' +
+      'and indentation, and must appear exactly once unless replaceAll is true. Documents work ' +
+      'too: xlsx edits the matching cells and keeps formulas/formatting; PDF and Word/RTF/ODT ' +
+      'are regenerated from their extracted text, so styling is flattened. Document edits write ' +
+      'a sibling "name (edited).ext" by default and leave the original alone — pass overwrite: ' +
+      'true only if the user asked to replace the original. This CHANGES ' +
+      'their system, so it requires the user to approve the action first. State clearly what ' +
+      'you are changing and where.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File to edit (absolute, ~-relative, or home-relative). Must already exist.' },
+        oldText: { type: 'string', description: 'Exact text currently in the file to replace. Include enough surrounding lines to be unique.' },
+        newText: { type: 'string', description: 'Text to replace oldText with. Use an empty string to delete the snippet.' },
+        replaceAll: { type: 'boolean', description: 'Replace every occurrence of oldText instead of requiring it to be unique. Defaults to false.' },
+        overwrite: { type: 'boolean', description: 'Documents (pdf/docx/rtf/odt/xlsx) only: replace the original file instead of writing a sibling "(edited)" copy. Defaults to false.' },
+      },
+      required: ['path', 'oldText', 'newText'],
       additionalProperties: false,
     },
   },
@@ -241,6 +271,43 @@ export const LOCAL_CHAT_TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'local_browser_agent',
+    description:
+      'Hand a task to LYKN\'s browser agent — a separate agent that opens a real browser tab ' +
+      'on the user\'s desktop and operates websites for them: navigating, clicking, typing, ' +
+      'filling forms, and working inside web apps (email, marketing tools, docs, stores — any ' +
+      'site). The user watches it work live and can take over the tab at any time. Use it when ' +
+      'the user asks you to GO DO something on a website or in a web product: "open mailchimp ' +
+      'and create the campaign", "check my email and reply to Sarah", "fill out the form on ' +
+      'example.com", "log into my dashboard and export the report". Do NOT use it for ' +
+      'questions you can answer yourself, for drafting/writing content in the chat, for web ' +
+      'lookups (use lykn_web_search / lykn_web_fetch), or for anything on the user\'s local ' +
+      'files (use the other local_* tools). The task starts immediately in its own tab and ' +
+      'runs while you reply — tell the user it\'s underway in the browser and they can watch ' +
+      'or take over; never narrate steps you did not do yourself.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: {
+          type: 'string',
+          description:
+            'The complete goal, written as an instruction to the browser agent. It sees ' +
+            'NOTHING of this conversation, so include everything it needs: what to do, where ' +
+            '(site or product name), and any specifics the user gave (names, content to use, ' +
+            'constraints).',
+        },
+        url: {
+          type: 'string',
+          description:
+            'Where to start, when known — a full URL like "https://mail.google.com". Omit it ' +
+            'if the user only named a product; the agent will find the site.',
+        },
+      },
+      required: ['task'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 export const LOCAL_CHAT_TOOLS_BY_NAME = Object.freeze(
@@ -305,6 +372,24 @@ export function looksLikeLocalSystemAsk(text) {
   if (/\b(open|show|pull\s*up|browse)\b.{0,24}\b(finder|files\s+app|file\s+browser)\b/.test(t)) return true;
   // Path-like tokens are a strong local signal.
   if (/(^|\s)(~\/[\w./-]+|\/(users|applications|library|volumes)\/[\w./-]+)/.test(t)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Heuristic: might this message be a task for the browser agent? Used ONLY by
+ * the stream lean-path gate, so a browser-shaped ask on a casually-classified
+ * turn keeps its tools and the MODEL gets to decide whether to call
+ * local_browser_agent. Deliberately loose — a false positive here just means
+ * tool schemas ride along on one turn; the model still chooses.
+ */
+export function mightBeBrowserTaskAsk(text) {
+  const t = String(text || '').toLowerCase();
+  if (!t.trim()) return false;
+  if (/\b(browser|website|web\s?site|web\s?app|new tab|in a tab)\b/.test(t)) return true;
+  if (/\b(log|sign)\s?(in|into)\b/.test(t)) return true;
+  if (/\b(open|go to|visit|pull up|head to|check|use)\b[^.?!]{0,40}\b(gmail|mail|inbox|email|site|page|dashboard|account|store|cart|\w+\.(?:com|io|net|org|co|app|ai))\b/.test(t)) {
     return true;
   }
   return false;

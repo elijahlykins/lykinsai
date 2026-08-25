@@ -39,6 +39,10 @@ async function planTask({ model, task, snapshot = null, userMemory = "", website
     constraints: result.constraints || [],
     knownFacts: result.knownFacts,
     skills,
+    // The rest of the task brief: what done looks like, and the adjacent
+    // actions the literal request does not license.
+    successCondition: result.successCondition,
+    doNot: result.doNot,
   });
   return {
     clarification: result.clarification,
@@ -98,6 +102,10 @@ async function replanTask({ model, task, snapshot, reason = "", constraints = nu
       constraints: revised,
       knownFacts: result.knownFacts,
       skills: knownSkills(result.skills),
+      // setPlan keeps the existing brief when these come back empty — a route
+      // change mid-task does not change what "done" means.
+      successCondition: result.successCondition,
+      doNot: result.doNot,
     });
   }
   return { clarification: result.clarification };

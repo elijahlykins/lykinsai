@@ -16,7 +16,7 @@ import ChatArtifactCard, { ArtifactBuildingPlaceholder } from "@/components/lykn
 import LyknChatArtifactPanel from "@/components/lyknChat/LyknChatArtifactPanel";
 import GeneratedImage from "@/components/lyknChat/GeneratedImage";
 import { openFileWindow } from "@/lib/files/fileWindows";
-import { isLiveBuildStatus } from "@/hooks/useThinkingStatus";
+import { isGenericBuildStatus, isLiveBuildStatus, useBuildThoughtTrail } from "@/hooks/useThinkingStatus";
 
 // Studio Research rail width — floats over the right edge; chat stays put.
 const RESEARCH_SIDEBAR_WIDTH = "min(340px, 30vw)";
@@ -42,6 +42,8 @@ import { copyMarkdownAsRich } from "@/lib/copyRichClipboard";
 import { chatBarMinHeight } from "@/lib/appearance";
 import { useAppearance } from "@/lib/useAppearance";
 import { isPullUpAsk, openLyknMediaPop } from "@/lib/lyknMediaPop";
+import BotAvatar from "@/components/bots/BotAvatar";
+import { botSeed } from "@/lib/bots/botStore";
 
 // Resolve a user-facing model name for the AI Response pill. The server
 // reports the REAL resolved backend in `served_model` — but LYKN is a
@@ -140,6 +142,14 @@ type PromptMessage = {
   sources?: { title: string; url: string }[];
   kind?: "prompt" | "load-in-greeting";
   attachments?: SentChatAttachmentData[];
+  /** Set when this turn was addressed to a Bot — the reply came from its
+   *  worker agent, and the response header wears its face and name. */
+  bot?: { id: string; name: string; face: string; eyes: string; color: string };
+  /** The Bot's task is still running — show the animated status line under
+   *  whatever has streamed so far, instead of a static "Thinking…" string. */
+  botWorking?: boolean;
+  botStatus?: string;
+  botTrail?: string[];
   /**
    * Set when the AI's reply ended with a hidden <fact_confirm>,
    * <learned>/<reason>, or <updated> tag — or when /api/learned/auto
@@ -318,7 +328,11 @@ export interface LyknChatViewProps {
     prompt?: string;
     aspect?: string;
     storagePath?: string;
+    batchId?: string;
+    index?: number;
   }) => void;
+  /** Retry one failed Imagine slot in the transcript 4-up. */
+  onRetryImagineSlot?: (batchId: string, slotIndex: number) => void;
   onSaveLink: (link: string) => void;
   addChatResponseToGrid?: (text: string) => void;
 
@@ -434,10 +448,7 @@ function messageHasInFlightTools(msg: { toolCalls?: ToolCallEvent[] } | null | u
 function isBuildSlotStatus(status?: string): boolean {
   const t = String(status || "").trim();
   if (!t) return false;
-  if (/\(\s*[\d.]+k?\s*\)/.test(t)) {
-    return /^(building |writing the |filling in |composing |rendering )/i.test(t);
-  }
-  return /^building\s+(?!the\s(?:app|page|artifact)\b)\S/i.test(t);
+  return isLiveBuildStatus(t) && !isGenericBuildStatus(t);
 }
 
 /* ------------------------------------------------------------------ */
@@ -486,7 +497,10 @@ type MessageItemProps = {
     prompt?: string;
     aspect?: string;
     storagePath?: string;
+    batchId?: string;
+    index?: number;
   }) => void;
+  onRetryImagineSlot?: (batchId: string, slotIndex: number) => void;
   onSaveLink: (link: string) => void;
   addChatResponseToGrid?: (text: string) => void;
   handleChunkClick: (e: React.MouseEvent, chunkKey: string, chunkText: string) => void;
@@ -508,6 +522,8 @@ type MessageItemProps = {
    * streaming its arguments (the long wait before "running").
    */
   inlineThinkingStatus?: string;
+  /** Earlier section-level build thoughts for the live spinner. */
+  buildThoughtTrail?: string[];
 };
 
 /**
@@ -1085,13 +1101,16 @@ function AiImageBatch({
   images,
   aspect,
   prompt,
+  batchId,
   savedMediaUrls,
   onSaveAiImage,
   onOpenGeneratedImage,
+  onRetrySlot,
 }: {
-  images: { url: string; storagePath?: string }[];
+  images: { url: string; storagePath?: string; status?: "loading" | "done" | "error"; error?: string }[];
   aspect?: string;
   prompt: string;
+  batchId?: string;
   savedMediaUrls: Set<string>;
   onSaveAiImage: (
     imageUrl: string,
@@ -1103,74 +1122,105 @@ function AiImageBatch({
     prompt?: string;
     aspect?: string;
     storagePath?: string;
+    batchId?: string;
+    index?: number;
   }) => void;
+  onRetrySlot?: (index: number) => void;
 }) {
   const ratio = /^(\d+):(\d+)$/.exec(String(aspect || ""));
+  const cellRatio = { aspectRatio: ratio ? `${ratio[1]} / ${ratio[2]}` : "1 / 1" };
   return (
     <div className="px-4 py-3">
       <div className={`grid gap-2 ${images.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
         {images.map((img, i) => {
-          const saved = savedMediaUrls.has(img.url);
+          const saved = !!img.url && savedMediaUrls.has(img.url);
+          const errored = img.status === "error";
+          const loading = !errored && (!img.url || img.status === "loading");
           return (
-            <div key={img.url || i} className="group/img relative overflow-hidden rounded-xl">
-              <button
-                type="button"
-                className="block w-full cursor-zoom-in"
-                onClick={() => {
-                  if (onOpenGeneratedImage) {
-                    onOpenGeneratedImage({
-                      url: img.url,
-                      prompt,
-                      aspect,
-                      storagePath: img.storagePath,
-                    });
-                    return;
-                  }
-                  openFileWindow({
-                    url: img.url,
-                    name: `${prompt || "Generated image"}.png`,
-                    media: "image",
-                    onSaveToVault: saved
-                      ? null
-                      : async () => {
-                          await onSaveAiImage(img.url, prompt, {
-                            storagePath: img.storagePath,
-                          });
-                        },
-                  });
-                }}
-                title="Open"
-              >
-                <GeneratedImage
-                  src={img.url}
-                  alt={`Variation ${i + 1}`}
-                  className="w-full object-cover"
-                  style={{ aspectRatio: ratio ? `${ratio[1]} / ${ratio[2]}` : "1 / 1" }}
-                />
-              </button>
-              <button
-                type="button"
-                disabled={saved}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSaveAiImage(img.url, prompt, { storagePath: img.storagePath });
-                }}
-                className={`absolute right-1.5 top-1.5 inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] backdrop-blur-sm transition-all ${
-                  saved
-                    ? "border-blue-400/40 bg-blue-500/15 text-blue-600"
-                    : "border-white/25 bg-black/40 text-white opacity-0 group-hover/img:opacity-100"
-                }`}
-              >
-                {saved ? (
-                  <>
-                    <Check className="h-3 w-3" /> Saved
-                  </>
-                ) : (
-                  <>
-                    <Save className="h-3 w-3" /> Save
-                  </>
-                )}
-              </button>
+            <div
+              key={img.url || `slot-${i}`}
+              className="group/img relative overflow-hidden rounded-xl bg-black/[0.04] dark:bg-white/[0.05]"
+              style={cellRatio}
+            >
+              {errored ? (
+                <button
+                  type="button"
+                  onClick={() => onRetrySlot?.(i)}
+                  disabled={!onRetrySlot}
+                  className="flex h-full w-full flex-col items-center justify-center gap-2 text-black/45 transition-colors hover:text-black/70 disabled:hover:text-black/45 dark:text-white/45 dark:hover:text-white/75"
+                  title={onRetrySlot ? "Retry" : img.error || "Generation failed"}
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  <span className="px-3 text-center text-[11px] leading-snug">
+                    {img.error || "Generation failed"}
+                  </span>
+                </button>
+              ) : loading ? (
+                <div className="lykn-imagine-shimmer absolute inset-0" />
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="block w-full cursor-zoom-in"
+                    onClick={() => {
+                      if (onOpenGeneratedImage) {
+                        onOpenGeneratedImage({
+                          url: img.url,
+                          prompt,
+                          aspect,
+                          storagePath: img.storagePath,
+                          batchId,
+                          index: i,
+                        });
+                        return;
+                      }
+                      openFileWindow({
+                        url: img.url,
+                        name: `${prompt || "Generated image"}.png`,
+                        media: "image",
+                        onSaveToVault: saved
+                          ? null
+                          : async () => {
+                              await onSaveAiImage(img.url, prompt, {
+                                storagePath: img.storagePath,
+                              });
+                            },
+                      });
+                    }}
+                    title="Open"
+                  >
+                    <GeneratedImage
+                      src={img.url}
+                      alt={`Variation ${i + 1}`}
+                      className="w-full object-cover"
+                      style={cellRatio}
+                    />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={saved}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSaveAiImage(img.url, prompt, { storagePath: img.storagePath });
+                    }}
+                    className={`absolute right-1.5 top-1.5 inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] backdrop-blur-sm transition-all ${
+                      saved
+                        ? "border-blue-400/40 bg-blue-500/15 text-blue-600"
+                        : "border-white/25 bg-black/40 text-white opacity-0 group-hover/img:opacity-100"
+                    }`}
+                  >
+                    {saved ? (
+                      <>
+                        <Check className="h-3 w-3" /> Saved
+                      </>
+                    ) : (
+                      <>
+                        <Save className="h-3 w-3" /> Save
+                      </>
+                    )}
+                  </button>
+                </>
+              )}
             </div>
           );
         })}
@@ -1189,13 +1239,14 @@ const MessageItem = React.memo(function MessageItem({
   buildChatMarkdownComponents,
   toggleAiExpanded, toggleUserPromptExpanded, getCollapsedPreview,
   onCopyMessage, onReaction, onRegenerate, onEditResend, onRegenerateNonUser,
-  onSaveYouTube, onSaveAttachment, onSaveAiImage, onOpenGeneratedImage, onSaveLink: _onSaveLink,
+  onSaveYouTube, onSaveAttachment, onSaveAiImage, onOpenGeneratedImage, onRetryImagineSlot, onSaveLink: _onSaveLink,
   addChatResponseToGrid,
   handleChunkClick, getSelectedText, registerChunks,
   onLoadInGreetingRefresh,
   onOpenArtifact,
   onFactNeuronChange,
   inlineThinkingStatus,
+  buildThoughtTrail,
 }: MessageItemProps) {
   const aiResponse = msg.aiResponse || "";
   const modelLabel = resolveModelLabel((msg as any).aiModel);
@@ -1338,7 +1389,7 @@ const MessageItem = React.memo(function MessageItem({
           })()}
         </div>
       )}
-      {msg.role === "user" && msg.aiResponse && (
+      {msg.role === "user" && (msg.aiResponse || (msg.bot && msg.botWorking)) && (
         <div className="flex justify-start">
           <div className="w-full">
             {/* Expanded: just a small collapse button — no header pill.
@@ -1358,7 +1409,10 @@ const MessageItem = React.memo(function MessageItem({
                 <ChevronRight className={`w-4 h-4 flex-shrink-0 transition-transform duration-200 ${isAiExpanded ? "rotate-90" : "text-black/40 dark:text-white/40"}`} />
                 {!isAiExpanded && (
                   <span className="text-sm text-black/60 dark:text-white/60 truncate leading-tight flex-1">
-                    {(msg as any).aiImageUrl ? "Generated image" : getCollapsedPreview(msg.aiResponse || "")}
+                    {(msg as any).aiImageUrl
+                      ? "Generated image"
+                      : getCollapsedPreview(msg.aiResponse || "") ||
+                        (msg.botWorking ? msg.botStatus || "Working…" : "")}
                   </span>
                 )}
               </button>
@@ -1369,14 +1423,34 @@ const MessageItem = React.memo(function MessageItem({
                 : `grid transition-[grid-template-rows,opacity] duration-200 ease-in-out ${isAiExpanded ? "grid-rows-[1fr] opacity-100 mt-1" : "grid-rows-[0fr] opacity-0"}`
             }>
               <div className="overflow-hidden min-h-0 group/aifocused">
+                {msg.bot ? (
+                  <div className="mb-1.5 flex items-center gap-1.5">
+                    <BotAvatar
+                      face={msg.bot.face}
+                      eyes={msg.bot.eyes}
+                      color={msg.bot.color}
+                      size={18}
+                      seed={botSeed(msg.bot.id)}
+                    />
+                    <span className="text-[11px] font-semibold text-black/50 dark:text-white/55">
+                      {msg.bot.name}
+                    </span>
+                  </div>
+                ) : null}
                 {(msg as any).aiImages?.length ? (
                   <AiImageBatch
                     images={(msg as any).aiImages}
                     aspect={(msg as any).imagine?.aspect}
                     prompt={msg.content}
+                    batchId={(msg as any).imagine?.batchId}
                     savedMediaUrls={savedMediaUrls}
                     onSaveAiImage={onSaveAiImage}
                     onOpenGeneratedImage={onOpenGeneratedImage}
+                    onRetrySlot={
+                      (msg as any).imagine?.batchId && onRetryImagineSlot
+                        ? (index) => onRetryImagineSlot(String((msg as any).imagine.batchId), index)
+                        : undefined
+                    }
                   />
                 ) : (msg as any).aiImageUrl ? (
                   <AiImageBatch
@@ -1442,16 +1516,27 @@ const MessageItem = React.memo(function MessageItem({
                         </div>
                       ) : htmlPending ? (
                         <div className="mt-2 max-w-[min(100%,42rem)] w-full">
-                          <ArtifactBuildingPlaceholder status={inlineThinkingStatus} />
+                          <ArtifactBuildingPlaceholder status={inlineThinkingStatus} trail={buildThoughtTrail} />
                         </div>
                       ) : inlineThinkingStatus && !isBuildSlotStatus(inlineThinkingStatus) ? (
                         <div className="mt-3">
-                          <ThinkingIndicator status={inlineThinkingStatus} />
+                          <ThinkingIndicator status={inlineThinkingStatus} trail={buildThoughtTrail} />
                         </div>
                       ) : null}
                     </div>
                   );
                 })()}
+                {msg.bot && msg.botWorking ? (
+                  // The Bot is still working this turn: a live animated status
+                  // line (with the trail of what it just did) under whatever
+                  // has streamed, instead of a static "Thinking…" string.
+                  <div className={`px-4 pb-3 ${String(aiResponse || "").trim() ? "" : "-mt-1"}`}>
+                    <ThinkingIndicator
+                      status={msg.botStatus || "Thinking…"}
+                      trail={msg.botTrail}
+                    />
+                  </div>
+                ) : null}
                 {Array.isArray(msg.aiResponseSections) && msg.aiResponseSections.length > 0 && (
                   // Structured load-in greeting: heading per topic, each
                   // update rendered as a row with an inline CTA button.
@@ -1939,7 +2024,7 @@ const MessageItem = React.memo(function MessageItem({
                 if (showBuildSlot) {
                   return (
                     <div className="px-1 mt-1 max-w-[min(100%,42rem)] w-full">
-                      <ArtifactBuildingPlaceholder status={inlineThinkingStatus} />
+                      <ArtifactBuildingPlaceholder status={inlineThinkingStatus} trail={buildThoughtTrail} />
                     </div>
                   );
                 }
@@ -2154,6 +2239,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   onSaveAttachment,
   onSaveAiImage,
   onOpenGeneratedImage,
+  onRetryImagineSlot,
   onSaveLink,
   addChatResponseToGrid,
   expandedAiMsgIds,
@@ -2196,6 +2282,10 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   // bar's geometry is CSS tokens.
   const appearance = useAppearance();
   const barMinH = chatBarMinHeight(appearance, composerMinH);
+  const buildThoughtTrail = useBuildThoughtTrail(
+    thinkingStatus,
+    isChatLoading || keepThinkingWhileLoading,
+  );
 
   const [selectedChunks, setSelectedChunks] = useState<Set<string>>(new Set());
   const chunkMapRef = useRef<Map<string, string>>(new Map());
@@ -2493,8 +2583,8 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
               <div className="space-y-4">
                 {chatMessages.map((msg, idx) => {
                   // Park the spinner under streamed description text for
-                  // the rest of the turn (build: description → "Writing
-                  // the code… (12k)" → artifact). The long wait is the
+                  // the rest of the turn (build: description → "Designing
+                  // the hero…" → artifact). The long wait is the
                   // tool's ARGUMENTS streaming — before status is
                   // "running" — so gating on in-flight tools left a
                   // silent gap after "I'll build that out…". Drop it
@@ -2537,6 +2627,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                     onSaveAttachment={onSaveAttachment}
                     onSaveAiImage={onSaveAiImage}
                     onOpenGeneratedImage={onOpenGeneratedImage}
+                    onRetryImagineSlot={onRetryImagineSlot}
                     onSaveLink={onSaveLink}
                     addChatResponseToGrid={addChatResponseToGrid}
                     handleChunkClick={handleChunkClick}
@@ -2546,6 +2637,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                     onOpenArtifact={onOpenArtifact}
                     onFactNeuronChange={onFactNeuronChange}
                     inlineThinkingStatus={isInFlightUserTurn ? thinkingStatus : undefined}
+                    buildThoughtTrail={isInFlightUserTurn ? buildThoughtTrail : undefined}
                   />
                   );
                 })}
@@ -2561,7 +2653,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
               ) && (
               <div className="flex justify-start">
                 <div className="max-w-[80%] py-3 text-sm leading-relaxed text-black/70 dark:text-white/60 flex items-center gap-3">
-                  <ThinkingIndicator status={thinkingStatus} />
+                  <ThinkingIndicator status={thinkingStatus} trail={buildThoughtTrail} />
                 </div>
               </div>
             )}

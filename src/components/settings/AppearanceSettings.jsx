@@ -240,10 +240,13 @@ function SizeField({ label, steps, value, onChange }) {
  *  taller gets a taller chip, and one whose radius would swallow a chip whole
  *  draws the `chipRadius` that reads the same at this scale.
  *
+ *  `variant="bar"` draws the chips as mini Home bars (wide, short, pill vs
+ *  box vs tall slate) instead of the smaller bubble tiles.
+ *
  *  `glyph` fills each chip, for the send button, whose shape means little as
  *  an empty box; `square` sizes the chips for it, since a round send button
  *  drawn on the wide bar chip would come out an ellipse. */
-function ShapePicker({ shapes, value, glyph: Glyph, square, onChange }) {
+function ShapePicker({ shapes, value, glyph: Glyph, square, variant, onChange }) {
   return (
     <div className="flex flex-wrap items-start gap-2.5 pb-6">
       {shapes.map((shape) => {
@@ -256,6 +259,7 @@ function ShapePicker({ shapes, value, glyph: Glyph, square, onChange }) {
               data-selected={selected}
               data-tall={shape.minH ? 'true' : undefined}
               data-square={square ? 'true' : undefined}
+              data-bar-shape={variant === 'bar' ? shape.id : undefined}
               aria-label={shape.name}
               aria-pressed={selected}
               title={shape.name}
@@ -322,6 +326,40 @@ function SendIconPicker({ icons, value, shape, onChange }) {
   );
 }
 
+/** Home-bar silhouette for a given appearance. Default is a pill because
+ *  that's the rounded bar at rest; Rectangle is a flat outlined box; Slate
+ *  is the tall stacked field. The page composer stays 14px on Default —
+ *  these three only really diverge on the Home bar, which is what the
+ *  preview has to draw if the chips are going to mean anything. */
+function barPreviewLook(appearance, { compact } = {}) {
+  const barSize = chatBarSizeById(appearance.chatBarSize);
+  const barShape = chatBarShapeById(appearance.chatBarShape);
+  const slate = barShape.id === 'slate';
+  const rectangle = barShape.id === 'rectangle';
+  const pad = Math.max(barSize.pad, barShape.pad || 0);
+  const minH = Math.max(barSize.minH, barShape.minH || 0);
+  const scale = compact ? 0.55 : 1;
+  return {
+    barSize,
+    barShape,
+    slate,
+    rectangle,
+    radius: barShape.id === 'soft' ? '9999px' : barShape.radius,
+    font: Math.max(9, barSize.font * scale),
+    minH: Math.round((slate ? Math.min(minH, 92) : barSize.minH) * scale),
+    padY: Math.round(Math.min(pad, slate ? 14 : 10) * scale),
+    padX: compact ? 8 : 12,
+    send: compact ? 16 : 24,
+    rectangleSkin: rectangle
+      ? {
+          background: 'var(--lg-tint)',
+          boxShadow: 'none',
+          border: '1px solid var(--lg-hairline)',
+        }
+      : null,
+  };
+}
+
 /** A transcript and a composer wearing the real chat classes, at the exact
  *  sizes and radii the choices below resolve to. The classes bring the ink and
  *  bubble tokens along; the geometry is set inline, which is what lets the
@@ -329,11 +367,10 @@ function SendIconPicker({ icons, value, shape, onChange }) {
 function ChatPreview({ appearance }) {
   const userSize = chatTextSizeById(appearance.chatUserTextSize);
   const aiSize = chatTextSizeById(appearance.chatAiTextSize);
-  const barSize = chatBarSizeById(appearance.chatBarSize);
   const bubbleShape = chatBubbleShapeById(appearance.chatBubbleShape);
-  const barShape = chatBarShapeById(appearance.chatBarShape);
   const sendShape = chatSendShapeById(appearance.chatSendShape);
   const SendGlyph = sendGlyph(appearance.chatSendIcon);
+  const bar = barPreviewLook(appearance);
   return (
     <div className="lykn-chat-ink mb-4 space-y-2.5 rounded-[12px] border border-black/[0.07] bg-black/[0.02] p-3 dark:border-white/[0.09] dark:bg-white/[0.03]">
       <div className="flex justify-end">
@@ -352,19 +389,33 @@ function ChatPreview({ appearance }) {
         investor call you moved to 4.
       </p>
       <div
-        className="lykn-chat-neu-chat-shell flex items-start gap-2"
-        style={{ borderRadius: barShape.radius, padding: barSize.pad }}
+        className={cn(
+          'lykn-chat-neu-chat-shell flex gap-2 transition-[border-radius,padding,min-height,background,box-shadow] duration-200',
+          bar.slate ? 'flex-col items-stretch justify-between' : 'items-center',
+        )}
+        data-shape={bar.barShape.id}
+        style={{
+          borderRadius: bar.radius,
+          padding: `${bar.padY}px ${bar.padX}px${bar.slate ? ' 8px' : ''}`,
+          minHeight: bar.minH,
+          ...bar.rectangleSkin,
+        }}
       >
         <span
           className="min-w-0 flex-1 px-1 text-black/45 dark:text-white/40"
-          style={{ fontSize: barSize.font, minHeight: barSize.minH, lineHeight: 1.45 }}
+          style={{ fontSize: bar.font, lineHeight: 1.45 }}
         >
           Ask me anything...
         </span>
         <span
           aria-hidden
-          className="flex h-6 w-6 shrink-0 items-center justify-center"
+          className={cn(
+            'flex shrink-0 items-center justify-center',
+            bar.slate && 'self-end',
+          )}
           style={{
+            width: bar.send,
+            height: bar.send,
             background: 'hsl(var(--lykn-accent))',
             color: 'hsl(var(--lykn-accent-fg))',
             // Default has no radius of its own; the composer's own 10px block
@@ -380,9 +431,11 @@ function ChatPreview({ appearance }) {
 }
 
 /** Miniature of the app rendered with the pending tokens, sitting on the
- *  wallpaper so dim and blur read as more than numbers. */
-function LivePreview({ accent, photo, dim, blur }) {
-  const accentColor = accent?.iridescent ? 'hsl(var(--lykn-accent))' : `hsl(${accent.hsl})`;
+ *  wallpaper so dim and blur read as more than numbers. The Home chat bar
+ *  sits under the window so rectangle / slate / the round pill actually
+ *  show up in this column. */
+function LivePreview({ accent, photo, dim, blur, appearance }) {
+  const accentColor = `hsl(${accent.hsl})`;
   const backdrop = photo
     ? { backgroundImage: `url(${photo})`, backgroundSize: 'cover', backgroundPosition: 'center' }
     : { background: 'linear-gradient(155deg, #23262c 0%, #0e1013 100%)' };
@@ -446,6 +499,51 @@ function LivePreview({ accent, photo, dim, blur }) {
         </div>
       </div>
       </div>
+      {appearance ? <HomeBarPreview appearance={appearance} accent={accent} /> : null}
+    </div>
+  );
+}
+
+/** Tiny Home chat bar for the wallpaper preview — same silhouettes as the
+ *  chips and the AI-chat mock, scaled to the 244px column. */
+function HomeBarPreview({ appearance, accent }) {
+  const bar = barPreviewLook(appearance, { compact: true });
+  const sendShape = chatSendShapeById(appearance.chatSendShape);
+  const SendGlyph = sendGlyph(appearance.chatSendIcon);
+  return (
+    <div
+      className={cn(
+        'relative mx-auto mt-3 flex w-[88%] gap-1.5 transition-[border-radius,min-height,padding] duration-200',
+        bar.slate ? 'flex-col items-stretch justify-between' : 'items-center',
+        !bar.rectangle && 'lykn-chat-neu-chat-shell',
+      )}
+      data-shape={bar.barShape.id}
+      style={{
+        borderRadius: bar.radius,
+        padding: bar.slate ? '7px 8px 6px' : '5px 8px',
+        minHeight: bar.slate ? 46 : 28,
+        ...bar.rectangleSkin,
+      }}
+    >
+      <span
+        className="min-w-0 flex-1 truncate text-black/40 dark:text-white/40"
+        style={{ fontSize: bar.font }}
+      >
+        Ask me anything...
+      </span>
+      <span
+        aria-hidden
+        className={cn('flex shrink-0 items-center justify-center', bar.slate && 'self-end')}
+        style={{
+          width: 14,
+          height: 14,
+          background: `hsl(${accent.hsl})`,
+          color: 'hsl(var(--lykn-accent-fg))',
+          borderRadius: sendShape.radius || '10px',
+        }}
+      >
+        <SendGlyph className="h-2.5 w-2.5" strokeWidth={2.4} />
+      </span>
     </div>
   );
 }
@@ -629,6 +727,7 @@ export default function AppearanceSettings({
               <ShapePicker
                 shapes={CHAT_BAR_SHAPES}
                 value={appearance.chatBarShape}
+                variant="bar"
                 onChange={(id) => update({ chatBarShape: id })}
               />
               <p className="text-[11px] leading-snug text-black/40 dark:text-white/35">
@@ -743,9 +842,10 @@ export default function AppearanceSettings({
           photo={photo}
           dim={appearance.wallpaperDim}
           blur={appearance.wallpaperBlur}
+          appearance={appearance}
         />
         <p className="mt-2.5 text-[11px] leading-snug text-black/40 dark:text-white/35">
-          The Home desktop, with your wallpaper, accent, and ink.
+          The Home desktop, with your wallpaper, accent, and chat bar.
         </p>
       </div>
 

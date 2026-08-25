@@ -272,11 +272,19 @@ function begin(event) {
   };
   armed = null;
 
-  buildGhost(elements, Math.max(paths.length, iconIds.length));
-  for (const el of elements) el.setAttribute("data-drag-source", "");
-  document.body.classList.add("lykn-dragging");
-  frame = requestAnimationFrame(tick);
-  notify();
+  // Same wedge-proofing as tick(): a throw while standing the drag up (say,
+  // cloning an element HMR just detached) must not leave `active` set with
+  // no frame loop behind it.
+  try {
+    buildGhost(elements, Math.max(paths.length, iconIds.length));
+    for (const el of elements) el.setAttribute("data-drag-source", "");
+    document.body.classList.add("lykn-dragging");
+    frame = requestAnimationFrame(tick);
+    notify();
+  } catch {
+    teardown();
+    return false;
+  }
   return true;
 }
 
@@ -290,13 +298,23 @@ export function cancelDrag() {
 function tick() {
   frame = 0;
   if (!active) return;
-  moveGhost();
-  // One hit test a frame, shared: what's under the cursor decides both the
-  // drop target and which list should scroll.
-  const under = document.elementFromPoint(active.x, active.y);
-  hitTest(under);
-  spring();
-  autoScroll(under);
+  // A throw anywhere in the frame (a zone callback whose component was just
+  // hot-swapped, a hover-open handler crashing) must tear the drag down, not
+  // strand `active` set forever — armDrag refuses to start while a drag is
+  // "in flight", so a stranded one silently kills every future drag until
+  // the page reloads.
+  try {
+    moveGhost();
+    // One hit test a frame, shared: what's under the cursor decides both the
+    // drop target and which list should scroll.
+    const under = document.elementFromPoint(active.x, active.y);
+    hitTest(under);
+    spring();
+    autoScroll(under);
+  } catch {
+    teardown();
+    return;
+  }
   frame = requestAnimationFrame(tick);
 }
 
@@ -497,8 +515,14 @@ function onUp(event) {
   active.y = event.clientY;
   setAltCopy(!!event.altKey);
   // The pointer can have moved since the last frame, so settle on the target
-  // under the release rather than the one the last tick saw.
-  hitTest(document.elementFromPoint(active.x, active.y));
+  // under the release rather than the one the last tick saw. If the hit test
+  // blows up (zone owner unmounted this instant), fall back to the last
+  // target the frame loop saw rather than losing the whole release.
+  try {
+    hitTest(document.elementFromPoint(active.x, active.y));
+  } catch {
+    /* keep active.zone as the last frame left it */
+  }
 
   const zone = active.zone;
   const payload = { ...active.payload, x: active.x, y: active.y, copy: active.copy };

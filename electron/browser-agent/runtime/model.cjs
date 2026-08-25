@@ -31,6 +31,17 @@ const PLAN_SCHEMA = {
         "2-4 sentences addressed to the user, telling them how you are going to do this and anything about the request worth flagging before you start. Plain language, no JSON, no step numbers.",
     },
     plan: { type: "array", items: { type: "string" }, description: "High-level steps (guidance, not click sequences)" },
+    successCondition: {
+      type: "string",
+      description:
+        "One sentence: the observable state of the world that means this task is DONE — what a screenshot of the final page would show. Specific to this task, checkable, no vague words like \"successfully\".",
+    },
+    doNot: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "2-5 adjacent actions the user's literal request does NOT license — the tempting extras next to this task (for \"check my email\": drafting replies, organizing the inbox). Short imperative phrases.",
+    },
     constraints: { type: "array", items: { type: "string" }, description: "Hard requirements from the user's request" },
     knownFacts: { type: "object", additionalProperties: true, description: "Facts already known from the request" },
     skills: { type: "array", items: { type: "string" }, description: "Relevant skill names from the provided list" },
@@ -181,6 +192,31 @@ const ROUTE_SCHEMA = {
     reason: { type: "string", description: "One short sentence, for the trace." },
   },
   required: ["route"],
+  additionalProperties: false,
+};
+
+/**
+ * Which of a Bot's tools should carry one prompt?
+ *
+ * Bots (headless teammates) have every LYKN tool: plain chat, image
+ * generation, artifact building, research reports, local-machine tasks, and
+ * — with the user's permission — the browser. Keyword heuristics kept
+ * mistaking ordinary chat for browser errands, so the Bot asked "want me to
+ * use the browser?" constantly. This is the judgement call that replaces
+ * them: one small model decision per tool-shaped prompt.
+ */
+const BOT_ROUTE_SCHEMA = {
+  type: "object",
+  properties: {
+    tool: {
+      type: "string",
+      enum: ["chat", "image", "build", "research", "local", "browser"],
+      description:
+        "chat = reply directly. image = generate a picture. build = build an app/site/tool artifact. research = an in-depth researched report. local = act on the user's own computer. browser = open the teammate's real browser and operate a live website or the user's online account (send, buy, book, post, check their mail).",
+    },
+    reason: { type: "string", description: "One short sentence, for the trace." },
+  },
+  required: ["tool"],
   additionalProperties: false,
 };
 
@@ -361,6 +397,15 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
   }
 
   return {
+    /**
+     * Generic structured call for sibling harnesses (the Bot harness drives
+     * its own decision schema through this). Same auth, retry, timeout and
+     * usage accounting as every named stage — one client, many loops.
+     */
+    structured(stage, opts) {
+      return call(stage, opts);
+    },
+
     async plan({ system, user, signal }) {
       // Roomier than it was: the plan now also writes the opening explanation
       // the user reads while the first page loads.
@@ -368,6 +413,8 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
       return {
         approach: String(out.approach || "").trim(),
         plan: Array.isArray(out.plan) ? out.plan.map(String).filter(Boolean) : [],
+        successCondition: String(out.successCondition || "").trim(),
+        doNot: Array.isArray(out.doNot) ? out.doNot.map(String).filter(Boolean) : [],
         // null, not [] — replanTask has to tell "the model said nothing about
         // constraints" apart from "the model says none of them still apply",
         // and collapsing both to [] made dropping a constraint impossible.
@@ -431,6 +478,48 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
       });
       return {
         route: out.route === "browser" ? "browser" : "chat",
+        reason: String(out.reason || "").slice(0, 200),
+      };
+    },
+
+    /**
+     * Pick the tool a Bot prompt should run on. Same contract as route():
+     * small, capped, and never what the user waits on — the caller keeps
+     * its own answer (usually "just chat") for when this fails.
+     */
+    async botRoute({ ask, recent = "", localMode = false, signal }) {
+      const out = await call("route", {
+        system: [
+          "You are a dispatcher. One message from a user to their AI teammate is in front of you, and your only job is to name the tool that carries it. You never answer the message yourself and you never refuse it.",
+          "",
+          'The teammate really can do all of this. In particular it can open a real browser signed in to the user\'s own accounts and operate it — send mail, buy, book, post, fill and submit forms. Answering "browser" is exactly what makes that happen (the teammate asks the user\'s permission first). Never answer "chat" because a task seems beyond a chat assistant — whether something is possible is not your call.',
+          "",
+          '"chat" — questions, opinions, explanations, WRITING or editing text (including drafting an email or message the user has not asked to send), math, brainstorming, advice, summaries of the conversation. A message that merely MENTIONS a website, app, or product is still chat.',
+          '"image" only when the user asks to generate, draw, or design a picture: art, a logo, a photo, a visual.',
+          '"build" only when the user asks to build a working deliverable: an app, website, page, game, or interactive tool.',
+          '"research" only when the user asks for a deep, sourced report or thorough investigation — not for a quick factual answer.',
+          localMode
+            ? '"local" when the work happens on the user\'s own computer: their local files, folders, or installed apps.'
+            : 'Never answer "local" — that tool is switched off right now.',
+          '"browser" when carrying the request out means OPERATING a live website or the user\'s own online account: sending their mail, checking their inbox or calendar, buying, booking, or ordering something, filling in or submitting a form, posting or messaging somewhere, or reading data that exists only behind their login (their inbox, calendar, files, dashboards). Drafting an email is chat; SENDING one is browser — "ok now send it to him" after a draft is browser.',
+          "",
+          'A wrong "browser" interrupts the user with "want me to open the browser?", so when a message only MIGHT be an errand — thinking out loud, asking whether something is possible — prefer "chat". But a plain instruction to send, buy, book, post, or check something in their account is "browser", never "chat".',
+        ].join("\n"),
+        user: [
+          `MESSAGE: ${String(ask || "").slice(0, 600)}`,
+          recent ? `RECENT CONVERSATION:\n${recent.slice(0, 600)}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+        schema: BOT_ROUTE_SCHEMA,
+        maxTokens: 120,
+        signal,
+      });
+      const tool = ["chat", "image", "build", "research", "local", "browser"].includes(out.tool)
+        ? out.tool
+        : "chat";
+      return {
+        tool: tool === "local" && !localMode ? "chat" : tool,
         reason: String(out.reason || "").slice(0, 200),
       };
     },

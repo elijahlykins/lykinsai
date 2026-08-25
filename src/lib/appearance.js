@@ -9,7 +9,6 @@ const STORAGE_KEY = 'lykinsai_settings';
 
 /** Accent swatches, in the order they render in the pane. */
 export const ACCENTS = [
-  { id: 'aurora', name: 'Aurora', hsl: '265 62% 70%', iridescent: true },
   { id: 'snow', name: 'Snow', hsl: '210 16% 76%' },
   { id: 'sand', name: 'Sand', hsl: '34 44% 74%' },
   { id: 'sage', name: 'Sage', hsl: '148 24% 66%' },
@@ -109,13 +108,16 @@ export const CHAT_BAR_SIZES = [
  * Slate keeps the shell and grows it: a deep radius over a tall, roomy field,
  * for people who write more than a line at a time.
  *
- * `chipRadius` is what the settings picker draws instead, for a shape whose
- * real radius would swallow a 46×30 chip whole and read as a pill.
+ * `chipRadius` is what the settings picker draws instead of the live radius.
+ * Default's chip is a pill because that's the Home bar at rest — the page
+ * composer stays 14px, but a 14px chip next to Rectangle's 10px is a wash.
+ * Slate's chip is generously rounded and tall, not the 11px box that used
+ * to make it look like Rectangle.
  */
 export const CHAT_BAR_SHAPES = [
-  { id: 'soft', name: 'Default', radius: '14px' },
-  { id: 'rectangle', name: 'Rectangle', radius: '10px' },
-  { id: 'slate', name: 'Slate', radius: '28px', chipRadius: '11px', pad: 18, minH: 104 },
+  { id: 'soft', name: 'Default', radius: '14px', chipRadius: '9999px' },
+  { id: 'rectangle', name: 'Rectangle', radius: '10px', chipRadius: '5px' },
+  { id: 'slate', name: 'Slate', radius: '28px', chipRadius: '16px', pad: 18, minH: 104 },
   { id: 'leaf', name: 'Leaf', radius: '22px 6px 22px 6px' },
 ];
 
@@ -300,9 +302,6 @@ export function chatBarMinHeight(appearance, fallback) {
 
 /** CSS background for a swatch chip / accent fill. */
 export function accentSwatchBackground(accent) {
-  if (accent?.iridescent) {
-    return 'conic-gradient(from 210deg, #7cd4ff, #b69cff, #ff9ecb, #ffd280, #7fe3ad, #7cd4ff)';
-  }
   return `hsl(${accent?.hsl || DEFAULT_APPEARANCE.accent})`;
 }
 

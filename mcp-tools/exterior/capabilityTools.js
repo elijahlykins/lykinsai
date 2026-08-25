@@ -343,7 +343,9 @@ export const buildReactArtifactTool = {
     '     apps, 3D games, multi-scene tools — split systems into modules',
     '     (game/, components/, lib/). Up to ~48 files.',
     '  Also pass `todos` (coding plan: [{id, content, status}]) on complex builds',
-    '  and update statuses as you finish steps. Pass `assets` ([{name, url}]) to',
+    '  with short human labels of each part (Hero, Pricing, Footer) and mark the',
+    '  current step in_progress so the user can follow along while you write.',
+    '  Update statuses as you finish steps. Pass `assets` ([{name, url}]) to',
     '  register hosted image/audio URLs as `import ASSETS from "./assets.js"` or',
     '  window.__lyknAssets — use URLs from lykn_generate_image / [USER_IMAGES].',
     '',
@@ -584,7 +586,7 @@ export const buildReactArtifactTool = {
       todos: {
         type: 'array',
         description:
-          'Coding plan checklist for complex builds. Update statuses across turns: pending | in_progress | completed | cancelled.',
+          'Coding plan with short human labels of each part (Hero, Pricing, Footer). Mark the current step in_progress. Statuses: pending | in_progress | completed | cancelled.',
         items: {
           type: 'object',
           properties: {

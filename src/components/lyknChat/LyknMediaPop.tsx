@@ -95,7 +95,7 @@ export default function LyknMediaPop({
         />
 
         <div
-          className="relative z-20 flex shrink-0 items-center justify-between gap-3 px-4 pb-2 pt-4 sm:px-6"
+          className="relative z-20 flex shrink-0 items-center justify-between gap-3 px-4 pb-2 pt-4 pointer-events-auto sm:px-6"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="flex min-w-0 items-center gap-2">
@@ -144,7 +144,7 @@ export default function LyknMediaPop({
 
         {footer ? (
           <div
-            className="relative z-20 mx-auto w-full max-w-2xl shrink-0 px-4 pb-5 pt-1 sm:px-6"
+            className="relative z-20 mx-auto w-full max-w-2xl shrink-0 px-4 pb-5 pt-1 pointer-events-auto sm:px-6"
             onClick={(e) => e.stopPropagation()}
           >
             {footer}

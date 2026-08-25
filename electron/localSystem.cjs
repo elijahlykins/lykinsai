@@ -34,6 +34,18 @@ function configure(userDataPath) {
   defaultUserDataPath = String(userDataPath || "");
 }
 
+// Optional server fallback for document extraction (documentReader tries
+// local parsers and macOS textutil first). Set once by the agent runtime,
+// which holds the api base and the auth token; reads work without it, they
+// just lose the last-resort extractor.
+let extractionOpts = null;
+function configureExtraction({ apiBase, getAuthToken } = {}) {
+  extractionOpts = apiBase && typeof getAuthToken === "function" ? { apiBase, getAuthToken } : null;
+}
+
+/** Documents local_read_file extracts to text instead of refusing as binary. */
+const RICH_DOC_RE = /\.(pdf|docx?|rtf|xlsx|pptx|odt)$/i;
+
 function normalizeSyncedFolders(folders) {
   const out = [];
   for (const f of Array.isArray(folders) ? folders : []) {
@@ -145,6 +157,7 @@ const LOCAL_TOOL_NAMES = [
   "local_search_files",
   "local_pull_file",
   "local_write_file",
+  "local_edit_file",
   "local_run_command",
   "local_synced_folders",
   "local_running_apps",
@@ -316,6 +329,7 @@ function checkToolAccess(name, args = {}, config) {
     case "local_read_file":
     case "local_pull_file":
     case "local_write_file":
+    case "local_edit_file":
     case "local_open_path":
       paths.push(resolveUserPath(args.path));
       break;
@@ -358,6 +372,31 @@ function classifyRisk(name, args = {}) {
       return {
         risky: true,
         summary: `Write file: ${target || "(unknown path)"}${outside ? " (outside home folder)" : ""}`,
+      };
+    }
+    case "local_edit_file": {
+      const target = resolveUserPath(args.path);
+      const outside = target && !isInsideHome(target);
+      // Show the user what's being swapped, diff-style, so the approval card
+      // is meaningful — but keep it short, it renders in a small <pre>.
+      const preview = (mark, text) => {
+        const s = String(text ?? "");
+        return `${mark} ${s.length > 200 ? s.slice(0, 200) + "…" : s}`;
+      };
+      // Document edits say where the result lands: a lossy regeneration that
+      // overwrites the original is a different approval from one that writes
+      // a sibling copy.
+      const isDoc = RICH_DOC_RE.test(target || "") && !/\.pptx$/i.test(target || "");
+      const verb = isDoc
+        ? args.overwrite === true
+          ? "Edit document (overwrites the original)"
+          : "Edit document (writes an '(edited)' copy beside the original)"
+        : "Edit file";
+      return {
+        risky: true,
+        summary:
+          `${verb}: ${target || "(unknown path)"}${outside ? " (outside home folder)" : ""}\n` +
+          `${preview("-", args.oldText)}\n${preview("+", args.newText)}`,
       };
     }
     case "local_run_command": {
@@ -430,6 +469,12 @@ async function readFileTool(args = {}) {
   if (st.size > 10 * 1024 * 1024) {
     return { ok: false, error: `File too large to read (${Math.round(st.size / 1024 / 1024)} MB)` };
   }
+  // Rich documents (PDF, Word, Excel, PowerPoint, ODT) extract to text — the
+  // same reader the overlay uses for the frontmost document. Before this they
+  // hit the binary sniff below and the agent was told to give up.
+  if (RICH_DOC_RE.test(file)) {
+    return readDocumentFile(file, st);
+  }
   const buf = await fsp.readFile(file);
   // Cheap binary sniff: NUL byte in the first 8KB.
   if (buf.subarray(0, 8192).includes(0)) {
@@ -437,6 +482,35 @@ async function readFileTool(args = {}) {
   }
   const { text, truncated } = capText(buf.toString("utf8"), READ_CAP_BYTES);
   return { ok: true, path: file, size: st.size, content: text, truncated };
+}
+
+async function readDocumentFile(file, st) {
+  const documentReader = require("./documentReader.cjs");
+  let opts = {};
+  if (extractionOpts) {
+    const token = await extractionOpts.getAuthToken().catch(() => null);
+    if (token) opts = { apiBase: extractionOpts.apiBase, token };
+  }
+  const out = await documentReader.extractDocumentFile(file, opts);
+  if (!out.ok) {
+    const why =
+      out.error === "file_too_large"
+        ? `Document too large to extract (${Math.round(st.size / 1024 / 1024)} MB)`
+        : `Could not extract text from this ${path.extname(file).slice(1) || "document"} file`;
+    return {
+      ok: false,
+      error: `${why}. Use local_pull_file to hand the file itself to the user's chat instead.`,
+    };
+  }
+  return {
+    ok: true,
+    path: file,
+    size: st.size,
+    format: out.format || path.extname(file).slice(1).toLowerCase(),
+    pageCount: out.pageCount ?? undefined,
+    content: out.text,
+    truncated: out.truncated === true,
+  };
 }
 
 async function searchFiles(args = {}) {
@@ -555,6 +629,77 @@ async function writeFileTool(args = {}) {
   await fsp.mkdir(path.dirname(file), { recursive: true });
   await fsp.writeFile(file, content, "utf8");
   return { ok: true, path: file, bytes: Buffer.byteLength(content, "utf8") };
+}
+
+/**
+ * local_edit_file — replace an exact snippet inside an existing text file.
+ * Surgical alternative to local_write_file: the rest of the file survives
+ * even when the model never read (or has a stale copy of) the whole thing.
+ */
+async function editFileTool(args = {}) {
+  const file = resolveUserPath(args.path);
+  if (!file) return { ok: false, error: "path is required" };
+  const oldText = String(args.oldText ?? "");
+  const newText = String(args.newText ?? "");
+  if (!oldText) {
+    return { ok: false, error: "oldText is required — to create a new file, use local_write_file" };
+  }
+  if (oldText === newText) {
+    return { ok: false, error: "oldText and newText are identical — nothing to change" };
+  }
+  // Rich documents route to the document editor: xlsx cells edit in place,
+  // PDF/Word/RTF/ODT regenerate through extracted text. Defaults to a sibling
+  // "(edited)" file so a lossy regeneration can never destroy the original.
+  const documentEditor = require("./documentEditor.cjs");
+  if (documentEditor.isEditableDocumentPath(file)) {
+    return documentEditor.editDocumentFile(file, {
+      oldText,
+      newText,
+      replaceAll: args.replaceAll === true,
+      overwrite: args.overwrite === true,
+    });
+  }
+  let st;
+  try {
+    st = await fsp.stat(file);
+  } catch {
+    return { ok: false, error: `${file} does not exist — use local_write_file to create a new file` };
+  }
+  if (st.isDirectory()) return { ok: false, error: `${file} is a directory` };
+  if (st.size > 10 * 1024 * 1024) {
+    return { ok: false, error: `File too large to edit (${Math.round(st.size / 1024 / 1024)} MB)` };
+  }
+  const buf = await fsp.readFile(file);
+  if (buf.subarray(0, 8192).includes(0)) {
+    return { ok: false, error: `${file} looks like a binary file — only text files can be edited` };
+  }
+  const text = buf.toString("utf8");
+  const occurrences = text.split(oldText).length - 1;
+  if (occurrences === 0) {
+    return {
+      ok: false,
+      error:
+        `oldText was not found in ${file}. It must match the file EXACTLY, including whitespace ` +
+        "and indentation — read the file with local_read_file and copy the snippet verbatim.",
+    };
+  }
+  if (occurrences > 1 && args.replaceAll !== true) {
+    return {
+      ok: false,
+      error:
+        `oldText appears ${occurrences} times in ${file}. Include more surrounding lines so it ` +
+        "matches exactly once, or pass replaceAll: true to change every occurrence.",
+    };
+  }
+  const next =
+    args.replaceAll === true ? text.split(oldText).join(newText) : text.replace(oldText, newText);
+  await fsp.writeFile(file, next, "utf8");
+  return {
+    ok: true,
+    path: file,
+    replacements: args.replaceAll === true ? occurrences : 1,
+    bytes: Buffer.byteLength(next, "utf8"),
+  };
 }
 
 function runCommand(args = {}) {
@@ -1063,6 +1208,8 @@ async function run(name, args = {}, { approved = false, userDataPath = "" } = {}
         return await pullFile(args);
       case "local_write_file":
         return await writeFileTool(args);
+      case "local_edit_file":
+        return await editFileTool(args);
       case "local_run_command":
         return await runCommand(args);
       case "local_synced_folders":
@@ -1090,6 +1237,7 @@ module.exports = {
   isLocalToolName,
   classifyRisk,
   configure,
+  configureExtraction,
   readLocalMode,
   writeLocalMode,
   writeMacSync,

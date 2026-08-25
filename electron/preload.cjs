@@ -121,8 +121,15 @@ contextBridge.exposeInMainWorld("lykn", {
     return () => ipcRenderer.removeListener("lykn:studio-browser-shot", fn);
   },
   // Open a URL as a tab in the Studio's own browser (artifact "Open" etc.).
-  studioOpenUrl: (url, title) =>
-    ipcRenderer.invoke("lykn:studio-open-url", { url: String(url || ""), title }),
+  // Optional opts.chatId binds that tab to the LyknChat that opened it so the
+  // rail chat bar continues the same conversation.
+  studioOpenUrl: (url, title, opts = {}) =>
+    ipcRenderer.invoke("lykn:studio-open-url", {
+      url: String(url || ""),
+      title,
+      chatId: opts?.chatId,
+      attachChat: !!opts?.attachChat,
+    }),
   // Open a chat artifact (URL and/or inline HTML) as a new agent tab.
   studioOpenArtifact: (payload) =>
     ipcRenderer.invoke("lykn:studio-open-artifact", payload || {}),
@@ -130,18 +137,14 @@ contextBridge.exposeInMainWorld("lykn", {
   // Prefer listening for the DOM event `lykn-studio-show-browser` (auto-forwarded
   // from this IPC below); this helper is for callers that want a direct cb.
   onStudioShowBrowser: (cb) => {
-    const fn = () => {
+    const fn = (_e, p) => {
       try {
-        cb?.();
+        cb?.(p || {});
       } catch (_) {}
     };
     ipcRenderer.on("lykn:studio-show-browser", fn);
     return () => ipcRenderer.removeListener("lykn:studio-show-browser", fn);
   },
-  // Ask main whether a chat prompt is really browser-agent work before the
-  // chat surface spends a turn answering it as conversation.
-  agentRouteCheck: (text) =>
-    ipcRenderer.invoke("lykn:agent-route-check", { text }),
   // Studio agent rail (beside the docked browser): drive + observe agents.
   studioAgentSend: (text, attachments, agentId, opts = {}) =>
     ipcRenderer.invoke("lykn:studio-bar-send", {
@@ -149,16 +152,30 @@ contextBridge.exposeInMainWorld("lykn", {
       attachments,
       agentId,
       fromSuggestion: !!opts?.fromSuggestion,
+      // Bot dispatches carry the structured identity (name/role/persona) so
+      // the harness system prompt holds it every turn — never parsed back
+      // out of the message text.
+      bot: opts?.bot || null,
     }),
   agentList: () => ipcRenderer.invoke("lykn:agent-list"),
   agentSwitch: (agentId) => ipcRenderer.invoke("lykn:agent-switch", agentId),
+  agentStop: (agentId) => ipcRenderer.invoke("lykn:agent-stop", agentId),
   agentClose: (agentId) => ipcRenderer.invoke("lykn:agent-close", agentId),
   agentCreate: (payload) => ipcRenderer.invoke("lykn:agent-create", payload || {}),
+  agentSetHeadless: (agentId, headless = true) =>
+    ipcRenderer.invoke("lykn:agent-set-headless", { agentId, headless }),
   agentResetMain: () => ipcRenderer.invoke("lykn:agent-reset-main"),
   agentShowBrowser: (agentId) =>
     ipcRenderer.invoke("lykn:agent-show-browser", { agentId, visible: true }),
   agentShowStep: (agentId, stepIndex) =>
     ipcRenderer.invoke("lykn:agent-show-step", { agentId, stepIndex }),
+  // Live screenshots of a Bot's hidden browser tab while it runs a
+  // user-approved browser task — feeds the tiny viewport above the chat bar.
+  onBotBrowserShot: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:bot-browser-shot", fn);
+    return () => ipcRenderer.removeListener("lykn:bot-browser-shot", fn);
+  },
   agentHistory: (agentId) => ipcRenderer.invoke("lykn:agent-history", agentId),
   // Use LYKN pill — open/close the agent chat side panel.
   agentChatSet: (payload) =>
@@ -449,8 +466,8 @@ contextBridge.exposeInMainWorld("lykn", {
   saveToDownloads: ({ name, bytes } = {}) =>
     ipcRenderer.invoke("lykn:save-to-downloads", { name, bytes }),
   // "Put this in a folder on my Mac" — the native save sheet picks the folder.
-  saveFileAs: ({ name, bytes } = {}) =>
-    ipcRenderer.invoke("lykn:save-file-as", { name, bytes }),
+  saveFileAs: ({ name, bytes, filters } = {}) =>
+    ipcRenderer.invoke("lykn:save-file-as", { name, bytes, filters }),
   // Files browser — the Vault's Locations sidebar. Browsing, editing, and a
   // per-folder watch so the view follows what actually happens on disk.
   files: {
@@ -515,6 +532,15 @@ contextBridge.exposeInMainWorld("lykn", {
     ipcRenderer.on("lykn:home-widgets-changed", fn);
     return () => ipcRenderer.removeListener("lykn:home-widgets-changed", fn);
   },
+  // Design picks from the welcome walkthrough (theme, accent, response
+  // length, chat inks). `stamp` tells the studio whether these are newer
+  // than what it already applied.
+  welcomeDesignGet: () => ipcRenderer.invoke("lykn:welcome-design-get"),
+  onWelcomeDesignChanged: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:welcome-design-changed", fn);
+    return () => ipcRenderer.removeListener("lykn:welcome-design-changed", fn);
+  },
   // Microphone — macOS only shows the TCC prompt when the app asks for it from
   // the main process; Chromium's getUserMedia inside Electron silently fails
   // when the OS status is still not-determined. Dictation and Voice Mode call
@@ -537,8 +563,10 @@ contextBridge.exposeInMainWorld("lykn", {
 // Always forward main→Studio "show browser" into a DOM event so Studio.jsx
 // (and any other listener) can switch to the Browser tab without an extra
 // subscription. Harmless when Studio isn't mounted.
-ipcRenderer.on("lykn:studio-show-browser", () => {
+ipcRenderer.on("lykn:studio-show-browser", (_e, p) => {
   try {
-    window.dispatchEvent(new CustomEvent("lykn-studio-show-browser"));
+    window.dispatchEvent(
+      new CustomEvent("lykn-studio-show-browser", { detail: p || {} }),
+    );
   } catch (_) {}
 });

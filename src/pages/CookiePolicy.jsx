@@ -258,7 +258,7 @@ export function CookiePolicyBody() {
               life="Until cleared"
             />
             <StorageRow
-              k="lykn_connect_onboarding_done, lykn:loadInBrief:hidden, lykn:chatAppDock:hidden, lykn:vaultAppDock:hidden"
+              k="lykn_connect_onboarding_done, lykn:loadInBrief:hidden, lykn:chatAppDock:hidden, lykn:vaultAppDock:hidden, lykn:imagine:hasUsed"
               purpose="Things you have finished or dismissed, so we don't show them again"
               life="Until cleared"
             />

@@ -13,6 +13,12 @@ const ownedBrowserAct = require("./ownedBrowserAct.cjs");
 // ownedBrowserAct stays available via LYKN_BROWSER_AGENT=legacy or when the
 // server does not expose /api/desktop/agent-model yet.
 const browserAgent = require("./browser-agent/index.cjs");
+// Bot harness (electron/bot-harness): the decide → act → verify loop every
+// headless Bot task runs through. Same layered-markdown prompt architecture
+// as the browser agent — persona in the system prompt, tools disclosed
+// progressively, verification per tool, one terminal delivery. Falls back to
+// the legacy single-shot streamChat path when the model endpoint is down.
+const botHarness = require("./bot-harness/index.cjs");
 // Local Mode task runner (files + terminal on the user's machine). Only used
 // when the user enabled Local Mode from the Vault switch.
 const localSystem = require("./localSystem.cjs");
@@ -465,7 +471,7 @@ function looksLikePermissionAsk(text) {
   if (!t) return false;
   return (
     /^\W*(?:do you want|would you like|should i|shall i|may i|can i|is it (?:ok|okay|alright)|are you (?:ok|happy|ready|sure)|ready for me)\b/i.test(t) ||
-    /\b(?:want me to|ready (?:for me )?to|shall i|should i|ok(?:ay)? (?:for me )?to|go ahead and|say the word)\b/i.test(t)
+    /\b(?:want me to|ready (?:for me )?to|shall i|should i|ok(?:ay)? (?:for me )?to|ok(?:ay)? if i|go ahead and|say the word)\b/i.test(t)
   );
 }
 
@@ -910,9 +916,9 @@ function createAgentRuntime(deps) {
     getAuthToken,
     readStreamResponse,
     emit,
-    ensureBrowserWindow,
+    ensureBrowserWindow: ensureBrowserWindowRaw,
     destroyBrowserWindow,
-    showBrowserWindow,
+    showBrowserWindow: showBrowserWindowRaw,
     hideBrowserWindow,
     hideAllBrowserWindows,
     browserWindowExists,
@@ -933,6 +939,13 @@ function createAgentRuntime(deps) {
     // LYKN_AGENT_TABS=1, the modular browser agent gets a real tabs adapter;
     // otherwise it stays in single-tab mode exactly as before.
     agentTabs = null,
+    // Bot mini-viewport support (main): tell layout which hidden Bot tabs
+    // must keep a painted surface, and force-rebuild one whose captures come
+    // back empty. A detached or zero-sized tab never composites, so without
+    // these the tiny viewport stays on "Opening the browser…" until the user
+    // reveals the tab by hand.
+    setBotShotAgents = null,
+    prepareBotShotSurface = null,
   } = deps;
 
   /** @type {Map<string, any>} */
@@ -940,6 +953,182 @@ function createAgentRuntime(deps) {
   let activeAgentId = null;
   let agentModeOn = false;
   let persistTimer = null;
+
+  // Document extraction's server fallback needs the api base + token this
+  // runtime already holds; local_read_file works without it, it just loses
+  // the last-resort extractor for formats the local parsers can't open.
+  try {
+    localSystem.configureExtraction?.({ apiBase, getAuthToken });
+  } catch {
+    /* extraction fallback is optional */
+  }
+
+  // Headless agents (LYKN Bots) work in a hidden tab: the webContents stays
+  // alive so browse/build skills run, but the browser window is never raised
+  // or revealed for them — every runtime call site funnels through these.
+  // Even a browser-approved Bot task (`botBrowserRun`) keeps its tab hidden:
+  // the chat bar shows a tiny live viewport instead, and clicking that
+  // reveals the tab through main's `lykn:agent-show-browser` (which calls
+  // the raw show, deliberately outside this gate).
+  const isHeadlessAgent = (id) => !!agents.get(id)?.headless;
+
+  // While any Bot runs an approved browser task, mirror its hidden tab into
+  // the chat bar's tiny viewport: a small screenshot every beat or so, sent
+  // over its own channel so nothing else in the pipeline changes.
+  let botShotTimer = null;
+  function anyBotBrowserRun() {
+    for (const a of agents.values()) {
+      if (a.headless && a.botBrowserRun) return true;
+    }
+    return false;
+  }
+  /**
+   * A frame from a hidden tab over the DevTools protocol. capturePage depends
+   * on a live compositing surface, and macOS refuses one for a view that has
+   * never been on screen — the reason the mini viewport sat on "Opening the
+   * browser…" until the tab was revealed once by hand. Page.captureScreenshot
+   * instead asks the RENDERER for a frame directly, which works regardless of
+   * whether the OS is compositing the view.
+   */
+  async function cdpShotDataUrl(wc, agent) {
+    const note = (why) => {
+      if (agent) agent._botShotCdpError = String(why || "").slice(0, 200);
+    };
+    try {
+      if (!wc.debugger.isAttached()) wc.debugger.attach("1.3");
+    } catch (e) {
+      note(`attach: ${e?.message || e}`);
+      return "";
+    }
+    try {
+      const out = await wc.debugger.sendCommand("Page.captureScreenshot", {
+        format: "jpeg",
+        quality: 72,
+        // Surface-synchronization path: renders the frame for the capture
+        // instead of waiting for one the (hidden) viewport already produced.
+        captureBeyondViewport: true,
+      });
+      if (out?.data) return `data:image/jpeg;base64,${out.data}`;
+      note("empty screenshot data");
+      return "";
+    } catch (e) {
+      note(String(e?.message || e));
+      return "";
+    }
+  }
+
+  async function captureBotBrowserShots() {
+    for (const a of agents.values()) {
+      if (!a.headless || !a.botBrowserRun) continue;
+      try {
+        const wc = getBrowserWebContents?.(a.id);
+        if (!wc || wc.isDestroyed?.()) continue;
+        // Re-assert the offscreen park every beat: a real-sized, attached
+        // surface gives capturePage its best shot, and tracks window resizes
+        // and the dock/undock transfers that re-parent views. Cheap when
+        // nothing changed (a bounds write, no re-attach).
+        prepareBotShotSurface?.(a.id);
+        // A hidden page must keep its timers and rAF running or the frames
+        // this loop captures freeze on whatever painted last. Idempotent;
+        // syncBotShotLoop restores throttling when the run disarms.
+        try {
+          wc.setBackgroundThrottling?.(false);
+          a._botShotUnthrottled = true;
+        } catch {
+          /* best-effort */
+        }
+        // Native capture first (fast, respects DPR), CDP as the fallback
+        // that works even when the OS never composited the hidden view.
+        let img = null;
+        try {
+          img = await wc.capturePage(undefined, { stayHidden: true, stayAwake: true });
+        } catch {
+          try {
+            img = await wc.capturePage();
+          } catch {
+            img = null;
+          }
+        }
+        let dataUrl = "";
+        if (img && !img.isEmpty?.()) {
+          const size = img.getSize?.();
+          const small = size && size.width > 420 ? img.resize({ width: 420 }) : img;
+          dataUrl = small.toDataURL();
+        } else {
+          dataUrl = await cdpShotDataUrl(wc, a);
+        }
+        if (!dataUrl) {
+          if (!a._botShotStarved) {
+            a._botShotStarved = true;
+            console.warn(
+              "[bot-shot] no frame from capturePage or CDP for",
+              a.id,
+              a._botShotCdpError ? `(CDP: ${a._botShotCdpError})` : "(CDP gave no detail)",
+              "— the mini viewport will stay on its placeholder",
+            );
+          }
+          continue;
+        }
+        a._botShotStarved = false;
+        let url = "";
+        try {
+          url = wc.getURL?.() || "";
+        } catch {
+          url = "";
+        }
+        emit("lykn:bot-browser-shot", { agentId: a.id, url, dataUrl });
+      } catch {
+        // Hidden surface not paintable this tick — rebuild it and retry next.
+        try {
+          prepareBotShotSurface?.(a.id);
+        } catch {
+          /* surface prep is best-effort */
+        }
+      }
+    }
+    if (!anyBotBrowserRun()) syncBotShotLoop();
+  }
+  function syncBotShotLoop() {
+    // Main parks every armed tab offscreen at real size (and returns the
+    // rest to the regular zero-size park when a run disarms).
+    try {
+      const armed = [];
+      for (const a of agents.values()) {
+        if (a.headless && a.botBrowserRun) armed.push(a.id);
+        // The capture loop un-throttles armed pages so their frames stay
+        // live; give a disarmed tab its normal background throttling back.
+        if (a.headless && !a.botBrowserRun && a._botShotUnthrottled) {
+          a._botShotUnthrottled = false;
+          try {
+            getBrowserWebContents?.(a.id)?.setBackgroundThrottling?.(true);
+          } catch {
+            /* best-effort */
+          }
+        }
+      }
+      setBotShotAgents?.(armed);
+    } catch {
+      /* surface prep is best-effort */
+    }
+    if (anyBotBrowserRun()) {
+      if (!botShotTimer) {
+        botShotTimer = setInterval(() => void captureBotBrowserShots(), 1400);
+      }
+    } else if (botShotTimer) {
+      clearInterval(botShotTimer);
+      botShotTimer = null;
+    }
+  }
+  const showBrowserWindow = (id, opts) => {
+    if (isHeadlessAgent(id)) return undefined;
+    return showBrowserWindowRaw?.(id, opts);
+  };
+  const ensureBrowserWindow = (id, opts = {}) => {
+    if (isHeadlessAgent(id)) {
+      return ensureBrowserWindowRaw?.(id, { ...opts, show: false, focus: false });
+    }
+    return ensureBrowserWindowRaw?.(id, opts);
+  };
 
   function agentsPath() {
     return path.join(userDataPath, "overlay-agents.json");
@@ -967,6 +1156,9 @@ function createAgentRuntime(deps) {
       // yes/no straight into resolveChoice.
       busy: !!a.busy && !waiting,
       error: a.error || "",
+      // A Bot running a user-approved browser task. The chat bar uses this to
+      // show the tiny live viewport above the composer.
+      botBrowser: !!(a.headless && a.botBrowserRun),
       role,
       pinned: role === "main" || !!a.pinned,
       // Parked-on-you state travels with the agent, not only on the transient
@@ -1557,6 +1749,10 @@ function createAgentRuntime(deps) {
     // ordinary chat — so the paused work never resumes.
     const resumeAsk = String(ask || "").trim();
     agent.pendingQuestion = resumeAsk ? { ask: resumeAsk.slice(0, 2000), at: Date.now() } : null;
+    // Remember the exact ask so the next run can refuse to park on it again.
+    // Chat history often stores the step transcript and drops this sentence,
+    // which is how the same question came back after every answer.
+    agent.lastAskedQuestion = q;
     // Steps so far + the question as the closing prose of the response.
     const text = emitStepTranscript(agent, { final: true, appendix: q }) || q;
     agent.partialText = text;
@@ -2336,6 +2532,10 @@ function createAgentRuntime(deps) {
         // replacement ("Finished — … open in the browser.") is not a prefix.
         content = full.startsWith(glass) ? m.content : glass;
       }
+      // Bot dispatches wrap the user's message in identity/teammate coaching
+      // ("[You are Scout…]", see botStore.taskBrief). That wrapper is for the
+      // model; on screen the user should only ever see what they typed.
+      if (m.role === "user") content = botAskCore(content);
       return { role: m.role, content, at: m.at };
     });
   }
@@ -2477,6 +2677,7 @@ function createAgentRuntime(deps) {
         title: a.title,
         role: a.role === "main" ? "main" : "worker",
         pinned: a.role === "main" || !!a.pinned,
+        headless: !!a.headless,
         status: restedStatus(a.status),
         skill: a.skill,
         url: a.url,
@@ -2524,6 +2725,7 @@ function createAgentRuntime(deps) {
           title: row.title || "Agent",
           role,
           pinned: false,
+          headless: !!row.headless,
           status: restedStatus(row.status || "idle"),
           skill: row.skill || "general",
           url: row.url || "",
@@ -2603,7 +2805,21 @@ function createAgentRuntime(deps) {
     if (agent.status === "running") agent.status = reason === "error" ? "error" : "idle";
   }
 
-  function createAgent({ title, goal, silent, role, activate, history } = {}) {
+  /**
+   * A Bot's identity, as the harness system prompt receives it. Structured —
+   * never parsed back out of dispatch-brief text — so the persona survives
+   * every turn instead of decaying after the first message.
+   */
+  function sanitizeBotProfile(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const name = String(raw.name || "").trim().slice(0, 60);
+    const role = String(raw.role || "").trim().slice(0, 80);
+    const persona = String(raw.persona || "").trim().slice(0, 1200);
+    if (!name && !persona) return null;
+    return { name, role, persona };
+  }
+
+  function createAgent({ title, goal, silent, role, activate, history, headless, bot } = {}) {
     const wantMain = role === "main";
     if (wantMain) {
       const existing = getMainAgent();
@@ -2623,6 +2839,8 @@ function createAgentRuntime(deps) {
         : title || titleFromGoal(goal) || `Agent ${workerN}`,
       role: wantMain ? "main" : "worker",
       pinned: wantMain,
+      headless: !wantMain && !!headless,
+      botProfile: sanitizeBotProfile(bot),
       status: "idle",
       skill: "general",
       url: "",
@@ -2685,6 +2903,18 @@ function createAgentRuntime(deps) {
       emit("lykn:agent-switched", switchPayload(agent));
     }
     return { ok: true, agentId: id, agent: publicAgent(agent) };
+  }
+
+  /**
+   * Flip an existing agent's headless flag (Bots adopting an agent that was
+   * created before the flag existed). Headless agents never raise the browser.
+   */
+  function setAgentHeadless(agentId, headless = true) {
+    const agent = agents.get(String(agentId || ""));
+    if (!agent || isMainAgent(agent)) return { ok: false, error: "not_found" };
+    agent.headless = !!headless;
+    schedulePersist();
+    return { ok: true };
   }
 
   /** Short greetings / casual chat Main can answer itself without spawning a worker. */
@@ -3223,27 +3453,168 @@ function createAgentRuntime(deps) {
     return needsBrowser;
   }
 
+  // Skills a headless (Bot) agent can run — everything except the browser.
+  const HEADLESS_SKILLS = new Set(["general", "build", "image", "research", "report-edit", "local"]);
+
+  // ── Bot browser opt-in ──────────────────────────────────────────────────
+  //
+  // Bots CAN work the browser, but never jump into it uninvited: a browser-
+  // shaped ask parks as a question first ("want me to use the browser?"),
+  // and only a yes arms `agent.botBrowserRun` — which makes the whole
+  // pipeline (routing, planning, window reveal) treat this task like a
+  // normal browse agent. The arm holds while that task is parked mid-flight
+  // and drops on the next fresh ask, so every new browser errand asks again.
+
+  /**
+   * The user's actual ask inside a Bot dispatch brief. Every dispatch wraps
+   * the task in identity/teammate coaching lines (see botStore.taskBrief);
+   * those fixed lines are routing noise, so tool decisions read only the task.
+   */
+  function botAskCore(text) {
+    const t = String(text || "").trim();
+    const first = t.match(/^First task:\s*([\s\S]+)$/m);
+    if (first) return first[1].trim();
+    const kept = t
+      .split("\n")
+      .filter((line) => {
+        const s = line.trim();
+        if (/^\[You are [\s\S]*\]$/.test(s)) return false;
+        if (/^Teammates you can ask:/i.test(s)) return false;
+        if (/^If part of this is clearly a teammate's job/i.test(s)) return false;
+        return true;
+      })
+      .join("\n")
+      .trim();
+    return kept || t;
+  }
+
+  /** The user is naming the browser outright — that IS the routing answer. */
+  const BOT_EXPLICIT_BROWSER_RE =
+    /\b(?:in|on|use|using|with|via|through|open)\s+(?:the\s+|my\s+|a\s+)?browser\b/i;
+
+  /**
+   * A Bot ask that LOOKS like it needs hands on a website. Heuristic and
+   * deliberately loose — it only NOMINATES an ask for the model tool router
+   * below, it never decides anything itself. Misfiring here costs one small
+   * model call; the model saying "chat" keeps the turn an ordinary reply.
+   */
+  /**
+   * Errand verbs that nominate even without an explicit object. Follow-ups
+   * lean on the conversation for their nouns — "ok send that to him" after
+   * the bot drafted an email says everything with pronouns, so the keyword
+   * heuristics below (which want addresses, app names, URLs) all miss it.
+   * The verb alone is enough to ask the model, which sees recent turns.
+   */
+  const BOT_ERRAND_VERB_RE =
+    /\b(?:send|email|e-mail|mail|reply|respond|forward|post|publish|tweet|submit|book|order|buy|purchase|schedule|reserve|cancel|unsubscribe|sign\s+(?:up|in)|log\s*in|message|text|dm|share)\b/i;
+
+  function botAskWantsBrowser(q) {
+    const t = String(q || "").trim();
+    if (!t) return false;
+    if (/\b(?:in|use|using|with|open|through)\s+(?:the\s+|my\s+|a\s+)?browser\b/i.test(t)) {
+      return true;
+    }
+    if (BOT_ERRAND_VERB_RE.test(t)) return true;
+    return !!(
+      ownedBrowserAct.looksLikeBrowseActAsk?.(t) ||
+      ownedBrowserAct.looksLikeMailComposeTask?.(t) ||
+      ownedBrowserAct.looksLikeMailReplyTask?.(t) ||
+      ownedBrowserAct.looksLikeMailInboxReview?.(t) ||
+      ownedBrowserAct.looksLikeMailDraftsReview?.(t) ||
+      ownedBrowserAct.asksAboutAppState?.(t) ||
+      ownedBrowserAct.looksLikeOwnAppContentAsk?.(t)
+    );
+  }
+
+  /** Recent Bot tool verdicts — repeating an ask costs nothing. */
+  const botToolCache = new Map();
+
+  /**
+   * The model decides which tool carries this Bot prompt: plain chat, one of
+   * the Bot's own tools (image/build/research/local), or a real browser
+   * errand. Runs only on nominated (tool-shaped) prompts, so casual chat
+   * never waits on it. "" on failure — the caller's heuristic answer stands
+   * and, crucially, no "want me to use the browser?" question parks.
+   */
+  async function routeBotTool(agent, text) {
+    const ask = String(text || "").trim();
+    if (!ask) return "";
+    const localOn = localModeEnabled();
+    const recent = (agent?.history || [])
+      .slice(-4)
+      .map((m) => `${m.role === "assistant" ? "Assistant" : "User"}: ${String(m.content || "").slice(0, 160)}`)
+      .join("\n");
+    // The conversation is part of the question — "send that to him" means a
+    // different thing after drafting an email than after a joke. Keying only
+    // on the ask would pin a follow-up's verdict to whichever context asked
+    // it first.
+    const key = `${ask.slice(0, 300)}|${recent.slice(-200)}|${localOn ? 1 : 0}`;
+    if (botToolCache.has(key)) return botToolCache.get(key);
+    let tool = "";
+    try {
+      const model = browserAgent.createAgentModel({ apiBase, getAuthToken, timeoutMs: 6000 });
+      const out = await model.botRoute({
+        ask,
+        recent,
+        localMode: localOn,
+        signal: agent?.abort?.signal,
+      });
+      tool = out.tool;
+      diagnostics.recordRouteDecision?.({
+        userDataPath,
+        ask: ask.slice(0, 120),
+        route: `bot:${tool}`,
+        reason: out.reason,
+      });
+    } catch {
+      // Offline, rate limited, slow — answer conversationally, don't ask.
+      return "";
+    }
+    if (botToolCache.size > 200) botToolCache.clear();
+    botToolCache.set(key, tool);
+    return tool;
+  }
+
+  /** The whole reply is a plain yes — nothing extra to carry as guidance. */
+  const BOT_BROWSER_BARE_YES_RE =
+    /^\W*(?:ok(?:ay)?|yes+|yep|yup|yeah|ya|sure|please(?:\s+do)?|go(?:\s+ahead)?|do\s+it|absolutely|sounds\s+good|go\s+for\s+it|(?:yes[,!.\s]+)?(?:use|open)\s+(?:the\s+)?browser)[\s,!.]*$/i;
+  /** Reply opens with a yes — arm the browser, keep the rest as guidance. */
+  const BOT_BROWSER_YES_START_RE =
+    /^\W*(?:ok(?:ay)?|yes+|yep|yup|yeah|ya|sure|please|go\s+ahead|do\s+it|absolutely|go\s+for\s+it|use\s+(?:the\s+)?browser)\b/i;
+  /** The whole reply is a plain no. */
+  const BOT_BROWSER_BARE_NO_RE =
+    /^\W*(?:no+|nope|nah|don'?t|do\s+not|not\s+now|no\s+thanks?|skip\s+(?:it|the\s+browser)|just\s+answer(?:\s+(?:it|here|me))?|answer\s+here|without\s+(?:the\s+)?browser|stay\s+(?:here|in\s+chat))[\s,!.]*$/i;
+  /** Reply opens with a no — stay out of the browser, keep the rest. */
+  const BOT_BROWSER_NO_START_RE =
+    /^\W*(?:no+|nope|nah|don'?t|do\s+not|not\s+now|no\s+thanks?|just\s+answer|without\s+(?:the\s+)?browser)\b/i;
+
   function resolveSkillForPrompt(agent, text, attachments) {
     const q = normalizeAgentStepText(text);
     const atts = Array.isArray(attachments) ? attachments : [];
     const hasAttachedImage = atts.some((a) => a && a.kind === "image" && a.dataUrl);
+    // A Bot with the user's go-ahead routes like a normal browse agent for
+    // this task; without it, browser venues are off the table.
+    const actsHeadless = !!agent.headless && !agent.botBrowserRun;
     // Own tab first, then the visible stage tab / linked worker — the routing
     // must see the tab the user is looking at, not just this agent's tab.
+    // Headless agents (Bots) never look at tabs at all.
     let liveTabUrl = "";
     try {
-      const wc = getBrowserWebContents?.(agent.id);
+      const wc = actsHeadless ? null : getBrowserWebContents?.(agent.id);
       liveTabUrl = getLiveTabUrl(agent, wc) || "";
     } catch {
       liveTabUrl = "";
     }
-    if (!liveTabUrl) liveTabUrl = resolveAnyLiveTabUrl(agent);
-    const pendingBrowseClarify = ownedBrowserAct.priorAskedForSiteClarification(
-      priorAssistantText(agent),
-    );
+    if (!liveTabUrl && !actsHeadless && !agent.headless) {
+      liveTabUrl = resolveAnyLiveTabUrl(agent);
+    }
+    const pendingBrowseClarify =
+      !actsHeadless &&
+      ownedBrowserAct.priorAskedForSiteClarification(priorAssistantText(agent));
     let skill = classifyAgentSkill(q, {
       hasLiveTab: !!liveTabUrl,
       liveUrl: liveTabUrl,
-      hasMailDraft: !!agent.lastMailDraft,
+      hasMailDraft: !actsHeadless && !!agent.lastMailDraft,
       hasArtifact: !!(agent.lastArtifact && agent.lastArtifact.code),
       hasReport: !!agent.lastResearchReport,
       hasImage: !!(agent.lastImage && agent.lastImage.url),
@@ -3324,6 +3695,15 @@ function createAgentRuntime(deps) {
     ) {
       skill = "local";
     }
+    // Headless agents (Bots) carry every LYKN tool except the browser: asks
+    // that resolved to a browser venue fall back to a conversational answer.
+    // The venue it WOULD have used is remembered so send() can offer the
+    // browser instead of silently downgrading the errand to chat.
+    if (agent.headless) agent.botSkillBeforeCoerce = "";
+    if (actsHeadless && !HEADLESS_SKILLS.has(skill)) {
+      agent.botSkillBeforeCoerce = skill;
+      return "general";
+    }
     return skill;
   }
 
@@ -3339,6 +3719,55 @@ function createAgentRuntime(deps) {
   async function runOneSkill(agent, stepText, attachments, skill, gen, stepMeta = null) {
     const rawStep = String(stepText || "").trim();
     const multiActive = !!(stepMeta && stepMeta.total > 1);
+    // Headless agents (Bots) run every skill except the browser, and their
+    // output stays in chat — no venue detours, no organize-sheet / mail
+    // sends, no opening deliverables in tabs. A browser-approved task
+    // (botBrowserRun) skips this and runs the real pipeline below.
+    if (agent.headless && !agent.botBrowserRun) {
+      // "browser" is a bot-router verdict, not a legacy skill: the browser is
+      // one of the Bot's tools, so the ask runs the Bot's own loop with that
+      // tool's doc preloaded — the loop parks the opt-in question itself.
+      const botSkill =
+        HEADLESS_SKILLS.has(skill) || skill === "browser" ? skill : "general";
+      const fullAsk = String(stepMeta?.fullAsk || rawStep).trim() || rawStep;
+      // Task-shaped turns run the Bot harness: the decide → act → verify loop
+      // with the persona in the system prompt and progressive tool docs.
+      // Casual chat ("general") keeps the fast streaming path — a harness
+      // round-trip on "hey, how's it going" is pure latency. Any failure to
+      // even run the loop degrades to the legacy single-shot dispatch, so a
+      // down model endpoint costs quality, never the whole turn.
+      if (botSkill !== "general" && botHarnessEnabled()) {
+        try {
+          return await runBotHarnessTask(agent, fullAsk, attachments, gen, {
+            primaryTool: BOT_SKILL_TO_TOOL[botSkill] || "",
+          });
+        } catch (e) {
+          diagnostics.recordRouteDecision?.({
+            userDataPath,
+            ask: fullAsk.slice(0, 120),
+            route: "bot:harness-fallback",
+            reason: String(e?.message || e).slice(0, 200),
+          });
+        }
+      }
+      if (botSkill === "browser") {
+        // Harness unavailable — park the plain opt-in it would have parked,
+        // so the errand still reaches the browser on a yes.
+        agent.pendingBotBrowse = { ask: fullAsk, at: Date.now() };
+        return offerAgentQuestion(
+          agent,
+          "This looks like something I'd need the browser for — want me to open it up and take care of it?",
+          ["Yes, use the browser", "No, just answer here"],
+          { ask: "" },
+        );
+      }
+      if (botSkill === "local") {
+        return runLocalTask(agent, fullAsk, gen);
+      }
+      return streamChat(agent, rawStep, attachments, botSkill, gen, {
+        suppressDone: multiActive,
+      });
+    }
     const liveForStep = agent.url || "";
     // Follow-up edits on the open Docs/Sheets/Notion file — keep context, no new file.
     if (
@@ -3528,7 +3957,9 @@ function createAgentRuntime(deps) {
       !screenSourced &&
       (skill === "research" || skill === "build") &&
       !(skill === "build" && (agent.lastArtifact?.code || agent.lastResearchReport));
-    if (skill === "general" || screenSourced || livePageDefault) {
+    // Headless agents (Bots) must not read the user's open page — they aren't
+    // connected to the browser, so their answers come from the conversation.
+    if ((skill === "general" || screenSourced || livePageDefault) && !agent.headless) {
       try {
         const wc = resolvePageContextWebContents(agent);
         if (wc && !wc.isDestroyed?.()) {
@@ -3894,6 +4325,18 @@ function createAgentRuntime(deps) {
     const atts = Array.isArray(attachments) ? attachments : [];
     const imageUrls = atts.filter((a) => a?.kind === "image" && a.dataUrl).map((a) => a.dataUrl);
     if (imageUrls.length) body.imageUrls = imageUrls;
+    // Text attachments (documents, folder listings, extracted files) ride
+    // inline — same as the Glass overlay path — or the turn ships nothing
+    // but a filename. Appended to the prompt, not effectiveText, so the
+    // per-skill text clip above can't truncate the user's own ask away.
+    const textAtts = atts.filter((a) => a?.kind === "text" && a.text);
+    if (textAtts.length && typeof body.prompt === "string") {
+      body.prompt +=
+        "\n\nAttached files (sent by the user with this request — use their contents):\n" +
+        textAtts
+          .map((a) => `--- ${a.name || "file"} ---\n${String(a.text).slice(0, 8000)}`)
+          .join("\n\n");
+    }
 
     const send = (channel, payload) => {
       if (gen !== agent.generation) return;
@@ -5043,6 +5486,30 @@ function createAgentRuntime(deps) {
     }
   }
 
+  /**
+   * Headless (Bot) turns end in chat, not in a browser tab, so the reply must
+   * BE the deliverable: images embed inline, artifacts link out, and text
+   * lands in full — never "…is open in the browser".
+   */
+  function formatHeadlessCompletion(agent, skill, answer) {
+    const text = String(answer || "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    if (skill === "image" && agent.lastImage?.url) {
+      const md = `![${agent.lastImage.title || "Generated image"}](${agent.lastImage.url})`;
+      return text.includes(agent.lastImage.url) ? text : [text, md].filter(Boolean).join("\n\n");
+    }
+    if (skill === "build" && agent.lastArtifact?.code) {
+      const url = shareableArtifactUrl(agent);
+      const title = agent.lastArtifact.title || "the artifact";
+      if (url && !text.includes(url)) {
+        return [text, `Built **${title}** — [open it here](${url}).`].filter(Boolean).join("\n\n");
+      }
+      return text || `Built **${title}**.`;
+    }
+    return text || "Done.";
+  }
+
   function formatAgentGlassStatus({ skill, answer, agent, openedInBrowser, multi, stepCount }) {
     const name = agent?.title || "Agent";
     if (skill === "monitor") {
@@ -5055,14 +5522,19 @@ function createAgentRuntime(deps) {
         .slice(0, 6000);
       return full || "Done.";
     }
-    if (skill === "build") {
-      const title = agent?.lastArtifact?.title || "artifact";
+    // The canned "…is open in the browser" lines only when that deliverable
+    // actually exists on this agent. A skill label alone proves nothing — a
+    // mis-resolved step once ended an email errand with "research report is
+    // open in the browser" when no report existed anywhere. Without the
+    // deliverable, fall through to the real answer at the bottom.
+    if (skill === "build" && agent?.lastArtifact?.code) {
+      const title = agent.lastArtifact.title || "artifact";
       return `Finished — **${title}** is open in the browser.`;
     }
-    if (skill === "image") {
+    if (skill === "image" && agent?.lastImage?.url) {
       return `Finished — image is open in the browser.`;
     }
-    if (skill === "research" || skill === "report-edit") {
+    if ((skill === "research" || skill === "report-edit") && agent?.lastResearchReport) {
       return `Finished — research report is open in the browser.`;
     }
     if (skill === "sheets-fill") {
@@ -6077,6 +6549,8 @@ function createAgentRuntime(deps) {
         return "Searching your files…";
       case "local_write_file":
         return `Writing ${String(args.path || "a file")}…`;
+      case "local_edit_file":
+        return `Editing ${String(args.path || "a file")}…`;
       case "local_run_command":
         return `Running: ${String(args.command || "").slice(0, 60)}…`;
       case "local_synced_folders":
@@ -6187,6 +6661,182 @@ function createAgentRuntime(deps) {
     agent.status = "running";
     agent.lastDeliverableKind = "local";
     return String(result?.answer || "Done.").trim() || "Done.";
+  }
+
+  // ── Bot harness ───────────────────────────────────────────────────────────
+  //
+  // Every task-shaped headless (Bot) turn runs through electron/bot-harness:
+  // persona in the system prompt, tools disclosed progressively (index line →
+  // full doc on first selection → call), verification per tool, safety gate
+  // on consequential rounds, and one terminal delivery that summarizes the
+  // run. Casual chat keeps the fast streaming path; the legacy single-shot
+  // dispatch remains the fallback when the harness cannot run at all.
+
+  /** Kill switch: LYKN_BOT_HARNESS=0 restores the legacy single-shot path. */
+  function botHarnessEnabled() {
+    return String(process.env.LYKN_BOT_HARNESS || "").trim() !== "0";
+  }
+
+  /** Routing verdicts / legacy skills → the harness tool whose doc preloads. */
+  const BOT_SKILL_TO_TOOL = {
+    build: "build_artifact",
+    image: "generate_image",
+    research: "research_report",
+    "report-edit": "edit_report",
+    local: "local_computer",
+    // A browser-shaped ask still runs the Bot's own loop — the browser is one
+    // of its tools, not a separate route. Preloading the doc means the common
+    // case decides once and parks the opt-in on round one.
+    browser: "browser",
+  };
+
+  /** What the user reads while the harness works — one line per phase. */
+  const BOT_TOOL_ACTING_STATUS = {
+    reply: "Writing my reply…",
+    research_report: "Researching…",
+    edit_report: "Revising the report…",
+    build_artifact: "Building it…",
+    generate_image: "Creating the image…",
+    local_computer: "Working on your Mac…",
+    browser: "Getting the browser ready…",
+  };
+
+  function botHarnessStatusLine(p) {
+    switch (p.phase) {
+      case "thinking":
+        return String(p.narration || "").trim() || "Thinking it through…";
+      case "reading":
+        return "Reading up on my tools…";
+      case "acting":
+        return (
+          String(p.narration || "").trim() ||
+          BOT_TOOL_ACTING_STATUS[p.tool] ||
+          "Working on it…"
+        );
+      case "awaiting_approval":
+        return "Waiting for your go-ahead…";
+      case "verifying":
+        return "Checking the work…";
+      case "recovering":
+        return "That didn't land — adjusting…";
+      default:
+        return "";
+    }
+  }
+
+  /** Trim to a word boundary with an ellipsis — never a mid-word chop. */
+  function trimStatusLine(text, max) {
+    const t = String(text || "").trim();
+    if (t.length <= max) return t;
+    const cut = t.slice(0, max);
+    const atWord = cut.lastIndexOf(" ");
+    return `${(atWord > max * 0.6 ? cut.slice(0, atWord) : cut).replace(/[\s,.;:—-]+$/, "")}…`;
+  }
+
+  async function runBotHarnessTask(agent, ask, attachments, gen, { primaryTool = "" } = {}) {
+    const model = browserAgent.createAgentModel({ apiBase, getAuthToken });
+    const atts = Array.isArray(attachments) ? attachments : [];
+    const attachmentsNote = atts
+      .map((a) =>
+        a?.kind === "image"
+          ? `an image: ${a.name || "attached image"}`
+          : `a file: ${a?.name || "attached file"}`,
+      )
+      .join("\n");
+
+    // Capability tools delegate to the same pipelines the legacy path used —
+    // the harness owns the loop and the prompts, not the capability. Streamed
+    // output reaches the user live (suppressDone: the harness delivers the
+    // closing message itself).
+    const streamTool = (skill) => async ({ instruction }) => {
+      const out = await streamChat(agent, instruction, atts, skill, gen, {
+        suppressDone: true,
+      });
+      const text = String(out || "").trim();
+      return { ok: !!text, output: text, summary: text.slice(0, 500) };
+    };
+    const executors = {
+      reply: streamTool("general"),
+      research_report: streamTool("research"),
+      edit_report: streamTool("report-edit"),
+      build_artifact: streamTool("build"),
+      generate_image: streamTool("image"),
+      local_computer: async ({ instruction }) => {
+        const out = await runLocalTask(agent, instruction, gen);
+        const text = String(out || "").trim();
+        return { ok: !!text, output: text, summary: text.slice(0, 500) };
+      },
+      browser: async ({ instruction }) => {
+        // The user already said no to the browser for this errand — never
+        // re-ask one round later. A failed tool run puts the loop on its
+        // recovery path: answer another way or deliver honestly.
+        if (
+          agent.botBrowseDeclinedAt &&
+          Date.now() - agent.botBrowseDeclinedAt < PENDING_QUESTION_MS
+        ) {
+          return {
+            ok: false,
+            output: "",
+            summary:
+              "the user already chose to stay out of the browser for this task — " +
+              "answer in chat with what you know, use another tool, or deliver honestly",
+          };
+        }
+        // The browser never opens uninvited: park the standing opt-in
+        // question and hand the turn back. A yes re-runs the errand armed
+        // (botBrowserRun) through the real browse pipeline. The harness's
+        // instruction carries the errand with conversation context folded
+        // in, which is a better browse goal than the raw ask.
+        agent.pendingBotBrowse = {
+          ask: String(instruction || ask).trim() || ask,
+          at: Date.now(),
+        };
+        return {
+          terminal: "waiting_for_user",
+          question:
+            "This looks like something I'd need the browser for — want me to open it up and take care of it?",
+          questionOptions: ["Yes, use the browser", "No, just answer here"],
+        };
+      },
+    };
+
+    const res = await botHarness.runBotTask({
+      goal: botAskCore(ask),
+      bot: agent.botProfile || null,
+      model,
+      executors,
+      conversationHistory: historyForPlanner(agent),
+      attachmentsNote,
+      localMode: localModeEnabled(),
+      primaryTool,
+      signal: agent.abort?.signal,
+      onApproval: ({ question }) => awaitBrowseApproval(agent, { question }),
+      onProgress: (p) => {
+        if (gen !== agent.generation) return;
+        // Every phase reports a status. The bot's chat row renders agent.step
+        // as a live animated line while the task runs, so a silent phase
+        // reads as a frozen bot — and only emitProgress updates agent.step
+        // where the row can see it.
+        const status = botHarnessStatusLine(p);
+        if (!status) return;
+        // Word-boundary trim: this line renders verbatim in the chat row, and
+        // a hard slice mid-sentence read as the bot's message being cut off.
+        agent.step = trimStatusLine(status, 240);
+        sendToAgentChannels(agent.id, "lykn:agent-status", { status: agent.step });
+        emitProgress(agent.id, { status: "running", step: agent.step, skill: agent.skill });
+      },
+    });
+
+    if (gen !== agent.generation) return "";
+    if (res.status === "waiting_for_user") {
+      return offerAgentQuestion(agent, res.question || res.answer, res.questionOptions || [], {
+        // The parked browser question resumes through pendingBotBrowse, not
+        // through a re-sent ask — an empty resume ask keeps the two paths
+        // from double-running the errand.
+        ask: res.parked ? "" : ask,
+      });
+    }
+    return res.answer || "Done.";
   }
 
   /**
@@ -6895,7 +7545,15 @@ function createAgentRuntime(deps) {
       // ask here (a legacy loop, or a model that phrased one as a question),
       // and a text box is the wrong shape for it — the user types "yes" and
       // that answer has to be re-interpreted as an instruction.
-      if (looksLikePermissionAsk(asked)) {
+      //
+      // Except a recipient ask: "Who should I send this to?" carries both
+      // "should I" and "send", but its only real answer is a typed name — on
+      // the Yes/No buttons it is unanswerable. It stays on the question card.
+      if (
+        looksLikePermissionAsk(asked) &&
+        browserAgent.permissionAskIsConsequential(asked) &&
+        !browserAgent.isRecipientQuestion?.(asked)
+      ) {
         agent.step = "Needs you — help with a step";
         try {
           sendToAgentChannels(agent.id, "lykn:agent-status", { status: agent.step });
@@ -6987,6 +7645,22 @@ function createAgentRuntime(deps) {
       if (seen.has(key)) continue;
       seen.add(key);
       blended.push({ role, content });
+    }
+    // The question the agent just asked is often missing from `content`
+    // (the finish path stored the step boxes and dropped the appendix).
+    // Put it back in front of the user's reply so the next run can see
+    // that this was already asked and answered.
+    const asked = String(agent?.lastAskedQuestion || "").trim();
+    if (asked) {
+      const needle = asked.slice(0, 80);
+      const already = blended.some(
+        (m) => m.role === "assistant" && String(m.content || "").includes(needle),
+      );
+      if (!already) {
+        let i = blended.length;
+        while (i > 0 && blended[i - 1].role === "user") i -= 1;
+        blended.splice(i, 0, { role: "assistant", content: asked.slice(0, 1200) });
+      }
     }
     return blended.slice(-10);
   }
@@ -7431,10 +8105,14 @@ function createAgentRuntime(deps) {
     }
 
     // Return keyboard focus to the glass bar (Gmail steals it during fill).
-    try {
-      focusOverlayComposer?.();
-    } catch {
-      /* ignore */
+    // Never for a Bot's run: its conversation lives in the main chat, and
+    // summoning Glass out of nowhere is exactly the wrong surface.
+    if (!agent.headless) {
+      try {
+        focusOverlayComposer?.();
+      } catch {
+        /* ignore */
+      }
     }
 
     const msg =
@@ -9471,9 +10149,15 @@ function createAgentRuntime(deps) {
 
   async function send(
     agentId,
-    { text, attachments, forceBuild, skipComplexGate, presetSteps, fromSuggestion } = {},
+    { text, attachments, forceBuild, skipComplexGate, presetSteps, fromSuggestion, bot } = {},
   ) {
     let agent = resolveAgent(agentId);
+    // Bot dispatches refresh the structured identity every turn — the agent
+    // may predate the profile, or the user may have edited the persona.
+    if (agent && bot) {
+      const profile = sanitizeBotProfile(bot);
+      if (profile) agent.botProfile = profile;
+    }
     // Glass can hold a stale id after restart / close — recreate instead of not_found.
     if (!agent) {
       const created = createAgent({ goal: String(text || "").trim(), silent: true });
@@ -9490,7 +10174,10 @@ function createAgentRuntime(deps) {
       return { ok: false, error: "empty" };
     }
 
-    activeAgentId = agent.id;
+    // Headless agents (Bots) work off to the side: they never become the
+    // "active" agent, so the rail/stage and untargeted sends stay on whatever
+    // the user was actually looking at.
+    if (!agent.headless) activeAgentId = agent.id;
 
     // Typed reply while a Local Mode approval is pending: yes/no resolves it;
     // anything else declines (safe default) and continues as a new ask.
@@ -9595,6 +10282,53 @@ function createAgentRuntime(deps) {
         });
       }
     }
+
+    // Bots: reply while the "want me to use the browser?" question is up.
+    // Yes arms this task to run the real browse pipeline (window visible),
+    // no answers headless as before, anything else supersedes as a fresh ask.
+    if (agent.headless && agent.pendingBotBrowse) {
+      const pendingBrowse =
+        Date.now() - (agent.pendingBotBrowse.at || 0) < PENDING_QUESTION_MS
+          ? agent.pendingBotBrowse
+          : null;
+      agent.pendingBotBrowse = null;
+      if (pendingBrowse) {
+        if (BOT_BROWSER_BARE_YES_RE.test(q)) {
+          agent.botBrowserRun = true;
+          q = pendingBrowse.ask;
+        } else if (BOT_BROWSER_YES_START_RE.test(q) && !BOT_BROWSER_NO_START_RE.test(q)) {
+          agent.botBrowserRun = true;
+          q = `${pendingBrowse.ask}\nAdditional guidance from the user: ${q}`;
+        } else if (BOT_BROWSER_BARE_NO_RE.test(q)) {
+          agent.skipBotBrowseAskOnce = true;
+          // The harness's browser tool honors this for the re-run: the user
+          // just said stay out of the browser, so it must not re-park the
+          // same question one round later.
+          agent.botBrowseDeclinedAt = Date.now();
+          q = pendingBrowse.ask;
+        } else if (BOT_BROWSER_NO_START_RE.test(q)) {
+          agent.skipBotBrowseAskOnce = true;
+          agent.botBrowseDeclinedAt = Date.now();
+          q = `${pendingBrowse.ask}\nAdditional guidance from the user: ${q}`;
+        }
+        // Anything else: a fresh ask replaces the parked one entirely.
+      }
+    }
+    // An armed browser task stays armed only while it is parked mid-flight
+    // (question, approval, sign-in, plan pause) or still running — a fresh
+    // ask starts headless again and asks before any new browser work.
+    if (agent.headless && agent.botBrowserRun) {
+      const parkedMidTask =
+        agent.status === "waiting" ||
+        agent.busy ||
+        !!agent.pendingChoice ||
+        !!agent.pendingQuestion ||
+        !!agent.pendingPlan ||
+        !!agent.waitingForSignIn;
+      if (!parkedMidTask) agent.botBrowserRun = false;
+    }
+    // Arming (or disarming) flips the tiny live viewport's screenshot loop.
+    if (agent.headless) syncBotShotLoop();
 
     if (forceBuild || skipComplexGate) {
       agent.skipComplexGateOnce = true;
@@ -9783,6 +10517,9 @@ function createAgentRuntime(deps) {
     if (answered) {
       agent.history.push({ role: "user", content: q, at: new Date().toISOString() });
       q = `${answered.ask}\nAdditional guidance from the user: ${q}`;
+    } else {
+      // A fresh instruction — not an answer to the last park.
+      agent.lastAskedQuestion = null;
     }
 
     const originalAsk = q;
@@ -9808,7 +10545,11 @@ function createAgentRuntime(deps) {
         return ask === tip || ask.startsWith(tip.slice(0, 40)) || tip.startsWith(ask.slice(0, 40));
       },
     );
-    agent._fromSuggestion = !!(fromSuggestion || tipMatch);
+    // Behaves headless unless this exact task carries the user's browser
+    // go-ahead — then intent breakdown, planning and routing all run like a
+    // normal browse agent.
+    const actsHeadless = !!agent.headless && !agent.botBrowserRun;
+    agent._fromSuggestion = !agent.headless && !!(fromSuggestion || tipMatch);
 
     // Deduce destination + task BEFORE navigating — vague asks like
     // "open my reddit ads thing" must not Google the filler phrase.
@@ -9818,15 +10559,20 @@ function createAgentRuntime(deps) {
     agent.preferredBrowseUrl = "";
     agent.lastIntent = null;
     let liveTabForIntent = "";
-    try {
-      const wcIntent = getBrowserWebContents?.(agent.id);
-      liveTabForIntent = getLiveTabUrl(agent, wcIntent) || "";
-    } catch {
-      liveTabForIntent = "";
+    // Headless agents (Bots) never look at tabs — neither their own hidden one
+    // nor whatever page the user has open — so routing can't drift to browse.
+    // A browser-approved Bot task reads its OWN tab only, never the user's.
+    if (!actsHeadless) {
+      try {
+        const wcIntent = getBrowserWebContents?.(agent.id);
+        liveTabForIntent = getLiveTabUrl(agent, wcIntent) || "";
+      } catch {
+        liveTabForIntent = "";
+      }
+      // Fall back to the visible stage tab / linked worker — same resolution the
+      // page-answer path uses, so intent breakdown and answering stay consistent.
+      if (!liveTabForIntent && !agent.headless) liveTabForIntent = resolveAnyLiveTabUrl(agent);
     }
-    // Fall back to the visible stage tab / linked worker — same resolution the
-    // page-answer path uses, so intent breakdown and answering stay consistent.
-    if (!liveTabForIntent) liveTabForIntent = resolveAnyLiveTabUrl(agent);
     // Already on a page + informational / casual ask → answer from scrape; don't
     // reinterpret into a multi-step browse plan.
     const skipIntentForPageAnswer =
@@ -9843,6 +10589,7 @@ function createAgentRuntime(deps) {
       !!agent._fromSuggestion && !!liveTabForIntent;
     if (
       !preset &&
+      !actsHeadless &&
       !skipIntentForPageAnswer &&
       !skipIntentForSuggestion &&
       needsAgentIntentBreakdown(originalAsk, { liveUrl: liveTabForIntent })
@@ -9900,7 +10647,8 @@ function createAgentRuntime(deps) {
 
     // Pipeline: dissect → plan → do → check → summary → suggestions.
     // presetSteps = resuming a plan parked at a sign-in wall (skip re-planning).
-    const plan = preset ? null : intentSteps ? null : buildAgentPlan(q);
+    // Headless (Bot) turns are always one conversational step — no plan.
+    const plan = preset || actsHeadless ? null : intentSteps ? null : buildAgentPlan(q);
     let steps = (
       preset ||
       intentSteps ||
@@ -9951,7 +10699,7 @@ function createAgentRuntime(deps) {
     // what this actually needs. Only for single-step asks: a multi-step plan
     // has already been shaped by the planner, and only when a tab is open,
     // which is what makes browser work possible at all.
-    if (!forceBuild && skill === "general" && !multi && liveTabForIntent) {
+    if (!forceBuild && !actsHeadless && skill === "general" && !multi && liveTabForIntent) {
       const needsBrowser = await routeNeedsBrowser(agent, q, { liveUrl: liveTabForIntent });
       if (needsBrowser && gen === agent.generation) skill = "browse";
     }
@@ -9979,6 +10727,45 @@ function createAgentRuntime(deps) {
     ) {
       skill = "browse";
     }
+    // Bots route tools with a model, not keywords. The keyword heuristics
+    // over-trigger (app names, "open", "check"…) and were parking the
+    // "want me to use the browser?" question on ordinary chat — so here they
+    // only NOMINATE: when anything about the ask looks tool- or browser-
+    // shaped, one small model call decides what this prompt actually is.
+    // Plain chat runs instantly with no model call. `botTool` carries the
+    // verdict into the step loop below, which re-resolves skills per step.
+    //
+    // A "browser" verdict does NOT park the opt-in question here. The Bot and
+    // the browser agent are one and the same — the browser is one of the
+    // Bot's tools, so the verdict only preloads that tool's doc and the Bot's
+    // own harness decides in its loop: park the opt-in, answer from context,
+    // or take a different tool. (This used to park right here, which made
+    // bot browser work a second route that bypassed the Bot entirely.)
+    let botTool = "";
+    if (actsHeadless && !forceBuild && !agent.skipBotBrowseAskOnce && skill !== "report-edit") {
+      // A fresh routed ask starts clean: a browser decline only binds the
+      // errand it answered, which re-ran in the turn that recorded it.
+      agent.botBrowseDeclinedAt = 0;
+      const core = botAskCore(q);
+      // botSkillBeforeCoerce is fresh — resolveSkillForPrompt just ran for
+      // this ask (forceBuild, which skips it, is excluded above).
+      const nominated =
+        !!agent.botSkillBeforeCoerce || skill !== "general" || botAskWantsBrowser(core);
+      if (nominated && gen === agent.generation) {
+        const verdict = BOT_EXPLICIT_BROWSER_RE.test(core)
+          ? "browser"
+          : await routeBotTool(agent, core);
+        if (gen !== agent.generation) return { ok: false, error: "superseded" };
+        if (verdict === "browser") botTool = "browser";
+        else if (verdict === "local") botTool = localModeEnabled() ? "local" : "general";
+        else if (verdict === "chat") botTool = "general";
+        else if (verdict && HEADLESS_SKILLS.has(verdict)) botTool = verdict;
+        if (botTool) skill = botTool;
+        // No verdict (offline/slow): the heuristic skill stands and nothing
+        // parks — a Bot that can't be sure answers in chat like before.
+      }
+    }
+    agent.skipBotBrowseAskOnce = false;
     agent.skill = skill;
     agent.plan = {
       lines: planLines,
@@ -10024,8 +10811,17 @@ function createAgentRuntime(deps) {
       });
     } else {
       // Deliverable turns: acknowledge in the response area BEFORE the work
-      // starts, so the user isn't staring at a bare spinner.
-      const kickoff = deliverableKickoffText(skill);
+      // starts, so the user isn't staring at a bare spinner. Headless (Bot)
+      // deliverables land in chat, so the "subtab" promises don't apply.
+      // A browser-verdict turn usually ends in the opt-in question, so no
+      // "working on it" promise — the question is the turn's real opener.
+      const kickoff = actsHeadless
+        ? skill === "general" || skill === "browser"
+          ? ""
+          : "On it — working on that now."
+        : agent.headless && agent.botBrowserRun
+          ? "On it — I'm in the browser now. You can watch me in the little window above the chat bar, or click it to open the full tab."
+          : deliverableKickoffText(skill);
       if (kickoff) {
         agent.partialText = kickoff;
         sendToAgentChannels(agent.id, "lykn:agent-delta", { text: kickoff });
@@ -10073,15 +10869,23 @@ function createAgentRuntime(deps) {
               stepText,
               i === 0 ? attachments : [],
             );
+        // The Bot tool router's verdict outranks the keyword heuristics for
+        // this prompt — re-apply it here because steps re-resolve.
+        if (botTool && actsHeadless) stepSkill = botTool;
         // Don't start a long-running monitor until later steps finish.
         if (stepSkill === "monitor" && i < steps.length - 1) {
           stepSkill = "browse";
         }
         lastSkill = stepSkill;
         agent.skill = stepSkill;
+        // Bot turns keep their status stream to one word: a plain chat turn
+        // shows only "Thinking…", and a Bot's browser/tool run never leaks
+        // its dispatch-brief wrapper into the label.
         const doingLabel = multi
           ? `Doing ${i + 1}/${steps.length}: ${stepText.slice(0, 48)}`
-          : `Doing: ${stepText.slice(0, 56)}`;
+          : actsHeadless
+            ? "Thinking…"
+            : `Doing: ${(agent.headless ? botAskCore(stepText) : stepText).slice(0, 56)}`;
         emitProgress(agent.id, {
           status: "running",
           step: doingLabel,
@@ -10662,14 +11466,23 @@ function createAgentRuntime(deps) {
         !!agent.pendingPlan?.waitingSignIn;
 
       let answer = waitingUser
-        ? renderStepTranscript(agent) ||
-          String(agent.partialText || "").trim() ||
+        ? (agent.waitingReason === "question"
+            ? String(agent.partialText || "").trim() || renderStepTranscript(agent)
+            : renderStepTranscript(agent) || String(agent.partialText || "").trim()) ||
           stripInlineWantMeSuggestions(
             stepAnswers.filter(Boolean).slice(-1)[0] || "",
           )
         : multi
           ? formatMultiStepCompletion(agent, steps, stepAnswers)
           : stripInlineWantMeSuggestions(stepAnswers[0] || "");
+      // A question pause must leave the ask in chat history. Preferring the
+      // step transcript used to drop it, so the next run asked again.
+      if (waitingUser && agent.waitingReason === "question") {
+        const asked = String(agent.waitingUserAction || agent.lastAskedQuestion || "").trim();
+        if (asked && !String(answer || "").includes(asked)) {
+          answer = answer ? `${answer}\n\n${asked}` : asked;
+        }
+      }
       if (
         !waitingUser &&
         (!Array.isArray(agent.lastSuggestions) || !agent.lastSuggestions.length)
@@ -10719,7 +11532,9 @@ function createAgentRuntime(deps) {
         ? String(answer || "").trim()
         : isMainAgent(agent)
           ? String(answer || "").trim()
-          : multi
+          : actsHeadless
+            ? formatHeadlessCompletion(agent, lastSkill, answer)
+            : multi
             ? formatMultiStepCompletion(agent, steps, stepAnswers)
             : formatAgentGlassStatus({
                 skill: lastSkill,
@@ -10754,6 +11569,13 @@ function createAgentRuntime(deps) {
             ? `Started ${pendingDelegates.map((d) => d.worker.title).join(", ")}`
             : "Done";
         agent.waitingForSignIn = false;
+      }
+      // A Bot's approved browser task is over once the turn truly finishes
+      // (not parked on the user): drop the arm so the tiny viewport goes
+      // away and the next browser-shaped ask asks permission again.
+      if (agent.headless && agent.botBrowserRun && agent.status === "idle") {
+        agent.botBrowserRun = false;
+        syncBotShotLoop();
       }
       // Announce the pause from the one place every turn passes through. The
       // park helpers each emit as they park, but plenty of turns end up waiting
@@ -10909,6 +11731,10 @@ function createAgentRuntime(deps) {
       agent.busy = false;
       agent._fromSuggestion = false;
       agent.partialText = "";
+      if (agent.headless && agent.botBrowserRun) {
+        agent.botBrowserRun = false;
+        syncBotShotLoop();
+      }
       agent.status = e?.name === "AbortError" ? "idle" : "error";
       agent.error = message;
       agent.step = message.slice(0, 80);
@@ -10988,6 +11814,7 @@ function createAgentRuntime(deps) {
     persist,
     persistNow,
     createAgent,
+    setAgentHeadless,
     ensureMainAgent,
     getMainAgent,
     switchAgent,

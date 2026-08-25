@@ -25,6 +25,8 @@ import {
   loadImagineAspect,
   saveImagineAspect,
 } from "@/lib/chat/imagineLayout";
+import { hasUsedImagine, markImagineUsed } from "@/lib/chat/imagineShowcase";
+import { IMAGINE_BATCH_SIZE } from "@/lib/chat/imagineThread";
 import LyknMediaPop, { MEDIA_POP_PANEL } from "@/components/lyknChat/LyknMediaPop";
 import GeneratedImage from "@/components/lyknChat/GeneratedImage";
 import ImagineMaskCanvas, {
@@ -54,7 +56,21 @@ import { VAULT_PICK_ITEMS_EVENT, VAULT_PICK_PATHS_EVENT } from "@/lib/vault/vaul
 import { deviceLocalUrlToDataUrl, isDeviceLocalUrl } from "@/lib/chat/deviceLocalImages";
 import { isLocalVaultEnabled } from "@/lib/vault/repository";
 import { storeLocalGeneration } from "@/lib/vault/repository/localGenerations";
-import { downloadToComputer } from "@/lib/files/downloadToComputer";
+import { toast } from "@/components/ui/use-toast";
+import {
+  canSaveFileAs,
+  downloadToComputer,
+  saveFileToChosenFolder,
+} from "@/lib/files/downloadToComputer";
+import {
+  encodeImageToFormat,
+  IMAGINE_DOWNLOAD_FORMATS,
+  imagineDownloadFilename,
+  imagineDownloadFilters,
+  loadImagineDownloadFormat,
+  saveImagineDownloadFormat,
+  type ImagineDownloadFormat,
+} from "@/lib/chat/imagineDownload";
 // Same AI-generated pool as the landing page Imagine collage.
 import imagineSneaker from "@/assets/imagine-sneaker.png";
 import imaginePorsche from "@/assets/imagine-porsche-gt3.png";
@@ -125,7 +141,7 @@ function ImagineShowcaseSlot({
   );
 }
 
-export const IMAGINE_BATCH_SIZE = 4;
+export { IMAGINE_BATCH_SIZE };
 
 type SlotStatus = "loading" | "done" | "error";
 
@@ -187,7 +203,7 @@ function markSessionCommitted(key: string, id: string, into?: Set<string>) {
  *  wipes the canvas immediately rather than waiting for the remount. */
 export const IMAGINE_CLEAR_EVENT = "lykn-imagine-clear";
 
-/** A settled batch, flattened for the chat turn it becomes. */
+/** A batch mirrored into the chat thread — pending first, then as slots land. */
 export type ImagineCommit = {
   id: string;
   prompt: string;
@@ -196,6 +212,15 @@ export type ImagineCommit = {
   kind: BatchKind;
   aspectRatio: string;
   images: { url: string; storagePath?: string }[];
+  /** True until every slot has settled (loading tiles still belong in the turn). */
+  pending?: boolean;
+  slots?: Array<{
+    status: SlotStatus;
+    url?: string;
+    storagePath?: string;
+    error?: string;
+  }>;
+  referenceUrls?: string[];
 };
 
 /**
@@ -208,13 +233,14 @@ export function imagineBatchesFromTurns(
     id: string;
     content?: string;
     aiImages?: { url: string; storagePath?: string }[];
-    imagine?: { aspect?: string; kind?: BatchKind; concept?: string };
+    imagine?: { aspect?: string; kind?: BatchKind; concept?: string; pending?: boolean };
     createdAt?: string;
   }>,
 ): ImagineBatch[] {
   const out: ImagineBatch[] = [];
   const seen = new Set<string>();
   for (const m of msgs || []) {
+    if (m.imagine?.pending) continue;
     const images = Array.isArray(m.aiImages) ? m.aiImages.filter((i) => i?.url) : [];
     if (!images.length) continue;
     const sig = images.map((i) => i.url).join("\n");
@@ -318,18 +344,6 @@ async function imagineReferencePayload(urls?: string[]): Promise<string[]> {
   return out;
 }
 
-/** A filename for a download, built from the batch's own concept label. */
-function imageFilename(label: string, mime: string): string {
-  const stem =
-    String(label || "")
-      .replace(/[\\/:*?"<>|]+/g, "-")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 60) || "lykn-image";
-  const ext =
-    mime === "image/jpeg" ? "jpg" : mime === "image/webp" ? "webp" : "png";
-  return `${stem}.${ext}`;
-}
 
 /** Aspect-ratio → CSS ratio for the grid cells ("3:2" → "3 / 2"). */
 function cssAspect(ar: string): string {
@@ -440,11 +454,15 @@ export type ImagineEditInput = {
   prompt?: string;
   aspect?: string;
   storagePath?: string;
+  /** Live canvas batch this image belongs to — keeps prev/next on the 4-up. */
+  batchId?: string;
+  index?: number;
 };
 
 export type StudioImagineHandle = {
   generate: (input: ImagineGenerateInput) => boolean;
   openEdit: (input: ImagineEditInput) => void;
+  retrySlot: (batchId: string, slotIndex: number) => void;
 };
 
 export type StudioImagineModeProps = {
@@ -452,7 +470,7 @@ export type StudioImagineModeProps = {
   chatKey: string;
   /** Past Imagine turns in this chat, so a reloaded canvas isn't blank. */
   seedBatches?: ImagineBatch[];
-  /** Called once per batch when every slot has settled, to write a chat turn. */
+  /** Writes / updates the chat turn: once on send, then as each slot lands. */
   onCommitBatch?: (commit: ImagineCommit) => void;
   /** Opens the chat page's vault picker for the bar's "Vault" menu row. */
   onPullVault?: () => void;
@@ -465,11 +483,11 @@ export type StudioImagineModeProps = {
   savedUrls?: Set<string>;
   /**
    * Share the chat thread and composer. Imagine then only draws in-flight
-   * batches, the empty-page showcase, and the mask editor — the conversation
+   * batches, the first-run showcase, and the mask editor — the conversation
    * and the bar stay on LyknChatView so switching modes doesn't drop them.
    */
   sharedThread?: boolean;
-  /** The chat already has turns — hide the empty-page showcase. */
+  /** The chat already has turns — hide the empty-page headline. */
   hasThread?: boolean;
   /** When false the overlay hides but in-flight work keeps running. */
   visible?: boolean;
@@ -498,6 +516,22 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
   batchesRef.current = batches;
   const seedRef = useRef(seedBatches);
   seedRef.current = seedBatches;
+  // Sample tiles under the bar are first-run only. Anyone who has already
+  // generated (this session, this chat, or an older cached chat) never
+  // sees them again — including on a fresh empty Imagine page.
+  const [imagineUsed, setImagineUsed] = useState(() => {
+    if (hasUsedImagine()) return true;
+    const already =
+      (sessionBatches.get(key) || []).length > 0 || !!(seedBatches && seedBatches.length);
+    if (already) markImagineUsed();
+    return already;
+  });
+  useEffect(() => {
+    if (imagineUsed) return;
+    if (!batches.length && !(seedBatches && seedBatches.length)) return;
+    markImagineUsed();
+    setImagineUsed(true);
+  }, [batches.length, seedBatches, imagineUsed]);
   /** Batches already written into the conversation, so none is written twice. */
   const committedRef = useRef<Set<string>>(new Set(sessionCommitted.get(key) || []));
   useEffect(() => {
@@ -517,31 +551,53 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
     setBatches(withConcept(seedBatches));
   }, [key, seedBatches]);
 
-  // Write each finished batch into the conversation as a real turn, so the
-  // images survive a reload and the other modes see what was made here.
+  // Mirror the canvas into the conversation as soon as a batch starts, then
+  // again as each slot lands. Waiting until every image finished hid the
+  // prompt bubble and left older 4-ups expanded for the whole generate.
+  const onCommitBatchRef = useRef(onCommitBatch);
+  onCommitBatchRef.current = onCommitBatch;
+  const emitBatchCommit = useCallback((b: ImagineBatch, pending: boolean) => {
+    const fn = onCommitBatchRef.current;
+    if (!fn) return;
+    const done = b.slots.filter((s) => s.status === "done" && s.url);
+    fn({
+      id: b.id,
+      prompt: b.label,
+      concept: b.concept,
+      kind: b.kind,
+      aspectRatio: b.aspectRatio,
+      images: done.map((s) => ({ url: String(s.url), storagePath: s.storagePath })),
+      pending,
+      slots: b.slots.map((s) => ({
+        status: s.status,
+        url: s.url,
+        storagePath: s.storagePath,
+        error: s.error,
+      })),
+      referenceUrls: b.referenceUrls,
+    });
+  }, []);
   useEffect(() => {
-    if (!onCommitBatch) return;
+    if (!onCommitBatchRef.current) return;
     for (const b of batches) {
-      if (committedRef.current.has(b.id)) continue;
       // Batches rebuilt from history already are turns.
       if (b.id.startsWith("turn-")) {
         committedRef.current = markSessionCommitted(key, b.id, committedRef.current);
         continue;
       }
-      if (b.slots.some((s) => s.status === "loading")) continue;
+      const loading = b.slots.some((s) => s.status === "loading");
       const done = b.slots.filter((s) => s.status === "done" && s.url);
-      if (!done.length) continue;
+      const allFailed = !loading && b.slots.length > 0 && b.slots.every((s) => s.status === "error");
+      const settled = !loading && (done.length > 0 || allFailed);
+      if (!settled) {
+        emitBatchCommit(b, true);
+        continue;
+      }
+      if (committedRef.current.has(b.id)) continue;
       committedRef.current = markSessionCommitted(key, b.id, committedRef.current);
-      onCommitBatch({
-        id: b.id,
-        prompt: b.label,
-        concept: b.concept,
-        kind: b.kind,
-        aspectRatio: b.aspectRatio,
-        images: done.map((s) => ({ url: String(s.url), storagePath: s.storagePath })),
-      });
+      emitBatchCommit(b, false);
     }
-  }, [batches, onCommitBatch]);
+  }, [batches, emitBatchCommit, key]);
 
   const [prompt, setPrompt] = useState("");
   const [aspect, setAspect] = useState<string>(() => loadImagineAspect());
@@ -565,6 +621,11 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
   const [savedFlash, setSavedFlash] = useState<Set<string>>(new Set());
   const [savingUrl, setSavingUrl] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [downloadOpen, setDownloadOpen] = useState(false);
+  const [downloadFormat, setDownloadFormat] = useState<ImagineDownloadFormat>(
+    () => loadImagineDownloadFormat(),
+  );
+  const downloadMenuRef = useRef<HTMLDivElement | null>(null);
   /** Long Imagine prompts clamp like chat until the user opens them. */
   const [expandedPrompts, setExpandedPrompts] = useState<Set<string>>(() => new Set());
 
@@ -782,6 +843,11 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
         createdAt: Date.now(),
       };
       setBatches((prev) => [...prev, batch]);
+      markImagineUsed();
+      setImagineUsed(true);
+      // Same tick as send — don't wait for the batches effect or the
+      // prompt bubble sits behind a still-expanded previous 4-up.
+      emitBatchCommit(batch, true);
       // Stagger starts so four identical provider calls don't collide on the
       // same rate-limit window; each slot still lands independently.
       batch.slots.forEach((slot, i) => {
@@ -793,7 +859,7 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
         scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
       }, 60);
     },
-    [runSlot],
+    [runSlot, emitBatchCommit],
   );
 
   const handleSend = useCallback(() => {
@@ -1100,6 +1166,16 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
     [patchSlot, runSlot],
   );
 
+  const retrySlotAt = useCallback(
+    (batchId: string, slotIndex: number) => {
+      const batch = batchesRef.current.find((b) => b.id === batchId);
+      const slot = batch?.slots[slotIndex];
+      if (!batch || !slot) return;
+      retrySlot(batch, slot);
+    },
+    [retrySlot],
+  );
+
   /* ---------- lightbox ---------- */
 
   const lightboxBatch =
@@ -1128,6 +1204,34 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
     (input: ImagineEditInput) => {
       const url = String(input.url || "");
       if (!url) return;
+      const live = batchesRef.current;
+      const byId = input.batchId ? live.find((b) => b.id === input.batchId) : undefined;
+      const matchIn = (batch: ImagineBatch) => {
+        const byUrl = batch.slots.findIndex((s) => s.status === "done" && s.url === url);
+        if (byUrl >= 0) return byUrl;
+        const path = String(input.storagePath || "");
+        if (!path) return -1;
+        return batch.slots.findIndex((s) => s.status === "done" && s.storagePath === path);
+      };
+      if (byId) {
+        const hinted = byId.slots[input.index ?? -1];
+        if (hinted?.status === "done" && hinted.url) {
+          openLightbox(byId.id, input.index as number);
+          return;
+        }
+        const index = matchIn(byId);
+        if (index >= 0) {
+          openLightbox(byId.id, index);
+          return;
+        }
+      }
+      for (const batch of live) {
+        const index = matchIn(batch);
+        if (index >= 0) {
+          openLightbox(batch.id, index);
+          return;
+        }
+      }
       const note = String(input.prompt || "");
       setLightbox(null);
       setGuestEdit({
@@ -1153,31 +1257,42 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
       resetEditNotes();
       window.setTimeout(() => remarksRef.current?.focus(), 50);
     },
-    [resetEditNotes],
+    [openLightbox, resetEditNotes],
   );
 
   const closeLightbox = useCallback(() => {
     setLightbox(null);
     setGuestEdit(null);
+    setDownloadOpen(false);
     resetEditNotes();
   }, [resetEditNotes]);
 
-  useImperativeHandle(ref, () => ({ generate, openEdit }), [generate, openEdit]);
+  useImperativeHandle(ref, () => ({ generate, openEdit, retrySlot: retrySlotAt }), [generate, openEdit, retrySlotAt]);
 
   const stepLightbox = useCallback(
     (dir: 1 | -1) => {
-      if (guestEdit || !lightbox || !lightboxBatch) return;
+      if (!lightboxBatch) return;
       const done = lightboxBatch.slots
         .map((s, i) => ({ s, i }))
-        .filter(({ s }) => s.status === "done");
+        .filter(({ s }) => s.status === "done" && s.url);
       if (done.length < 2) return;
-      const pos = done.findIndex(({ i }) => i === lightbox.index);
+      const current = guestEdit ? guestEdit.index : lightbox?.index ?? 0;
+      const pos = done.findIndex(({ i }) => i === current);
       const next = done[(pos + dir + done.length) % done.length];
       resetEditNotes();
-      setLightbox({ batchId: lightbox.batchId, index: next.i });
+      if (lightbox) {
+        setLightbox({ batchId: lightbox.batchId, index: next.i });
+        return;
+      }
+      if (guestEdit) {
+        setGuestEdit({ batch: guestEdit.batch, index: next.i });
+      }
     },
     [guestEdit, lightbox, lightboxBatch, resetEditNotes],
   );
+
+  const canStepLightbox =
+    (lightboxBatch?.slots.filter((s) => s.status === "done" && s.url).length || 0) > 1;
 
   // Outline + prompt → new batch grounded in this image and the mask.
   const handleRefine = useCallback(() => {
@@ -1247,31 +1362,74 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
     void saveLightboxImage();
   }, [saveLightboxImage]);
 
-  /**
-   * Downloading files the image in the AI Drive first. The copy that lands in
-   * the user's Downloads folder is a copy — the drive is where the image
-   * lives, and an image that only ever existed as a download would be gone
-   * from LYKN the moment the generation was swept.
-   */
-  const handleDownload = useCallback(() => {
-    const url = lightboxUrl;
-    if (!url || downloading) return;
-    setDownloading(true);
-    void (async () => {
-      try {
-        await saveLightboxImage();
-        const response = await fetch(url);
-        if (!response.ok) return;
-        const blob = await response.blob();
-        const label = lightboxBatch?.concept || lightboxBatch?.label || "lykn-image";
-        await downloadToComputer(blob, imageFilename(label, blob.type), blob.type);
-      } catch {
-        /* nothing written; the image is still in the drive */
-      } finally {
-        setDownloading(false);
-      }
-    })();
-  }, [downloading, lightboxBatch, lightboxUrl, saveLightboxImage]);
+  useEffect(() => {
+    if (!downloadOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (downloadMenuRef.current?.contains(e.target as Node)) return;
+      setDownloadOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      setDownloadOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [downloadOpen]);
+
+  const handleDownloadAs = useCallback(
+    (format: ImagineDownloadFormat) => {
+      const url = lightboxUrl;
+      if (!url || downloading) return;
+      const picked = saveImagineDownloadFormat(format);
+      setDownloadFormat(picked);
+      setDownloadOpen(false);
+      setDownloading(true);
+      void (async () => {
+        try {
+          let source: Blob;
+          if (isDeviceLocalUrl(url)) {
+            const read = await deviceLocalUrlToDataUrl(url, "download");
+            if (!read) throw new Error("read");
+            const res = await fetch(read.dataUrl);
+            if (!res.ok) throw new Error("read");
+            source = await res.blob();
+          } else {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error("fetch");
+            source = await res.blob();
+          }
+          const encoded = await encodeImageToFormat(source, picked);
+          const label = lightboxBatch?.concept || lightboxBatch?.label || "lykn-image";
+          const name = imagineDownloadFilename(label, picked);
+          const filters = imagineDownloadFilters(picked);
+          if (canSaveFileAs()) {
+            const saved = await saveFileToChosenFolder(encoded, name, encoded.type, { filters });
+            if (saved) {
+              toast({ title: "Saved", description: saved });
+            }
+            return;
+          }
+          await downloadToComputer(encoded, name, encoded.type);
+          toast({ title: "Downloaded", description: name });
+        } catch {
+          toast({
+            title: "Couldn't download this",
+            description: "The image couldn't be written. Try again in a moment.",
+            variant: "destructive",
+          });
+        } finally {
+          setDownloading(false);
+        }
+      })();
+    },
+    [downloading, lightboxBatch, lightboxUrl],
+  );
 
   const isSaved = !!lightboxUrl && (savedUrls?.has(lightboxUrl) || savedFlash.has(lightboxUrl));
   const isSaving = !!lightboxUrl && savingUrl === lightboxUrl;
@@ -1283,15 +1441,17 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
   const empty = sharedThread
     ? !hasThread && !anyLoading
     : batches.length === 0;
-  const overlayBatches = sharedThread
-    ? batches.filter((b) => !b.id.startsWith("turn-") && !committedRef.current.has(b.id))
-    : [];
+  // Shared-thread Imagine writes the 4-up into the transcript so a new
+  // prompt can collapse prior batches. The floating overlay would sit on
+  // top of that turn and eat the space those collapses just made.
+  const overlayBatches: ImagineBatch[] = [];
+  const showShowcase = empty && !imagineUsed;
 
   // Bottom showcase: three slots at a time, advance by three so the whole
   // row rotates to a fresh set (landing-page Imagine collage cadence).
   const [showcaseTick, setShowcaseTick] = useState(0);
   useEffect(() => {
-    if (!empty) return;
+    if (!showShowcase) return;
     try {
       if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     } catch {
@@ -1302,7 +1462,7 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
       SHOWCASE_ROTATE_MS,
     );
     return () => window.clearInterval(id);
-  }, [empty]);
+  }, [showShowcase]);
   const showcaseN = SHOWCASE_IMAGES.length;
 
   const activeLayout =
@@ -1687,7 +1847,7 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
     >
       {sharedThread ? (
         <>
-          {visible && empty ? showcaseRow : null}
+          {visible && showShowcase ? showcaseRow : null}
           {visible && overlayBatches.length > 0 ? overlayGrid : null}
         </>
       ) : empty ? (
@@ -1708,7 +1868,7 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
               <div className="lykn-imagine-empty-bar pointer-events-none">{promptBar}</div>
             </div>
           </div>
-          {showcaseRow}
+          {showShowcase ? showcaseRow : null}
         </div>
       ) : (
         <>
@@ -1808,21 +1968,54 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
             </span>
           </span>
         }
-        onPrev={() => stepLightbox(-1)}
-        onNext={() => stepLightbox(1)}
+        onPrev={canStepLightbox ? () => stepLightbox(-1) : undefined}
+        onNext={canStepLightbox ? () => stepLightbox(1) : undefined}
         topBar={
           lightboxUrl ? (
             <>
-              <button
-                type="button"
-                onClick={handleDownload}
-                disabled={downloading}
-                className={`flex h-9 w-9 items-center justify-center rounded-full ${MEDIA_POP_PANEL} disabled:opacity-40`}
-                title="Download — also saves to the AI Drive"
-                aria-label="Download"
-              >
-                {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-              </button>
+              <div ref={downloadMenuRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setDownloadOpen((v) => !v)}
+                  disabled={downloading}
+                  className={`flex h-9 w-9 items-center justify-center rounded-full ${MEDIA_POP_PANEL} disabled:opacity-40`}
+                  title="Download"
+                  aria-label="Download"
+                  aria-haspopup="menu"
+                  aria-expanded={downloadOpen}
+                >
+                  {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                </button>
+                {downloadOpen ? (
+                  <div
+                    role="menu"
+                    className={`absolute right-0 top-full z-30 mt-2 w-44 rounded-[14px] p-1.5 ${MEDIA_POP_PANEL}`}
+                  >
+                    <p className="px-2.5 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-black/40 dark:text-white/40">
+                      Save as
+                    </p>
+                    {IMAGINE_DOWNLOAD_FORMATS.map((opt) => {
+                      const on = opt.id === downloadFormat;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          role="menuitem"
+                          onClick={() => handleDownloadAs(opt.id)}
+                          className={`flex w-full items-center justify-between gap-2 rounded-[0.5rem] px-2.5 py-1.5 text-left text-[0.75rem] ${
+                            on ? "font-medium text-black dark:text-white" : "text-black/70 dark:text-white/75"
+                          }`}
+                        >
+                          <span>{opt.label}</span>
+                          <span className="text-[10px] font-normal text-black/40 dark:text-white/40">
+                            {opt.hint}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
               {onSaveImage ? (
                 <button
                   type="button"
@@ -1865,7 +2058,7 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
                         }
                       }}
                       rows={1}
-                      placeholder={hasMask ? "Describe the change…" : "Describe the edit — or outline a region first"}
+                      placeholder={hasMask ? "Describe the change..." : "Describe the edit or outline a region first"}
                       className="lykn-home-chat-bar-input min-w-0 w-full flex-auto resize-none bg-transparent px-2 py-1 text-[0.92rem] text-black/85 outline-none ring-0 placeholder:text-black/40 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 dark:text-white/90 dark:placeholder:text-white/40"
                     />
                     <div className="flex w-full items-center gap-1.5 px-0.5">
@@ -1895,7 +2088,7 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
                         }
                       }}
                       rows={1}
-                      placeholder={hasMask ? "Describe the change…" : "Describe the edit — or outline a region first"}
+                      placeholder={hasMask ? "Describe the change..." : "Describe the edit or outline a region first"}
                       className="lykn-home-chat-bar-input min-w-0 flex-1 self-center resize-none bg-transparent py-1 text-[0.85rem] text-black/85 outline-none ring-0 placeholder:text-black/40 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 dark:text-white/90 dark:placeholder:text-white/40"
                     />
                     <button

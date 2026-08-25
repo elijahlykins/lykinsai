@@ -39,6 +39,25 @@ test("mid-flow confirmations are the agent's job, not the user's", () => {
   }
 });
 
+test("opening a composer is the agent's job, not the user's", () => {
+  const goal = "send an email to elijah@lykn.io";
+  for (const label of ["Compose", "New message", "Reply", "Reply all", "Forward"]) {
+    assert.equal(proceedsAlone(goal, label, "the compose window opens"), true, `should click "${label}" alone`);
+  }
+});
+
+test("filling the draft is the agent's job even if it claims the send as the outcome", () => {
+  const goal = "send an email to elijah@lykn.io";
+  for (const label of ["To recipients", "Subject", "Message Body", "To", "Cc"]) {
+    assert.equal(
+      proceedsAlone(goal, label, "the message is sent"),
+      true,
+      `should click "${label}" alone`,
+    );
+  }
+  assert.equal(proceedsAlone(goal, "Send", "the message is sent"), true);
+});
+
 test("spending money always needs the user", () => {
   assert.equal(proceedsAlone("buy the black hoodie in size large", "Place order"), false);
   assert.equal(proceedsAlone("find me a cheap monitor on amazon", "Buy now"), false);

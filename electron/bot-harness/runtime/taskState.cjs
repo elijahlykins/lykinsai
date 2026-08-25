@@ -1,0 +1,108 @@
+/**
+ * Working memory for one Bot task: what was asked, what has run, what came
+ * back, and which tool docs have been read. Formatted for the model every
+ * round in the user message so the system prompt stays byte-stable.
+ */
+
+function createTaskState({ goal, primaryTool = "" } = {}) {
+  return {
+    goal: String(goal || "").trim(),
+    round: 0,
+    /** Tool docs read so far — the progressive-disclosure ledger. */
+    docsLoaded: new Set(primaryTool ? [primaryTool] : []),
+    /** Every event this task, in order: doc reads, tool runs, verifications. */
+    events: [],
+    /** How many tools actually executed (doc reads don't count). */
+    executed: 0,
+    /** Recovery budget: verification failures + tool errors we retried. */
+    recoveries: 0,
+    /** Standing guidance from the last failed verification / tool error. */
+    guidance: "",
+    /** Set once the loop pushed back on an empty-handed delivery. */
+    deliverPushbackUsed: false,
+    /** The task brief beyond the goal, defined by the model on its first
+     * decision: what done looks like, and the adjacent actions the literal
+     * request does not license. Pinned into every later round. */
+    successCondition: "",
+    doNot: [],
+  };
+}
+
+/** First non-empty definition wins — the brief never changes mid-task. */
+function setTaskBrief(state, { successCondition, doNot } = {}) {
+  if (!state.successCondition && String(successCondition || "").trim()) {
+    state.successCondition = String(successCondition).trim().slice(0, 300);
+  }
+  if (!state.doNot.length && Array.isArray(doNot) && doNot.length) {
+    state.doNot = doNot
+      .map((d) => String(d || "").trim())
+      .filter(Boolean)
+      .slice(0, 6);
+  }
+}
+
+function recordDocRead(state, toolName) {
+  state.docsLoaded.add(toolName);
+  state.events.push({ kind: "doc", tool: toolName });
+}
+
+function recordToolRun(state, { tool, instruction, ok, summary }) {
+  state.executed += 1;
+  state.events.push({
+    kind: "tool",
+    tool,
+    instruction: String(instruction || "").slice(0, 600),
+    ok: ok !== false,
+    summary: String(summary || "").slice(0, 800),
+  });
+}
+
+function recordVerification(state, { tool, success, evidence, reason }) {
+  state.events.push({
+    kind: "verify",
+    tool,
+    success: success === true,
+    detail: String((success === true ? evidence : reason) || "").slice(0, 400),
+  });
+}
+
+function recordNote(state, note) {
+  state.events.push({ kind: "note", note: String(note || "").slice(0, 300) });
+}
+
+/** Approval outcomes are part of the record — a declined send must never be
+ * retried or reported as done. */
+function recordApproval(state, { tool, approved }) {
+  state.events.push({ kind: "approval", tool, approved: approved === true });
+}
+
+function formatEventsForModel(state) {
+  if (!state.events.length) return "(nothing has run yet)";
+  return state.events
+    .map((e, i) => {
+      const n = i + 1;
+      if (e.kind === "doc") return `${n}. read the instructions for \`${e.tool}\``;
+      if (e.kind === "tool") {
+        return `${n}. ${e.tool}("${e.instruction}") → ${e.ok ? "ok" : "FAILED"}: ${e.summary || "(no output)"}`;
+      }
+      if (e.kind === "verify") {
+        return `${n}. verification of ${e.tool} → ${e.success ? "confirmed" : "NOT confirmed"}: ${e.detail}`;
+      }
+      if (e.kind === "approval") {
+        return `${n}. user ${e.approved ? "APPROVED" : "DECLINED"} the ${e.tool} action`;
+      }
+      return `${n}. note: ${e.note}`;
+    })
+    .join("\n");
+}
+
+module.exports = {
+  createTaskState,
+  setTaskBrief,
+  recordDocRead,
+  recordToolRun,
+  recordVerification,
+  recordNote,
+  recordApproval,
+  formatEventsForModel,
+};

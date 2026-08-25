@@ -176,6 +176,95 @@ test("the AI cannot open a missing path", async () => {
   assert.match(result.error, /no such file/i);
 });
 
+test("editing a file asks for approval, then swaps only the matched snippet", async () => {
+  write({ syncAll: true, syncedFolders: [] });
+  const file = path.join(desktop, "notes.md");
+  fs.writeFileSync(file, "# Plan\n- buy milk\n- walk dog\n");
+
+  const pending = await localSystem.run(
+    "local_edit_file",
+    { path: file, oldText: "- buy milk", newText: "- buy oat milk" },
+    { userDataPath: userData },
+  );
+  assert.equal(pending.needsApproval, true);
+  assert.match(pending.summary, /Edit file: /);
+
+  const done = await localSystem.run(
+    "local_edit_file",
+    { path: file, oldText: "- buy milk", newText: "- buy oat milk" },
+    { userDataPath: userData, approved: true },
+  );
+  assert.equal(done.ok, true);
+  assert.equal(done.replacements, 1);
+  assert.equal(fs.readFileSync(file, "utf8"), "# Plan\n- buy oat milk\n- walk dog\n");
+});
+
+test("an edit whose snippet isn't in the file changes nothing", async () => {
+  write({ syncAll: true, syncedFolders: [] });
+  const file = path.join(desktop, "notes.md");
+  fs.writeFileSync(file, "hello world\n");
+
+  const result = await localSystem.run(
+    "local_edit_file",
+    { path: file, oldText: "goodbye", newText: "hi" },
+    { userDataPath: userData, approved: true },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.error, /not found/i);
+  assert.equal(fs.readFileSync(file, "utf8"), "hello world\n");
+});
+
+test("an ambiguous snippet is refused unless replaceAll is set", async () => {
+  write({ syncAll: true, syncedFolders: [] });
+  const file = path.join(desktop, "notes.md");
+  fs.writeFileSync(file, "a\nTODO\nb\nTODO\n");
+
+  const refused = await localSystem.run(
+    "local_edit_file",
+    { path: file, oldText: "TODO", newText: "DONE" },
+    { userDataPath: userData, approved: true },
+  );
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /2 times/);
+
+  const all = await localSystem.run(
+    "local_edit_file",
+    { path: file, oldText: "TODO", newText: "DONE", replaceAll: true },
+    { userDataPath: userData, approved: true },
+  );
+  assert.equal(all.ok, true);
+  assert.equal(all.replacements, 2);
+  assert.equal(fs.readFileSync(file, "utf8"), "a\nDONE\nb\nDONE\n");
+});
+
+test("editing a missing file points at local_write_file instead", async () => {
+  write({ syncAll: true, syncedFolders: [] });
+  const result = await localSystem.run(
+    "local_edit_file",
+    { path: path.join(desktop, "nope.txt"), oldText: "x", newText: "y" },
+    { userDataPath: userData, approved: true },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.error, /does not exist.*local_write_file/i);
+});
+
+test("edits are blocked outside the synced folders", async () => {
+  const projects = path.join(home, "Projects");
+  fs.mkdirSync(projects);
+  write({ syncAll: false, syncedFolders: [projects] });
+  const file = path.join(desktop, "notes.md");
+  fs.writeFileSync(file, "hello\n");
+
+  const result = await localSystem.run(
+    "local_edit_file",
+    { path: file, oldText: "hello", newText: "bye" },
+    { userDataPath: userData, approved: true },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.error, /not synced/i);
+  assert.equal(fs.readFileSync(file, "utf8"), "hello\n");
+});
+
 test("switching a folder keeps the rest of the settings", () => {
   write({ syncAll: false, syncedFolders: [home], updatedAt: 1 });
 

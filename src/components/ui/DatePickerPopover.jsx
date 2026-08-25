@@ -33,6 +33,7 @@ export default function DatePickerPopover({
   trigger,
   align = "start",
   side = "bottom",
+  allowClear = true,
 }) {
   const [open, setOpen] = useState(false);
   const selected = parseYmd(value);
@@ -102,7 +103,7 @@ export default function DatePickerPopover({
             >
               Today
             </button>
-            {value ? (
+            {allowClear && value ? (
               <button
                 type="button"
                 onClick={() => pick(null)}

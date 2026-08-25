@@ -186,6 +186,66 @@
         font-size: 14px;
         opacity: 0.55;
       }
+      #welcome-back {
+        position: absolute;
+        left: calc((100% - min(1120px, 84vw)) / 2);
+        bottom: 6.4vh;
+        z-index: 3;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 22px;
+        border: none;
+        border-radius: 12px;
+        font: inherit;
+        font-size: 15px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.85);
+        background: rgba(255, 255, 255, 0.1);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+        cursor: pointer;
+        opacity: 0;
+        pointer-events: none;
+        transition: background 150ms ease, opacity 200ms ease;
+      }
+      #welcome-back.visible {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      #welcome-back:hover {
+        background: rgba(255, 255, 255, 0.16);
+      }
+      #welcome-skip {
+        position: absolute;
+        left: calc((100% - min(1120px, 84vw)) / 2 + 118px);
+        bottom: 6.4vh;
+        z-index: 3;
+        display: inline-flex;
+        align-items: center;
+        padding: 12px 22px;
+        border: none;
+        border-radius: 12px;
+        font: inherit;
+        font-size: 15px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.85);
+        background: rgba(255, 255, 255, 0.1);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+        cursor: pointer;
+        opacity: 0;
+        pointer-events: none;
+        transition: background 150ms ease, opacity 200ms ease, left 200ms ease;
+      }
+      #welcome-skip.visible {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      #welcome-skip.flush {
+        left: calc((100% - min(1120px, 84vw)) / 2);
+      }
+      #welcome-skip:hover {
+        background: rgba(255, 255, 255, 0.16);
+      }
 
       /* ── Stage 2: essentials ── */
       .opt {
@@ -761,6 +821,9 @@
         text-decoration: underline;
         cursor: pointer;
       }
+      #login-back {
+        display: none;
+      }
       .sub {
         margin: 0 0 14px;
         font-size: 17px;
@@ -770,7 +833,8 @@
       /* ── Stage 6: import ── */
       .browser-row {
         display: flex;
-        gap: 16px;
+        flex-direction: column;
+        gap: 12px;
         margin-top: 8px;
       }
       .browser-card {
@@ -839,31 +903,98 @@
       .browser-card input:checked ~ .radio::after {
         transform: scale(1);
       }
+      .browser-card.has-profiles {
+        flex-wrap: wrap;
+        align-items: flex-start;
+      }
+      .browser-card .profile-dd {
+        display: none;
+        flex: 1 1 100%;
+        margin: 4px 0 0 58px;
+        position: relative;
+        max-width: 280px;
+      }
+      .browser-card input:checked ~ .profile-dd {
+        display: block;
+      }
+      .profile-dd-btn {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px 12px;
+        border: none;
+        border-radius: 10px;
+        font: inherit;
+        font-size: 13.5px;
+        font-weight: 550;
+        color: rgba(255, 255, 255, 0.9);
+        background: rgba(255, 255, 255, 0.1);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+        cursor: pointer;
+      }
+      .profile-dd-btn::after {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-right: 1.6px solid rgba(255, 255, 255, 0.7);
+        border-bottom: 1.6px solid rgba(255, 255, 255, 0.7);
+        transform: rotate(45deg) translateY(-2px);
+      }
+      .profile-dd.open .profile-dd-btn::after {
+        transform: rotate(225deg) translateY(-1px);
+      }
+      .profile-dd-menu {
+        display: none;
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: calc(100% + 6px);
+        z-index: 4;
+        max-height: 168px;
+        overflow-y: auto;
+        padding: 4px;
+        border-radius: 10px;
+        background: rgba(18, 20, 26, 0.96);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+          0 16px 40px rgba(0, 0, 0, 0.4);
+        scrollbar-width: none;
+      }
+      .profile-dd-menu::-webkit-scrollbar {
+        display: none;
+      }
+      .profile-dd.open .profile-dd-menu {
+        display: block;
+      }
+      .profile-dd-menu button {
+        display: block;
+        width: 100%;
+        text-align: left;
+        border: none;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.88);
+        font: inherit;
+        font-size: 13.5px;
+        padding: 9px 10px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .profile-dd-menu button:hover,
+      .profile-dd-menu button.sel {
+        background: rgba(255, 255, 255, 0.1);
+      }
       #import-skip,
       #logins-skip,
       #macsync-skip,
-      #background-skip,
-      #widgets-skip {
-        position: absolute;
-        left: calc((100% - min(1120px, 84vw)) / 2);
-        bottom: 6.4vh;
-        padding: 12px 22px;
-        border: none;
-        border-radius: 12px;
-        font: inherit;
-        font-size: 15px;
-        font-weight: 600;
-        color: rgba(255, 255, 255, 0.85);
-        background: rgba(255, 255, 255, 0.1);
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
-        cursor: pointer;
+      #background-skip {
+        display: none;
         transition: background 150ms ease;
       }
       #import-skip:hover,
       #logins-skip:hover,
       #macsync-skip:hover,
-      #background-skip:hover,
-      #widgets-skip:hover {
+      #background-skip:hover {
         background: rgba(255, 255, 255, 0.16);
       }
 
@@ -1217,6 +1348,25 @@
       .hang-window .hw-links.dim .hw-app img {
         filter: grayscale(1) brightness(1.4) opacity(0.35);
       }
+      /* Theme stage: a color plate of the chosen swatch, not a chat. */
+      .hang-window .theme-color {
+        position: absolute;
+        inset: 52px 10% 10% 9%;
+        border-radius: 16px;
+        background: var(--accent-swatch, var(--accent, hsl(210 92% 56%)));
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28),
+          0 16px 40px rgba(0, 0, 0, 0.28);
+        transition: background 200ms ease;
+      }
+      .hang-window.light {
+        background: rgba(236, 238, 242, 0.92);
+      }
+      .hang-window.light .dots i {
+        background: rgba(0, 0, 0, 0.16);
+      }
+      .hang-window.light .hw-tab {
+        background: rgba(0, 0, 0, 0.08);
+      }
       @keyframes hw-pop {
         from {
           transform: scale(0.55);
@@ -1449,8 +1599,16 @@
       }
       .swatches {
         display: flex;
-        gap: 20px;
-        margin: 4px 0 36px;
+        flex-wrap: wrap;
+        gap: 14px 16px;
+        margin: 4px 0 52px;
+      }
+      .swatch-wrap {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        width: 42px;
       }
       .swatch {
         width: 42px;
@@ -1467,6 +1625,166 @@
         outline: 3px solid rgba(255, 255, 255, 0.95);
         outline-offset: 3px;
       }
+      .swatch-name {
+        position: absolute;
+        top: 48px;
+        white-space: nowrap;
+        font-size: 11.5px;
+        font-weight: 500;
+        color: rgba(255, 255, 255, 0.72);
+        pointer-events: none;
+        opacity: 0;
+      }
+      .swatch-wrap.sel .swatch-name {
+        opacity: 1;
+      }
+      #stage-chat .setup-copy,
+      #stage-chatbar .setup-copy {
+        max-height: calc(100vh - 22vh);
+        overflow-y: auto;
+        /* Room for selected outlines / hover scale — overflow-y clips the
+           left edge of the first swatch and shape chips without this. */
+        padding: 8px 10px 12px 10px;
+        margin-left: -10px;
+      }
+      .seg {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: 1fr;
+        gap: 4px;
+        padding: 3px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.08);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+      }
+      .seg button {
+        border: none;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.7);
+        font: inherit;
+        font-size: 13px;
+        font-weight: 550;
+        padding: 8px 6px;
+        border-radius: 9px;
+        cursor: pointer;
+      }
+      .seg button.sel {
+        background: rgba(255, 255, 255, 0.16);
+        color: #fff;
+      }
+      .shape-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .shape-chip,
+      .send-chip {
+        width: 46px;
+        height: 30px;
+        border: none;
+        cursor: pointer;
+        background: rgba(255, 255, 255, 0.1);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+        color: rgba(255, 255, 255, 0.85);
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: transform 120ms ease;
+      }
+      .shape-chip.tall {
+        height: 40px;
+      }
+      .shape-chip.bar {
+        width: 72px;
+        height: 22px;
+      }
+      .shape-chip.bar.tall {
+        height: 40px;
+      }
+      .shape-chip.bar.box {
+        background: transparent;
+        box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.45);
+      }
+      .send-chip {
+        width: 34px;
+        height: 34px;
+      }
+      .shape-chip:hover,
+      .send-chip:hover {
+        transform: scale(1.08);
+      }
+      .shape-chip.sel,
+      .send-chip.sel {
+        outline: 2px solid rgba(255, 255, 255, 0.95);
+        outline-offset: 2px;
+      }
+      .send-chip svg {
+        width: 16px;
+        height: 16px;
+      }
+      .ink-field {
+        margin: 0 0 18px;
+      }
+      .ink-field .section-label {
+        margin-bottom: 10px;
+        font-size: 14.5px;
+      }
+      .ink-swatches {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .ink-swatch {
+        width: 26px;
+        height: 26px;
+        border-radius: 99px;
+        border: none;
+        cursor: pointer;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+        transition: transform 120ms ease;
+      }
+      .ink-swatch:hover {
+        transform: scale(1.12);
+      }
+      .ink-swatch.sel {
+        outline: 2px solid rgba(255, 255, 255, 0.95);
+        outline-offset: 2px;
+      }
+      .prompt-field {
+        width: min(440px, 100%);
+        min-height: 92px;
+        resize: none;
+        line-height: 1.45;
+      }
+      .respond-hint {
+        margin: 8px 0 0;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.48);
+      }
+      .choice .mini.respond {
+        display: flex;
+        align-items: flex-end;
+        padding: 12px 10px 10px;
+      }
+      .choice .m-reply {
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .choice .m-reply i {
+        display: block;
+        height: 7px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.22);
+      }
+      .choice .m-reply i:nth-child(1) { width: 92%; }
+      .choice .m-reply i:nth-child(2) { width: 74%; }
+      .choice .m-reply i:nth-child(3) { width: 58%; }
+      .choice .mini.respond.concise .m-reply i:nth-child(n+2) { display: none; }
+      .choice .mini.respond.concise .m-reply i:nth-child(1) { width: 62%; }
+      .choice .mini.respond.medium .m-reply i:nth-child(3) { display: none; }
       .choice-row {
         display: flex;
         gap: 18px;
@@ -1696,19 +2014,19 @@
         border-radius: 14px 14px 4px 14px;
         font-size: 13.5px;
         line-height: 1.45;
-        color: #fff;
-        background: var(--accent, #0e6fff);
+        color: var(--user-ink, #fff);
+        background: var(--bubble, var(--accent, hsl(210 92% 56%)));
         box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-        transition: background 200ms ease;
+        transition: background 200ms ease, color 200ms ease, font-size 200ms ease, border-radius 200ms ease;
       }
       .pv-reply {
         position: absolute;
         top: 44%;
         left: 8%;
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         gap: 12px;
-        width: 70%;
+        width: 78%;
       }
       .pv-reply .pv-avatar {
         flex: none;
@@ -1722,6 +2040,14 @@
         height: 14px;
         border-radius: 7px;
         background: rgba(255, 255, 255, 0.12);
+      }
+      .pv-reply-text {
+        flex: 1;
+        margin: 4px 0 0;
+        font-size: 13.5px;
+        line-height: 1.4;
+        color: var(--ai-ink, rgba(255, 255, 255, 0.88));
+        transition: color 200ms ease, font-size 200ms ease;
       }
       .pv-ask {
         position: absolute;
@@ -1737,6 +2063,8 @@
         color: rgba(255, 255, 255, 0.5);
         background: rgba(255, 255, 255, 0.08);
         box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+        box-sizing: border-box;
+        transition: border-radius 200ms ease, padding 200ms ease, min-height 200ms ease, font-size 200ms ease;
       }
       .pv-ask .pv-send {
         margin-left: auto;
@@ -1748,8 +2076,117 @@
         justify-content: center;
         font-size: 15px;
         color: #fff;
-        background: var(--accent, #0e6fff);
-        transition: background 200ms ease;
+        background: var(--accent, hsl(210 92% 56%));
+        transition: background 200ms ease, border-radius 200ms ease;
+      }
+      .pv-ask .pv-send svg {
+        width: 15px;
+        height: 15px;
+        display: block;
+      }
+      /* Chat customization preview: stack the transcript so size/shape
+         changes grow in place instead of covering the reply or the bar. */
+      .pv-window.pv-chat {
+        display: flex;
+        flex-direction: column;
+        height: 90%;
+      }
+      .pv-window.pv-chat .dots {
+        flex: none;
+      }
+      .pv-window.pv-chat .pv-thread {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        gap: 10px;
+        padding: 2px 8% 10px;
+        overflow: hidden;
+      }
+      .pv-window.pv-chat .pv-bubble,
+      .pv-window.pv-chat .pv-reply {
+        flex: none;
+      }
+      .pv-window.pv-chat .pv-bubble {
+        position: relative;
+        top: auto;
+        right: auto;
+        align-self: flex-end;
+        max-width: 78%;
+      }
+      .pv-window.pv-chat .pv-reply {
+        position: relative;
+        top: auto;
+        left: auto;
+        width: auto;
+        max-width: 92%;
+      }
+      .pv-window.pv-chat .pv-ask {
+        position: relative;
+        left: auto;
+        right: auto;
+        bottom: auto;
+        margin: 0 7% 8%;
+        flex: none;
+        width: auto;
+        max-height: 38%;
+        overflow: hidden;
+        white-space: nowrap;
+        /* Page composer shell — Default is a raised slab, not a wash. */
+        background: linear-gradient(145deg, #343840, #282c32);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        box-shadow:
+          0 4px 16px rgba(0, 0, 0, 0.45),
+          0 1.5px 4px rgba(0, 0, 0, 0.25),
+          inset 0 1px 0 rgba(255, 255, 255, 0.07);
+        transition:
+          border-radius 200ms ease,
+          padding 200ms ease,
+          min-height 200ms ease,
+          font-size 200ms ease,
+          background 200ms ease,
+          box-shadow 200ms ease,
+          border-color 200ms ease;
+      }
+      .pv-window.pv-chat .pv-ask-text {
+        flex: 1;
+        min-width: 0;
+      }
+      .pv-window.pv-chat .pv-ask .pv-send {
+        flex: none;
+      }
+      /* Rectangle: flat glass + one hairline, same as Settings / chat page. */
+      .pv-window.pv-chat .pv-ask[data-shape="rectangle"] {
+        background: rgba(255, 255, 255, 0.07);
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        box-shadow: none;
+      }
+      /* Slate: tall roomy field, send parked on the bottom row. */
+      .pv-window.pv-chat .pv-ask[data-shape="slate"] {
+        flex-direction: column;
+        align-items: stretch;
+        justify-content: space-between;
+        gap: 10px;
+        white-space: normal;
+        max-height: 46%;
+      }
+      .pv-window.pv-chat .pv-ask[data-shape="slate"] .pv-send {
+        align-self: flex-end;
+        margin-left: 0;
+      }
+      .pv-window.pv-chat.light .pv-ask {
+        background: linear-gradient(145deg, #f6f6f6, #f0f0f0);
+        border: 1px solid rgba(0, 0, 0, 0.04);
+        box-shadow:
+          0 6px 20px rgba(0, 0, 0, 0.12),
+          0 2px 6px rgba(0, 0, 0, 0.07),
+          inset 0 1px 0 rgba(255, 255, 255, 0.6);
+      }
+      .pv-window.pv-chat.light .pv-ask[data-shape="rectangle"] {
+        background: rgba(255, 255, 255, 0.62);
+        border: 1px solid rgba(0, 0, 0, 0.12);
+        box-shadow: none;
       }
       /* light appearance preview */
       .pv-window.light {
@@ -1760,6 +2197,9 @@
       .pv-window.light .pv-tabs i,
       .pv-window.light .pv-rail i {
         background: rgba(0, 0, 0, 0.1);
+      }
+      .pv-window.light .pv-reply-text {
+        color: var(--ai-ink, rgba(17, 17, 17, 0.86));
       }
       .pv-window.light .pv-ask {
         background: rgba(0, 0, 0, 0.06);
@@ -1775,6 +2215,8 @@
   <body>
     <div id="card">
       <div id="progress"><div class="fill"></div></div>
+      <button type="button" id="welcome-back">&#8592; Back</button>
+      <button type="button" id="welcome-skip">Skip</button>
 
       <!-- Stage 1: the reveal animation -->
       <div class="stage active" id="stage-reveal">
@@ -2131,32 +2573,6 @@
         <button class="cta" id="background-next" disabled>Set background <span class="key">&#9166;</span></button>
       </div>
 
-      <!-- Stage widgets: what LYKN keeps on the Home desktop -->
-      <div class="stage" id="stage-widgets">
-        <div class="setup-inner">
-          <div class="setup-copy">
-            <h1 style="margin-bottom: 20px">Choose your widgets</h1>
-            <p class="sub" style="margin-bottom: 24px">
-              Pick what sits on your LYKN desktop. They stay live &mdash; your
-              day, your tasks, and everything you've saved, one glance away.
-            </p>
-            <div class="widget-grid" id="widget-grid"></div>
-            <p class="sub" style="font-size: 13.5px">
-              Add or remove widgets anytime from Settings &rarr; Display.
-            </p>
-          </div>
-          <div class="setup-preview">
-            <div class="hang-window">
-              <div class="dots"><i></i><i></i><i></i></div>
-              <span class="hw-tab"></span>
-              <div class="hw-widgets dim" id="hw-widgets"></div>
-            </div>
-          </div>
-        </div>
-        <button id="widgets-skip">Skip</button>
-        <button class="cta" id="widgets-next">Add widgets <span class="key">&#9166;</span></button>
-      </div>
-
       <!-- Stage 8: favorite apps -->
       <div class="stage" id="stage-apps">
         <div class="setup-inner">
@@ -2201,102 +2617,156 @@
                 <div class="mini light"><span class="m-dots"><i></i><i></i><i></i></span><span class="m-page"></span></div>
                 <div class="c-label">Light</div>
               </div>
-              <div class="choice" data-value="auto">
+              <div class="choice" data-value="system">
                 <div class="mini auto"><span class="m-dots"><i></i><i></i><i></i></span><span class="m-page"></span></div>
-                <div class="c-label">Auto</div>
+                <div class="c-label">System</div>
               </div>
             </div>
           </div>
           <div class="setup-preview">
-            <div class="pv-window pv">
+            <div class="hang-window pv" id="pv-theme">
+              <div class="theme-color" id="theme-color-img"></div>
               <div class="dots"><i></i><i></i><i></i></div>
-              <div class="pv-bubble">My tomato looks a bit more yellow than the others&hellip;</div>
-              <div class="pv-reply"><span class="pv-avatar"></span><span class="pv-line"></span></div>
-              <div class="pv-ask">Ask a question <span class="pv-send">&#8593;</span></div>
+              <span class="hw-tab"></span>
             </div>
           </div>
         </div>
         <button class="cta" id="theme-next">Next <span class="key">&#9166;</span></button>
       </div>
 
-      <!-- Stage 10: Make LYKN Yours — tab layout -->
-      <div class="stage" id="stage-tabs">
+      <!-- Stage 10: How LYKN responds -->
+      <div class="stage" id="stage-respond">
         <div class="setup-inner">
           <div class="setup-copy">
-            <h1 style="margin-bottom: 20px">Tabs, your way</h1>
-            <p class="section-label">Choose how you would like to view your tabs:</p>
-            <div class="choice-row" id="tabs-row">
-              <div class="choice sel" data-value="top">
-                <div class="mini">
+            <h1 style="margin-bottom: 20px">How LYKN responds</h1>
+            <p class="section-label">Pick a response length. You can change this anytime in Settings.</p>
+            <div class="choice-row" id="respond-row">
+              <div class="choice" data-value="concise">
+                <div class="mini respond concise">
                   <span class="m-dots"><i></i><i></i><i></i></span>
-                  <span class="m-tabs"><i></i><i></i><i></i></span>
-                  <span class="m-page"></span>
+                  <span class="m-reply"><i></i><i></i><i></i></span>
                 </div>
-                <div class="c-label">Top of Window</div>
+                <div class="c-label">Concise</div>
               </div>
-              <div class="choice" data-value="sidebar">
-                <div class="mini has-rail">
+              <div class="choice sel" data-value="medium">
+                <div class="mini respond medium">
                   <span class="m-dots"><i></i><i></i><i></i></span>
-                  <span class="m-rail"><i></i><i></i><i></i></span>
-                  <span class="m-page"></span>
+                  <span class="m-reply"><i></i><i></i><i></i></span>
                 </div>
-                <div class="c-label">Sidebar</div>
+                <div class="c-label">Balanced</div>
               </div>
-            </div>
-          </div>
-          <div class="setup-preview">
-            <div class="pv-window pv" id="pv-tabs">
-              <div class="dots"><i></i><i></i><i></i></div>
-              <div class="pv-tabs"><i></i><i></i><i></i></div>
-              <div class="pv-rail"><i></i><i></i><i></i><i></i></div>
-              <div class="pv-reply" style="top: 40%"><span class="pv-avatar"></span><span class="pv-line"></span></div>
-              <div class="pv-ask">Ask a question <span class="pv-send">&#8593;</span></div>
-            </div>
-          </div>
-        </div>
-        <button class="cta" id="tabs-next">Next <span class="key">&#9166;</span></button>
-      </div>
-
-      <!-- Stage 11: Make LYKN Yours — how it opens -->
-      <div class="stage" id="stage-start">
-        <div class="setup-inner">
-          <div class="setup-copy">
-            <h1 style="margin-bottom: 20px">Start your way</h1>
-            <p class="section-label">Choose what LYKN opens to. You can change this anytime.</p>
-            <div class="choice-row" id="start-row">
-              <div class="choice sel" data-value="studio">
-                <div class="mini">
+              <div class="choice" data-value="detailed">
+                <div class="mini respond">
                   <span class="m-dots"><i></i><i></i><i></i></span>
-                  <span class="m-grid"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+                  <span class="m-reply"><i></i><i></i><i></i></span>
                 </div>
-                <div class="c-label">Studio</div>
-              </div>
-              <div class="choice" data-value="chat">
-                <div class="mini">
-                  <span class="m-dots"><i></i><i></i><i></i></span>
-                  <span class="m-chat"><i class="me"></i><i style="width: 70%"></i><i class="bar"></i></span>
-                </div>
-                <div class="c-label">Chat</div>
-              </div>
-              <div class="choice" data-value="browser">
-                <div class="mini">
-                  <span class="m-dots"><i></i><i></i><i></i></span>
-                  <span class="m-url"></span>
-                  <span class="m-lines"><i></i><i></i><i></i></span>
-                </div>
-                <div class="c-label">Browser</div>
+                <div class="c-label">Detailed</div>
               </div>
             </div>
+            <p class="section-label" style="margin-top: 28px">Custom instructions</p>
+            <textarea class="field prompt-field" id="respond-prompt" maxlength="1500" placeholder="Be concise and direct. Use bullet points. Skip the preamble."></textarea>
+            <p class="respond-hint">Optional. LYKN uses this on every new chat.</p>
           </div>
           <div class="setup-preview">
             <div class="pv-window pv">
               <div class="dots"><i></i><i></i><i></i></div>
-              <div class="pv-bubble" style="top: 24%">Ready when you are.</div>
+              <div class="pv-bubble">What's on my calendar today?</div>
+              <div class="pv-reply">
+                <span class="pv-avatar"></span>
+                <span class="pv-reply-text" id="pv-respond-text">Three things — a design review at 10, lunch with Ana at 12:30, and the investor call you moved to 4.</span>
+              </div>
               <div class="pv-ask">Ask a question <span class="pv-send">&#8593;</span></div>
             </div>
           </div>
         </div>
-        <button class="cta" id="start-next">Next <span class="key">&#9166;</span></button>
+        <button class="cta" id="respond-next">Next <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Stage 11: Chat colors -->
+      <div class="stage" id="stage-chat">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1 style="margin-bottom: 20px">Color your chats</h1>
+            <p class="section-label">Match the chat bar and messages to you. Same colors as Settings.</p>
+            <div class="ink-field">
+              <p class="section-label">Your text</p>
+              <div class="ink-swatches" id="ink-user"></div>
+            </div>
+            <div class="ink-field">
+              <p class="section-label">Your message bubble</p>
+              <div class="ink-swatches" id="ink-bubble"></div>
+            </div>
+            <div class="ink-field">
+              <p class="section-label">LYKN's replies</p>
+              <div class="ink-swatches" id="ink-ai"></div>
+            </div>
+          </div>
+          <div class="setup-preview">
+            <div class="pv-window pv pv-chat">
+              <div class="dots"><i></i><i></i><i></i></div>
+              <div class="pv-thread">
+                <div class="pv-bubble">What's on my calendar today?</div>
+                <div class="pv-reply">
+                  <span class="pv-avatar"></span>
+                  <span class="pv-reply-text">Three things — a design review at 10, lunch with Ana at 12:30, and the investor call you moved to 4.</span>
+                </div>
+              </div>
+              <div class="pv-ask"><span class="pv-ask-text">Ask a question</span> <span class="pv-send">&#8593;</span></div>
+            </div>
+          </div>
+        </div>
+        <button class="cta" id="chat-next">Next <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Stage chatbar: sizes, shapes, send button -->
+      <div class="stage" id="stage-chatbar">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1 style="margin-bottom: 20px">Shape your chats</h1>
+            <p class="section-label">Your text, LYKN's replies, the bar, and the send button.</p>
+            <div class="ink-field">
+              <p class="section-label">Your text</p>
+              <div class="seg" id="size-user"></div>
+            </div>
+            <div class="ink-field">
+              <p class="section-label">LYKN's replies</p>
+              <div class="seg" id="size-ai"></div>
+            </div>
+            <div class="ink-field">
+              <p class="section-label">Chat bar</p>
+              <div class="seg" id="size-bar"></div>
+            </div>
+            <div class="ink-field">
+              <p class="section-label">Message bubble shape</p>
+              <div class="shape-row" id="shape-bubble"></div>
+            </div>
+            <div class="ink-field">
+              <p class="section-label">Chat bar shape</p>
+              <div class="shape-row" id="shape-bar"></div>
+            </div>
+            <div class="ink-field">
+              <p class="section-label">Send button</p>
+              <div class="shape-row" id="send-icon"></div>
+            </div>
+            <div class="ink-field">
+              <div class="shape-row" id="send-shape"></div>
+            </div>
+          </div>
+          <div class="setup-preview">
+            <div class="pv-window pv pv-chat">
+              <div class="dots"><i></i><i></i><i></i></div>
+              <div class="pv-thread">
+                <div class="pv-bubble">What's on my calendar today?</div>
+                <div class="pv-reply">
+                  <span class="pv-avatar"></span>
+                  <span class="pv-reply-text">Three things — a design review at 10, lunch with Ana at 12:30, and the investor call you moved to 4.</span>
+                </div>
+              </div>
+              <div class="pv-ask"><span class="pv-ask-text">Ask a question</span> <span class="pv-send" id="pv-chatbar-send">&#8593;</span></div>
+            </div>
+          </div>
+        </div>
+        <button class="cta" id="chatbar-next">Next <span class="key">&#9166;</span></button>
       </div>
 
       <!-- Stage 12: privacy -->
@@ -2418,22 +2888,63 @@
         7: document.getElementById("stage-logins"),
         macsync: document.getElementById("stage-macsync"),
         background: document.getElementById("stage-background"),
-        widgets: document.getElementById("stage-widgets"),
         8: document.getElementById("stage-apps"),
         9: document.getElementById("stage-theme"),
-        10: document.getElementById("stage-tabs"),
-        11: document.getElementById("stage-start"),
+        10: document.getElementById("stage-respond"),
+        11: document.getElementById("stage-chat"),
+        chatbar: document.getElementById("stage-chatbar"),
         12: document.getElementById("stage-privacy"),
         13: document.getElementById("stage-finish"),
       };
       // Progress across the welcome stages. Stage 2 (essentials) hands off to
       // the finish animation (stage 13), which fills the bar to 100.
-      const PROGRESS = { 3: 8, 4: 18, 5: 28, 6: 38, 7: 48, macsync: 51, background: 55, widgets: 58, 8: 62, 9: 68, 10: 78, 11: 86, 12: 92, 2: 96 };
+      const PROGRESS = { 3: 8, 4: 18, 5: 28, 6: 38, 7: 48, macsync: 51, background: 55, 8: 62, 9: 68, 10: 76, 11: 82, chatbar: 88, 12: 92, 2: 96 };
       let stage = 1;
-      const setStage = (n) => {
+      const stageHistory = [];
+      // Account / reveal slides — once setup starts, Back must not return here.
+      const AUTH_STAGES = new Set([1, 3, 4, 5, "login"]);
+      const SKIP_NEXT = {
+        6: "macsync",
+        7: "macsync",
+        macsync: "background",
+        background: 8,
+        8: 9,
+        9: 10,
+        10: 11,
+        11: "chatbar",
+        chatbar: 12,
+        12: 2,
+        2: 13,
+      };
+      const previousSetupStage = () => {
+        for (let i = stageHistory.length - 1; i >= 0; i -= 1) {
+          const prev = stageHistory[i];
+          if (prev != null && prev !== 13 && !AUTH_STAGES.has(prev) && stages[prev]) return prev;
+        }
+        return null;
+      };
+      const goBack = () => {
+        const prev = previousSetupStage();
+        if (prev == null) return;
+        while (stageHistory.length) {
+          const popped = stageHistory.pop();
+          if (popped === prev) {
+            setStage(prev, { back: true });
+            return;
+          }
+        }
+      };
+      const setStage = (n, opts = {}) => {
+        if (!opts.back && stage !== n) stageHistory.push(stage);
         stages[stage].classList.remove("active");
         stage = n;
         stages[stage].classList.add("active");
+        const backOn = n !== 1 && n !== 13 && previousSetupStage() != null;
+        const skipOn = Object.prototype.hasOwnProperty.call(SKIP_NEXT, n);
+        document.getElementById("welcome-back").classList.toggle("visible", backOn);
+        const skipBtn = document.getElementById("welcome-skip");
+        skipBtn.classList.toggle("visible", skipOn);
+        skipBtn.classList.toggle("flush", skipOn && !backOn);
         try {
           window.lyknWelcome.stageChanged(n);
         } catch {
@@ -2599,7 +3110,13 @@
         }
       };
       loginBtn.addEventListener("click", signIn);
-      document.getElementById("login-back").addEventListener("click", () => setStage(loginReturnStage));
+      document.getElementById("welcome-back").addEventListener("click", goBack);
+      document.getElementById("welcome-skip").addEventListener("click", () => {
+        const next = SKIP_NEXT[stage];
+        if (next === undefined) return;
+        setStage(next);
+      });
+      document.getElementById("login-back").addEventListener("click", goBack);
 
       // ── Continue with Google: OAuth runs in the system browser; the main
       // process pings us when the session lands. ──
@@ -2668,37 +3185,103 @@
       const browserRow = document.getElementById("browser-row");
       const importNext = document.getElementById("import-next");
       let browsersLoaded = false;
+      let browsers = [];
+      let selectedProfileDir = "";
+      const selectedBrowser = () => browsers.find((b) => b.id === browserRow.querySelector("input:checked")?.value) || null;
+      const closeProfileMenus = () => {
+        browserRow.querySelectorAll(".profile-dd.open").forEach((dd) => dd.classList.remove("open"));
+      };
+      const profileLabelFor = (browser) => {
+        const profiles = Array.isArray(browser?.profiles) ? browser.profiles : [];
+        const pick = profiles.find((p) => p.dir === selectedProfileDir) || profiles[0];
+        return pick?.name || "Choose a profile";
+      };
+      const paintProfileDropdown = (card, browser) => {
+        const dd = card.querySelector(".profile-dd");
+        if (!dd) return;
+        const profiles = Array.isArray(browser.profiles) ? browser.profiles : [];
+        const label = dd.querySelector(".profile-dd-btn");
+        const menu = dd.querySelector(".profile-dd-menu");
+        if (label) label.textContent = profileLabelFor(browser);
+        if (!menu) return;
+        menu.innerHTML = profiles
+          .map(
+            (p) =>
+              `<button type="button" class="${p.dir === selectedProfileDir ? "sel" : ""}" data-dir="${escAttr(p.dir)}">${escAttr(p.name)}</button>`,
+          )
+          .join("");
+        menu.querySelectorAll("button").forEach((btn) =>
+          btn.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            selectedProfileDir = btn.dataset.dir;
+            closeProfileMenus();
+            paintProfileDropdown(card, browser);
+          }),
+        );
+      };
       const loadBrowsers = async () => {
         if (browsersLoaded) return;
         browsersLoaded = true;
-        let list = [];
         try {
-          list = (await window.lyknWelcome.getBrowsers()) || [];
+          browsers = (await window.lyknWelcome.getBrowsers()) || [];
         } catch {
-          list = [{ id: "safari", name: "Safari" }];
+          browsers = [];
         }
-        browserRow.innerHTML = list
-          .map(
-            (b) => `
-          <label class="browser-card">
-            <input type="radio" name="import-browser" value="${b.id}" />
+        browserRow.innerHTML = browsers
+          .map((b) => {
+            const profiles = Array.isArray(b.profiles) ? b.profiles : [];
+            const count = profiles.length;
+            const dd =
+              count > 0
+                ? `<div class="profile-dd">
+                    <button type="button" class="profile-dd-btn"></button>
+                    <div class="profile-dd-menu"></div>
+                  </div>`
+                : "";
+            return `
+          <div class="browser-card${count ? " has-profiles" : ""}">
+            <input type="radio" name="import-browser" value="${escAttr(b.id)}" />
             ${BROWSER_ICONS[b.id] || ""}
-            <span class="b-name"><b>${b.name}</b>${b.profiles ? `<span>${b.profiles} profile${b.profiles === 1 ? "" : "s"}</span>` : ""}</span>
+            <span class="b-name"><b>${escAttr(b.name)}</b>${count ? `<span>${count} profile${count === 1 ? "" : "s"}</span>` : ""}</span>
             <span class="radio"></span>
-          </label>`,
-          )
+            ${dd}
+          </div>`;
+          })
           .join("");
         browserRow.querySelectorAll("input").forEach((r) => {
-          // Radios can't be unchecked by clicking, and preventDefault on a
-          // radio click restores its pre-click state (undoing a manual
-          // uncheck). So the card intercepts the click and toggles manually.
-          r.closest(".browser-card").addEventListener("click", (event) => {
+          const card = r.closest(".browser-card");
+          const browser = browsers.find((b) => b.id === r.value);
+          if (browser) paintProfileDropdown(card, browser);
+          card.addEventListener("click", (event) => {
+            if (event.target.closest(".profile-dd")) return;
             event.preventDefault();
-            r.checked = !r.checked;
+            const was = r.checked;
+            browserRow.querySelectorAll("input").forEach((other) => {
+              other.checked = other === r ? !was : false;
+            });
+            closeProfileMenus();
+            if (r.checked && browser?.profiles?.[0] && !browser.profiles.some((p) => p.dir === selectedProfileDir)) {
+              selectedProfileDir = browser.profiles[0].dir;
+              paintProfileDropdown(card, browser);
+            }
             importNext.disabled = !r.checked;
           });
         });
+        browserRow.querySelectorAll(".profile-dd-btn").forEach((btn) =>
+          btn.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const dd = btn.closest(".profile-dd");
+            const open = !dd.classList.contains("open");
+            closeProfileMenus();
+            dd.classList.toggle("open", open);
+          }),
+        );
       };
+      document.addEventListener("click", (event) => {
+        if (!event.target.closest(".profile-dd")) closeProfileMenus();
+      });
       // Hand off to the studio. The main process waits for the studio to
       // finish loading, fades this window out, and closes it — so the loader
       // stays up (not a faded-out blank) however long the boot takes.
@@ -2716,12 +3299,19 @@
       importNext.addEventListener("click", async () => {
         const sel = browserRow.querySelector("input:checked");
         if (!sel) return;
+        const browser = selectedBrowser();
+        if (browser?.profiles?.length && !selectedProfileDir) {
+          selectedProfileDir = browser.profiles[0].dir;
+        }
         try {
-          await window.lyknWelcome.setImportBrowser(sel.value);
+          await window.lyknWelcome.setImportBrowser({
+            id: sel.value,
+            profileDir: selectedProfileDir,
+          });
         } catch {
           /* stored best-effort */
         }
-        setStage(7); // logins come from the chosen browser's keychain store
+        setStage(7);
       });
       // No import source → nothing to pull logins from; on to Mac sync.
       document.getElementById("import-skip").addEventListener("click", () => setStage("macsync"));
@@ -2738,13 +3328,22 @@
           syncStatus.textContent = "Choose a browser to sync first.";
           return;
         }
+        if (!selectedProfileDir) {
+          syncStatus.textContent = "Choose a profile to sync.";
+          return;
+        }
         browserSyncing = true;
         syncBrowserBtn.disabled = true;
         syncBrowserBtn.firstChild.textContent = "Syncing\u2026 ";
         syncStatus.textContent = "Approve any macOS prompts to continue.";
         try {
+          await window.lyknWelcome.setImportBrowser({
+            id: selected.value,
+            profileDir: selectedProfileDir,
+          });
           const result = await window.lyknWelcome.syncBrowser({
             browserId: selected.value,
+            profileDir: selectedProfileDir,
             importCookies: true,
             importTabs: true,
             importHistory: true,
@@ -2921,115 +3520,11 @@
         if (bgFilePreview) bgThumbFile.innerHTML = `<img src="${bgFilePreview}" alt="" />`;
         renderBgState();
       });
-      document.getElementById("background-skip").addEventListener("click", () => setStage("widgets"));
+      document.getElementById("background-skip").addEventListener("click", () => setStage(8));
       document.getElementById("background-next").addEventListener("click", async () => {
         if (bgNext.disabled || !bgChoice) return;
         try {
           await window.lyknWelcome.setBackground(bgChoice);
-        } catch {
-          /* stored best-effort */
-        }
-        setStage("widgets");
-      });
-
-      // ── stage widgets: what LYKN keeps on the Home desktop ──
-      // Ids match the studio's homeWidgets settings keys; `size` mirrors the
-      // real widget's footprint so the preview reads like the actual desktop.
-      const WIDGETS = [
-        {
-          id: "calendar",
-          name: "Calendar",
-          desc: "Today, plus what's next.",
-          accent: "#ff6b6b",
-          on: true,
-          icon: `<rect x="3" y="5" width="18" height="16" rx="2" /><path d="M8 3v4M16 3v4M3 11h18" />`,
-        },
-        {
-          id: "monthCalendar",
-          name: "Month",
-          desc: "The whole month at a glance.",
-          accent: "#ff6b6b",
-          on: true,
-          icon: `<rect x="3" y="4" width="18" height="17" rx="2" /><path d="M3 9h18M9 9v12M15 9v12" />`,
-        },
-        {
-          id: "todos",
-          name: "To-dos",
-          desc: "Your open tasks.",
-          accent: "#f5a524",
-          on: true,
-          icon: `<path d="M4 6.5 6 8.5 10 4.5M4 17.5l2 2 4-4M13 7h7M13 17h7" />`,
-        },
-        {
-          id: "vault",
-          name: "Vault",
-          desc: "Everything you've saved.",
-          accent: "#a78bfa",
-          on: true,
-          size: "wide",
-          icon: `<rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="9" cy="10" r="1.6" /><path d="m21 16-5-5-9 9" />`,
-        },
-        {
-          id: "projects",
-          name: "Projects",
-          desc: "Pick up recent work.",
-          accent: "#2dd4bf",
-          on: false,
-          size: "tall",
-          icon: `<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M3 12h18" />`,
-        },
-        {
-          id: "files",
-          name: "Files",
-          desc: "Your Mac files, on the desktop.",
-          accent: "#38bdf8",
-          on: true,
-          icon: `<path d="M14 3v5h5" /><path d="M6 3h8l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" />`,
-        },
-      ];
-      const widgetGrid = document.getElementById("widget-grid");
-      const hwWidgets = document.getElementById("hw-widgets");
-      const widgetPicks = new Set(WIDGETS.filter((w) => w.on).map((w) => w.id));
-      const widgetIcon = (paths) =>
-        `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
-      // Nothing picked → the mockup shows every widget dimmed, as a hint.
-      const renderWidgetPreview = () => {
-        const picked = WIDGETS.filter((w) => widgetPicks.has(w.id));
-        hwWidgets.classList.toggle("dim", picked.length === 0);
-        hwWidgets.innerHTML = (picked.length ? picked : WIDGETS)
-          .map(
-            (w, i) => `
-              <div class="hw-widget ${w.size || ""}" style="--wg:${w.accent};animation-delay:${i * 45}ms">
-                <b>${escAttr(w.name)}</b><i></i><i style="width:65%"></i>
-              </div>`,
-          )
-          .join("");
-      };
-      widgetGrid.innerHTML = WIDGETS.map(
-        (w) => `
-          <button type="button" class="widget-card${widgetPicks.has(w.id) ? " picked" : ""}" data-id="${w.id}" aria-pressed="${widgetPicks.has(w.id)}">
-            <span class="wg-icon">${widgetIcon(w.icon)}</span>
-            <span class="wg-label"><b>${escAttr(w.name)}</b><span>${escAttr(w.desc)}</span></span>
-          </button>`,
-      ).join("");
-      widgetGrid.querySelectorAll(".widget-card").forEach((card) =>
-        card.addEventListener("click", () => {
-          const id = card.dataset.id;
-          if (widgetPicks.has(id)) widgetPicks.delete(id);
-          else widgetPicks.add(id);
-          const on = widgetPicks.has(id);
-          card.classList.toggle("picked", on);
-          card.setAttribute("aria-pressed", String(on));
-          renderWidgetPreview();
-        }),
-      );
-      renderWidgetPreview();
-      document.getElementById("widgets-skip").addEventListener("click", () => setStage(8));
-      document.getElementById("widgets-next").addEventListener("click", async () => {
-        try {
-          await window.lyknWelcome.setHomeWidgets(
-            Object.fromEntries(WIDGETS.map((w) => [w.id, widgetPicks.has(w.id)])),
-          );
         } catch {
           /* stored best-effort */
         }
@@ -3195,29 +3690,283 @@
       });
 
       // ── stages 9–11: Make LYKN Yours ──
-      const prefs = { accent: "#0e6fff", appearance: "dark", tabLayout: "top", startView: "studio" };
+      // IDs and values match Settings › Appearance / Assistant so the
+      // studio can apply them to the same `lykinsai_settings` keys.
+      const ACCENTS = [
+        { id: "snow", name: "Snow", hsl: "210 16% 76%" },
+        { id: "sand", name: "Sand", hsl: "34 44% 74%" },
+        { id: "sage", name: "Sage", hsl: "148 24% 66%" },
+        { id: "mist", name: "Mist", hsl: "196 32% 70%" },
+        { id: "ocean", name: "Ocean", hsl: "210 92% 56%" },
+        { id: "periwinkle", name: "Periwinkle", hsl: "240 68% 70%" },
+        { id: "orchid", name: "Orchid", hsl: "286 52% 66%" },
+        { id: "clay", name: "Clay", hsl: "14 38% 62%" },
+        { id: "graphite", name: "Graphite", hsl: "220 8% 42%" },
+      ];
+      const INKS = [
+        { id: "default", name: "Default" },
+        { id: "accent", name: "My accent" },
+        { id: "white", name: "White", hsl: "0 0% 100%" },
+        { id: "ivory", name: "Ivory", hsl: "38 44% 92%" },
+        { id: "silver", name: "Silver", hsl: "214 14% 74%" },
+        { id: "graphite", name: "Graphite", hsl: "220 9% 46%" },
+        { id: "charcoal", name: "Charcoal", hsl: "220 14% 18%" },
+        { id: "blue", name: "Blue", hsl: "212 92% 58%" },
+        { id: "sky", name: "Sky", hsl: "196 88% 62%" },
+        { id: "teal", name: "Teal", hsl: "174 68% 44%" },
+        { id: "green", name: "Green", hsl: "146 62% 45%" },
+        { id: "yellow", name: "Yellow", hsl: "46 94% 56%" },
+        { id: "orange", name: "Orange", hsl: "28 92% 55%" },
+        { id: "red", name: "Red", hsl: "2 80% 57%" },
+        { id: "pink", name: "Pink", hsl: "334 82% 66%" },
+        { id: "purple", name: "Purple", hsl: "266 78% 68%" },
+        { id: "navy", name: "Navy", hsl: "218 76% 34%" },
+        { id: "forest", name: "Forest", hsl: "152 56% 26%" },
+        { id: "crimson", name: "Crimson", hsl: "352 70% 38%" },
+        { id: "rust", name: "Rust", hsl: "18 74% 38%" },
+        { id: "plum", name: "Plum", hsl: "284 48% 34%" },
+      ];
+      const RESPOND_SAMPLES = {
+        concise: "Three meetings — 10, 12:30, and 4.",
+        medium: "Three things — a design review at 10, lunch with Ana at 12:30, and the investor call you moved to 4.",
+        detailed: "You've got three things on the calendar. Design review at 10, lunch with Ana at 12:30, and the investor call you moved to 4. I'll ping you 10 minutes before the first one.",
+      };
+      const TEXT_SIZES = [
+        { id: "small", name: "Small", px: 12.5 },
+        { id: "default", name: "Default", px: 14 },
+        { id: "large", name: "Large", px: 17 },
+        { id: "xlarge", name: "Largest", px: 25 },
+      ];
+      const BAR_SIZES = [
+        { id: "small", name: "Small", font: 11, pad: 8, minH: 44 },
+        { id: "default", name: "Default", font: 12, pad: 12, minH: 52 },
+        { id: "large", name: "Large", font: 14, pad: 15, minH: 62 },
+        { id: "xlarge", name: "Largest", font: 16.5, pad: 18, minH: 72 },
+      ];
+      const BAR_SHAPES = [
+        { id: "soft", name: "Default", radius: "14px", chipRadius: "9999px" },
+        { id: "rectangle", name: "Rectangle", radius: "10px", chipRadius: "5px" },
+        { id: "slate", name: "Slate", radius: "28px", chipRadius: "16px", pad: 18, minH: 104, tall: true },
+        { id: "leaf", name: "Leaf", radius: "22px 6px 22px 6px" },
+      ];
+      const BUBBLE_SHAPES = [
+        { id: "tail", name: "Default", radius: "15px 15px 4px 15px" },
+        { id: "round", name: "Rounded", radius: "16px" },
+        { id: "pill", name: "Pill", radius: "9999px" },
+        { id: "rectangle", name: "Rectangle", radius: "0px" },
+        { id: "leaf", name: "Leaf", radius: "18px 4px 18px 4px" },
+      ];
+      const SEND_SHAPES = [
+        { id: "default", name: "Default", radius: "10px" },
+        { id: "circle", name: "Circle", radius: "9999px" },
+        { id: "squircle", name: "Squircle", radius: "32%" },
+        { id: "rounded", name: "Rounded", radius: "10px" },
+        { id: "square", name: "Square", radius: "4px" },
+      ];
+      const SEND_ICONS = {
+        arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>',
+        arrowRight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>',
+        plane: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>',
+        return: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="m9 10-5 5 5 5"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>',
+        chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>',
+        sparkle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8Z"/></svg>',
+      };
+      const SEND_ICON_NAMES = [
+        { id: "arrow", name: "Arrow" },
+        { id: "arrowRight", name: "Forward" },
+        { id: "plane", name: "Plane" },
+        { id: "return", name: "Return" },
+        { id: "chevron", name: "Chevron" },
+        { id: "sparkle", name: "Sparkle" },
+      ];
+      const prefs = {
+        accent: "ocean",
+        appearance: "dark",
+        responseLength: "medium",
+        userPrompt: "",
+        chatUserTextColor: "default",
+        chatBubbleColor: "default",
+        chatAiTextColor: "default",
+        chatUserTextSize: "default",
+        chatAiTextSize: "default",
+        chatBarSize: "default",
+        chatBubbleShape: "tail",
+        chatBarShape: "soft",
+        chatSendIcon: "arrow",
+        chatSendShape: "default",
+      };
+      const byId = (list, id) => list.find((item) => item.id === id) || list[0];
 
-      // Theme swatches — LYKN blue first (default).
-      const ACCENTS = ["#0e6fff", "#9aa3b2", "#10b981", "#7c6df2", "#f59e0b", "#ec6a9c", "#e8506e", "#f0562a"];
+      const accentById = (id) => ACCENTS.find((a) => a.id === id) || ACCENTS.find((a) => a.id === "ocean");
+      const inkById = (id) => INKS.find((i) => i.id === id) || INKS[0];
+      const hslCss = (hsl) => (hsl ? `hsl(${hsl})` : "");
+      const accentCss = (accent) => hslCss(accent.hsl);
+      const inkCss = (ink) => {
+        if (!ink || ink.id === "default") return "";
+        if (ink.id === "accent") return hslCss(accentById(prefs.accent).hsl);
+        return hslCss(ink.hsl);
+      };
+      const readableOn = (hsl) => {
+        const lightness = Number(String(hsl || "").split(" ")[2]?.replace("%", ""));
+        return Number.isFinite(lightness) && lightness > 62 ? "0 0% 12%" : "0 0% 100%";
+      };
+      const systemIsLight = () =>
+        typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: light)").matches;
+      const previewIsLight = () => prefs.appearance === "light" || (prefs.appearance === "system" && systemIsLight());
+
+      const applyPreview = () => {
+        const accent = accentById(prefs.accent);
+        const light = previewIsLight();
+        const userInk = inkById(prefs.chatUserTextColor);
+        const bubbleInk = inkById(prefs.chatBubbleColor);
+        const aiInk = inkById(prefs.chatAiTextColor);
+        const bubbleColor = inkCss(bubbleInk);
+        let userColor = inkCss(userInk);
+        if (!userColor && bubbleColor) {
+          const srcHsl = bubbleInk.id === "accent" ? accent.hsl : bubbleInk.hsl;
+          userColor = hslCss(readableOn(srcHsl));
+        }
+        const aiColor = inkCss(aiInk);
+        document.querySelectorAll(".pv").forEach((w) => {
+          w.style.setProperty("--accent", hslCss(accent.hsl));
+          w.style.setProperty("--accent-swatch", hslCss(accent.hsl));
+          w.classList.toggle("light", light);
+        });
+        const userSize = byId(TEXT_SIZES, prefs.chatUserTextSize);
+        const aiSize = byId(TEXT_SIZES, prefs.chatAiTextSize);
+        const barSize = byId(BAR_SIZES, prefs.chatBarSize);
+        const barShape = byId(BAR_SHAPES, prefs.chatBarShape);
+        const bubbleShape = byId(BUBBLE_SHAPES, prefs.chatBubbleShape);
+        const sendShape = byId(SEND_SHAPES, prefs.chatSendShape);
+        document.querySelectorAll(".pv-chat").forEach((w) => {
+          if (bubbleColor) w.style.setProperty("--bubble", bubbleColor);
+          else w.style.removeProperty("--bubble");
+          if (userColor) w.style.setProperty("--user-ink", userColor);
+          else w.style.removeProperty("--user-ink");
+          if (aiColor) w.style.setProperty("--ai-ink", aiColor);
+          else w.style.removeProperty("--ai-ink");
+          w.querySelectorAll(".pv-bubble").forEach((el) => {
+            el.style.fontSize = `${userSize.px}px`;
+            el.style.borderRadius = bubbleShape.radius;
+          });
+          w.querySelectorAll(".pv-reply-text").forEach((el) => {
+            el.style.fontSize = `${aiSize.px}px`;
+          });
+          w.querySelectorAll(".pv-ask").forEach((el) => {
+            const slate = barShape.id === "slate";
+            const pad = Math.min(Math.max(barSize.pad, barShape.pad || 0), slate ? 16 : 14);
+            const rawMin = Math.max(barSize.minH, barShape.minH || 0);
+            const minH = slate ? Math.min(rawMin, 92) : Math.min(rawMin, 64);
+            el.dataset.shape = barShape.id;
+            // Default on Home is a pill — 14px vs Rectangle's 10px is a wash
+            // at this scale, so the preview wears the round bar people pick.
+            el.style.borderRadius = barShape.id === "soft" ? "9999px" : barShape.radius;
+            el.style.padding = slate ? `${pad}px 14px 10px` : `${pad}px 14px`;
+            el.style.fontSize = `${barSize.font}px`;
+            el.style.minHeight = `${minH}px`;
+          });
+          w.querySelectorAll(".pv-send").forEach((el) => {
+            el.style.borderRadius = sendShape.radius;
+            el.innerHTML = SEND_ICONS[prefs.chatSendIcon] || SEND_ICONS.arrow;
+          });
+        });
+        const respondText = document.getElementById("pv-respond-text");
+        if (respondText) respondText.textContent = RESPOND_SAMPLES[prefs.responseLength] || RESPOND_SAMPLES.medium;
+      };
+
       const swatches = document.getElementById("swatches");
       swatches.innerHTML = ACCENTS.map(
-        (c, i) => `<button type="button" class="swatch${i === 0 ? " sel" : ""}" data-color="${c}" style="background:${c}" aria-label="Theme color"></button>`,
+        (accent) => `
+          <span class="swatch-wrap${accent.id === prefs.accent ? " sel" : ""}">
+            <button type="button" class="swatch${accent.id === prefs.accent ? " sel" : ""}" data-accent="${accent.id}" style="background:${accentCss(accent)}" aria-label="${accent.name}" title="${accent.name}"></button>
+            <span class="swatch-name">${accent.name}</span>
+          </span>`,
       ).join("");
-      const applyAccent = () => {
-        document.querySelectorAll(".pv").forEach((w) => w.style.setProperty("--accent", prefs.accent));
-        document.querySelectorAll(".mini .m-chat").forEach((c) => c.style.setProperty("--accent", prefs.accent));
-      };
       swatches.querySelectorAll(".swatch").forEach((s) =>
         s.addEventListener("click", () => {
-          swatches.querySelector(".sel")?.classList.remove("sel");
+          swatches.querySelectorAll(".sel").forEach((el) => el.classList.remove("sel"));
           s.classList.add("sel");
-          prefs.accent = s.dataset.color;
-          applyAccent();
+          s.closest(".swatch-wrap")?.classList.add("sel");
+          prefs.accent = s.dataset.accent;
+          paintInkRows();
+          applyPreview();
         }),
       );
-      applyAccent();
 
-      // Single-select card groups.
+      const paintInkRow = (rowId, selected) => {
+        const row = document.getElementById(rowId);
+        const light = previewIsLight();
+        row.innerHTML = INKS.map((ink) => {
+          const color = inkCss(ink) || (light ? "hsl(0 0% 8%)" : "hsl(0 0% 100%)");
+          return `<button type="button" class="ink-swatch${ink.id === selected ? " sel" : ""}" data-ink="${ink.id}" style="background:${color}" aria-label="${ink.name}" title="${ink.name}"></button>`;
+        }).join("");
+        row.querySelectorAll(".ink-swatch").forEach((chip) =>
+          chip.addEventListener("click", () => {
+            const key =
+              rowId === "ink-user" ? "chatUserTextColor" : rowId === "ink-bubble" ? "chatBubbleColor" : "chatAiTextColor";
+            prefs[key] = chip.dataset.ink;
+            paintInkRows();
+            applyPreview();
+          }),
+        );
+      };
+      const paintInkRows = () => {
+        paintInkRow("ink-user", prefs.chatUserTextColor);
+        paintInkRow("ink-bubble", prefs.chatBubbleColor);
+        paintInkRow("ink-ai", prefs.chatAiTextColor);
+      };
+      const paintSeg = (rowId, list, key) => {
+        const row = document.getElementById(rowId);
+        row.innerHTML = list
+          .map(
+            (item) =>
+              `<button type="button" class="${item.id === prefs[key] ? "sel" : ""}" data-id="${item.id}">${item.name}</button>`,
+          )
+          .join("");
+        row.querySelectorAll("button").forEach((btn) =>
+          btn.addEventListener("click", () => {
+            prefs[key] = btn.dataset.id;
+            paintChatLayout();
+            applyPreview();
+          }),
+        );
+      };
+      const paintShapeRow = (rowId, list, key, kind) => {
+        const row = document.getElementById(rowId);
+        const sendShape = byId(SEND_SHAPES, prefs.chatSendShape);
+        row.innerHTML = list
+          .map((item) => {
+            if (kind === "icon") {
+              return `<button type="button" class="send-chip${item.id === prefs[key] ? " sel" : ""}" data-id="${item.id}" style="border-radius:${sendShape.radius}" aria-label="${item.name}" title="${item.name}">${SEND_ICONS[item.id]}</button>`;
+            }
+            const radius = item.chipRadius || item.radius;
+            const barCls = kind === "bar" ? ` bar${item.id === "rectangle" ? " box" : ""}` : "";
+            const cls = kind === "send" ? "send-chip" : `shape-chip${item.tall ? " tall" : ""}${barCls}`;
+            const glyph = kind === "send" ? SEND_ICONS[prefs.chatSendIcon] : "";
+            return `<button type="button" class="${cls}${item.id === prefs[key] ? " sel" : ""}" data-id="${item.id}" style="border-radius:${radius}" aria-label="${item.name}" title="${item.name}">${glyph}</button>`;
+          })
+          .join("");
+        row.querySelectorAll("button").forEach((btn) =>
+          btn.addEventListener("click", () => {
+            prefs[key] = btn.dataset.id;
+            paintChatLayout();
+            applyPreview();
+          }),
+        );
+      };
+      const paintChatLayout = () => {
+        paintSeg("size-user", TEXT_SIZES, "chatUserTextSize");
+        paintSeg("size-ai", TEXT_SIZES, "chatAiTextSize");
+        paintSeg("size-bar", BAR_SIZES, "chatBarSize");
+        paintShapeRow("shape-bubble", BUBBLE_SHAPES, "chatBubbleShape", "bubble");
+        paintShapeRow("shape-bar", BAR_SHAPES, "chatBarShape", "bar");
+        paintShapeRow("send-icon", SEND_ICON_NAMES, "chatSendIcon", "icon");
+        paintShapeRow("send-shape", SEND_SHAPES, "chatSendShape", "send");
+      };
+      paintInkRows();
+      paintChatLayout();
+      applyPreview();
+
       const choiceGroup = (rowId, onPick) => {
         const row = document.getElementById(rowId);
         row.querySelectorAll(".choice").forEach((c) =>
@@ -3230,26 +3979,58 @@
       };
       choiceGroup("appearance-row", (v) => {
         prefs.appearance = v;
-        // "auto" previews as dark — matches the app tonight, at least.
-        document.querySelectorAll(".pv").forEach((w) => w.classList.toggle("light", v === "light"));
+        paintInkRows();
+        applyPreview();
       });
-      choiceGroup("tabs-row", (v) => {
-        prefs.tabLayout = v;
-        document.getElementById("pv-tabs").classList.toggle("sidebar", v === "sidebar");
-      });
-      choiceGroup("start-row", (v) => {
-        prefs.startView = v;
+      choiceGroup("respond-row", (v) => {
+        prefs.responseLength = v;
+        applyPreview();
       });
 
-      document.getElementById("theme-next").addEventListener("click", () => setStage(10));
-      document.getElementById("tabs-next").addEventListener("click", () => setStage(11));
-      document.getElementById("start-next").addEventListener("click", async () => {
+      const respondPrompt = document.getElementById("respond-prompt");
+      respondPrompt.addEventListener("input", () => {
+        prefs.userPrompt = respondPrompt.value.slice(0, 1500);
+      });
+      respondPrompt.addEventListener("keydown", (e) => e.stopPropagation());
+
+      const savePrefs = async () => {
         try {
-          await window.lyknWelcome.setPrefs(prefs);
+          await window.lyknWelcome.setPrefs({
+            accent: prefs.accent,
+            appearance: prefs.appearance,
+            responseLength: prefs.responseLength,
+            userPrompt: prefs.userPrompt,
+            chatUserTextColor: prefs.chatUserTextColor,
+            chatBubbleColor: prefs.chatBubbleColor,
+            chatAiTextColor: prefs.chatAiTextColor,
+            chatUserTextSize: prefs.chatUserTextSize,
+            chatAiTextSize: prefs.chatAiTextSize,
+            chatBarSize: prefs.chatBarSize,
+            chatBubbleShape: prefs.chatBubbleShape,
+            chatBarShape: prefs.chatBarShape,
+            chatSendIcon: prefs.chatSendIcon,
+            chatSendShape: prefs.chatSendShape,
+          });
         } catch {
           /* stored best-effort */
         }
-        setStage(12); // privacy choices close out the welcome stages
+      };
+
+      document.getElementById("theme-next").addEventListener("click", async () => {
+        await savePrefs();
+        setStage(10);
+      });
+      document.getElementById("respond-next").addEventListener("click", async () => {
+        await savePrefs();
+        setStage(11);
+      });
+      document.getElementById("chat-next").addEventListener("click", async () => {
+        await savePrefs();
+        setStage("chatbar");
+      });
+      document.getElementById("chatbar-next").addEventListener("click", async () => {
+        await savePrefs();
+        setStage(12);
       });
 
       // ── stage 12: privacy ──
@@ -3273,6 +4054,10 @@
       });
 
       document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && stage !== 1 && stage !== 13) {
+          goBack();
+          return;
+        }
         if (stage === 1) setStage(3);
         else if (e.key === "Enter" && stage === 2) getStarted();
         else if (e.key === "Enter" && stage === 3) emailNext.click();
@@ -3283,11 +4068,11 @@
         else if (e.key === "Enter" && stage === 7) document.getElementById("logins-import").click();
         else if (e.key === "Enter" && stage === "macsync") document.getElementById("macsync-next").click();
         else if (e.key === "Enter" && stage === "background") document.getElementById("background-next").click();
-        else if (e.key === "Enter" && stage === "widgets") document.getElementById("widgets-next").click();
         else if (e.key === "Enter" && stage === 8) document.getElementById("apps-next").click();
-        else if (e.key === "Enter" && stage === 9) setStage(10);
-        else if (e.key === "Enter" && stage === 10) setStage(11);
-        else if (e.key === "Enter" && stage === 11) document.getElementById("start-next").click();
+        else if (e.key === "Enter" && stage === 9) document.getElementById("theme-next").click();
+        else if (e.key === "Enter" && stage === 10) document.getElementById("respond-next").click();
+        else if (e.key === "Enter" && stage === 11) document.getElementById("chat-next").click();
+        else if (e.key === "Enter" && stage === "chatbar") document.getElementById("chatbar-next").click();
         else if (e.key === "Enter" && stage === 12) document.getElementById("privacy-next").click();
       });
     </script>

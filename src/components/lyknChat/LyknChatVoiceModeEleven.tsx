@@ -13,13 +13,13 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
 import { API_BASE_URL } from "@/lib/api-config";
 import { VOICE_FIRST_MESSAGE_OVERRIDE } from "@/lib/voice/voiceConfig";
 import { micErrorMessage, requestMicStream } from "@/lib/voice/micAccess";
 import { getVoiceId } from "@/lib/ai-prefs";
 import { TUNE_VOICE_TOOL, applyVoiceInstructionTune } from "@/lib/voice/tuneInstructions";
+import VoiceModePopup from "./VoiceModePopup";
 import VoiceTechOrb from "./VoiceTechOrb";
 import { emitProjectsChanged } from "@/lib/synthesis/projectLiveSync";
 
@@ -507,7 +507,7 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
 
   return (
     <div
-      className="relative flex flex-col items-center justify-center w-full"
+      className="relative flex w-full flex-col items-center"
       onDragOver={(e) => { if (onAttach) { e.preventDefault(); setDragActive(true); } }}
       onDragLeave={(e) => { if (e.currentTarget === e.target) setDragActive(false); }}
       onDrop={onAttach ? handleDrop : undefined}
@@ -518,9 +518,9 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
         className="relative flex flex-col items-center justify-center outline-none"
         aria-label="Voice orb"
       >
-        <VoiceTechOrb state={uiState} micLevel={micLevel} size={320} />
-        <div className="mt-10 flex flex-col items-center gap-2 text-center max-w-xl px-6">
-          <span className="text-foreground/80 text-base font-medium">
+        <VoiceTechOrb state={uiState} micLevel={micLevel} size={148} />
+        <div className="mt-1 flex flex-col items-center gap-1.5 text-center px-2">
+          <span className="text-foreground/75 text-sm font-medium">
             {uiState === "error"
               ? (errorText || STATUS_COPY.error)
               : (toolLabel || STATUS_COPY[uiState])}
@@ -531,7 +531,7 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
               tabIndex={0}
               onClick={(e) => { e.stopPropagation(); retry(); }}
               onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); retry(); } }}
-              className="mt-1 px-4 py-1.5 rounded-full bg-foreground/10 hover:bg-foreground/15 text-foreground/80 text-sm transition-colors cursor-pointer"
+              className="mt-0.5 px-3 py-1 rounded-full bg-foreground/10 hover:bg-foreground/15 text-foreground/80 text-xs transition-colors cursor-pointer"
             >
               Try again
             </span>
@@ -540,10 +540,10 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
       </button>
 
       {onAttach && (
-        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[68] w-full max-w-lg px-6 flex flex-col items-center gap-2">
+        <div className="mt-3 w-full flex flex-col items-center gap-1.5">
           {(attachToast || attachError) && (
             <span
-              className={`text-xs font-medium px-3 py-1 rounded-full ${
+              className={`text-[11px] font-medium px-2.5 py-0.5 rounded-full ${
                 attachError ? "bg-red-500/15 text-red-400" : "bg-emerald-500/15 text-emerald-400"
               }`}
             >
@@ -551,7 +551,7 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
             </span>
           )}
           <div
-            className={`flex items-center gap-2 w-full rounded-2xl border bg-foreground/[0.04] backdrop-blur px-3 py-2 transition-colors ${
+            className={`flex items-center gap-1.5 w-full rounded-xl border bg-foreground/[0.04] px-2 py-1.5 transition-colors ${
               dragActive ? "border-primary/60 bg-primary/5" : "border-foreground/10"
             }`}
           >
@@ -559,11 +559,11 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
               type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={attachBusy}
-              className="shrink-0 grid place-items-center w-8 h-8 rounded-full text-foreground/60 hover:text-foreground hover:bg-foreground/10 transition-colors disabled:opacity-40"
+              className="shrink-0 grid place-items-center w-7 h-7 rounded-full text-foreground/60 hover:text-foreground hover:bg-foreground/10 transition-colors disabled:opacity-40"
               aria-label="Attach a file"
               title="Attach a file"
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
               </svg>
             </button>
@@ -574,12 +574,12 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
               onPaste={handlePasteBarPaste}
               onKeyDown={handlePasteBarKeyDown}
               disabled={attachBusy}
-              placeholder={attachBusy ? "Sharing…" : "Paste a link, image, PDF, doc, or drag & drop"}
-              className="flex-1 bg-transparent text-sm text-foreground placeholder:text-foreground/40 outline-none disabled:opacity-50"
+              placeholder={attachBusy ? "Sharing…" : "Paste a link or file"}
+              className="flex-1 bg-transparent text-xs text-foreground placeholder:text-foreground/40 outline-none disabled:opacity-50"
               aria-label="Paste links or files to share with the voice agent"
             />
             {attachBusy && (
-              <span className="shrink-0 w-4 h-4 rounded-full border-2 border-foreground/20 border-t-foreground/70 animate-spin" />
+              <span className="shrink-0 w-3.5 h-3.5 rounded-full border-2 border-foreground/20 border-t-foreground/70 animate-spin" />
             )}
           </div>
           <input
@@ -599,32 +599,11 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
 export default function LyknChatVoiceModeEleven(props: LyknChatVoiceModeElevenProps) {
   const { open, onClose } = props;
 
-  useEffect(() => {
-    if (!open) return undefined;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-
   return (
-    <AnimatePresence>
-      {open && (
-        <motion.div
-          key="voice-mode-eleven"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.2 }}
-          className="lykn-voice-overlay fixed inset-0 z-[67] flex flex-col items-center justify-center bg-background"
-          role="dialog"
-          aria-modal="false"
-          aria-label="Voice Mode"
-        >
-          <ConversationProvider>
-            <VoiceInner {...props} />
-          </ConversationProvider>
-        </motion.div>
-      )}
-    </AnimatePresence>
+    <VoiceModePopup open={open} onClose={onClose}>
+      <ConversationProvider>
+        <VoiceInner {...props} />
+      </ConversationProvider>
+    </VoiceModePopup>
   );
 }

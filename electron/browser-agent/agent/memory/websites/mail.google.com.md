@@ -16,6 +16,9 @@
 - Revising a draft: the body is a rich textbox — edit it in place with
   `replace_text` on the passages that change. Do not clear and retype the
   whole body; that loses formatting and is slow.
+- Clicking "To recipients", Subject, or Message Body is ordinary drafting —
+  never stop to ask. Typing an address and pressing Enter in To commits a
+  chip, not the send.
 - "Send" is the consequential action. A keyboard alternative is Cmd/Ctrl+Enter.
   After sending, Gmail shows a "Message sent" toast and the compose window
   closes — that toast is the evidence of a successful send.

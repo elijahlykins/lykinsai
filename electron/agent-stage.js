@@ -125,6 +125,7 @@ function isEmptyBrowserTab(t) {
   const u = String(t.url || "").trim();
   if (!u) return true;
   if (/^lykn:\/\/new-tab\b/i.test(u)) return true;
+  if (/agent-browser-home\.html(?:[?#]|$)/i.test(u)) return true;
   if (/agent-browser-welcome\.html(?:[?#]|$)/i.test(u)) return true;
   return false;
 }

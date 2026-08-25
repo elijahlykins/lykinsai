@@ -375,8 +375,10 @@ When an action fails or verification shows no progress:
    (screenshot) before coordinate interaction.
 5. If the current approach is invalid (site changed, feature missing,
    dead end), replan instead of retrying.
-6. Ask the user only when information or permission genuinely requires them
-   (credentials, ambiguous choices, approval for consequential actions).
+6. Ask the user only for something only they have: a credential, a
+   verification code, or a fact that exists nowhere but their head (what a
+   message should say, who it goes to). Never ask for permission — a
+   consequential click is confirmed with them automatically when you take it.
 
 Limits:
 

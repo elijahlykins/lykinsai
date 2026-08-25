@@ -440,8 +440,9 @@ test("the gate reads the labels products actually ship", () => {
     // navigation that merely mentions a committing word
     "Order history", "Purchase history", "Payment methods", "Track order", "Manage subscription",
     "Purchase details", "Order details", "Booking summary", "Delivery options", "Billing settings",
-    // composing is not sending
+    // composing is not sending — Reply / Forward open a composer
     "New message", "Compose", "Draft", "Drafts", "Sent mail", "Sharing options",
+    "Reply", "Reply all", "Forward",
   ];
   for (const label of mustPause) {
     assert.equal(risk(label), "consequential", `"${label}" must not run unattended`);

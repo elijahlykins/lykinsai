@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { HardDrive, TerminalSquare, FilePlus } from "lucide-react";
+import { HardDrive, TerminalSquare, FilePlus, FilePen } from "lucide-react";
 import {
   subscribeLocalApprovals,
   resolveLocalApproval,
@@ -43,7 +43,13 @@ export default function LocalToolApprovalCard() {
     "local_search_files",
     "local_pull_file",
   ].includes(req.tool);
-  const Icon = isCommand ? TerminalSquare : req.tool === "local_write_file" ? FilePlus : HardDrive;
+  const Icon = isCommand
+    ? TerminalSquare
+    : req.tool === "local_write_file"
+      ? FilePlus
+      : req.tool === "local_edit_file"
+        ? FilePen
+        : HardDrive;
   const title = isCommand ? "Run this command?" : isRead ? "Allow file access?" : "Allow this change?";
 
   return (
