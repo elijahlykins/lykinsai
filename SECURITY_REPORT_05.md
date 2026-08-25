@@ -8,7 +8,7 @@
 
 ## Summary
 
-LYKN's secrets posture was **fundamentally sound** but lacked a startup-time gate, a complete secret inventory, a pre-commit-hook tripwire, and a rotation playbook — all of which are now in place. The git history audit was clean: no `.env` file was ever committed (only `.env.example` placeholders), no real secrets surface in any historical commit. The npm audit was less rosy: a critical `jspdf` chain (10 CVEs) plus 31 other vulnerabilities, of which **all 28 auto-fixable issues plus the 1 critical `jspdf` chain** were resolved this session, dropping the audit from **32 vulnerabilities (1 CRITICAL, 16 HIGH, 15 MODERATE) to 3 vulnerabilities (0 CRITICAL, 1 HIGH, 2 MODERATE)** — the residual three are documented under Accepted Risk. `validateSecrets()` is wired into the server boot path and refuses to start a production server with a missing or undersized secret. Test suite (6 tests) green throughout.
+LYKN's secrets posture was **fundamentally sound** but lacked a startup-time gate, a complete secret inventory, a pre-commit-hook tripwire, and a rotation playbook — all of which are now in place. The git history audit was clean: no `.env` file was ever committed (only `.env.example` placeholders), no real secrets surface in any historical commit. The npm audit was less rosy at Agent 05 time: a critical `jspdf` chain (10 CVEs) plus 31 other vulnerabilities, of which **all 28 auto-fixable issues plus the 1 critical `jspdf` chain** were resolved that session. **As of the 2026-08-25 dependency-audit PR**, main had regressed to **32 vulnerabilities (3 CRITICAL, 15 HIGH)** because lockfile bumps had not been committed; this PR re-runs `npm audit fix`, adds safe `package.json` overrides for the `@huggingface/transformers` transitive chain, and documents the two remaining HIGH packages (`pptxgenjs` / `image-size`) under Accepted Risk — dropping the audit gate to **13 total (2 HIGH accepted, 11 MODERATE, 0 CRITICAL)**. `validateSecrets()` is wired into the server boot path and refuses to start a production server with a missing or undersized secret. Test suite green throughout (electron/SQLite FTS5 tests require a fuller host and remain environment-gated in CI).
 
 ---
 
@@ -102,35 +102,41 @@ The two scratch files (2.4 MB each) were deleted.
 
 ## npm audit summary
 
-**Before:** 32 vulnerabilities (1 CRITICAL, 16 HIGH, 15 MODERATE)
-**After:** 3 vulnerabilities (0 CRITICAL, 1 HIGH, 2 MODERATE) — all in the Accepted Risk bucket below.
+**Before (2026-08-25, main):** 32 vulnerabilities (3 CRITICAL, 15 HIGH, 12 MODERATE, 2 LOW)
+**After (this PR):** 13 vulnerabilities (0 CRITICAL, 2 HIGH accepted, 11 MODERATE)
 
 | Action | Vulns resolved | Notes |
 |---|---|---|
-| `npm audit fix` (auto-fixable, no `--force`) | 28 | Tests still pass after fix |
-| `npm install jspdf@4.2.1 --save-exact` | 1 (CRITICAL with 10 CVEs) | `jspdf` is declared in `package.json` but not actually imported anywhere in source — an unused leftover dependency. Breaking 3.x→4.x bump is therefore impact-free. Pinned exact (no caret) to prevent drift. |
-| Deferred | 3 | See Accepted Risk |
+| `npm audit fix` (auto-fixable, no `--force`) | 15 HIGH/CRITICAL + assorted moderate | `tar`, `shell-quote`, `concurrently`, `vite`, `postcss`, `undici`, `js-yaml`, `nanoid`, `brace-expansion`, `fast-uri`, `ip-address`, `socket.io-parser`, and others |
+| `package.json` `overrides` for `onnxruntime-node → adm-zip@0.6.0` and `sharp@0.35.3` | 4 HIGH (`@huggingface/transformers`, `onnxruntime-node`, transitive `adm-zip`, `sharp`) | Keeps `@huggingface/transformers` for local embeddings; upstream pins older transitives but patched versions exist |
+| Deferred (accepted risk) | 2 HIGH | `pptxgenjs` / `image-size` — see Accepted Risk |
 
-Full per-package detail (resolved):
+Full per-package detail (resolved in this PR):
 
 | Package | Severity | CVE class | Resolution |
 |---|---|---|---|
-| `jspdf` 3.x → 4.2.1 | CRITICAL | LFI, PDF injection, DoS, race condition, etc. (10 advisories) | upgraded, pinned exact |
-| `@remix-run/router`, `react-router`, `react-router-dom` | HIGH | XSS via open redirect | auto-upgraded |
-| `@xmldom/xmldom` | HIGH | XML injection (5 advisories) | auto-upgraded |
-| `flatted` | HIGH | Prototype pollution + DoS | auto-upgraded |
-| `lodash` | HIGH | Prototype pollution + code injection (3 advisories) | auto-upgraded |
-| `minimatch` | HIGH | ReDoS (4 advisories) | auto-upgraded |
-| `multer` | HIGH | DoS (3 advisories) | auto-upgraded |
-| `path-to-regexp` | HIGH | ReDoS | auto-upgraded |
-| `picomatch` | HIGH | Method injection + ReDoS | auto-upgraded |
-| `rollup` | HIGH | Path traversal | auto-upgraded |
-| `socket.io-parser` | HIGH | Unbounded binary attachments | auto-upgraded |
-| `underscore` | HIGH | Unbounded recursion | auto-upgraded |
-| `undici` | HIGH | WebSocket overflow + smuggling (6 advisories) | auto-upgraded |
-| `vite` | HIGH | Path traversal + dev-server file read | auto-upgraded |
-| `ajv` | MODERATE | ReDoS | auto-upgraded |
-| `brace-expansion`, `engine.io-client`, `express-rate-limit` (transitive `ip-address`), `follow-redirects`, `ip-address`, `postcss`, `qs`, `resend` (transitive `svix → uuid`), `svix`, `uuid`, `ws`, `yaml` | MODERATE | various | auto-upgraded |
+| `tar` | CRITICAL | Archive parse DoS / infinite loop | auto-upgraded via `npm audit fix` |
+| `shell-quote` | CRITICAL | Command injection / parse DoS (via `concurrently`) | auto-upgraded |
+| `concurrently` | CRITICAL | Inherited from `shell-quote` | auto-upgraded |
+| `vite` | HIGH | Dev-server path traversal / Windows UNC leak | auto-upgraded |
+| `postcss` | HIGH | Source-map path traversal | auto-upgraded |
+| `undici` | HIGH | Cache desync / info disclosure | auto-upgraded |
+| `js-yaml` | HIGH | Quadratic CPU in `!!omap` | auto-upgraded |
+| `nanoid` | HIGH | Infinite loop in custom generators | auto-upgraded |
+| `brace-expansion` | HIGH | ReDoS / OOM | auto-upgraded |
+| `fast-uri` | HIGH | Host confusion via backslash | auto-upgraded |
+| `ip-address` | HIGH | SSRF / trust-boundary bypass | auto-upgraded |
+| `socket.io-parser` | HIGH | Zero-attachment memory exhaustion | auto-upgraded |
+| `adm-zip` (transitive via `onnxruntime-node`) | HIGH | Crafted ZIP → 4 GB allocation | `overrides` → `0.6.0` (direct dep was already patched) |
+| `sharp` (transitive via `@huggingface/transformers`) | HIGH | libvips CVE bundle | `overrides` → `0.35.3` |
+
+Previously resolved (Agent 05 session, still in tree):
+
+| Package | Severity | Resolution |
+|---|---|---|
+| `jspdf` 3.x → 4.2.1 | CRITICAL (10 CVEs) | upgraded, pinned exact |
+| `@remix-run/router`, `react-router`, `react-router-dom` | HIGH | auto-upgraded |
+| `lodash`, `minimatch`, `multer`, `rollup`, and others | HIGH/MODERATE | auto-upgraded |
 
 **Lock-file integrity:** `package-lock.json` is committed and tracked. Verified:
 ```
@@ -144,34 +150,34 @@ package-lock.json
 
 ## Accepted Risk (deferred dependency upgrades)
 
-Three vulnerabilities remain in the audit. Per Agent 05's plan and user approval, these are deferred — the rationale, mitigation, and replacement path are documented here so the next maintainer has full context.
+Two HIGH vulnerabilities remain in the audit gate after fixable upgrades and safe overrides. Per Agent 05's plan and the 2026-08-25 dependency-audit PR, these are deferred — the rationale, mitigation, and replacement path are documented here so the next maintainer has full context.
 
-### `xlsx` ≥0.18.5 — HIGH (no fix available)
+### `pptxgenjs` / `image-size` — HIGH (no non-breaking fix)
 
 - **CVEs:**
-  - `GHSA-4r6h-8v6p-xvw6` — Prototype Pollution in SheetJS
-  - `GHSA-5pgg-2g8v-p4x9` — SheetJS ReDoS
-- **Why deferred:** SheetJS Inc. removed `xlsx` from npm in 2024 and now distributes only via their CDN / paid feed. There is no patched npm version of `xlsx` — `npm audit` reports "No fix available" because npm cannot reach a fixed version. Updating in place is not an option.
+  - `GHSA-w3rx-r6r6-pgpr` — ICNS parser infinite loop (DoS)
+  - `GHSA-5p2g-fcmc-qvqq` — JXL/HEIF parser infinite loops (DoS)
+- **Why deferred:** LYKN uses `pptxgenjs@4.0.1` (latest on npm) for server-side deck export in `lib/exterior/capabilities/buildTemplate.js`. It depends on `image-size@^1.2.1`. npm reports the only automated fix as `npm audit fix --force` → `pptxgenjs@1.1.5`, a **major breaking downgrade** that would break the v4 API LYKN uses. Even `image-size@2.0.2` (latest) is still flagged — there is no patched npm release yet.
 - **Mitigation in current code:**
-  - `xlsx` is invoked only on user-uploaded `.xlsx` files (Vault import path). Inputs already pass through size limits (`/api/uploads` multer config) and the request flows through `requireAuth`, so unauthenticated abuse is not possible.
-  - The prototype-pollution CVE requires a maliciously crafted XLSX from a paying user; LYKN does not import third-party XLSX from public sources.
-  - The ReDoS CVE caps at one slow request per upload; that is bounded by the per-user rate limits Agent 04 added.
+  - `buildPptxBuffer()` generates text-only slides (title + bullet text). It does **not** call `addImage()` or otherwise feed arbitrary image bytes into `image-size`'s ICNS/JXL/HEIF parsers.
+  - Export runs server-side behind authenticated capability tooling, not on untrusted browser input directly.
+  - The DoS class requires attacker-controlled image metadata; LYKN's export path does not expose that surface today.
 - **Recommended replacement path:**
-  - Migrate to `exceljs` (active maintenance, MIT, drop-in for read paths) **or** SheetJS's CDN-distributed `xlsx` (if you want feature parity but accept the non-npm distribution model).
-  - Track as a dedicated PR — the API surface is similar but workbook → row mapping in `vault-importers/` will need a code change.
-- **Severity rating retained as HIGH** but **risk-accepted** until the migration PR ships.
+  - Track upstream `pptxgenjs` / `image-size` releases for a patched dependency bump.
+  - If image embedding is added later, validate image types/size before passing to pptxgenjs.
+- **Severity rating retained as HIGH** but **risk-accepted** until upstream ships a fix or LYKN migrates export.
 
-### `quill` <2.0 (via `react-quill@^1.3.5`) — MODERATE × 2 (breaking fix)
+### Removed accepted-risk entries (2026-08-25)
 
-- **CVE:** `GHSA-4943-9vgg-gr5r` — Cross-site Scripting in quill
-- **Why deferred:** The advised fix is `npm audit fix --force` → `react-quill@0.0.2`. That is **not** a typo: react-quill jumped from 1.x to 2.x with a `0.0.x` series in between, and the auto-fix would *downgrade* to a semver-incomparable scaffold release that does not export the same component API. The ecosystem migration target is `quill@2.x` + `react-quill-new` (or rebuild on TipTap, which LYKN already uses elsewhere).
-- **Mitigation in current code:**
-  - The Quill editor is mounted inside the in-app rich-text editor only. Output is rendered in the same DOM subtree; the XSS vector requires user A to author content that user B then renders.
-  - LYKN's content-rendering path uses `dompurify` (already declared in `package.json` and used by the Vault preview pipeline). Quill output that flows through DOMPurify before render-on-someone-else's-screen is sanitized.
-  - **Action required for the deferral to remain valid:** confirm every render of Quill HTML by user B passes through DOMPurify. (Track as Agent 06 follow-up: add a code-search rule.)
-- **Recommended replacement path:**
-  - LYKN already uses TipTap (`@tiptap/*`) in the Notes panel. Migrate the remaining `react-quill` mount points to TipTap and remove `react-quill` + `quill` from `package.json` entirely.
-- **Severity rating retained as MODERATE** but **risk-accepted** pending the TipTap migration.
+`xlsx`, `quill`, and `react-quill` were previously documented here but are **no longer in `package.json` / the lockfile** (Vault importers use `exceljs`; rich text uses TipTap). They remain in git history of this report for traceability only — they are not on the CI Accepted-Risk list anymore.
+
+### Historical: `quill` / `react-quill` — MODERATE (removed from tree)
+
+- Migrated away; TipTap (`@tiptap/*`) is the editor stack. No longer audited.
+
+### Historical: `xlsx` — HIGH (removed from tree)
+
+- Migrated to `exceljs` for spreadsheet import/export. No longer audited.
 
 ---
 
@@ -210,7 +216,7 @@ The 8-character per-call floor in `verifyBackfillSecret` / `verifyDiscoverIngest
 - *(none — `jspdf` chain resolved this session)*
 
 ### HIGH
-- *(none new — all auto-fixable HIGHs resolved this session; `xlsx` deferred under Accepted Risk)*
+- *(none new — auto-fixable HIGHs resolved; `pptxgenjs` / `image-size` deferred under Accepted Risk)*
 
 ### MEDIUM
 - **M1.** `BACKFILL_SECRET` / `DISCOVER_INGEST_SECRET` / `ADMIN_INGEST_SECRET` had a per-call 8-char minimum, far below the 32-char recommendation. **Resolved** at startup-validation level (32-char floor in `validateSecrets()`). Per-call 8-char floor preserved as DiD; raise that to 32 in a follow-up PR after every prod deployment is rotated to ≥32-char values (procedure documented in runbook).
@@ -224,8 +230,8 @@ The 8-character per-call floor in `verifyBackfillSecret` / `verifyDiscoverIngest
 
 ### INFO
 - **I1. `VITE_ADMIN_EMAILS` information disclosure.** This env var is `VITE_*`-prefixed by design (the SPA reads it to gate admin-UI elements client-side). The value is **bundled into the public JavaScript bundle** and visible to every visitor. This is **information disclosure**, not privilege escalation — server-side `requireAdmin` middleware is the actual access gate, and Agent 02/04 confirmed that gate is correctly enforced on every admin route. However, leaking the email addresses of admins gives an attacker a targeting list for credential-stuffing or phishing campaigns. **Decision deferred to product owner:** retain the client-side flag as-is (current behavior, accepts the disclosure trade-off for code simplicity), or migrate to a server-side `is_admin` flag returned by `/api/account/me` (server-only, no email addresses bundled). `validateSecrets()` accepts `VITE_ADMIN_EMAILS` in its `PUBLIC_VITE_ALLOWLIST` to avoid blocking deploys; a code comment in that file flags the trade-off.
-- **I2.** `xlsx@0.18.5` HIGH × 2 — accepted risk; see `Accepted Risk` section. Migration to `exceljs` recommended.
-- **I3.** `quill` / `react-quill` MODERATE × 2 — accepted risk; see `Accepted Risk` section. Migration to TipTap recommended.
+- **I2.** `pptxgenjs` / `image-size` HIGH × 2 — accepted risk; see `Accepted Risk` section. Text-only PPTX export path; track upstream for patched releases.
+- **I3.** *(removed)* `quill` / `react-quill` — migrated to TipTap; no longer in dependency tree.
 
 ---
 
@@ -241,9 +247,10 @@ The 8-character per-call floor in `verifyBackfillSecret` / `verifyDiscoverIngest
 
 1. **Raise the per-call 8-char floor to 32 chars** in `verifyBackfillSecret`, `verifyDiscoverIngestSecret`, `verifyAdminIngestSecret` once every deployment has rotated to ≥32-char values. Tracking: defer to a follow-up PR, sequence per `ROTATION_RUNBOOK.md`.
 2. **Implement re-encrypt-in-place migration for `CONNECTOR_TOKEN_KEY`.** Currently rotation is destructive (every user reconnects). The runbook documents the design for the safer path (`CONNECTOR_TOKEN_KEY_NEXT` env var + one-shot migration script), but the script itself is not yet implemented.
-3. **Migrate Quill editor mount points to TipTap** to drop `react-quill` and resolve the deferred MODERATE CVEs.
-4. **Migrate `xlsx` consumers to `exceljs`** to drop `xlsx` and resolve the deferred HIGH CVEs.
+3. ~~**Migrate Quill editor mount points to TipTap**~~ — done; TipTap is the editor stack.
+4. ~~**Migrate `xlsx` consumers to `exceljs`**~~ — done; `exceljs` is in tree.
 5. **Decide `VITE_ADMIN_EMAILS` policy** (retain client-side / move server-side via `/api/account/me`). Product-owner call.
+6. **Track `pptxgenjs` / `image-size` upstream** for a non-breaking patched release; revisit Accepted Risk when available.
 
 ---
 
@@ -269,7 +276,7 @@ The 8-character per-call floor in `verifyBackfillSecret` / `verifyDiscoverIngest
 - [x] `validateSecrets()` implemented and called at server startup, immediately after `dotenv.config()`
 - [x] `BACKFILL_SECRET`, `DISCOVER_INGEST_SECRET`, `ADMIN_INGEST_SECRET` documented as ≥32 chars in runbook (and enforced at startup; per-call 8-char floor preserved as DiD)
 - [x] `CONNECTOR_TOKEN_KEY` documented as exactly 64 hex chars (32 bytes for AES-256), enforced at startup
-- [x] `npm audit` run — all CRITICAL and auto-fixable HIGH/MODERATE CVEs addressed; remaining 3 documented under Accepted Risk
+- [x] `npm audit` run — all CRITICAL and auto-fixable HIGH/MODERATE CVEs addressed; remaining 2 HIGH (`pptxgenjs` / `image-size`) documented under Accepted Risk
 - [x] `package-lock.json` committed and tracked in git
 - [x] Pre-commit hook installed (`.git/hooks/pre-commit`) with gitleaks invocation
 - [x] `.gitleaks.toml` created with LYKN-specific allowlist
