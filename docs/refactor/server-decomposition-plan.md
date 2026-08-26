@@ -1,7 +1,13 @@
 # server.js Decomposition Plan
 
-**Status:** Analysis only — no code has been changed. This is the plan for a future refactor agent.
+**Status:** Waves 0–1 complete.
+Wave 0 (2026-08-26) added the safety harness: `tests/server/` + `serverRouteManifest.json` + `npm run test:server` (see `tests/server/README.md`).
+Wave 1 (2026-08-26) extracted the first four route domains into `server/routes/` with zero manifest drift: `youtube.routes.js` (8 routes), `webtools.routes.js` (3), `usage.routes.js` (3), `feeds.routes.js` (9, incl. the poll-due cron trio + `verifyAdminIngestSecret`, whose only callers are those three routes).
+`server.js`: 27,839 → 26,654 lines.
+Pattern used: `registerXRoutes(app, deps)` with full literal paths (§7), registered at the exact original position in server.js; bootstrap-owned singletons (limiters, `supabaseAdmin`, `upload`, `requireAuth`/`requireAppAccess`, `isUrlSafe`, `sha256`) are passed as focused deps; stateless external services are imported directly by the router modules.
+Wave 1 deliberately left in place: `authLimiter`-gated authFlows and admin (plan-listed as Wave-1-safe but excluded from this wave's scope), all services, all pollers, all global middleware.
 **Audited:** 2026-08-25, against `server.js` at 27,839 lines (working tree, unstaged frontend work by other agents present but no server changes).
+Line numbers in §2–§6 refer to that pre-Wave-1 snapshot; re-verify against HEAD before each extraction.
 **Absolute goal:** take `server.js` from ~27,800 lines to a small bootstrap/orchestration file with **zero runtime behavior change**.
 
 ---

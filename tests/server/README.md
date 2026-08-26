@@ -1,8 +1,8 @@
 # Server Decomposition Safety Harness (Wave 0)
 
-This directory is the safety net for decomposing `server.js` (27,839 lines, 161 routes) into `server/routes|services|middleware/*`.
-No decomposition has happened yet.
-The harness exists so that every future extraction can mechanically prove the external route contract did not change.
+This directory is the safety net for decomposing `server.js` (27,839 lines and 161 routes at harness creation) into `server/routes|services|middleware/*`.
+The harness exists so that every extraction can mechanically prove the external route contract did not change.
+Wave 1 extracted the first four domains into `server/routes/` (youtube, webtools, usage, feeds — 23 routes) using this harness; the manifest showed zero drift.
 
 Companion planning document: `docs/refactor/server-decomposition-plan.md`.
 
