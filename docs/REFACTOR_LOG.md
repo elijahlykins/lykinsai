@@ -74,3 +74,29 @@ None intended. Bodies byte-identical apart from `export`.
 
 ### Result
 `Vault.jsx`: 10,163 → 9,706 lines (−457). New module: 498 lines.
+
+---
+
+## Batch 2 — 2026-08-25 — Remove unused imports in Vault.jsx
+
+### Change
+Removed two unused named imports from the `lucide-react` import block in
+`src/pages/Vault.jsx`: `ChevronUp`, `ArrowRight`.
+
+### Reason
+Both symbols had zero references in the file. Verified against the
+pre-Batch-1 baseline (`git show 85be9a4~1`): each already had exactly one
+reference (the import line itself) before the helper extraction, so they were
+pre-existing dead imports, not orphans created by Batch 1.
+
+### Behavioral change
+None. Named icon imports have no side effects.
+
+### References checked
+- ESLint `unused-imports/no-unused-imports`: 0 errors after change
+  (was 2; remaining warnings are pre-existing unused eslint-disable
+  directives, out of scope).
+- `npm run build` (vite): success.
+
+### Result
+`Vault.jsx`: 9,706 → 9,704 lines (−2).
