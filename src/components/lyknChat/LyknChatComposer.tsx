@@ -2,17 +2,10 @@ import React, { useCallback } from "react";
 import { Loader2 } from "lucide-react";
 
 import ChatSendIcon from "@/lib/chatSendIcon";
+import { resizeChatInputEl } from "@/lib/chat/resizeChatInput";
 
-/** Auto-grow textarea — same behavior as useChatEngine's resizeChatInputEl. */
-export function resizeLyknChatInput(el: HTMLTextAreaElement | null) {
-  if (!el) return;
-  const maxH = 180;
-  el.style.height = "auto";
-  const minH = el.dataset.minH ? Number(el.dataset.minH) : 36;
-  const nextH = Math.min(maxH, Math.max(minH, el.scrollHeight));
-  el.style.height = `${nextH}px`;
-  el.style.overflowY = el.scrollHeight > maxH ? "auto" : "hidden";
-}
+/** Auto-grow textarea — shared implementation with useChatEngine. */
+export const resizeLyknChatInput = resizeChatInputEl;
 
 export type LyknChatComposerProps = {
   value: string;

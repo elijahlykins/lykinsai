@@ -478,3 +478,81 @@ pre-existing (also present on the monolith at HEAD).
 ### Result
 `src/index.css`: 10,497 → 30 lines. 14 stylesheets, ~10,568 lines
 including file banners.
+
+## Phase IX — Chat engine decomposition, Wave 1 — 2026-08-25
+
+Move-first extraction of pure/zero-state machinery out of
+`src/hooks/useChatEngine.ts` (1,846 → 1,488) and
+`src/lib/ai/chatSendOrchestrator.ts` (3,221 → 2,512). No runtime contract,
+ordering, streaming, retry, or abort behavior changed. All moved bodies
+verified verbatim against HEAD by mechanical diff.
+
+### What moved where
+
+- `src/lib/ai/actionJsonRescue.ts` (600) — action-JSON rescue family from
+  the orchestrator: `normalizeRescuedAction`, `repairUnescapedQuotes`,
+  `tryParseJsonLoose`, `findActionJsonSpans`, `tryExtractEnvelope`,
+  `convertAddBlockToAction`, `convertAddWireToAction`,
+  `rescueXmlTagActions`, `rescueInlineBlockMarkup`,
+  `stripStreamingActionJson`, plus their private regex constants.
+  Imports `CreateAction` type-only from the orchestrator (type authority
+  unchanged; erased at runtime, no cycle).
+- `src/lib/ai/vaultSurfaceGate.ts` (137) — `userRequestedVaultSurface`,
+  `userRequestedVaultDisplay` and their regex constants from the
+  orchestrator.
+- `src/lib/ai/artifactSendPlan.ts` (391) — `resolveArtifactSendPlan`, the
+  ~300-line build/refine/discuss intent classification block from
+  `useChatEngine.handleChatSend`. Pure function; only three mechanical
+  input substitutions (`studioModeInstructionsRef?.current`,
+  `sendSnap.aiThread`, `artifactAppRef.current.get(thisChatId)` become
+  explicit inputs). The forget-app-link side effect and the
+  "starting fresh" console log stay at the call site, driven by returned
+  flags. Several conditions mirror server.js — do not simplify.
+- `src/lib/chat/chatResponseExtractors.ts` (81) — pure response helpers
+  from `useChatEngine`: `looksLikeDeflectingQuestion`, `isVideoQuestion`,
+  `buildDirectVideoAnswerFromGrounding`, `extractSourceLinks`,
+  `extractAiConnections`, `extractWebLinksFromText`. Their impure
+  siblings stay in the hook: `extractAndApplyTagActions` (Supabase
+  writes), `validateYouTubeVideoId` / `extractAndEmbedYouTubeUrls`
+  (fetch with user token + `setChatMessages`).
+- `src/lib/chat/resizeChatInput.ts` (14) — single `resizeChatInputEl`;
+  exact duplicates removed from `useChatEngine` and `LyknChatComposer`
+  (which re-exports it as `resizeLyknChatInput` for existing consumers).
+- `flattenNodeText` duplicate in `useChatEngine` removed; the hook now
+  imports the byte-identical original from `src/lib/chatChunks.ts`.
+
+### Characterization tests added
+
+- `src/lib/ai/actionJsonRescue.test.ts` (34 tests) — locks current
+  malformed-JSON rescue behavior, including two quirks: shorthand types
+  (`heading`, `text`) fail the `isActionLike` gate so `[CREATE_BLOCK:]`
+  markup with shorthand types is stripped but not rescued; and the
+  whole-text envelope pass drops prose BEFORE a bare mid-prose action
+  JSON (splices from buffer start, not `consumed.start`).
+- `src/lib/ai/artifactSendPlan.test.ts` (15 tests) — normal Ask, fresh
+  Build, refine open artifact, cross-chat artifact, discuss-only,
+  sticky Build/Imagine demotion and re-arming, linked installed app,
+  in-place installed-app rebuild, reference-image fresh rebuild.
+- Run: `node --import ./scripts/test-alias-loader.mjs --test
+  src/lib/ai/actionJsonRescue.test.ts src/lib/ai/artifactSendPlan.test.ts`
+
+### Behavior changes
+None intended. Also mechanically required: six extractor names removed
+from the `handleChatSend` dependency array (module-level constants have
+stable identity, so memoization is unchanged).
+
+### Deliberately left behind / deferred
+- `maybeAutoNameChat` + `autoNamedBoards` / `maybeNotifyModelDowngrade`
+  + `notifiedDowngrades` (module-level session state, shared with
+  `useChatVoiceMode`) — separate batch.
+- `chatTurnTypes.ts` vs orchestrator type fork — Wave 2, untouched.
+- Streaming internals, retry/abort, board-switch effect, reconcile
+  block, `chatThreadRuntime.ts`, `server.js` — untouched by design.
+
+### References checked
+- imports/exports re-verified (grep for old symbols in both source files)
+- moved bodies diffed verbatim against HEAD (sed/awk extraction diff)
+- typecheck 822 errors before = 822 after; lint clean on touched files
+- build passes; `test:agent` 642+29 pass; orphan AI/chat tests 53 pass
+  (chatArtifacts/researchReportFinalize test files import vitest, which
+  is not installed — pre-existing, unrelated)

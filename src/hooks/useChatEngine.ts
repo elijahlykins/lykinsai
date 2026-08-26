@@ -4,7 +4,17 @@ import ReactMarkdown from "react-markdown";
 import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import { supabase } from "@/lib/supabase";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
+import {
+  looksLikeDeflectingQuestion,
+  isVideoQuestion,
+  buildDirectVideoAnswerFromGrounding,
+  extractSourceLinks,
+  extractAiConnections,
+  extractWebLinksFromText,
+} from "@/lib/chat/chatResponseExtractors";
 import { ingestChatFiles } from "@/lib/chat/ingestChatFiles";
+import { resizeChatInputEl } from "@/lib/chat/resizeChatInput";
+import { flattenNodeText } from "@/lib/chatChunks";
 import { isDeviceLocalUrl } from "@/lib/chat/deviceLocalImages";
 import { ChatCodeBlock } from "@/components/lyknChat/ChatCodeBlock";
 import { ChatPopImage } from "@/components/lyknChat/LyknMediaPop";
@@ -18,14 +28,9 @@ import {
   type OrchestratorResult,
   type ChatSendParams,
 } from "@/lib/ai/chatSendOrchestrator";
-import { type ChatArtifact, toArtifactEditContext, isEditableArtifact } from "@/lib/ai/chatArtifacts";
+import { type ChatArtifact, toArtifactEditContext } from "@/lib/ai/chatArtifacts";
 import { handleLyknBrowserClick } from "@/lib/lyknChat/openInStudioBrowser";
-import {
-  isInsistFreshBuildAsk,
-  isRedesignAsk,
-  isTypedNewDeliverableAsk,
-  isVagueBuildAsk,
-} from "@/lib/ai/artifactBuildIntent";
+import { resolveArtifactSendPlan } from "@/lib/ai/artifactSendPlan";
 import { detectImageAsk, imagineSwitchNotice } from "@/lib/ai/studioModeIntent";
 import { toast } from "@/components/ui/use-toast";
 import { micErrorMessage, requestMicStream } from "@/lib/voice/micAccess";
@@ -50,28 +55,6 @@ export type { PromptMessage, FocusedChatAttachment, CreateAction, OrchestratorRe
 // Artifact kinds buildable from the "+" → Create submenu (claude.ai-style).
 export type ArtifactKind = "deck" | "study" | "document" | "worksheet" | "spreadsheet" | "chart" | "diagram" | "webapp";
 export type ComposerMode = "none" | "image" | "web" | "research" | `create:${ArtifactKind}`;
-
-/* ------------------------------------------------------------------ */
-/*  Shared utility functions (moved from LyknChat.tsx top-level)      */
-/* ------------------------------------------------------------------ */
-
-function resizeChatInputEl(el: HTMLTextAreaElement | null) {
-  if (!el) return;
-  const maxH = 180;
-  el.style.height = "auto";
-  const minH = el.dataset.minH ? Number(el.dataset.minH) : 36;
-  const nextH = Math.min(maxH, Math.max(minH, el.scrollHeight));
-  el.style.height = `${nextH}px`;
-  el.style.overflowY = el.scrollHeight > maxH ? "auto" : "hidden";
-}
-
-const flattenNodeText = (node: any): string => {
-  if (node == null || typeof node === "boolean") return "";
-  if (typeof node === "string" || typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(flattenNodeText).join("");
-  if (React.isValidElement(node)) return flattenNodeText((node.props as any)?.children);
-  return "";
-};
 
 /* ------------------------------------------------------------------ */
 /*  Hook dependency interface                                          */
@@ -781,67 +764,12 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     [],
   );
 
-  const looksLikeDeflectingQuestion = useCallback((s: string) => {
-    const t = String(s || "").trim().toLowerCase();
-    if (!t) return true;
-    return /(would you like|do you want|want me to|should i|it seems like|would you want|do you need)/i.test(t);
-  }, []);
-
-  const isVideoQuestion = useCallback((s: string) => {
-    const t = String(s || "").toLowerCase();
-    const hasVideoWord = /\b(video|youtube|clip|short|reel|transcript|watch|recording)\b/i.test(t);
-    if (hasVideoWord) return true;
-    if (/transcri(?:be|pt|ption)/i.test(t)) return true;
-    const hasPronouns = /\b(he|she|they|speaker|narrator|host|presenter)\b/i.test(t);
-    if (hasPronouns && /\b(say(?:s|ing)?|said|talk(?:s|ing)?|mention|discuss|explain|point)\b/i.test(t)) return true;
-    return false;
-  }, []);
-
   const sanitizeAssistantResponse = useCallback((s: string) => String(s || "").trim(), []);
-
-  const buildDirectVideoAnswerFromGrounding = useCallback((grounding: string) => {
-    const raw = String(grounding || "").trim();
-    if (!raw || raw === "(none)") return "";
-    const lines = raw.split("\n").map((l) => l.trim()).filter((l) => /^\-\s*\[\d{2}:\d{2}\-\d{2}:\d{2}\]\s+/.test(l)).slice(0, 8).map((l) => l.replace(/^\-\s*/, "").replace(/\s+/g, " ").trim()).filter(Boolean);
-    if (!lines.length) return "";
-    const keyPoints = lines.slice(0, 5).map((l) => `- ${l}`);
-    return [`From the on-board video transcript:`, `Answer: ${lines[0]}`, `Key grounded points:\n${keyPoints.join("\n")}`].join("\n\n");
-  }, []);
 
   const getKnowledgeBaseContext = useCallback(() => getCachedKbText(), [getCachedKbText]);
 
-  const extractSourceLinks = useCallback((text: string): { cleanText: string; sources: { title: string; url: string }[] } => {
-    // Require at least one newline before the header so we don't grab the word
-    // "sources:" or "references:" when the model uses it in the middle of a
-    // sentence (case-insensitive match previously chopped off the rest of a
-    // long response whenever prose like "The main sources:\n..." appeared).
-    const sm = text.match(/\n+(?:Sources?|References?):?[ \t]*\n([\s\S]*?)$/i);
-    if (!sm) return { cleanText: text, sources: [] };
-    const block = sm[1].trim();
-    const sources: { title: string; url: string }[] = [];
-    const lr = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
-    let m: RegExpExecArray | null;
-    while ((m = lr.exec(block)) !== null) sources.push({ title: m[1], url: m[2] });
-    if (!sources.length) { const br = /(?:^|\n)\s*\d+\.\s*(https?:\/\/[^\s]+)/g; while ((m = br.exec(block)) !== null) { try { const u = new URL(m[1]); sources.push({ title: u.hostname.replace(/^www\./, ""), url: m[1] }); } catch {} } }
-    // Only strip the trailing block when we actually extracted real citation
-    // links. Otherwise the match was likely a false positive (e.g. the AI used
-    // "Sources:" as an inline list header) and we'd silently delete the rest
-    // of the response.
-    if (!sources.length) return { cleanText: text, sources: [] };
-    const ct = text.slice(0, sm.index).trimEnd();
-    return { cleanText: ct, sources };
-  }, []);
-
   const attachSourcesToBlock = useCallback((_responseBlockId: string, _sources: { title: string; url: string }[]) => {
     /* Canvas is gone — citations stay inline in the chat message. */
-  }, []);
-
-  const extractAiConnections = useCallback((responseText: string) => {
-    const re = /\[AI_CONNECTION:(.+?)\|(.+?)\|(.+?)\]/g;
-    const conns: Array<{ title: string; sourceType: "board" | "media"; reason: string }> = [];
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(responseText)) !== null) { const title = m[1].trim(); const rt = m[2].trim().toLowerCase(); const reason = m[3].trim(); if (title && reason) conns.push({ title, sourceType: rt === "board" ? "board" : "media", reason }); }
-    return { connections: conns.slice(0, 3), cleanText: responseText.replace(/\s*\[AI_CONNECTION:[^\]]*\]/g, "").trimEnd() };
   }, []);
 
   const extractAndApplyTagActions = useCallback(async (responseText: string): Promise<string> => {
@@ -881,15 +809,6 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     setChatMessages((prev) => prev.map((m2) => m2.id === promptId ? { ...m2, aiYouTubeUrls: urls } : m2));
     return { urls, cleanText };
   }, [validateYouTubeVideoId]);
-
-  const extractWebLinksFromText = useCallback((text: string): string[] => {
-    const urlRe = /https?:\/\/[^\s<>"')\]]+/gi;
-    const ytHosts = ["youtube.com", "youtu.be", "youtube-nocookie.com"];
-    const seen = new Set<string>(); const links: string[] = [];
-    let m: RegExpExecArray | null;
-    while ((m = urlRe.exec(text)) !== null) { const raw = m[0].replace(/[.,;:!?)]+$/, ""); try { const host = new URL(raw).hostname.replace(/^www\./, "").toLowerCase(); if (ytHosts.some((h) => host.includes(h))) continue; if (!seen.has(raw)) { seen.add(raw); links.push(raw); } } catch {} }
-    return links.slice(0, 5);
-  }, []);
 
   const extractAndEmbedMediaItems = useCallback(async (aiText: string, _responseBlockId: string | null): Promise<{ cleanText: string; pulled: number }> => {
     const cleanText = aiText.replace(/\s*\[PULL_MEDIA:[^\]]*\]/g, "").trimEnd();
@@ -1095,307 +1014,30 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
 
     try {
       const editArtifact = activeArtifactRef.current;
-      const artifactChatId = String(editArtifact?.sourceChatId || "").trim();
       const thisChatId = String(streamChatId || "").trim();
-      // Only refine artifacts tagged to THIS board. Untagged / other-chat
-      // panel state must not force edits or strip Build on a fresh chat.
-      const artifactBelongsHere =
-        !!editArtifact && !!thisChatId && artifactChatId === thisChatId;
-      const stickyModeInstructions = String(studioModeInstructionsRef?.current || "");
-      const stickyBuildMode =
-        stickyModeInstructions.includes("The user is in Build mode");
-      const stickyImagineMode =
-        sendMode === "image" && stickyModeInstructions.includes("The user is in Imagine mode");
-      let isBuildMode = sendMode === "create:webapp";
-      const hasAttachedImage = sentAttachments.some(
-        (a) => (a.type || "").toLowerCase() === "image" && !!a.url,
-      );
-      // Build mode with an open same-kind artifact → refine (edits) by default.
-      // Fresh rebuild only on clear new-commission / redesign / reference-image
-      // signals. Regular chat never starts a new build from wording alone —
-      // Create/Build must be armed (server also enforces this).
-      let createArmed =
-        typeof sendMode === "string" && sendMode.startsWith("create:");
-      const typedNewDeliverableAsk =
-        createArmed && isTypedNewDeliverableAsk(text);
-      const insistFreshBuildAsk = createArmed && isInsistFreshBuildAsk(text);
-      const regularChatBuildAsk =
-        !createArmed &&
-        (isTypedNewDeliverableAsk(text) || isInsistFreshBuildAsk(text));
-      const redesignAsk = isRedesignAsk(text);
-      // Edit/add asks against an open artifact — keep in sync with server.js.
-      // Length cap is soft: longer "add X and fix Y" messages still refine.
-      const looksLikeSurgicalTweak =
-        text.trim().length < 400 &&
-        /\b(?:fix|change|update|tweak|adjust|add|make|rename|remove|delete|patch|bug|typo|font|colou?r|theme|move|replace|swap|hide|show|enable|disable|increase|decrease|darken|brighten|dim|mute|darker|lighter|brighter|edit|improve|polish|wire|connect|implement|insert|extend|expand|shorten|widen|narrow|resize|restyle|reword|rewrite|correct|repair)\b/i.test(
-          text,
-        ) &&
-        !redesignAsk &&
-        !typedNewDeliverableAsk &&
-        !insistFreshBuildAsk;
-      // Sticky Build / Imagine pages are conversational modes, not automatic
-      // tool buttons. Questions and general discussion stay in chat; only a
-      // clear commission or mutation request arms the matching generator.
-      const normalizedModeAsk = text.trim();
-      const discussionQuestion =
-        /^(?:what|why|how|when|where|who|which|should|would|could|can|is|are|do|does|did|has|have|tell\s+me|explain|describe|discuss|help\s+me\s+understand|give\s+me\s+advice|make\s+sense)\b/i.test(
-          normalizedModeAsk,
-        );
-      const directCreateQuestion =
-        /^(?:can|could|would|will)\s+(?:you|we)\s+(?:please\s+)?(?:make|build|create|generate|design|draw|add|apply|give|put|change|update|edit|fix|format|style|organize|reorder|group|align|center|bold|italicize|underline|highlight|adjust|tweak|dim|darken|brighten|remove|replace|redesign|rebuild|restyle|turn|set)\b/i.test(
-          normalizedModeAsk,
-        );
-      const imperativeModeAction =
-        /^(?:(?:ok|okay|now|then|also|please|and|let['’]s)\s*[,—-]?\s*)*(?:make|build|create|generate|design|draw|add|apply|give|put|change|update|edit|fix|format|style|organize|reorder|group|align|center|bold|italicize|underline|highlight|adjust|tweak|dim|darken|brighten|remove|replace|redesign|rebuild|restyle|turn|set|redo|reimagine|render)\b/i.test(
-          normalizedModeAsk,
-        );
-      // Natural edit requests are often phrased as a desired end state rather
-      // than an imperative: "every note should have a heading", "the button
-      // needs to be smaller", "I want the sidebar darker".
-      const desiredStateModeAction =
-        artifactBelongsHere &&
-        (/\b(?:should|needs? to|must)\s+(?:be|have|show|use|include|display|look|feel|read|say|contain)\b/i.test(
-          normalizedModeAsk,
-        ) ||
-          /\b(?:i want|i need|i(?:'|’)d like|i would like)\b/i.test(normalizedModeAsk));
-      const bareBuildBrief =
-        /^(?:(?:an?|the|my|another|new)\s+)?(?:web ?app|web ?site|site|landing ?page|dashboard|app|game|tool|calculator|prototype|widget|quiz|tracker|form|simulator|pitch ?deck|slide ?deck|presentation|spread ?sheet|flow ?chart|diagram|chart|study ?guide|work ?sheet)\b/i.test(
-          normalizedModeAsk,
-        );
-      const hasPriorGeneratedImage = (sendSnap.aiThread || []).some(
-        (message) =>
-          message.role === "assistant" &&
-          /!\[[^\]]*\]\(https?:\/\/[^)]+\)/i.test(String(message.content || "")),
-      );
-      const vagueBuildAsk = isVagueBuildAsk(text);
-      const directBuildAction =
-        !vagueBuildAsk &&
-        directCreateQuestion &&
-        (typedNewDeliverableAsk ||
-          artifactBelongsHere ||
-          bareBuildBrief ||
-          /\b(?:make|build|create|generate|design|draw|code|render)\b/i.test(
-            normalizedModeAsk,
-          ));
-      const buildModeAction =
-        !vagueBuildAsk &&
-        (directBuildAction ||
-        desiredStateModeAction ||
-        (!discussionQuestion &&
-          (typedNewDeliverableAsk ||
-            insistFreshBuildAsk ||
-            (artifactBelongsHere &&
-              (redesignAsk || looksLikeSurgicalTweak || imperativeModeAction)) ||
-            (!artifactBelongsHere &&
-              imperativeModeAction &&
-              /\b(?:make|build|create|generate|design|draw|code|render)\b/i.test(
-                normalizedModeAsk,
-              )) ||
-            bareBuildBrief)));
-      // The composer chip is cleared after every send and re-armed by the
-      // Studio view on the next render. A fast follow-up can therefore arrive
-      // with sendMode="none" even though the user is still in Build and is
-      // clearly asking to mutate the open artifact.
-      const buildSessionEditTurn =
-        stickyBuildMode && buildModeAction && artifactBelongsHere;
-      const imageRefinementAsk =
-        /^(?:(?:ok|okay|now|then|also|and)\s*[,—-]?\s*)*(?:same\b|another\b|again\b|darker\b|lighter\b|brighter\b|more\b|less\b|try\b|redo\b)/i.test(
-          normalizedModeAsk,
-        );
-      const imagineModeAction =
-        (directCreateQuestion &&
-          (detectImageAsk(normalizedModeAsk) ||
-            hasAttachedImage ||
-            hasPriorGeneratedImage ||
-            /\b(?:make|create|generate|design|draw|paint|illustrate|render|reimagine)\b/i.test(
-              normalizedModeAsk,
-            ))) ||
-        (!discussionQuestion &&
-          (detectImageAsk(normalizedModeAsk) ||
-            (imperativeModeAction &&
-              (hasAttachedImage ||
-                hasPriorGeneratedImage ||
-                /\b(?:make|create|generate|design|draw|paint|illustrate|render|reimagine)\b/i.test(
-                  normalizedModeAsk,
-                ))) ||
-            (imageRefinementAsk && hasPriorGeneratedImage) ||
-            (hasAttachedImage &&
-              /\b(?:like this|same style|use this|based on this|recreate|reimagine|transform)\b/i.test(
-                normalizedModeAsk,
-              ))));
-      const stickyBuildConversation = stickyBuildMode && !buildModeAction;
-      const stickyImagineConversation = stickyImagineMode && !imagineModeAction;
-      if (stickyBuildConversation) {
-        createArmed = false;
-        isBuildMode = false;
-      }
-      const referenceRebuildAsk =
-        /\b(?:exact(?:ly)?\s+clone|identical|1\s*:\s*1|recreate|clone\s+(?:this|that|it)|(?:look|make)\s+(?:it\s+)?(?:just\s+)?like\s+this|full\s+rewrite)\b/i.test(
-          text,
-        ) &&
-        (hasAttachedImage || artifactBelongsHere);
-      // Mirror server isFreshWebappBuildAsk — open Super Coin Dash must not
-      // ride along on "build me a copy of minecraft like this".
-      const makingVerb =
-        /\b(?:make|build|create|generate|design|code|write|whip up|mock up|put together)\b/i.test(
-          text,
-        );
-      const webappNoun =
-        /\b(?:games?(?! ?plan)|apps?|web ?apps?|mini[- ]?apps?|sandbox(?:es)?|simulators?|minecraft|voxel|platformers?|shooters?|rpg|first[- ]?person|\b3d\b|three\.?js)\b/i.test(
-          text,
-        );
-      const copyOfWebapp =
-        /\bcopy of\b[^.!?\n]{0,80}\b(?:minecraft|games?(?! ?plan)|apps?|sandbox(?:es)?|voxel|platformers?|world)\b/i.test(
-          text,
-        );
-      const referencePhrase =
-        /\b(?:like this|like that|from this|based on this|from the (?:image|screenshot|picture|reference)|as shown|in the (?:image|screenshot|picture))\b/i.test(
-          text,
-        );
-      const differentDeliverable =
-        /\b(?:different|brand[- ]?new|entirely new|fresh|whole new|completely new)\s+(?:game|app|build|artifact|world)\b/i.test(
-          text,
-        );
-      const visualOverhaulAsk = redesignAsk;
-      // Map "+" → Create kinds early so open-panel refine can gate fresh-webapp.
-      const CREATE_TOOL_BY_KIND: Record<string, string> = {
-        deck: "lykn_build_template",
-        study: "lykn_build_react_artifact",
-        document: "lykn_build_react_artifact",
-        worksheet: "lykn_build_react_artifact",
-        spreadsheet: "lykn_build_spreadsheet",
-        chart: "lykn_generate_chart",
-        diagram: "lykn_generate_diagram",
-        webapp: "lykn_build_react_artifact",
-        video: "lykn_render_video",
-      };
-      const createKind =
-        typeof sendMode === "string" && sendMode.startsWith("create:")
-          ? sendMode.slice("create:".length)
-          : "";
-      const createToolName = CREATE_TOOL_BY_KIND[createKind] || "";
-      const openToolName = String(editArtifact?.toolName || "");
-      const sameCreateBuilder =
-        !!createToolName && !!openToolName && createToolName === openToolName;
-      const broadFreshWebappAsk =
-        differentDeliverable ||
-        (makingVerb && (webappNoun || copyOfWebapp)) ||
-        (hasAttachedImage && makingVerb && referencePhrase) ||
-        (hasAttachedImage && (webappNoun || copyOfWebapp) && referencePhrase);
-      // With the same-kind artifact open, "make the game harder" / "build a
-      // settings panel" must refine — only force fresh on clear NEW commissions.
-      const freshWebappAsk =
-        createArmed &&
-        (artifactBelongsHere && sameCreateBuilder
-          ? differentDeliverable ||
-            copyOfWebapp ||
-            (hasAttachedImage &&
-              (referencePhrase || webappNoun) &&
-              (makingVerb || referencePhrase)) ||
-            (makingVerb &&
-              (webappNoun || copyOfWebapp) &&
-              /\b(?:new|another|different|separate|from scratch|start over|brand[- ]?new)\b/i.test(
-                text,
-              ))
-          : broadFreshWebappAsk);
-      // "make it look just like Castle Crashers" with an open game = full
-      // rebuild, not a surgical refine (which rejects full_rewrite and dies).
-      const openReactRebuildAsk =
-        visualOverhaulAsk &&
-        artifactBelongsHere &&
-        String(editArtifact?.toolName || "") === "lykn_build_react_artifact";
-      // A visual overhaul of an installed app is still an edit of THAT app.
-      // Keep its source + installedAppId attached so the server can authorize
-      // a full rewrite and the returned artifact keeps the Update target.
-      // Clear new-commission signals below still win for explicit requests
-      // for another/different app.
-      const installedAppEditId =
-        String(editArtifact?.installedAppId || artifactAppRef.current.get(thisChatId) || "").trim();
-      // An installed app remains the edit target for this chat even if the UI
-      // is currently showing Chat instead of Build. Explicit mutation asks
-      // should update that app; questions still take the discuss-only path.
-      const installedAppEditTurn =
-        !!installedAppEditId &&
-        artifactBelongsHere &&
-        buildModeAction &&
-        !differentDeliverable &&
-        !insistFreshBuildAsk;
-      const inPlaceInstalledAppRebuild =
-        openReactRebuildAsk &&
-        !!installedAppEditId &&
-        !differentDeliverable &&
-        !insistFreshBuildAsk;
-      // Style rematch of the OPEN deck — still send activeArtifact so the
-      // server can authorize full_rewrite; do NOT treat as a brand-new build.
-      const openTemplateRestyleAsk =
-        visualOverhaulAsk &&
-        artifactBelongsHere &&
-        String(editArtifact?.toolName || "") === "lykn_build_template" &&
-        !typedNewDeliverableAsk &&
-        !insistFreshBuildAsk;
-      // Clear new-build signals only. When Build is armed AND the same-kind
-      // artifact is already open, prefer refine — do NOT treat every non-short
-      // ask as a fresh rebuild (that was wiping add/edit requests).
-      const clearFreshBuildIntent =
-        referenceRebuildAsk ||
-        freshWebappAsk ||
-        openReactRebuildAsk ||
-        insistFreshBuildAsk ||
-        (typedNewDeliverableAsk && artifactBelongsHere && !looksLikeSurgicalTweak) ||
-        differentDeliverable;
-      const buildModeFresh =
-        clearFreshBuildIntent ||
-        (isBuildMode &&
-          !artifactBelongsHere &&
-          (hasAttachedImage || !looksLikeSurgicalTweak)) ||
-        (isBuildMode &&
-          artifactBelongsHere &&
-          !sameCreateBuilder &&
-          (hasAttachedImage || !looksLikeSurgicalTweak)) ||
-        (isBuildMode &&
-          artifactBelongsHere &&
-          sameCreateBuilder &&
-          hasAttachedImage &&
-          (referenceRebuildAsk || freshWebappAsk || referencePhrase));
-      // Thread the open panel for context / edits / style rematches.
-      // Build / Create armed → refine open panel with edits. A clear mutation
-      // request in the sticky Build session or installed-app edit chat also
-      // stays armed across turns.
-      // Otherwise Chat mode (composer none) remains discuss-only.
-      const artifactEditArmed =
-        createArmed || buildSessionEditTurn || installedAppEditTurn;
-      const refiningOpenArtifact =
-        artifactEditArmed &&
-        artifactBelongsHere &&
-        isEditableArtifact(editArtifact) &&
-        !insistFreshBuildAsk &&
-        !regularChatBuildAsk &&
-        !differentDeliverable &&
-        (inPlaceInstalledAppRebuild ||
-          (!buildModeFresh &&
-            !openReactRebuildAsk &&
-            (openTemplateRestyleAsk ||
-              ((sameCreateBuilder || buildSessionEditTurn || installedAppEditTurn) &&
-                (looksLikeSurgicalTweak ||
-                  isBuildMode ||
-                  (!typedNewDeliverableAsk && !freshWebappAsk))))));
-      // With builders unarmed for this turn, let the model talk about the
-      // open artifact without shipping edits / ARTIFACT_OPEN instructions.
-      const discussOpenArtifact =
-        !artifactEditArmed &&
-        !refiningOpenArtifact &&
-        artifactBelongsHere &&
-        !!editArtifact;
-      const effectiveComposerMode =
-        stickyBuildConversation || stickyImagineConversation
-          ? "none"
-          : refiningOpenArtifact &&
-              typeof sendMode === "string" &&
-              sendMode.startsWith("create:") &&
-              sameCreateBuilder &&
-              (looksLikeSurgicalTweak || isBuildMode)
-            ? "none"
-            : sendMode;
+      // Build/refine/discuss intent classification lives in
+      // src/lib/ai/artifactSendPlan.ts (pure; extracted verbatim from this
+      // block). The side effects driven by its outputs stay here below.
+      const {
+        createArmed,
+        typedNewDeliverableAsk,
+        insistFreshBuildAsk,
+        createToolName,
+        openTemplateRestyleAsk,
+        buildModeFresh,
+        refiningOpenArtifact,
+        discussOpenArtifact,
+        effectiveComposerMode,
+      } = resolveArtifactSendPlan({
+        text,
+        sendMode,
+        streamChatId,
+        editArtifact,
+        studioModeInstructions: studioModeInstructionsRef?.current,
+        sentAttachments,
+        aiThread: sendSnap.aiThread,
+        linkedAppId: artifactAppRef.current.get(thisChatId),
+      });
       // Commissioning something new, rather than the open build's next
       // version: whatever comes back is its own software, so it must not
       // install over the app this chat had been editing.
@@ -1546,10 +1188,10 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   }, [
     focusedChatAttachments, selectedModel, customModelId, chatId, routeChatId, projectId, scopedProjectId, scopedProjectName, user?.id, setChatInput, setComposerMode,
     buildLyknChatContext, getKnowledgeBaseContext, getCachedWorkspaceSummary,
-    getAllYouTubeBlocks, buildYouTubeGrounding, isVideoQuestion, looksLikeDeflectingQuestion,
-    sanitizeAssistantResponse, buildDirectVideoAnswerFromGrounding,
-    extractSourceLinks, extractAiConnections, extractAndApplyTagActions,
-    extractAndEmbedYouTubeUrls, extractAndEmbedMediaItems, extractWebLinksFromText, attachSourcesToBlock,
+    getAllYouTubeBlocks, buildYouTubeGrounding,
+    sanitizeAssistantResponse,
+    extractAndApplyTagActions,
+    extractAndEmbedYouTubeUrls, extractAndEmbedMediaItems, attachSourcesToBlock,
     applyProjectActions,
     setConnectionCards, setShowConnectionCard, setMediaSuggestions, setSelectedMediaIds, setShowMediaSuggestion,
     typeResponseIntoChat, typeIntoAiResponseBlock, maybeRunConversationSummary,
