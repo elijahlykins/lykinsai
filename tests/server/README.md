@@ -7,6 +7,7 @@ Wave 2 extracted three moderate domains (admin, connections, synthesis — 31 ro
 Wave 3 extracted three long-term live domains (voice, desktop, files — 26 routes), again with zero drift; the concatenated security scan covers the new routers automatically.
 Wave 4 extracted three more moderate live domains (account, storage, assist — 21 routes), again with zero drift; 101 of the 161 routes now live in `server/routes/`.
 Wave 5 extracted the auth-flow and connector-OAuth boundaries (authFlows, platform, connectionsOAuth — 17 routes), again with zero drift; 118 of the 161 routes now live in `server/routes/`, leaving billing, chat core, the pre-limiter platform routes, the learning/user-model band, and discover inline.
+Wave 6 extracted the billing boundary (billing — 9 routes), again with zero drift; 127 of the 161 routes now live in `server/routes/`. The Stripe webhook and all shared billing infra (plan caches, `resolveUserPlan`, `requireAppAccess`, `handleStripeEvent`) stayed in server.js; billing 401/stripe-config characterization tests were added to `serverCriticalRoutes.test.mjs`.
 Note: Synthesis is planned legacy infrastructure pending Memory Architecture Replacement; `synthesis.routes.js` is retained as an isolation boundary, not as a commitment to the architecture, and the learning/user-model route band stays inline as a MEMORY-REPLACEMENT CANDIDATE.
 
 Companion planning document: `docs/refactor/server-decomposition-plan.md`.

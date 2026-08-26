@@ -198,8 +198,45 @@ test('stripe webhook rejects an unsigned payload with 400 (signature contract)',
 });
 
 test('billing/stripe-config is public and returns the publishable-key shape', async () => {
+  // CHARACTERIZATION: this endpoint is intentionally unauthenticated (it
+  // vends the publishable key for embedded checkout) — a DEFERRED BILLING
+  // FINDING, preserved as-is. 200 + { publishableKey } when the env var is
+  // set, 503 { error: 'stripe_not_configured' } when it is not.
   const res = await get('/api/billing/stripe-config');
   assert.ok([200, 503].includes(res.status), `got ${res.status}`);
+  const body = await res.json();
+  if (res.status === 200) {
+    assert.ok(typeof body.publishableKey === 'string' && body.publishableKey.length > 0);
+  } else {
+    assert.equal(body.error, 'stripe_not_configured');
+  }
+});
+
+test('every non-public billing route 401s without an Authorization header', async () => {
+  // Characterizes the auth perimeter of the billing boundary extracted in
+  // Wave 6 (server/routes/billing.routes.js). requireAuth runs before any
+  // zod validation or Stripe access, so unauthenticated calls must always
+  // short-circuit with the shared 401 shape.
+  const cases = [
+    ['GET', '/api/billing/me'],
+    ['POST', '/api/billing/checkout'],
+    ['GET', '/api/billing/credits'],
+    ['POST', '/api/billing/topup'],
+    ['POST', '/api/billing/trial-checkout'],
+    ['POST', '/api/billing/portal'],
+    ['GET', '/api/billing/waitlist'],
+    ['POST', '/api/billing/waitlist'],
+  ];
+  for (const [method, path] of cases) {
+    const res = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: method === 'POST' ? '{}' : undefined,
+    });
+    assert.equal(res.status, 401, `${method} ${path} without auth → 401 (got ${res.status})`);
+    const body = await res.json();
+    assert.equal(body.error, 'Missing or invalid Authorization header');
+  }
 });
 
 // ── Secret-gated cron endpoints ─────────────────────────────────────────────
