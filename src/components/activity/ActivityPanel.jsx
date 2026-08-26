@@ -44,16 +44,59 @@ export default function ActivityPanel() {
   }
 
   const routineName = (routineId) => routines.find((r) => r.id === routineId)?.name || "";
+  const watching = routines.filter((r) => r.watching && !r.running);
+  const runningTasks = tasks;
 
   return (
     <div className="h-full min-h-0 overflow-y-auto px-6 py-6 text-black/80 dark:text-white/85">
       <div className="mx-auto max-w-lg">
-        {/* Working now */}
         <Section
-          title="Working now"
-          hint={tasks.length ? "" : "Nothing is running right now."}
+          title="Watching"
+          hint={watching.length ? "" : "No monitors are watching right now."}
         >
-          {tasks.map((task) => (
+          {watching.map((routine) => (
+            <li
+              key={routine.id}
+              className="flex items-center gap-3 rounded-xl bg-black/[0.035] px-3 py-2.5 dark:bg-white/[0.05]"
+            >
+              <span className="relative flex h-2 w-2 shrink-0">
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-sky-500" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[0.8rem] font-medium">
+                  {routine.bot?.name || "Bot"}
+                  <span className="text-black/40 dark:text-white/45"> · {routine.name}</span>
+                </p>
+                <p className="truncate text-[0.7rem] text-black/45 dark:text-white/45">
+                  {routine.watchingTarget || routine.triggerLabel}
+                  {routine.lastCheckedAt ? ` · last checked ${timeAgo(routine.lastCheckedAt)}` : ""}
+                </p>
+                {routine.watchingCondition ? (
+                  <p className="truncate text-[0.68rem] text-black/35 dark:text-white/40">
+                    {routine.watchingCondition}
+                    {routine.monitorStatus && routine.monitorStatus !== "watching"
+                      ? ` · ${String(routine.monitorStatus).replace(/_/g, " ")}`
+                      : ""}
+                  </p>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                title="Pause this routine"
+                onClick={() => setRoutineEnabled(routine.id, false)}
+                className="flex items-center gap-1 rounded-full bg-black/[0.05] px-2.5 py-1 text-[0.7rem] font-medium text-black/60 transition-colors hover:bg-black/[0.08] dark:bg-white/[0.08] dark:text-white/60"
+              >
+                <Pause className="h-3 w-3" /> Pause
+              </button>
+            </li>
+          ))}
+        </Section>
+
+        <Section
+          title="Running"
+          hint={runningTasks.length ? "" : "Nothing is running right now."}
+        >
+          {runningTasks.map((task) => (
             <li
               key={task.taskId}
               className="flex items-center gap-3 rounded-xl bg-black/[0.035] px-3 py-2.5 dark:bg-white/[0.05]"
@@ -78,7 +121,7 @@ export default function ActivityPanel() {
               </div>
               <button
                 type="button"
-                title="Stop this task"
+                title="Stop this task — the routine keeps watching"
                 onClick={() => stopTask(task.taskId)}
                 className="flex items-center gap-1 rounded-full bg-black/[0.05] px-2.5 py-1 text-[0.7rem] font-medium text-black/60 transition-colors hover:bg-red-500/10 hover:text-red-500 dark:bg-white/[0.08] dark:text-white/60"
               >
@@ -113,8 +156,9 @@ export default function ActivityPanel() {
                   </span>
                 </p>
                 <p className="truncate text-[0.7rem] text-black/45 dark:text-white/45">
-                  {routine.triggerLabel}
+                  {routine.watchingTarget || routine.triggerLabel}
                   {routine.running ? " · running now" : ""}
+                  {routine.watching && !routine.running ? " · watching" : ""}
                   {!routine.enabled ? " · paused" : ""}
                 </p>
               </div>

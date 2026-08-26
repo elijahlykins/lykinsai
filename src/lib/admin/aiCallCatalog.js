@@ -98,7 +98,7 @@ export const AI_SURFACES = [
     id: "browser_agent",
     name: "Agent Harness (browser + Bot stages)",
     description:
-      "Stage-level structured model calls behind the desktop Agent Harness: task planning, per-round action decisions, action verification, post-task learning, and the small pre-turn route/offer judgements. The Bot Harness shares the decide/verify stages. Grounding (described target to screen point) is metered separately as browser_agent_ground.",
+      "Stage-level structured model calls behind the desktop Agent Harness: task planning, per-round action decisions, action verification, post-task learning, the small pre-turn route/offer judgements, and bounded monitor semantic/vision classifiers (only after a cheap observation detects a real change).",
     endpoint: "POST /api/desktop/agent-model, POST /api/desktop/agent-ground",
     file: "server/routes/desktop.routes.js",
     lineRange: "~695-800",
@@ -106,7 +106,7 @@ export const AI_SURFACES = [
     models: [
       "gpt-5.6-terra (BROWSER_AGENT_MODEL)",
       "claude-opus-5 (plan/judge overrides)",
-      "gpt-4.1-mini (learn/route/offer)",
+      "gpt-4.1-mini (learn/route/offer/monitor_semantic/monitor_vision)",
       "holo3-1-35b-a3b (ground)",
     ],
     actionTypes: [
@@ -118,6 +118,8 @@ export const AI_SURFACES = [
       "browser_agent_offer",
       "browser_agent_judge",
       "browser_agent_ground",
+      "browser_agent_monitor_semantic",
+      "browser_agent_monitor_vision",
     ],
     tier: "high",
     guestAccessible: false,

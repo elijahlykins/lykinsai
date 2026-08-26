@@ -1,10 +1,11 @@
 # Tool: create_routine
 
 Set up a routine: a task this bot will run on its own, on a schedule or when
-something happens on the user's computer. Use it when the user asks for
-recurring or standing work — "every weekday at 8, check competitor pricing",
-"when a PDF lands in my Downloads, summarize it", "keep an eye on my test
-suite and fix simple failures".
+something happens on the user's computer or a watched page/window. Use it when
+the user asks for recurring or standing work — "every weekday at 8, check
+competitor pricing", "when a PDF lands in my Downloads, summarize it", "watch
+this page and tell me when the status changes", "keep an eye on my test suite
+and fix simple failures".
 
 Creating a routine runs NOTHING now. It records what to do and when; each
 occurrence later runs as its own task under this bot's identity, and the user
@@ -31,6 +32,9 @@ Triggers:
 - `{ "type": "schedule", "schedule": { "kind": "once", "at": "2026-09-01T08:00:00" } }`
 - `{ "type": "filesystem", "path": "~/Downloads", "event": "created", "pattern": "*.pdf" }`
 - `{ "type": "process", "name": "npm run build", "event": "exited" }`
+- `{ "type": "browser", "url": "https://render.com/deploy/123", "condition": { "event": "equals", "value": "Failed" }, "target": { "kind": "text", "text": "Failed" }, "notifyOnly": true }`
+- `{ "type": "browser", "url": "https://example.com", "condition": { "event": "enabled" }, "target": { "kind": "role", "role": "button", "name": "Publish" } }`
+- `{ "type": "screen", "appName": "Final Cut Pro", "titlePattern": "Export", "condition": { "event": "changed", "semantic": "export finishes" }, "notifyOnly": true }`
 - `{ "type": "manual" }` (the user runs it by hand)
 
 `notificationPolicy`: `always` (default), `on_success`, `on_failure`,

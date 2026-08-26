@@ -45,6 +45,13 @@ const {
   openExternalSafe,
 } = require("./net/safeFetch.cjs");
 const overlayConstants = require("./windows/overlayConstants.cjs");
+const {
+  LANG_PICKER_WIDTH,
+  LANG_PICKER_MIN_HEIGHT,
+  LANG_PICKER_MAX_HEIGHT,
+  LANG_PICKER_GAP,
+  AGENT_SIDEBAR_WIDTH,
+} = overlayConstants;
 const { initializeElectronServices } = require("./services/initializeElectronServices.cjs");
 const { createRoutineRuntime } = require("./bot-routines/routineRuntime.cjs");
 const { registerAllIpc } = require("./ipc/index.cjs");
@@ -342,34 +349,8 @@ if (!gotLock) {
   process.exit(0);
 }
 
-// OAuth provider origins we allow to open in-app (rather than the external
-// browser) so the redirect can return to lykn.io with the session intact.
-const AUTH_HOST_SUFFIXES = [
-  "accounts.google.com",
-  "appleid.apple.com",
-  "login.microsoftonline.com",
-];
-
-// Pin Supabase auth hosts to THIS project when VITE_SUPABASE_URL is known —
-// a blanket *.supabase.co allowlist let any tenant's project stay inside the
-// app chrome. Fall back to the suffix only when the env isn't baked in.
-const SUPABASE_AUTH_HOST = (() => {
-  try {
-    const raw = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "";
-    if (!raw) return null;
-    return new URL(raw).hostname.toLowerCase();
-  } catch {
-    return null;
-  }
-})();
-
-// GitHub needs path-level treatment: its OAuth surface must open in-app for
-// the sign-in redirect to work, but the rest of github.com must NOT — the Mac
-// release downloads live on github.com, and allowlisting the whole host let a
-// "Download for Mac" click hijack the app window into GitHub instead of
-// triggering a clean external download.
-const GITHUB_AUTH_PATH_RE = /^\/(login|sessions?)(\/|$)/;
-
+// Auth host allowlists and handoff-port constants live with their logic in
+// electron/auth/desktopAuth.cjs.
 function isAuthNavigation(...a) { return d.isAuthNavigation(...a); }
 
 // ── Deep-link sign-in (lykn://auth) ─────────────────────────────────────────
@@ -392,7 +373,6 @@ let pendingDesktopAuthState = null;
 // a second "Open LYKN" / pagehide retry with the SAME tokens still works.
 /** @type {{ access_token: string, refresh_token: string, expiresAt: number } | null} */
 let lastAcceptedAuthHandoff = null;
-const DESKTOP_AUTH_STATE_TTL_MS = 15 * 60 * 1000;
 
 function desktopAuthStatePath(...a) { return d.desktopAuthStatePath(...a); }
 
@@ -402,22 +382,9 @@ function loadDesktopAuthState(...a) { return d.loadDesktopAuthState(...a); }
 
 function clearDesktopAuthState(...a) { return d.clearDesktopAuthState(...a); }
 
-// Loopback auth handoff: after Google finishes in the system browser,
-// /desktop-auth POSTs tokens to 127.0.0.1 so the Mac app can sign in without
-// requiring a click on "Open LYKN". lykn://auth remains a manual fallback.
-// Also used in unpackaged/local shells so we never steal lykn:// from the
-// installed LYKN.app (Launch Services would relaunch Electron.app with no main).
-const AUTH_HANDOFF_PORT = Number(process.env.LYKN_DEV_AUTH_PORT || 38472);
-// A second LYKN can already own the default port — typically the installed
-// LYKN.app while a dev shell runs. Posting tokens to a port we don't own hands
-// them to the OTHER instance, which rejects them as bad_state (it never minted
-// that desktop_state), so each instance needs a port of its own.
-const AUTH_HANDOFF_PORT_CANDIDATES = [
-  AUTH_HANDOFF_PORT,
-  AUTH_HANDOFF_PORT + 10,
-  AUTH_HANDOFF_PORT + 11,
-  AUTH_HANDOFF_PORT + 12,
-];
+// Loopback auth handoff server state (the port candidates and the server
+// itself live in electron/auth/desktopAuth.cjs; these locals back the shared
+// d.authHandoffServer / d.authHandoffPort accessors).
 /** @type {import('node:http').Server | null} */
 let authHandoffServer = null;
 // 0 until listen() succeeds — mintDesktopAuthUrl only advertises a port we own.
@@ -442,8 +409,6 @@ function handleAuthDeepLink(...a) { return d.handleAuthDeepLink(...a); }
 // Windows (and Linux) deliver lykn:// URLs via process argv — cold start and
 // second-instance. Scan an argv-like list for the first lykn: URL.
 function findLyknUrlInArgv(...a) { return d.findLyknUrlInArgv(...a); }
-const LYKN_PROTOCOL = "lykn";
-const LYKN_BUNDLE_ID = "ai.lykn.desktop";
 
 function findPackagedLyknApp(...a) { return d.findPackagedLyknApp(...a); }
 
@@ -1005,10 +970,8 @@ function hidePickerWindow(...a) { return d.hidePickerWindow(...a); }
 // ── Detached Translate-mode language picker ─────────────────────────────
 // Same vibrancy-window pattern as menu/picker: can't hang inside the overlay
 // HWND or macOS paints a blurred slab under the list.
-const LANG_PICKER_WIDTH = 180;
-const LANG_PICKER_MIN_HEIGHT = 72;
-const LANG_PICKER_MAX_HEIGHT = 180;
-const LANG_PICKER_GAP = 6;
+// (Layout constants live in windows/overlayConstants.cjs, shared with the
+// extracted overlaySatellites module.)
 let langPickerWindow = null;
 let langPickerHeight = 160;
 /** Pill rect relative to the overlay window content (from renderer). */
@@ -1091,7 +1054,7 @@ function showPanelWindow(...a) { return d.showPanelWindow(...a); }
 function hidePanelWindow(...a) { return d.hidePanelWindow(...a); }
 
 // ── Agent Mode: sidebar + owned browser sessions ───────────────────────────
-const AGENT_SIDEBAR_WIDTH = 280;
+// AGENT_SIDEBAR_WIDTH is shared with overlaySatellites via overlayConstants.
 const AGENT_SIDEBAR_MIN_HEIGHT = 180;
 const AGENT_SIDEBAR_MAX_HEIGHT = 560;
 let agentSidebarWindow = null;
@@ -4760,6 +4723,51 @@ function initRoutineRuntime() {
           });
         },
       }),
+    monitorDeps: {
+      observeBrowser: (trigger) => runtime.observeRoutineBrowser(trigger),
+      subscribePageEvents: (trigger, onEvent) => runtime.subscribeRoutineBrowser(trigger, onEvent),
+      callModel: (opts) => runtime.callMonitorModel(opts),
+      observeScreen: async (trigger) => {
+        const capture = d.captureTargetedWindow;
+        if (typeof capture !== "function") {
+          return { found: false, appRunning: true, status: "waiting_for_target" };
+        }
+        const shot = await capture({
+          appName: trigger.appName,
+          titlePattern: trigger.titlePattern,
+          region: trigger.region,
+          maxWidth: 320,
+        });
+        if (!shot?.ok) {
+          return {
+            found: false,
+            appName: trigger.appName || "",
+            title: "",
+            appRunning: shot?.status !== "target_unavailable",
+            status: shot?.status || "target_unavailable",
+          };
+        }
+        const fp = screenFingerprint(shot.imageUrl);
+        shot.imageUrl = "";
+        return {
+          found: true,
+          appName: shot.appName || trigger.appName || "",
+          title: shot.title || "",
+          fingerprint: fp,
+        };
+      },
+      captureScreenForVision: async (trigger) => {
+        const capture = d.captureTargetedWindow;
+        if (typeof capture !== "function") return { imageUrl: "" };
+        const shot = await capture({
+          appName: trigger.appName,
+          titlePattern: trigger.titlePattern,
+          region: trigger.region,
+          maxWidth: 640,
+        });
+        return { imageUrl: shot?.ok ? shot.imageUrl : "" };
+      },
+    },
   });
   // The harness's create_routine tool reaches routines through this seam.
   runtime.setRoutineBridge({
@@ -4879,31 +4887,8 @@ async function fetchAiStreamCompletion(...a) { return d.fetchAiStreamCompletion(
 //      and the web app's Supabase client refreshes an expired stored session
 //      on boot, so this also recovers after long sleeps/reboots.
 
-const READ_SUPABASE_TOKEN_JS = `(function () {
-  try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith('sb-') && k.endsWith('-auth-token')) {
-        const v = JSON.parse(localStorage.getItem(k) || 'null');
-        const tok = v && (v.access_token || (v.currentSession && v.currentSession.access_token));
-        if (tok) return tok;
-      }
-    }
-  } catch (e) {}
-  return null;
-})()`;
-
-// Distinguishes "signed out" (no sb- key at all → give up fast) from "session
-// stored but access token stale" (keep polling while Supabase refreshes it).
-const HAS_SUPABASE_SESSION_JS = `(function () {
-  try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith('sb-') && k.endsWith('-auth-token')) return true;
-    }
-  } catch (e) {}
-  return false;
-})()`;
+// (READ_SUPABASE_TOKEN_JS / HAS_SUPABASE_SESSION_JS live with their callers in
+// electron/auth/desktopAuth.cjs.)
 
 let cachedAuthToken = null;
 let cachedAuthTokenExpMs = 0;
@@ -6032,6 +6017,19 @@ function bindShellContext() {
   d.ownedBrowserAct = ownedBrowserAct;
 }
   app.whenReady().then(() => {
+  // Bind the shared shell context FIRST: most main.cjs functions are thin
+  // stubs that delegate to implementations attached by the extracted modules
+  // (auth/, windows/, overlay/, tray/). Calling any stub before this runs
+  // throws "d.<fn> is not a function".
+  initializeElectronServices({
+    app,
+    session,
+    localStore,
+    localSystem,
+    macFiles,
+  });
+  bindShellContext();
+
   // Serve vault HTML artifacts to Glass iframes from memory (see
   // resolveVaultHtmlDisplayUrl). Avoids localhost file-proxy iframe failures.
   try {
@@ -6097,14 +6095,6 @@ function bindShellContext() {
   installPermissionHandler();
   setupSystemAudioCapture();
   buildAppMenu();
-  initializeElectronServices({
-    app,
-    session,
-    localStore,
-    localSystem,
-    macFiles,
-  });
-  bindShellContext();
   registerAllIpc(d);
   extensionBridge = startExtensionBridge({
     userDataPath: app.getPath("userData"),

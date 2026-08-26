@@ -36,6 +36,12 @@ export type BotRoutine = {
   concurrencyPolicy: string;
   enabled: boolean;
   running?: boolean;
+  watching?: boolean;
+  watchingTarget?: string;
+  watchingCondition?: string;
+  monitorStatus?: string;
+  lastCheckedAt?: string | null;
+  lastChangeAt?: string | null;
   lastRunAt?: string | null;
   nextRunAt?: number | null;
 };

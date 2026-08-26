@@ -40,6 +40,8 @@ function registerRoutinesIpc(d) {
           bot: input.bot,
           botId: input.botId,
           notificationPolicy: input.notificationPolicy,
+          browserContext: input.browserContext,
+          windowContext: input.windowContext,
         });
       }
       const routine = runtime().createRoutine(input);

@@ -11,6 +11,7 @@
 
 const path = require("node:path");
 const { compileLocalCapabilities } = require("../task-runtime/executors/localCapabilities.cjs");
+const { originOf } = require("./browserObservation.cjs");
 
 const DAY_WORDS = {
   sunday: 0,
@@ -74,12 +75,94 @@ function extensionPatternFromText(text) {
   return match ? `*.${match[1].toLowerCase()}` : "";
 }
 
+function urlFromText(text) {
+  const match = /(https?:\/\/[^\s"'`,]+)/i.exec(String(text || ""));
+  return match ? match[1].replace(/[.,;:]+$/, "") : "";
+}
+
+function looksLikeBrowserWatch(text) {
+  return (
+    /\b(this\s+(page|tab|dashboard|site|ticket|deployment|button)|the\s+(page|tab|dashboard|site))\b/i.test(text) ||
+    /\b(watch|monitor|keep an eye on)\b.*\b(page|tab|dashboard|site|url|button|ticket|deployment|price|status)\b/i.test(
+      text,
+    ) ||
+    /\b(tell me|notify me|alert me|let me know)\b.*\b(page|tab|button|price|status|dashboard|ticket|deployment)\b/i.test(
+      text,
+    ) ||
+    /\bbutton\s+becomes?\s+(enabled|available|clickable)\b/i.test(text)
+  );
+}
+
+function looksLikeScreenWatch(text) {
+  return (
+    /\b(this\s+(window|screen|app)|the\s+(window|screen))\b/i.test(text) ||
+    /\b(watch|monitor|keep an eye on)\b.*\b(window|screen|export)\b/i.test(text) ||
+    /\b(tell me|notify me|alert me|let me know)\b.*\b(window|screen|export)\b/i.test(text)
+  );
+}
+
+function isNotifyOnlyInstruction(text) {
+  const t = String(text || "").toLowerCase();
+  const tells = /\b(tell me|notify me|alert me|let me know|ping me)\b/.test(t);
+  const acts =
+    /\b(inspect|diagnose|investigate|fix|repair|rerun|re-run|open it|click|download|summarize|write|delete|send|email)\b/.test(
+      t,
+    );
+  return tells && !acts;
+}
+
+function browserConditionFromText(text) {
+  const namedButton = /(?:the\s+)?"?([^"]{2,40})"?\s+button\s+becomes?\s+(enabled|available|clickable)/i.exec(text);
+  if (namedButton) {
+    const name = namedButton[1].trim();
+    if (!/^(this|the|a|that)$/i.test(name)) {
+      return {
+        event: "enabled",
+        target: { kind: "role", role: "button", name },
+      };
+    }
+  }
+  if (/\bbecomes?\s+(enabled|available|clickable)\b/i.test(text)) {
+    return { event: "enabled", target: { kind: "role", role: "button" } };
+  }
+  const toValue = /(?:status|state)\s+changes?\s+to\s+["']?([a-z0-9 _-]{1,40})/i.exec(text);
+  if (toValue) {
+    return {
+      event: "equals",
+      value: toValue[1].trim(),
+      target: { kind: "text", text: toValue[1].trim() },
+    };
+  }
+  const fromWord = /changes?\s+from\s+["']?([a-z0-9 _-]{1,40})/i.exec(text);
+  if (fromWord) {
+    return { event: "changed", target: { kind: "text", text: fromWord[1].trim() } };
+  }
+  if (/\bprice\b/i.test(text)) return { event: "changed", target: { kind: "page" } };
+  if (/\b(responds?|replies?|comment)\b/i.test(text)) {
+    return { event: "changed", target: { kind: "page" }, semantic: true };
+  }
+  if (/\bfails?\b|\bfailed\b/i.test(text)) {
+    return { event: "equals", value: "Failed", target: { kind: "text", text: "Failed" } };
+  }
+  return { event: "changed", target: { kind: "page" } };
+}
+
+function appNameFromText(text) {
+  const known = /\b(final cut pro|chrome|safari|firefox|xcode|figma|slack|notion|terminal|finder|preview)\b/i.exec(
+    text,
+  );
+  return known ? known[1] : "";
+}
+
 /**
  * Parse a natural-language routine request into { trigger } or null when no
  * trigger phrase is recognizable. Never guesses: an unparseable sentence is
  * the caller's cue to ask for structured fields.
+ *
+ * @param {string} rawText
+ * @param {{ browserContext?: { url?: string, title?: string, appName?: string }, windowContext?: { appName?: string, title?: string } }} [context]
  */
-function parseTriggerFromText(rawText) {
+function parseTriggerFromText(rawText, context = {}) {
   const text = String(rawText || "").trim();
   if (!text) return null;
 
@@ -145,6 +228,55 @@ function parseTriggerFromText(rawText) {
     }
   }
 
+  const explicitUrl = urlFromText(text);
+  const browserCtx = context.browserContext || {};
+  const windowCtx = context.windowContext || {};
+
+  if (looksLikeBrowserWatch(text) || (explicitUrl && /\b(watch|tell me|notify|alert|when)\b/i.test(text))) {
+    const url = explicitUrl || String(browserCtx.url || "").trim();
+    if (!url) return { _error: "browser_target_required" };
+    const cond = browserConditionFromText(text);
+    const notifyOnly = isNotifyOnlyInstruction(text);
+    return {
+      type: "browser",
+      url,
+      origin: originOf(url),
+      ...(browserCtx.title ? { titlePattern: String(browserCtx.title).slice(0, 80) } : {}),
+      ...(browserCtx.appName ? { appName: String(browserCtx.appName).slice(0, 80) } : {}),
+      target: cond.target,
+      condition: {
+        event: cond.event,
+        ...(cond.value ? { value: cond.value } : {}),
+        ...(cond.semantic ? { semantic: true } : {}),
+      },
+      ...(cond.semantic ? { semantic: true } : {}),
+      notifyOnly,
+    };
+  }
+
+  if (looksLikeScreenWatch(text)) {
+    const appName = appNameFromText(text) || String(windowCtx.appName || "").trim();
+    const titlePattern = String(windowCtx.title || "").trim();
+    if (!appName && !titlePattern) return { _error: "screen_target_required" };
+    const notifyOnly = isNotifyOnlyInstruction(text);
+    let semanticPrompt = "";
+    if (/\bexport\b/i.test(text) && /\b(finish|finished|finishes|done|complete|completed)\b/i.test(text)) {
+      semanticPrompt = "export finishes";
+    } else if (/\berror/i.test(text) || /\bfail/i.test(text)) semanticPrompt = "an error appears";
+    else if (/\b(finish|finished|finishes|done|complete|completed)\b/i.test(text)) semanticPrompt = "this finishes";
+    return {
+      type: "screen",
+      ...(appName ? { appName } : {}),
+      ...(titlePattern ? { titlePattern } : {}),
+      condition: {
+        event: "changed",
+        ...(semanticPrompt ? { semantic: semanticPrompt } : {}),
+      },
+      ...(semanticPrompt ? { semantic: true } : {}),
+      notifyOnly,
+    };
+  }
+
   return null;
 }
 
@@ -176,6 +308,24 @@ function compileRoutineCapabilities(instructions, trigger, { explicit } = {}) {
     caps.add("files.read");
     caps.add("local.shell.read");
   }
+  if (trigger?.type === "browser") {
+    caps.add("browser.read");
+    if (
+      !trigger.notifyOnly &&
+      /\b(inspect|diagnose|investigate|fix|open|click|navigate|interact)\b/.test(text)
+    ) {
+      caps.add("browser.navigate");
+      caps.add("browser.interact");
+    }
+  }
+  if (trigger?.type === "screen") {
+    caps.add("local_computer");
+    caps.add("local.apps.read");
+    if (!trigger.notifyOnly && /\b(inspect|diagnose|investigate|fix)\b/.test(text)) {
+      caps.add("browser.read");
+      caps.add("local.shell.read");
+    }
+  }
   if (/\b(fix|repair|patch|resolve failures?|make (the )?tests? pass)\b/.test(text)) {
     caps.add("files.write");
     caps.add("local.shell.execute");
@@ -202,7 +352,7 @@ function compileRoutineCapabilities(instructions, trigger, { explicit } = {}) {
  * structured JSON when the model provided it, deterministic NL parsing
  * otherwise. Returns { ok, spec } or { ok: false, error } — never a guess.
  */
-function resolveRoutineSpec(instruction) {
+function resolveRoutineSpec(instruction, context = {}) {
   const raw = String(instruction || "").trim();
   if (!raw) return { ok: false, error: "empty_instruction" };
 
@@ -229,16 +379,28 @@ function resolveRoutineSpec(instruction) {
     };
   }
 
-  const trigger = parseTriggerFromText(raw);
+  const trigger = parseTriggerFromText(raw, context);
+  if (trigger?._error === "browser_target_required") {
+    return {
+      ok: false,
+      error:
+        "could_not_parse_trigger: say which page to watch (open it and ask again, or paste the URL). I will not pick a random tab.",
+    };
+  }
+  if (trigger?._error === "screen_target_required") {
+    return {
+      ok: false,
+      error:
+        "could_not_parse_trigger: say which window to watch (name the app, or ask while that window is in front). I will not pick a random window.",
+    };
+  }
   if (!trigger) {
     return {
       ok: false,
       error:
-        "could_not_parse_trigger: say when it should run (e.g. \"every weekday at 8\", \"when a PDF appears in ~/Downloads\") or pass structured JSON",
+        "could_not_parse_trigger: say when it should run (e.g. \"every weekday at 8\", \"when a PDF appears in ~/Downloads\", \"watch this page\") or pass structured JSON",
     };
   }
-  // The instructions are the sentence minus nothing: the durable instruction
-  // keeps the user's own words so the Routine reads back exactly as asked.
   return {
     ok: true,
     spec: { name: "", instructions: raw, trigger },
@@ -250,5 +412,6 @@ module.exports = {
   parseClockTime,
   compileRoutineCapabilities,
   resolveRoutineSpec,
+  isNotifyOnlyInstruction,
   PART_OF_DAY_TIMES,
 };

@@ -30,7 +30,9 @@ const { createScheduler } = require("./scheduler.cjs");
 const { createMonitorRuntime } = require("./monitors.cjs");
 const { createNotificationService } = require("./notificationService.cjs");
 const { compileRoutineCapabilities, resolveRoutineSpec } = require("./nlRoutine.cjs");
-const { describeTrigger } = require("./triggers.cjs");
+const { describeTrigger, isMonitorTrigger } = require("./triggers.cjs");
+const { describeBrowserTarget, describeBrowserCondition } = require("./browserObservation.cjs");
+const { describeScreenTarget, describeScreenCondition } = require("./screenObservation.cjs");
 
 /**
  * @param {object} opts
@@ -80,10 +82,45 @@ function createRoutineRuntime({
 
   function publicRoutine(routine) {
     if (!routine) return null;
+    const monitor = store.getMonitorState(routine.id) || {};
+    const watching =
+      routine.enabled === true && isMonitorTrigger(routine.trigger) && !activeRuns.has(routine.id);
+    let watchingTarget = "";
+    let watchingCondition = "";
+    if (routine.trigger?.type === "browser") {
+      watchingTarget = describeBrowserTarget(routine.trigger);
+      watchingCondition = describeBrowserCondition(routine.trigger);
+    } else if (routine.trigger?.type === "screen") {
+      watchingTarget = describeScreenTarget(routine.trigger);
+      watchingCondition = describeScreenCondition(routine.trigger);
+    } else if (routine.trigger?.type === "filesystem") {
+      watchingTarget = routine.trigger.path;
+      watchingCondition = describeTrigger(routine.trigger);
+    } else if (routine.trigger?.type === "process") {
+      watchingTarget = routine.trigger.name;
+      watchingCondition = describeTrigger(routine.trigger);
+    }
     return {
       ...routine,
       triggerLabel: describeTrigger(routine.trigger),
       running: activeRuns.has(routine.id),
+      watching,
+      watchingTarget,
+      watchingCondition,
+      monitorStatus: String(monitor.status || (watching ? "watching" : "")),
+      lastCheckedAt: Number.isFinite(Number(monitor.lastObservedAt))
+        ? new Date(Number(monitor.lastObservedAt)).toISOString()
+        : null,
+      lastChangeAt: monitor.lastTriggeredAt ? new Date(Number(monitor.lastTriggeredAt)).toISOString() : null,
+      monitorDiagnostics: {
+        pollTicks: Number(monitor.pollTicks) || 0,
+        observations: Number(monitor.observations) || 0,
+        changesDetected: Number(monitor.changesDetected) || 0,
+        semanticEvaluations: Number(monitor.semanticEvaluations) || 0,
+        visionCalls: Number(monitor.visionCalls) || 0,
+        tasksTriggered: Number(monitor.tasksTriggered) || 0,
+        modelCalls: Number(monitor.modelCalls) || 0,
+      },
     };
   }
 
@@ -235,6 +272,24 @@ function createRoutineRuntime({
         path: context?.path,
         files: context?.files,
         processName: context?.name,
+        url: context?.url,
+        title: context?.title,
+        appName: context?.appName,
+        from: context?.from,
+        to: context?.to,
+        summary: context?.summary,
+      });
+    },
+    onStatus: (routine, { status, summary, notify }) => {
+      if (!notify) return;
+      const botName = routine.bot?.name || "Bot";
+      notifications.notify({
+        botId: routine.botId,
+        routineId: routine.id,
+        title: `${botName}: ${routine.name}`,
+        body: String(summary || `Monitor status: ${status}`).slice(0, 240),
+        urgency: status === "needs_attention" ? "high" : "normal",
+        policy: "always",
       });
     },
   });
@@ -261,11 +316,12 @@ function createRoutineRuntime({
    * Deterministic; returns { ok:false, error } when the trigger is ambiguous
    * so the Bot can ask instead of guessing.
    */
-  function createRoutineFromInstruction(instruction, { bot, botId, notificationPolicy } = {}) {
-    const resolved = resolveRoutineSpec(instruction);
+  function createRoutineFromInstruction(instruction, { bot, botId, notificationPolicy, browserContext, windowContext } = {}) {
+    const resolved = resolveRoutineSpec(instruction, { browserContext, windowContext });
     if (!resolved.ok) return resolved;
     const spec = resolved.spec;
     try {
+      const notifyOnly = spec.trigger?.notifyOnly === true;
       const routine = createRoutine({
         botId: botId || bot?.id,
         bot,
@@ -273,7 +329,8 @@ function createRoutineRuntime({
         instructions: spec.instructions || String(instruction || "").trim(),
         trigger: spec.trigger,
         capabilities: spec.capabilities,
-        notificationPolicy: spec.notificationPolicy || notificationPolicy,
+        notificationPolicy:
+          spec.notificationPolicy || notificationPolicy || (notifyOnly ? "on_change" : undefined),
         concurrencyPolicy: spec.concurrencyPolicy,
       });
       return { ok: true, routine };

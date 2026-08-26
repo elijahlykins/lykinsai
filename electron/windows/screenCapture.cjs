@@ -380,6 +380,52 @@ async function capturePrimaryScreen({ maxWidth, format = "png", quality = 80 } =
   return null;
 }
 
+async function captureTargetedWindow({ appName = "", titlePattern = "", region = null, maxWidth = 640 } = {}) {
+  const status = screenCaptureStatus();
+  if (status === "denied") return { ok: false, status: "needs_attention", reason: "screen_permission_denied" };
+  const thumbnailSize = { width: Math.max(160, maxWidth), height: Math.max(100, Math.round(maxWidth * 0.7)) };
+  let sources = [];
+  try {
+    sources = await desktopCapturer.getSources({ types: ["window"], thumbnailSize });
+  } catch (e) {
+    return { ok: false, status: "target_unavailable", reason: e?.message || "capture_failed" };
+  }
+  const app = String(appName || "").toLowerCase();
+  const title = String(titlePattern || "").toLowerCase();
+  const match = sources.find((s) => {
+    const name = String(s?.name || "").toLowerCase();
+    if (app && !name.includes(app)) return false;
+    if (title && !name.includes(title)) return false;
+    return !s.thumbnail?.isEmpty?.();
+  });
+  if (!match || match.thumbnail?.isEmpty?.()) {
+    return { ok: false, status: "target_unavailable", sources: sources.map((s) => s.name).slice(0, 12) };
+  }
+  let img = match.thumbnail;
+  if (region && Number(region.w) > 0 && Number(region.h) > 0) {
+    try {
+      img = img.crop({
+        x: Math.max(0, Number(region.x) || 0),
+        y: Math.max(0, Number(region.y) || 0),
+        width: Number(region.w),
+        height: Number(region.h),
+      });
+    } catch {
+      /* keep full window */
+    }
+  }
+  const jpeg = img.toJPEG(70);
+  const imageUrl = `data:image/jpeg;base64,${jpeg.toString("base64")}`;
+  return {
+    ok: true,
+    status: "ok",
+    appName: appName || match.name,
+    title: match.name,
+    imageUrl,
+    windowId: match.id,
+  };
+}
+
 async function captureBrowserScreenThumbnail() {
   if (screenCaptureStatus() !== "granted") return "";
   try {
@@ -398,6 +444,7 @@ async function captureBrowserScreenThumbnail() {
   d.captureBrowserScreenThumbnail = captureBrowserScreenThumbnail;
   d.captureInteractiveSnip = captureInteractiveSnip;
   d.capturePrimaryScreen = capturePrimaryScreen;
+  d.captureTargetedWindow = captureTargetedWindow;
   d.closeSnipWindow = closeSnipWindow;
   d.ensureScreenRecordingAccess = ensureScreenRecordingAccess;
   d.getTargetCaptureDisplay = getTargetCaptureDisplay;

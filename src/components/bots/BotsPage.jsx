@@ -120,6 +120,16 @@ export default function BotsPage() {
 
 /* ── Routines — standing work this Bot runs on its own ──────────────────── */
 
+function timeAgo(iso) {
+  const at = Date.parse(String(iso || ""));
+  if (!Number.isFinite(at)) return "";
+  const s = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return new Date(at).toLocaleDateString();
+}
+
 const RUN_STATUS_LABEL = {
   running: "Running…",
   completed: "Done",
@@ -161,7 +171,7 @@ function BotRoutines({ bot }) {
     } else {
       setError(
         String(result?.error || "").startsWith("could_not_parse_trigger")
-          ? "Say when it should run — like \u201cevery weekday at 8\u201d or \u201cwhen a PDF appears in Downloads\u201d."
+          ? "Say when it should run — like “every weekday at 8”, “when a PDF appears in Downloads”, or “watch this page”."
           : result?.error || "Could not create that routine.",
       );
     }
@@ -216,6 +226,7 @@ function BotRoutines({ bot }) {
 
 function RoutineRow({ routine }) {
   const lastRun = routine.lastRunAt ? new Date(routine.lastRunAt).toLocaleString() : "";
+  const lastChecked = routine.lastCheckedAt ? timeAgo(routine.lastCheckedAt) : "";
   return (
     <li
       className={`rounded-xl bg-black/[0.035] px-3 py-2 dark:bg-white/[0.05] ${
@@ -226,10 +237,19 @@ function RoutineRow({ routine }) {
         <div className="min-w-0 flex-1">
           <p className="truncate text-[0.8rem] font-medium">{routine.name}</p>
           <p className="truncate text-[0.7rem] text-black/40 dark:text-white/45">
-            {routine.triggerLabel}
-            {routine.running ? " · running now" : lastRun ? ` · last ran ${lastRun}` : ""}
+            {routine.watchingTarget ? `Watching: ${routine.watchingTarget}` : routine.triggerLabel}
+            {routine.running ? " · running now" : ""}
+            {routine.watching && !routine.running ? " · watching" : ""}
             {!routine.enabled ? " · paused" : ""}
           </p>
+          {routine.watchingCondition ? (
+            <p className="truncate text-[0.68rem] text-black/35 dark:text-white/40">
+              {routine.watchingCondition}
+              {lastChecked ? ` · last checked ${lastChecked}` : ""}
+            </p>
+          ) : lastRun ? (
+            <p className="truncate text-[0.68rem] text-black/35 dark:text-white/40">Last ran {lastRun}</p>
+          ) : null}
         </div>
         <button
           type="button"

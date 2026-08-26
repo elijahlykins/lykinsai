@@ -156,3 +156,24 @@ test("a declined gate refuses without parking a second ask", async () => {
   assert.match(out.summary, /stay out of the browser/);
   assert.equal(parked.length, 0);
 });
+
+test("observePassive never runs the browser-agent loop", async () => {
+  let ran = false;
+  const seen = [];
+  const executor = new BrowserExecutor({
+    runBrowserTask: async () => {
+      ran = true;
+      return { ok: true, status: "completed", answer: "nope" };
+    },
+    observePage: async ({ target }) => {
+      seen.push(target.url);
+      return { ok: true, status: "ok", fingerprint: "fp", url: target.url, target: { found: true, text: "Building" } };
+    },
+  });
+  const obs = await executor.observePassive({
+    target: { url: "https://render.com/deploy/123", target: { kind: "text", text: "Building" } },
+  });
+  assert.equal(ran, false);
+  assert.equal(obs.fingerprint, "fp");
+  assert.deepEqual(seen, ["https://render.com/deploy/123"]);
+});

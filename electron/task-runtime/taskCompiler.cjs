@@ -191,6 +191,12 @@ function compileRoutineTask(input = {}, options = {}) {
     contextLines.push(`Files: ${context.files.map((f) => String(f).slice(0, 120)).slice(0, 20).join(", ")}`);
   }
   if (context.processName) contextLines.push(`Process: ${String(context.processName).slice(0, 120)}`);
+  if (context.url) contextLines.push(`Watched URL: ${String(context.url).slice(0, 300)}`);
+  if (context.title) contextLines.push(`Page title: ${String(context.title).slice(0, 120)}`);
+  if (context.appName) contextLines.push(`App: ${String(context.appName).slice(0, 80)}`);
+  if (context.from) contextLines.push(`From: ${String(context.from).slice(0, 80)}`);
+  if (context.to) contextLines.push(`To: ${String(context.to).slice(0, 80)}`);
+  if (context.summary) contextLines.push(`Observed: ${String(context.summary).slice(0, 240)}`);
 
   const objective = contextLines.length
     ? `${instructions}\n\n[Current occurrence]\n${contextLines.join("\n")}`

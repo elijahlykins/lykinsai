@@ -31,6 +31,7 @@ const {
   toHarnessResult,
 } = require("./task-runtime/executors/localExecutor.cjs");
 const { compileLocalTask, compileRoutineTask } = require("./task-runtime/taskCompiler.cjs");
+const { createBrowserObserveHost } = require("./bot-routines/browserObserveHost.cjs");
 // Local Mode task runner (files + terminal on the user's machine). Only used
 // when the user enabled Local Mode from the Vault switch.
 const localSystem = require("./localSystem.cjs");
@@ -6956,7 +6957,20 @@ function createAgentRuntime(deps) {
             "Routines belong to a bot, and this chat isn't running as one — ask the user to use one of their bots.",
         };
       }
-      const result = routineBridge.createFromInstruction(String(instruction || ""), { bot, botId: bot.id });
+      const wc = getBrowserWebContents?.(agent.id);
+      const liveUrl = (wc && !wc.isDestroyed?.() ? wc.getURL?.() : "") || agent.url || "";
+      const browserContext = /^https?:/i.test(liveUrl)
+        ? {
+            url: liveUrl,
+            title: wc && !wc.isDestroyed?.() ? wc.getTitle?.() || "" : "",
+            appName: "LYKN",
+          }
+        : null;
+      const result = routineBridge.createFromInstruction(String(instruction || ""), {
+        bot,
+        botId: bot.id,
+        browserContext,
+      });
       if (!result?.ok) {
         return { ok: false, output: "", summary: `Could not create the routine: ${result?.error || "unknown error"}` };
       }
@@ -7167,6 +7181,22 @@ function createAgentRuntime(deps) {
     agent.activeTaskId = canonicalTask.id;
     agent.generation += 1;
     const gen = agent.generation;
+
+    const notifyOnly =
+      routine.trigger?.notifyOnly === true && String(triggerContext.reason || "") !== "manual";
+    if (notifyOnly) {
+      const output = String(triggerContext.summary || "Watched condition matched.").slice(0, 2000);
+      taskRuntime.complete(canonicalTask.id, { output, executor: "monitor" });
+      agent.activeTaskId = "";
+      return {
+        taskId: canonicalTask.id,
+        status: "completed",
+        output,
+        error: "",
+        usage: { calls: 0, inputTokens: 0, outputTokens: 0, byStage: {} },
+      };
+    }
+
     agent.abort = new AbortController();
     agent.busy = true;
     agent.status = "running";
@@ -7204,12 +7234,27 @@ function createAgentRuntime(deps) {
         });
         return toHarnessResult(out);
       };
-      const browserRefusal = async () => ({
-        ok: false,
-        output: "",
-        summary:
-          "The live browser isn't available in unattended routine runs yet. Use research_report for web information, or reply with what you can determine without the browser.",
-      });
+      const browserChild = async ({ instruction, signal, task, progress }) => {
+        ensureBrowserWindow?.(agent.id, { show: false, focus: false });
+        const wc = getBrowserWebContents?.(agent.id);
+        if (!wc || wc.isDestroyed?.()) {
+          return { ok: false, output: "", summary: "The routine's browser tab is not available." };
+        }
+        const out = await browserExecutor.execute(task || canonicalTask, {
+          signal,
+          progress,
+          browse: {
+            agent,
+            gen,
+            wc,
+            browseGoal: String(instruction || canonicalTask.objective),
+            convHistory: [],
+            sendPolicy: "auto",
+            userAsk: String(instruction || ""),
+          },
+        });
+        return toHarnessResult(out);
+      };
 
       // The routine's capability envelope decides which executors exist in
       // this run. A missing executor reads as "not available in this run" to
@@ -7217,6 +7262,7 @@ function createAgentRuntime(deps) {
       const caps = new Set(Array.isArray(canonicalTask.capabilities) ? canonicalTask.capabilities : []);
       const hasLocal =
         caps.has("local_computer") || [...caps].some((c) => c.startsWith("files.") || c.startsWith("local."));
+      const hasBrowser = caps.has("browser") || [...caps].some((c) => String(c).startsWith("browser."));
       const executors = {
         reply: streamTool("general"),
         ...(caps.has("research_report") ? { research_report: streamTool("research") } : {}),
@@ -7224,13 +7270,15 @@ function createAgentRuntime(deps) {
         ...(caps.has("build_artifact") ? { build_artifact: streamTool("build") } : {}),
         ...(caps.has("generate_image") ? { generate_image: streamTool("image") } : {}),
         ...(hasLocal ? { local_computer: localChild } : {}),
-        browser: browserRefusal,
+        ...(hasBrowser ? { browser: browserChild } : {}),
       };
-      const primaryTool = hasLocal && routine.trigger?.type !== "schedule"
-        ? "local_computer"
-        : caps.has("research_report")
-          ? "research_report"
-          : "";
+      const primaryTool = hasBrowser && routine.trigger?.type === "browser"
+        ? "browser"
+        : hasLocal && routine.trigger?.type !== "schedule"
+          ? "local_computer"
+          : caps.has("research_report")
+            ? "research_report"
+            : "";
 
       agent.lastBotModelUsage = modelUsage;
       const execution = await taskRuntime.execute(canonicalTask.id, botExecutor, {
@@ -7817,6 +7865,28 @@ function createAgentRuntime(deps) {
     };
   }
 
+  function listRoutineBrowserTabs() {
+    const out = [];
+    for (const a of agents.values()) {
+      const wc = getBrowserWebContents?.(a.id);
+      if (!wc || wc.isDestroyed?.()) continue;
+      out.push({
+        id: a.id,
+        url: wc.getURL?.() || a.url || "",
+        title: wc.getTitle?.() || "",
+        wc,
+        appName: "LYKN",
+      });
+    }
+    return out;
+  }
+
+  const browserObserveHost = createBrowserObserveHost({
+    listTabs: listRoutineBrowserTabs,
+    getDOMCatalog: (wc) => ownedBrowserAct.getDOMCatalog(wc),
+    getPageContext: (wc) => ownedBrowserAct.getPageContext(wc),
+  });
+
   // The ONE canonical browser executor. Every browser run — a normal Agent's
   // browse, a Bot's approved browser errand, the mail-compose venue — executes
   // its canonical Task through this instance, so identity, capabilities,
@@ -7825,6 +7895,7 @@ function createAgentRuntime(deps) {
   // context.browse; the browser itself stays owned by the existing
   // controller/actuator stack inside runModularBrowserAgent.
   const browserExecutor = new BrowserExecutor({
+    observePage: ({ target, query }) => browserObserveHost.observe({ target, query }),
     runBrowserTask: async ({ task, context }) => {
       const { agent, gen, wc, browseGoal, convHistory, maxRounds, sendPolicy, userAsk } =
         context.browse;
@@ -12622,6 +12693,22 @@ function createAgentRuntime(deps) {
     setRoutineBridge,
     stopTask,
     listActiveTasks,
+    observeRoutineBrowser: (trigger) => browserExecutor.observePassive({ target: trigger, query: trigger }),
+    subscribeRoutineBrowser: (trigger, onEvent) => browserObserveHost.subscribe(trigger, onEvent),
+    callMonitorModel: async (opts = {}) => {
+      const model = browserAgent.createAgentModel({
+        apiBase,
+        getAuthToken,
+        timeoutMs: opts.timeoutMs,
+      });
+      return model.structured(opts.stage || "monitor_semantic", {
+        system: opts.system,
+        user: opts.user,
+        imageUrl: opts.imageUrl,
+        schema: opts.schema,
+        maxTokens: opts.maxTokens,
+      });
+    },
     // Test-only: hand back the internal mutable agent so security tests can
     // seed a pending choice and exercise the REAL resolveChoice attestation.
     // This is never forwarded to a renderer — the runtime object lives only in

@@ -125,3 +125,62 @@ test("capability derivation is conservative and read-shaped by default", () => {
   const explicit = compileRoutineCapabilities("anything", { type: "manual" }, { explicit: ["reply"] });
   assert.deepEqual(explicit, ["reply"]);
 });
+
+test("watch this page with a bound tab becomes a browser trigger", () => {
+  const trigger = parseTriggerFromText("Watch this page and tell me when the price changes.", {
+    browserContext: { url: "https://shop.test/sku/1", title: "Acme — $49", appName: "LYKN" },
+  });
+  assert.equal(trigger.type, "browser");
+  assert.equal(trigger.url, "https://shop.test/sku/1");
+  assert.equal(trigger.notifyOnly, true);
+  assert.equal(trigger.condition.event, "changed");
+});
+
+test("watch this page without a tab refuses instead of picking a random one", () => {
+  const resolved = resolveRoutineSpec("Watch this page and tell me when the status changes.");
+  assert.equal(resolved.ok, false);
+  assert.match(resolved.error, /which page/i);
+});
+
+test("tell me when this button becomes enabled binds a role target", () => {
+  const trigger = parseTriggerFromText("Tell me when this button becomes enabled.", {
+    browserContext: { url: "https://app.test/deploy" },
+  });
+  assert.equal(trigger.type, "browser");
+  assert.equal(trigger.condition.event, "enabled");
+  assert.equal(trigger.target.role, "button");
+  assert.equal(trigger.notifyOnly, true);
+});
+
+test("watch this window with an explicit app becomes a screen trigger", () => {
+  const trigger = parseTriggerFromText("Watch this window and tell me when the export finishes.", {
+    windowContext: { appName: "Final Cut Pro", title: "Export" },
+  });
+  assert.equal(trigger.type, "screen");
+  assert.equal(trigger.appName, "Final Cut Pro");
+  assert.equal(trigger.notifyOnly, true);
+  assert.match(String(trigger.condition.semantic), /export/i);
+});
+
+test("watch this window without a target refuses instead of picking a random window", () => {
+  const resolved = resolveRoutineSpec("Notify me if this screen changes.");
+  assert.equal(resolved.ok, false);
+  assert.match(resolved.error, /which window/i);
+});
+
+test("act-on-change browser routines gain interact caps; notify-only stays read", () => {
+  const notify = compileRoutineCapabilities("Tell me when this page changes.", {
+    type: "browser",
+    url: "https://x.test",
+    notifyOnly: true,
+  });
+  assert.ok(notify.includes("browser.read"));
+  assert.ok(!notify.includes("browser.interact"));
+
+  const act = compileRoutineCapabilities("Watch this deployment. If it fails, inspect it.", {
+    type: "browser",
+    url: "https://render.com/deploy/1",
+    notifyOnly: false,
+  });
+  assert.ok(act.includes("browser.interact"));
+});

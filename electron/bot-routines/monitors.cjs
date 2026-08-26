@@ -7,11 +7,13 @@
  * This module observes; it never interprets. Filesystem monitors use native
  * fs.watch (event-driven) with a bounded polling fallback; process monitors
  * poll pgrep at a bounded interval because process exit has no portable
- * event. Change detection is DETERMINISTIC — name sets, sizes, mtimes,
- * running/not-running — hashed into a fingerprint. When nothing changed,
- * nothing happens: no Task, no notification, no model call. Semantic
- * evaluation ("did something IMPORTANT change?") belongs to the Task a
- * trigger spawns, so the model runs only AFTER a meaningful change.
+ * event; browser monitors take a compact AXI-style snapshot (no model call);
+ * screen monitors fingerprint a targeted window (pixels only when native
+ * state cannot answer). Change detection is DETERMINISTIC — name sets,
+ * sizes, mtimes, running/not-running, compact DOM fingerprints, perceptual
+ * image hashes. When nothing changed, nothing happens: no Task, no
+ * notification, no model call. Semantic evaluation is reached only AFTER a
+ * meaningful change that is not deterministically decidable.
  *
  * Resource control:
  *   - max concurrent monitors (MAX_MONITORS)
@@ -23,8 +25,8 @@
  *
  * Persisted monitor state is minimal (routineStore.setMonitorState):
  * fingerprint, a capped name list for "created" detection, condition state,
- * lastTriggeredAt / cooldownUntil, errorCount. Never file contents, page
- * bytes, or screenshots.
+ * lastTriggeredAt / cooldownUntil, errorCount, compact diagnostics.
+ * Never file contents, page bytes, screenshots, OCR, or generation refs.
  */
 
 const fs = require("node:fs");
@@ -33,7 +35,20 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 const { execFile } = require("node:child_process");
-const { matchesPattern } = require("./triggers.cjs");
+const { matchesPattern, isMonitorTrigger } = require("./triggers.cjs");
+const {
+  evaluateBrowserCondition,
+  urlsMatch,
+  looksLoggedOut,
+  titleMatches,
+  isEphemeralRef,
+} = require("./browserObservation.cjs");
+const {
+  evaluateNativeWindowState,
+  evaluateScreenFingerprints,
+  fingerprintNative,
+} = require("./screenObservation.cjs");
+const { createSemanticEvaluator } = require("./semanticEval.cjs");
 
 const MAX_MONITORS = 20;
 const DEBOUNCE_MS = 1000;
@@ -41,6 +56,8 @@ const COOLDOWN_MS = 60 * 1000;
 const MIN_POLL_MS = 5 * 1000;
 const FS_FALLBACK_POLL_MS = 30 * 1000;
 const PROCESS_POLL_MS = 10 * 1000;
+const BROWSER_POLL_MS = 10 * 1000;
+const SCREEN_POLL_MS = 15 * 1000;
 const ERROR_BACKOFF_BASE_MS = 15 * 1000;
 const ERROR_BACKOFF_MAX_MS = 5 * 60 * 1000;
 /** Above this many matching entries we keep only the fingerprint, not names. */
@@ -115,6 +132,7 @@ function defaultProcessRunning(name) {
 function createMonitorRuntime({
   store,
   onTrigger,
+  onStatus: onStatusFn = null,
   now = () => Date.now(),
   setTimeoutFn = setTimeout,
   clearTimeoutFn = clearTimeout,
@@ -130,15 +148,62 @@ function createMonitorRuntime({
   const debounceMs = Number.isFinite(deps.debounceMs) ? deps.debounceMs : DEBOUNCE_MS;
   const processPollMs = Math.max(MIN_POLL_MS, Number(deps.processPollMs) || PROCESS_POLL_MS);
   const fsFallbackPollMs = Math.max(MIN_POLL_MS, Number(deps.fsFallbackPollMs) || FS_FALLBACK_POLL_MS);
+  const browserPollMs = Math.max(MIN_POLL_MS, Number(deps.browserPollMs) || BROWSER_POLL_MS);
+  const screenPollMs = Math.max(MIN_POLL_MS, Number(deps.screenPollMs) || SCREEN_POLL_MS);
+  const observeBrowser = deps.observeBrowser || null;
+  const observeScreen = deps.observeScreen || null;
+  const captureScreenForVision = deps.captureScreenForVision || null;
+  const subscribePageEvents = deps.subscribePageEvents || null;
+  const onStatus =
+    typeof onStatusFn === "function"
+      ? onStatusFn
+      : typeof deps.onStatus === "function"
+        ? deps.onStatus
+        : () => {};
+  const semantic = createSemanticEvaluator({
+    callModel: deps.callModel || null,
+    now,
+    cooldownMs: Number.isFinite(deps.semanticCooldownMs) ? deps.semanticCooldownMs : cooldownMs,
+  });
 
   /** @type {Map<string, {kind:string, close:() => void}>} routineId → active monitor */
   const active = new Map();
 
   function isMonitored(routine) {
-    return (
-      routine?.enabled === true &&
-      (routine?.trigger?.type === "filesystem" || routine?.trigger?.type === "process")
-    );
+    return routine?.enabled === true && isMonitorTrigger(routine?.trigger);
+  }
+
+  function bump(routineId, fields) {
+    const state = store.getMonitorState(routineId) || {};
+    const patch = { ...fields };
+    for (const [key, amount] of Object.entries(fields)) {
+      if (typeof amount === "number" && /^(pollTicks|observations|changesDetected|semanticEvaluations|visionCalls|tasksTriggered|modelCalls)$/.test(key)) {
+        patch[key] = (Number(state[key]) || 0) + amount;
+      }
+    }
+    store.setMonitorState(routineId, patch);
+    return store.getMonitorState(routineId);
+  }
+
+  function setStatus(routine, status, { notify = false, summary = "" } = {}) {
+    const prev = store.getMonitorState(routine.id)?.status;
+    store.setMonitorState(routine.id, { status, ...(summary ? { lastStatusSummary: String(summary).slice(0, 200) } : {}) });
+    if (notify && prev !== status) {
+      const lastAt = Number(store.getMonitorState(routine.id)?.lastStatusNotifiedAt) || 0;
+      if (now() - lastAt > cooldownMs) {
+        store.setMonitorState(routine.id, { lastStatusNotifiedAt: now() });
+        try {
+          onStatus(routine, { status, summary, notify: true });
+        } catch {
+          /* status observers must not break the monitor */
+        }
+      }
+    }
+  }
+
+  function pollDelayFor(trigger, fallback) {
+    const requested = Number(trigger?.pollMs);
+    return Math.max(MIN_POLL_MS, Number.isFinite(requested) && requested > 0 ? requested : fallback);
   }
 
   function inCooldown(routineId) {
@@ -342,6 +407,349 @@ function createMonitorRuntime({
     };
   }
 
+  function startPolledMonitor(routine, kind, evaluateFn, delayMs, { subscribe } = {}) {
+    let timer = null;
+    let closed = false;
+    let inFlight = false;
+    let events = null;
+    const delay = pollDelayFor(routine.trigger, delayMs);
+    const tick = async () => {
+      if (closed || inFlight) return;
+      inFlight = true;
+      bump(routine.id, { pollTicks: 1 });
+      let result;
+      try {
+        result = await evaluateFn(store.get(routine.id) || routine);
+      } finally {
+        inFlight = false;
+      }
+      let next = delay;
+      if (result?.error) next = noteError(routine.id);
+      else clearError(routine.id);
+      if (closed) return;
+      if (timer) clearTimeoutFn(timer);
+      timer = setTimeoutFn(tick, next);
+      timer?.unref?.();
+    };
+    if (typeof subscribe === "function") {
+      try {
+        events = subscribe(routine.trigger, () => {
+          if (closed || inFlight) return;
+          void tick();
+        });
+      } catch {
+        events = null;
+      }
+    }
+    void tick();
+    return {
+      kind,
+      close: () => {
+        closed = true;
+        if (timer) clearTimeoutFn(timer);
+        try {
+          events?.close?.();
+        } catch {
+          /* already gone */
+        }
+      },
+    };
+  }
+
+  // ── Browser ────────────────────────────────────────────────────────────────
+
+  async function evaluateBrowserRoutine(routine) {
+    if (typeof observeBrowser !== "function") {
+      setStatus(routine, "waiting_for_target", { notify: false });
+      return { error: true, status: "waiting_for_target" };
+    }
+    bump(routine.id, { observations: 1 });
+    let obs;
+    try {
+      obs = await observeBrowser(routine.trigger);
+    } catch {
+      return { error: true };
+    }
+    if (obs && isEphemeralRef(routine.trigger?.target?.loc)) {
+      return { error: true };
+    }
+
+    const trig = routine.trigger;
+    const status = String(obs?.status || (obs?.ok === false ? "target_unavailable" : "ok"));
+    const state = store.getMonitorState(routine.id) || {};
+
+    if (status === "stale_ref" || status === "stale_ref_retry") {
+      // Re-observe once with a fresh generation. A single stale ref is not a
+      // monitor failure.
+      try {
+        obs = await observeBrowser(trig);
+      } catch {
+        return { error: true };
+      }
+    }
+
+    const liveStatus = String(obs?.status || (obs?.ok === false ? "target_unavailable" : "ok"));
+    if (liveStatus === "target_unavailable" || liveStatus === "waiting_for_target") {
+      setStatus(routine, liveStatus, {
+        notify: true,
+        summary:
+          liveStatus === "waiting_for_target"
+            ? "Waiting for the watched page to be available."
+            : "The watched page is not open.",
+      });
+      store.setMonitorState(routine.id, { lastObservedAt: now() });
+      return { fired: false, status: liveStatus };
+    }
+
+    const liveUrl = String(obs?.url || "");
+    if (trig.url || trig.origin) {
+      if (!urlsMatch(liveUrl, trig.url, trig.origin)) {
+        const loggedOut = looksLoggedOut(liveUrl, obs?.title, trig.origin);
+        const nextStatus = loggedOut ? "needs_attention" : "navigated_away";
+        setStatus(routine, nextStatus, {
+          notify: true,
+          summary: loggedOut
+            ? "The watched page looks signed out. Open it and sign in — this monitor will not ask again until the page is back."
+            : "The watched tab navigated somewhere else. This monitor will not follow a random replacement page.",
+        });
+        store.setMonitorState(routine.id, { lastObservedAt: now() });
+        return { fired: false, status: nextStatus };
+      }
+    }
+    if (trig.titlePattern && !titleMatches(obs?.title, trig.titlePattern)) {
+      setStatus(routine, "navigated_away", {
+        notify: true,
+        summary: "The watched tab no longer matches the expected title.",
+      });
+      store.setMonitorState(routine.id, { lastObservedAt: now() });
+      return { fired: false, status: "navigated_away" };
+    }
+
+    setStatus(routine, "watching");
+    const fingerprint = String(obs?.fingerprint || "");
+    const observed = {
+      lastObservedAt: now(),
+      lastFingerprint: fingerprint,
+      lastValue: String(obs?.target?.text || obs?.target?.name || "").slice(0, 80),
+      lastUrl: liveUrl.slice(0, 300),
+      lastTitle: String(obs?.title || "").slice(0, 80),
+      lastDisabled: obs?.target?.disabled === true,
+      lastFound: obs?.target?.found === true,
+    };
+
+    if (!state.lastFingerprint) {
+      store.setMonitorState(routine.id, observed);
+      return { fired: false, baseline: true };
+    }
+    if (fingerprint && fingerprint === state.lastFingerprint) {
+      store.setMonitorState(routine.id, { lastObservedAt: observed.lastObservedAt });
+      return { fired: false, unchanged: true };
+    }
+
+    bump(routine.id, { changesDetected: 1 });
+    store.setMonitorState(routine.id, observed);
+
+    const previous = {
+      fingerprint: state.lastFingerprint,
+      value: state.lastValue,
+      title: state.lastTitle,
+      target: {
+        found: state.lastFound === true,
+        text: state.lastValue,
+        name: state.lastValue,
+        disabled: state.lastDisabled === true,
+      },
+    };
+    const current = {
+      fingerprint,
+      value: observed.lastValue,
+      title: observed.lastTitle,
+      target: obs?.target || { found: false, text: observed.lastValue },
+    };
+
+    const verdict = evaluateBrowserCondition({
+      previous,
+      current,
+      condition: trig.condition,
+    });
+    if (verdict.decidable === false) {
+      bump(routine.id, { semanticEvaluations: 1, modelCalls: 1 });
+      let evalResult;
+      try {
+        evalResult = await semantic.evaluateSemantic({
+          routineId: routine.id,
+          condition: trig.condition?.semanticPrompt || routine.instructions,
+          observation: {
+            url: liveUrl,
+            title: observed.lastTitle,
+            value: observed.lastValue,
+            summary: `${verdict.from || ""} → ${verdict.to || ""}`.trim(),
+          },
+          previous: { value: state.lastValue },
+        });
+      } catch {
+        return { fired: false, error: true };
+      }
+      if (!evalResult.matched) return { fired: false, semantic: true };
+      const fired = trigger(routine, "browser:semantic", {
+        url: liveUrl,
+        title: observed.lastTitle,
+        from: verdict.from,
+        to: verdict.to,
+        summary: evalResult.summary || `${verdict.from} → ${verdict.to}`,
+      });
+      if (fired) bump(routine.id, { tasksTriggered: 1 });
+      return { fired, semantic: true };
+    }
+    if (!verdict.matched) return { fired: false };
+    const fired = trigger(routine, `browser:${trig.condition?.event || "changed"}`, {
+      url: liveUrl,
+      title: observed.lastTitle,
+      from: verdict.from,
+      to: verdict.to,
+      summary: verdict.summary,
+    });
+    if (fired) bump(routine.id, { tasksTriggered: 1 });
+    return { fired };
+  }
+
+  function startBrowserMonitor(routine) {
+    return startPolledMonitor(routine, "browser", evaluateBrowserRoutine, browserPollMs, {
+      subscribe: subscribePageEvents,
+    });
+  }
+
+  // ── Screen ─────────────────────────────────────────────────────────────────
+
+  async function evaluateScreenRoutine(routine) {
+    if (typeof observeScreen !== "function") {
+      setStatus(routine, "waiting_for_target", { notify: false });
+      return { error: true, status: "waiting_for_target" };
+    }
+    bump(routine.id, { observations: 1 });
+    let obs;
+    try {
+      obs = await observeScreen(routine.trigger);
+    } catch {
+      return { error: true };
+    }
+    const state = store.getMonitorState(routine.id) || {};
+    const native = {
+      found: obs?.found === true,
+      appName: obs?.appName || routine.trigger.appName || "",
+      title: obs?.title || "",
+      appRunning: obs?.appRunning !== false,
+    };
+
+    if (!native.found) {
+      const status = native.appRunning === false ? "target_unavailable" : "waiting_for_target";
+      setStatus(routine, status, {
+        notify: true,
+        summary:
+          status === "waiting_for_target"
+            ? "Waiting for the watched window."
+            : "The watched app is not running.",
+      });
+      store.setMonitorState(routine.id, { lastObservedAt: now() });
+      return { fired: false, status };
+    }
+
+    setStatus(routine, "watching");
+    const nativeFp = fingerprintNative(native);
+    const previousNative = {
+      found: state.lastNativeFound === true,
+      title: state.lastTitle || "",
+      appName: state.lastAppName || "",
+    };
+    const nativeVerdict = evaluateNativeWindowState({
+      previous: state.lastNativeFound === undefined ? null : previousNative,
+      current: native,
+      condition: routine.trigger.condition,
+    });
+    store.setMonitorState(routine.id, {
+      lastObservedAt: now(),
+      lastNativeFound: native.found,
+      lastTitle: String(native.title).slice(0, 80),
+      lastAppName: String(native.appName).slice(0, 80),
+      lastNativeFingerprint: nativeFp,
+    });
+
+    if (nativeVerdict && nativeVerdict.decidable && nativeVerdict.matched) {
+      bump(routine.id, { changesDetected: 1 });
+      const fired = trigger(routine, "screen:native", {
+        appName: native.appName,
+        title: native.title,
+        from: nativeVerdict.from,
+        to: nativeVerdict.to,
+        summary: nativeVerdict.summary,
+      });
+      if (fired) bump(routine.id, { tasksTriggered: 1 });
+      return { fired, native: true };
+    }
+
+    const currentFp = String(obs?.fingerprint || "");
+    if (!currentFp) {
+      // Native state did not fire and there is no image fingerprint: treat as
+      // baseline / unchanged. Never invent a vision call.
+      if (!state.lastFingerprint) return { fired: false, baseline: true };
+      return { fired: false, unchanged: true };
+    }
+    if (!state.lastFingerprint) {
+      store.setMonitorState(routine.id, { lastFingerprint: currentFp });
+      return { fired: false, baseline: true };
+    }
+    const diff = evaluateScreenFingerprints(state.lastFingerprint, currentFp);
+    store.setMonitorState(routine.id, { lastFingerprint: currentFp });
+    if (diff.unchanged || diff.baseline) return { fired: false, unchanged: true };
+    bump(routine.id, { changesDetected: 1 });
+    if (!diff.meaningful) return { fired: false, noisy: true };
+
+    const needsSemantic = routine.trigger.semantic === true || !!routine.trigger.condition?.semantic;
+    if (!needsSemantic) {
+      const fired = trigger(routine, "screen:changed", {
+        appName: native.appName,
+        title: native.title,
+        summary: "The watched window changed.",
+      });
+      if (fired) bump(routine.id, { tasksTriggered: 1 });
+      return { fired };
+    }
+
+    if (typeof captureScreenForVision !== "function") {
+      return { fired: false, semantic: true, skipped: "no_vision_seam" };
+    }
+    bump(routine.id, { semanticEvaluations: 1, visionCalls: 1, modelCalls: 1 });
+    let imageUrl = "";
+    try {
+      const shot = await captureScreenForVision(routine.trigger);
+      imageUrl = String(shot?.imageUrl || "");
+    } catch {
+      return { fired: false, error: true };
+    }
+    let evalResult;
+    try {
+      evalResult = await semantic.evaluateVision({
+        routineId: routine.id,
+        condition: routine.trigger.condition?.semantic || routine.instructions,
+        imageUrl,
+      });
+    } finally {
+      imageUrl = "";
+    }
+    if (!evalResult.matched) return { fired: false, semantic: true };
+    const fired = trigger(routine, "screen:semantic", {
+      appName: native.appName,
+      title: native.title,
+      summary: evalResult.summary || "The watched window matches the condition.",
+    });
+    if (fired) bump(routine.id, { tasksTriggered: 1 });
+    return { fired, semantic: true };
+  }
+
+  function startScreenMonitor(routine) {
+    return startPolledMonitor(routine, "screen", evaluateScreenRoutine, screenPollMs);
+  }
+
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   /** Start/stop the monitor for one routine to match its current definition. */
@@ -355,10 +763,12 @@ function createMonitorRuntime({
     }
     if (!isMonitored(routine)) return;
     if (active.size >= MAX_MONITORS) return; // bounded; surfaced via monitorCount
-    const monitor =
-      routine.trigger.type === "filesystem"
-        ? startFilesystemMonitor(routine)
-        : startProcessMonitor(routine);
+    let monitor;
+    if (routine.trigger.type === "filesystem") monitor = startFilesystemMonitor(routine);
+    else if (routine.trigger.type === "process") monitor = startProcessMonitor(routine);
+    else if (routine.trigger.type === "browser") monitor = startBrowserMonitor(routine);
+    else if (routine.trigger.type === "screen") monitor = startScreenMonitor(routine);
+    else return;
     active.set(id, monitor);
   }
 
@@ -381,7 +791,9 @@ function createMonitorRuntime({
       const routine = store.get(routineId);
       if (!routine) continue;
       if (monitor.kind === "filesystem") await evaluateFilesystemRoutine(routine);
-      else await evaluateProcessRoutine(routine);
+      else if (monitor.kind === "process") await evaluateProcessRoutine(routine);
+      else if (monitor.kind === "browser") await evaluateBrowserRoutine(routine);
+      else if (monitor.kind === "screen") await evaluateScreenRoutine(routine);
     }
   }
 
@@ -400,6 +812,15 @@ function createMonitorRuntime({
       const routine = store.get(routineId);
       return routine ? evaluateProcessRoutine(routine) : Promise.resolve({ error: true });
     },
+    evaluateBrowser: (routineId) => {
+      const routine = store.get(routineId);
+      return routine ? evaluateBrowserRoutine(routine) : Promise.resolve({ error: true });
+    },
+    evaluateScreen: (routineId) => {
+      const routine = store.get(routineId);
+      return routine ? evaluateScreenRoutine(routine) : Promise.resolve({ error: true });
+    },
+    semanticCounts: () => semantic.counts(),
   };
 }
 
@@ -409,4 +830,6 @@ module.exports = {
   COOLDOWN_MS,
   DEBOUNCE_MS,
   MIN_POLL_MS,
+  BROWSER_POLL_MS,
+  SCREEN_POLL_MS,
 };

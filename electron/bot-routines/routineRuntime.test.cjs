@@ -255,6 +255,67 @@ test("monitored external content cannot expand what the task may do", async () =
   assert.equal(call.routine.instructions, "Summarize new PDFs.");
 });
 
+test("a hostile page observation cannot expand capabilities or rewrite the objective", async () => {
+  const world = makeWorld();
+  const routine = world.runtime.createRoutine({
+    botId: BOT.id,
+    bot: BOT,
+    name: "Deployment monitor",
+    instructions: "Watch this deployment. If it fails, inspect it.",
+    trigger: {
+      type: "browser",
+      url: "https://render.com/deploy/123",
+      condition: { event: "equals", value: "Failed" },
+      target: { kind: "text", text: "Failed" },
+    },
+    capabilities: ["reply", "browser.read", "browser.interact"],
+  });
+  await world.runtime.runNow(routine.id);
+  const call = world.executions[0];
+  assert.deepEqual(call.routine.capabilities, ["reply", "browser.read", "browser.interact"]);
+  assert.equal(call.routine.instructions, "Watch this deployment. If it fails, inspect it.");
+  assert.ok(!call.routine.capabilities.includes("local.shell.execute"));
+});
+
+test("browser monitor watching vs running is projected separately", async () => {
+  const world = makeWorld();
+  const routine = world.runtime.createRoutine({
+    botId: BOT.id,
+    bot: BOT,
+    name: "Deployment status",
+    instructions: "Tell me when the status changes.",
+    trigger: {
+      type: "browser",
+      url: "https://render.com/deploy/123",
+      condition: { event: "changed" },
+      notifyOnly: true,
+    },
+  });
+  const listed = world.runtime.listRoutines({})[0];
+  assert.equal(listed.watching, true);
+  assert.equal(listed.running, false);
+  assert.match(listed.watchingTarget, /render\.com/);
+  const run = world.runtime.runNow(routine.id);
+  const during = world.runtime.listRoutines({})[0];
+  assert.equal(during.running, true);
+  await run;
+  const after = world.runtime.listRoutines({})[0];
+  assert.equal(after.running, false);
+});
+
+test("natural-language browser creation binds the current tab", () => {
+  const world = makeWorld();
+  const result = world.runtime.createRoutineFromInstruction(
+    "Watch this page and tell me when the status changes from Building.",
+    { bot: BOT, browserContext: { url: "https://render.com/deploy/123", title: "Deploy" } },
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.routine.trigger.type, "browser");
+  assert.equal(result.routine.trigger.url, "https://render.com/deploy/123");
+  assert.equal(result.routine.watching, true);
+  assert.ok(result.routine.capabilities.includes("browser.read"));
+});
+
 test("routine definitions survive a runtime restart with history intact", async () => {
   const world = makeWorld();
   const routine = manualRoutine(world.runtime);

@@ -34,13 +34,27 @@ class BrowserExecutor {
    * @param {(args: {task: object, allowedActions: Set<string>, context: object}) => Promise<object>} deps.runBrowserTask
    *   Host function that runs one browser task and resolves with the modular
    *   runtime's mapped result ({status, ok, answer, history, url, ...}).
+   * @param {(args: {target: object, query?: object}) => Promise<object>} [deps.observePage]
+   *   Passive observation seam: compact page state, no model call, no action.
    */
-  constructor({ runBrowserTask }) {
+  constructor({ runBrowserTask, observePage = null }) {
     if (typeof runBrowserTask !== "function") {
       throw new TypeError("BrowserExecutor requires a runBrowserTask function");
     }
     this.name = "browser";
     this.runBrowserTask = runBrowserTask;
+    this.observePage = observePage;
+  }
+
+  /**
+   * Observe a page without running the browser-agent decision loop.
+   * Used by Bot Routine monitors. Never acts. Never calls a model.
+   */
+  async observePassive({ target, query } = {}) {
+    if (typeof this.observePage !== "function") {
+      return { ok: false, status: "unavailable", reason: "observe_seam_missing" };
+    }
+    return this.observePage({ target, query });
   }
 
   async execute(task, runtime = {}) {

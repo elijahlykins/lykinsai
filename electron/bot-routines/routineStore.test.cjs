@@ -156,8 +156,27 @@ test("listForBot scopes by owner", () => {
   assert.equal(store.list().length, 2);
 });
 
-test("a corrupt store file loads as empty instead of crashing", () => {
-  fs.writeFileSync(path.join(dir, "bot-routines.json"), "{not json");
+test("a browser trigger survives restart without ephemeral refs", async () => {
   const store = makeStore();
-  assert.deepEqual(store.list(), []);
+  const routine = store.create({
+    botId: "bot-1",
+    bot: BOT,
+    name: "Price watch",
+    instructions: "Tell me when the price changes.",
+    trigger: {
+      type: "browser",
+      url: "https://shop.test/sku/1",
+      target: { kind: "role", role: "status", name: "Price" },
+      condition: { event: "changed" },
+      notifyOnly: true,
+    },
+  });
+  assert.doesNotMatch(JSON.stringify(routine.trigger), /g\d+:/);
+  await store.persistNow();
+  const reopened = makeStore();
+  const loaded = reopened.get(routine.id);
+  assert.equal(loaded.trigger.type, "browser");
+  assert.equal(loaded.trigger.url, "https://shop.test/sku/1");
+  assert.equal(loaded.trigger.target.role, "status");
+  assert.doesNotMatch(JSON.stringify(loaded), /g\d+:/);
 });

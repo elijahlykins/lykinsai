@@ -386,7 +386,11 @@ function createRoutineStore({ userDataPath, now = () => Date.now(), onChange = (
   function setMonitorState(routineId, patch = {}) {
     const id = String(routineId || "");
     if (!routines.has(id)) return null;
-    const state = { ...(monitors.get(id) || {}), ...patch };
+    const clean = { ...patch };
+    for (const key of ["screenshot", "image", "imageUrl", "dataUrl", "ocr", "pageText", "catalog", "visibleText", "raw", "ref"]) {
+      delete clean[key];
+    }
+    const state = { ...(monitors.get(id) || {}), ...clean };
     monitors.set(id, state);
     // Monitor state changes are frequent (every observation tick can update
     // lastObservedAt) — debounced persistence is enough; the fields that must
