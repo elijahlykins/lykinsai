@@ -121,7 +121,7 @@ This work does not modify `electron/task-runtime/executors/remoteExecutor.cjs` o
 
 - Local stdio MCP
 - MCP Registry / marketplace
-- Connector demolition
+- Connector demolition (see `docs/refactor/mcp-parity-report.md` for the Phase 3 proof and deletion map)
 - First-party tool progressive disclosure migration
 - Provider-specific Gmail/Drive/Notion/Slack/GitHub MCP adapters
 - Enterprise auth beyond the generic MCP OAuth profile
