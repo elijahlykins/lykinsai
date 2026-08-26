@@ -610,3 +610,109 @@ Commit message for this phase:
 
 Stop after that commit.
 Do not begin connector demolition.
+
+---
+
+## Phase 4 demolition-ready result
+
+Status: legacy Vault-sync connector runtime retired on the rebased `feat/universal-mcp` branch.
+Previous main was `d9224d4`.
+The integrated pre-demolition HEAD was `723d832`.
+The rebase preserved RemoteExecutor, GitHub workflows, Universal MCP, Bot and Routine `connectionIds`, MCP route registration, Remote UI, MCP Connections UI, and both systems' test scripts.
+
+### Calendar dependency
+
+The old flow was Calendar UI to `/api/connections` to `connectionsOAuth.routes.js` to `connectors-service.js` to the Google or Apple calendar adapter to `lykn_events`.
+Google OAuth, Google Calendar reads, Apple CalDAV authentication and reads, recurring event parsing, incremental synchronization, cancellation, stale-event pruning, and background polling now belong to `lib/calendar/*`.
+The Calendar UI uses `/api/calendar/connections`.
+External calendar events continue to be mirrored read-only into `lykn_events`.
+The Calendar product does not create, edit, or delete source-provider events, so no provider write behavior was removed.
+The calendar runtime no longer imports the legacy connector registry, connector service, connector adapters, legacy OAuth routes, or Vault ingestion helpers.
+
+### Cursor Cloud dependency
+
+The old flow wrote an encrypted Cursor API key into a `social_connections` row and read it from the Cursor build runtime.
+Cursor credentials now use the typed `cursor_cloud_api_key` credential in `lykn_credentials` through `lib/security/credentialStore.js`.
+Cursor build rows can reference `credential_id`.
+Existing active Cursor rows are read only when no generic credential exists, decrypted with the compatible AES-256-GCM primitive, and copied into `lykn_credentials`.
+No secret is returned to the UI, stored in a Task, or exposed to model context.
+
+### Generic credential owner
+
+`lib/security/credentialStore.js` owns AES-256-GCM encryption, decryption, typed credential references, user-scoped storage access, and public secret-free projections.
+Universal MCP, Cursor Cloud, custom API connections, and the legacy-key rotation utility depend on this generic primitive.
+Provider and business logic remain outside the credential owner.
+The ciphertext format remains `base64(iv):base64(tag):base64(ciphertext)` under `CONNECTOR_TOKEN_KEY`, so existing compatible ciphertext can be migrated without plaintext export.
+
+### `social_connections` residuals
+
+There is no normal live product dependency on `social_connections`.
+The only trusted-runtime reads are bounded read-through migration paths for existing Cursor, Google Calendar, and Apple Calendar users.
+The key-rotation script retains access because those migration-source ciphertext rows must remain decryptable until migration is complete.
+Reset scripts and historical migrations may continue naming the table.
+The table must not be dropped until production telemetry or an explicit migration confirms that no unmigrated Cursor or calendar rows remain and the read-through paths have been removed.
+
+### OAuth residuals
+
+The provider registry OAuth routes are removed.
+The removed routes are `/api/connections/:provider/start`, `/oauth/callback/:provider`, `/api/connections/:provider/connect-info`, and `/api/connections/:provider/connect-token`.
+Google Calendar OAuth is retained under the Calendar-owned route and state table.
+MCP OAuth under `/oauth/mcp/*` is retained.
+User account authentication and Remote/GitHub authentication are unchanged.
+
+### Final death audit
+
+DELETE:
+
+- `connectors-service.js`
+- `server/routes/connectionsOAuth.routes.js`
+- Every provider adapter under `connectors/`
+- Legacy connector polling and `/api/connections/poll-due`
+- Provider OAuth and token-paste dialogs
+- Legacy connector list, sync, pause, reconnect, and disconnect routes
+- Notion token-based live refetch from `social_connections`
+- Legacy OAuth-backed Slack action-app discovery
+
+MIGRATE:
+
+- Google and Apple Calendar authentication and synchronization to `lib/calendar/*`
+- Cursor API key ownership to `lykn_credentials`
+- Existing Cursor and calendar rows through bounded lazy read-through
+- Settings connection management to Universal MCP, Calendar, Cursor Cloud, and Custom API surfaces
+- Vault app dock data to historical retained Vault source metadata
+
+KEEP:
+
+- Universal MCP runtime, OAuth, trust, connection restrictions, and explicit Vault save
+- RemoteExecutor and first-party GitHub workflows
+- Calendar-owned read-only provider synchronization
+- Generic credential storage and encryption
+- Custom REST connections as a separate explicit power-user surface
+- Markdown Memory, TaskRuntime, Bot and Routine restrictions, and internal LYKN tools
+
+DATA RETENTION ONLY:
+
+- Existing connector-imported Vault notes and their source metadata
+- Historical connector migrations and schema references
+- `social_connections` and `oauth_states` tables until a later data migration and approved schema drop
+
+There are zero unexplained runtime consumers of `CONNECTOR_REGISTRY`, `connectors/**`, `connectors-service.js`, legacy `oauth_states`, `pollDueConnections`, `runSync`, `saveConnectorNote`, or the provider OAuth routes.
+
+### Demolition surface removed
+
+The demolition removed the provider registry, provider adapters, Vault-sync save helper, legacy OAuth route module, connector poller, poll-due endpoint, connector management dialogs, and provider-token Notion refetch.
+The server route manifest now records 143 routes after removal of nine legacy connector routes.
+The catalog remains as presentation metadata for historical Vault content and recognizable source icons.
+
+### Runtime behavior differences
+
+Legacy providers no longer background-mirror external application content into Vault.
+Live external application reads and writes use Universal MCP unless the responsibility belongs to the narrowly owned Calendar, Cursor Cloud, Remote/GitHub, or Custom API product surface.
+Previously imported Vault items remain available and retain source presentation.
+Dragging a historical Notion URL with no stored body no longer performs a hidden token-based provider refetch.
+Calendar synchronization remains read-only and continues updating `lykn_events`.
+
+### Validation
+
+The Phase 4 validation record is maintained in the final implementation report for the branch.
+The required green checks include Universal MCP, agent and RemoteExecutor, Electron, server, security, memory, Calendar, Cursor Cloud, GitHub, Routine, Vault, build, typecheck, and lint, with pre-existing baseline failures recorded rather than concealed.

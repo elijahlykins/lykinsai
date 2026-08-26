@@ -904,6 +904,36 @@ test('MCP failure never falls back to connectors, Vault mirror, or lykn_call_app
   assert.notEqual(execResult.reason, 'legacy_connector');
 });
 
+test('legacy Vault-sync connector runtime is absent after demolition', () => {
+  const removed = [
+    'connectors-service.js',
+    'server/routes/connectionsOAuth.routes.js',
+    'src/components/connections/OAuthConnectDialog.jsx',
+    'src/components/connections/TokenConnectDialog.jsx',
+    'connectors/_save.js',
+    'connectors/google/gmail.js',
+    'connectors/google/drive.js',
+    'connectors/notion.js',
+    'connectors/slack.js',
+  ];
+  for (const rel of removed) {
+    assert.equal(fs.existsSync(path.join(ROOT, rel)), false, `${rel} must stay retired`);
+  }
+
+  const runtimeSources = [
+    'server.js',
+    'server/routes/feeds.routes.js',
+    'src/lib/synthesis/loadInUpdates.ts',
+    'src/components/connections/VaultAppDock.jsx',
+  ];
+  for (const rel of runtimeSources) {
+    const source = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    assert.equal(source.includes('/api/connections/poll-due'), false, rel);
+    assert.equal(source.includes("from('social_connections')"), false, rel);
+    assert.equal(source.includes("from './connectors-service.js'"), false, rel);
+  }
+});
+
 test('malicious MCP result cannot expand local file capabilities', () => {
   const task = {
     objective: 'Find Sarah email',

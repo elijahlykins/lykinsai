@@ -4,13 +4,13 @@
     "Ordered registration surface of server.js (Express app). Entry order IS the contract:",
     "Express matches in registration order, so any reordering here is a behavior change."
   ],
-  "routeCount": 139,
+  "routeCount": 143,
   "middlewareCount": 6,
   "byMethod": {
-    "DELETE": 5,
-    "GET": 42,
-    "PATCH": 6,
-    "POST": 86
+    "DELETE": 6,
+    "GET": 43,
+    "PATCH": 7,
+    "POST": 87
   },
   "byDomain": {
     "account": 8,
@@ -20,13 +20,13 @@
     "billing": 10,
     "chatCore": 5,
     "connections": 5,
-    "connectors": 10,
+    "connectors": 3,
     "customModels": 1,
     "desktop": 9,
-    "feeds": 9,
+    "feeds": 8,
     "files": 6,
     "learning": 1,
-    "other": 10,
+    "other": 22,
     "platform": 4,
     "synthesis": 5,
     "usage": 3,
@@ -432,6 +432,198 @@
         "<anonymous>"
       ],
       "domain": "connections",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/calendar/connections",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/calendar/connections/google/start",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/oauth/calendar/google/callback",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/calendar/connections/apple",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/calendar/connections/:id/sync",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "path": "/api/calendar/connections/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "path": "/api/calendar/connections/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/cursor/credentials/connect-info",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/cursor/credentials",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/cursor/credentials",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/cursor/credentials/:id/validate",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "path": "/api/cursor/credentials/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "path": "/api/cursor/credentials/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
       "flags": [
         "auth"
       ]
@@ -2187,21 +2379,6 @@
       "methods": [
         "POST"
       ],
-      "path": "/api/connections/poll-due",
-      "chain": [
-        "<anonymous>"
-      ],
-      "domain": "feeds",
-      "flags": [
-        "secretGated",
-        "externalContract"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "POST"
-      ],
       "path": "/api/ai/cursor-builds/poll-due",
       "chain": [
         "<anonymous>"
@@ -2210,128 +2387,6 @@
       "flags": [
         "secretGated",
         "externalContract"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "POST"
-      ],
-      "path": "/api/connections/:provider/start",
-      "chain": [
-        "requireAuth",
-        "<anonymous>"
-      ],
-      "domain": "connectors",
-      "flags": [
-        "auth"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "GET"
-      ],
-      "path": "/oauth/callback/:provider",
-      "chain": [
-        "<anonymous>"
-      ],
-      "domain": "connectors",
-      "flags": [
-        "externalContract"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "GET"
-      ],
-      "path": "/api/connections/:provider/connect-info",
-      "chain": [
-        "requireAuth",
-        "<anonymous>"
-      ],
-      "domain": "connectors",
-      "flags": [
-        "auth"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "POST"
-      ],
-      "path": "/api/connections/:provider/connect-token",
-      "chain": [
-        "requireAuth",
-        "<anonymous>",
-        "<anonymous>",
-        "<anonymous>"
-      ],
-      "domain": "connectors",
-      "flags": [
-        "auth"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "GET"
-      ],
-      "path": "/api/connections",
-      "chain": [
-        "requireAuth",
-        "<anonymous>"
-      ],
-      "domain": "connectors",
-      "flags": [
-        "auth"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "POST"
-      ],
-      "path": "/api/connections/:id/sync",
-      "chain": [
-        "requireAuth",
-        "<anonymous>"
-      ],
-      "domain": "connectors",
-      "flags": [
-        "auth"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "PATCH"
-      ],
-      "path": "/api/connections/:id",
-      "chain": [
-        "requireAuth",
-        "<anonymous>",
-        "<anonymous>"
-      ],
-      "domain": "connectors",
-      "flags": [
-        "auth"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "DELETE"
-      ],
-      "path": "/api/connections/:id",
-      "chain": [
-        "requireAuth",
-        "<anonymous>"
-      ],
-      "domain": "connectors",
-      "flags": [
-        "auth"
       ]
     },
     {

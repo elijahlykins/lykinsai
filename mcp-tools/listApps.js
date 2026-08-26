@@ -37,9 +37,8 @@ export const listAppsTool = {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }
     let listCustomConnections;
-    let listOAuthBackedApps;
     try {
-      ({ listCustomConnections, listOAuthBackedApps } = await import('../lib/customConnections/customConnections.js'));
+      ({ listCustomConnections } = await import('../lib/customConnections/customConnections.js'));
     } catch (e) {
       return errorContent(`custom_connections_unavailable: ${e?.message || e}`);
     }
@@ -62,28 +61,7 @@ export const listAppsTool = {
         auth: r.auth_type === 'none' ? 'public' : 'key-on-file',
       }));
 
-    // OAuth-backed action apps (e.g. Slack connected via the one-click OAuth
-    // flow). Same lykn_call_app contract; the token was minted by OAuth rather
-    // than pasted. A custom connection with the same slug takes precedence.
-    let oauthApps = [];
-    try {
-      const list = await listOAuthBackedApps(ctx.supabaseAdmin, ctx.userId);
-      const customSlugs = new Set(customApps.map((a) => a.slug));
-      oauthApps = (list || [])
-        .filter((a) => !customSlugs.has(a.slug))
-        .map((a) => ({
-          slug: a.slug,
-          name: a.name,
-          base_url: a.base_url,
-          description: a.description || null,
-          writes_allowed: Boolean(a.allow_writes),
-          auth: 'oauth',
-        }));
-    } catch {
-      // Non-fatal — fall back to custom apps only.
-    }
-
-    const apps = [...customApps, ...oauthApps];
+    const apps = customApps;
 
     return jsonContent({
       ok: true,

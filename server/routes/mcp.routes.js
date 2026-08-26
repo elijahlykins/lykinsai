@@ -1,9 +1,10 @@
 /**
  * Universal MCP connection HTTP API.
- * Additive. Does not replace /api/connections (Vault-sync connectors).
+ * Canonical live external-connection API. Calendar and product-owned
+ * credentials retain narrowly scoped routes outside this module.
  */
 
-import { encryptToken, decryptToken } from '../../connectors-service.js';
+import { encryptToken, decryptToken } from '../../lib/security/credentialStore.js';
 import {
   createMcpConnectionManager,
   createSupabaseMcpStore,

@@ -6,12 +6,10 @@
 // middleware chains, and registration order are preserved exactly —
 // tests/server/serverRouteManifest.test.mjs enforces this.
 //
-// The poll-due trio (/api/feeds/poll-due, /api/connections/poll-due,
-// /api/ai/cursor-builds/poll-due) is an EXTERNAL cron contract: paths and
-// Bearer shared-secret semantics are frozen. verifyAdminIngestSecret moved
-// here because these three routes are its only callers.
+// The RSS and Cursor build poll-due routes are external cron contracts and
+// retain the shared Bearer-secret verification.
 //
-// The in-process RSS/connector/cursor-build pollers do NOT live here — they
+// The in-process RSS/calendar/cursor-build pollers do NOT live here — they
 // stay in server.js's app.listen callback (identical startup timing).
 
 import crypto from 'crypto';
@@ -21,7 +19,6 @@ import {
   fetchAndSaveNewEntries,
   pollDueFeeds,
 } from '../../rss-service.js';
-import { pollDueConnections } from '../../connectors-service.js';
 import { pollRunningBuilds } from '../../lib/cursor/cursorBuilds.js';
 
 /**
@@ -281,28 +278,6 @@ export function registerFeedsRoutes(app, {
 
       const limit = Math.max(1, Math.min(200, Number(req.body?.limit) || 25));
       const result = await pollDueFeeds({ supabaseAdmin, limit });
-      return res.json(result);
-    } catch (err) {
-      return res.status(500).json({ error: 'Poll failed' });
-    }
-  });
-
-  // Admin / cron endpoint: poll every connector that's currently due. Mirrors
-  // the RSS `POST /api/feeds/poll-due` endpoint, protected by the same shared
-  // secret. This is the entry point a serverless deployment (Vercel / Lambda /
-  // Netlify) hits on a 1-minute cron, since `setInterval` doesn't survive
-  // between requests there. Long-lived hosts (Render, self-hosted) get the
-  // same fan-out via `makeConnectorPoller` below; this endpoint is the
-  // fallback path for environments where the in-process poller is disabled.
-  app.post('/api/connections/poll-due', async (req, res) => {
-    try {
-      if (!verifyAdminIngestSecret(req)) {
-        return res.status(401).json({ error: 'Unauthorized' });
-      }
-      if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
-
-      const limit = Math.max(1, Math.min(100, Number(req.body?.limit) || 25));
-      const result = await pollDueConnections({ supabaseAdmin, limit });
       return res.json(result);
     } catch (err) {
       return res.status(500).json({ error: 'Poll failed' });

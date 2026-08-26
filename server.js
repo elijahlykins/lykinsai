@@ -54,15 +54,6 @@ import {
 } from './lib/billing/creditWallet.js';
 import { compressConversation as compressConversationForPrompt } from './src/lib/ai/conversationFormat.js';
 import { makeRssPoller } from './rss-service.js';
-import {
-  CONNECTOR_REGISTRY,
-  isProviderConfigured,
-  envPrefixFor,
-  makeConnectorPoller,
-} from './connectors-service.js';
-import {
-  listOAuthBackedApps,
-} from './lib/customConnections/customConnections.js';
 import { registerCustomModelRoutes } from './custom-models-routes.js';
 import { registerAccountRoutes } from './server/routes/account.routes.js';
 import { registerAdminRoutes } from './server/routes/admin.routes.js';
@@ -73,9 +64,11 @@ import { registerClientErrorRoute, registerHealthRoute, registerFileProxyAndArti
 import { registerStripeWebhook } from './server/routes/stripeWebhook.routes.js';
 import { registerAssistRoutes } from './server/routes/assist.routes.js';
 import { registerCustomConnectionsRoutes } from './server/routes/connections.routes.js';
-import { registerConnectionsOAuthRoutes } from './server/routes/connectionsOAuth.routes.js';
+import { registerCalendarConnectionRoutes } from './server/routes/calendarConnections.routes.js';
+import { registerCursorCredentialRoutes } from './server/routes/cursorCredentials.routes.js';
 import { registerMcpRoutes, getMcpManager } from './server/routes/mcp.routes.js';
 import { resolveMcpToolsForTurn, bindMcpChatHandlers } from './lib/mcp/chatTurn.js';
+import { pollDueCalendarConnections } from './lib/calendar/calendarService.js';
 import {
   registerDesktopRoutes,
   getBrowserControlProvider,
@@ -1894,122 +1887,6 @@ const VAULT_URL_LOOKUP_TOTAL_CHARS = 18000;
 //   https://www.notion.so/Lykins-AI-Project-Overview-e6016e5d764a47f...
 //   https://www.notion.so/e6016e5d764a47f48b9b3c2c1d3e4f5a
 //   https://www.notion.so/workspace/Page-Title-e6016e5d764a47f48b9b...
-function extractNotionPageIdFromUrl(url) {
-  if (!url || typeof url !== 'string') return null;
-  // Strip query/fragment.
-  const clean = url.split('?')[0].split('#')[0];
-  // Last path segment.
-  const last = clean.split('/').filter(Boolean).pop() || '';
-  // Notion page ids are 32 hex chars, optionally hyphenated 8-4-4-4-12.
-  // The last segment is either `<title>-<32hex>` or just `<32hex>`.
-  const match = last.match(/([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
-  if (!match) return null;
-  // Normalize to hyphenated form, which is what /v1/blocks/{id} accepts.
-  const raw = match[1].replace(/-/g, '');
-  if (raw.length !== 32) return null;
-  return `${raw.slice(0, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}-${raw.slice(16, 20)}-${raw.slice(20)}`;
-}
-
-// Pulls the user's active Notion access token from social_connections,
-// extracts the page id from the URL, and calls the Notion connector's
-// fetchPageBody helper. Returns the flattened text body (possibly empty).
-// Bounded at 6s wall clock — anything longer would tank chat latency.
-const LIVE_REFETCH_TIMEOUT_MS = 6000;
-let _connectorTokenHelpers = null;
-let _notionFetchPageBody = null;
-
-async function loadConnectorTokenHelpers() {
-  if (_connectorTokenHelpers) return _connectorTokenHelpers;
-  const mod = await import('./connectors-service.js');
-  _connectorTokenHelpers = { decryptToken: mod.decryptToken };
-  return _connectorTokenHelpers;
-}
-
-async function loadNotionFetchPageBody() {
-  if (_notionFetchPageBody) return _notionFetchPageBody;
-  const mod = await import('./connectors/notion.js');
-  _notionFetchPageBody = mod.fetchPageBody;
-  return _notionFetchPageBody;
-}
-
-async function liveRefetchNotionPageBody(userId, url) {
-  if (!supabaseAdmin || !userId || !url) return '';
-  const pageId = extractNotionPageIdFromUrl(url);
-  if (!pageId) {
-    console.warn(`📡 live-refetch: could not parse Notion page id from ${url}`);
-    return '';
-  }
-  // Find the user's active Notion connection. There can technically be
-  // multiple (different workspaces); pick the most recently synced.
-  const { data: conns, error } = await supabaseAdmin
-    .from('social_connections')
-    .select('id, access_token, status')
-    .eq('user_id', userId)
-    .eq('provider', 'notion')
-    .order('last_synced_at', { ascending: false, nullsFirst: false })
-    .limit(3);
-  if (error) {
-    console.warn(`📡 live-refetch: connection lookup failed:`, error.message);
-    return '';
-  }
-  const active = (conns || []).find((c) => c.status !== 'reauth' && c.status !== 'error') || (conns || [])[0];
-  if (!active?.access_token) {
-    console.warn(`📡 live-refetch: no active Notion connection for user ${userId}`);
-    return '';
-  }
-  let accessToken;
-  try {
-    const { decryptToken } = await loadConnectorTokenHelpers();
-    accessToken = decryptToken(active.access_token);
-  } catch (e) {
-    console.warn(`📡 live-refetch: token decrypt failed:`, e?.message || e);
-    return '';
-  }
-  if (!accessToken) return '';
-  let fetchPageBodyFn;
-  try {
-    fetchPageBodyFn = await loadNotionFetchPageBody();
-  } catch (e) {
-    console.warn(`📡 live-refetch: could not load notion connector:`, e?.message || e);
-    return '';
-  }
-  // Wall-clock bound so a slow Notion API can't hang the chat turn.
-  try {
-    const result = await Promise.race([
-      fetchPageBodyFn({ accessToken, pageId }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('live-refetch timed out')), LIVE_REFETCH_TIMEOUT_MS)),
-    ]);
-    return String(result || '').trim();
-  } catch (e) {
-    console.warn(`📡 live-refetch threw:`, e?.message || e);
-    return '';
-  }
-}
-
-// Cache the freshly fetched body back into the vault note so future turns
-// (or queries from other surfaces) hit the cheap synced path instead of
-// re-fetching from Notion. Surgically updates only the post-marker portion
-// of `content` so we don't disturb the attachments JSON.
-async function persistLiveFetchedBody({ userId, noteId, content, freshBody }) {
-  if (!supabaseAdmin || !userId || !noteId || !freshBody) return;
-  const raw = String(content || '');
-  const span = findAttachmentsMarkerSpan(raw);
-  let nextContent;
-  if (span) {
-    nextContent = `${raw.slice(0, span.markerEnd)}\n${freshBody}`.replace(/\n{3,}/g, '\n\n').trim();
-  } else {
-    nextContent = `${raw.trim()}\n\n${freshBody}`.trim();
-  }
-  await supabaseAdmin
-    .from('vault_items')
-    .update({ content: nextContent, updated_at: new Date().toISOString() })
-    .eq('id', noteId)
-    .eq('user_id', userId);
-  // Reindex synthesis chunks + regenerate summary so the next semantic
-  // retrieval / drag-in uses the fresh content. Fire-and-forget.
-  enrichVaultNoteSummary({ userId, noteId }).catch(() => {});
-}
-
 function detectConnectedSourceUrls(text) {
   const t = String(text || '');
   if (!t) return [];
@@ -2111,38 +1988,6 @@ async function fetchVaultNotesByUrls(userId, urlMatches) {
       let body = extractBodyAfterAttachmentsMarker(row.content);
       let bodySource = body.length ? 'synced' : 'none';
 
-      // LIVE RE-FETCH FALLBACK
-      // When the stored body is empty (page synced before body capture was
-      // wired, or the original sync's /v1/blocks call returned an empty
-      // result for some reason), and we still have an active OAuth token
-      // for this connector, fetch the page content directly from the
-      // provider's API right now and inject the fresh result. This makes
-      // drag-into-chat behave like real-time access for the dragged item,
-      // which is the user's mental model — they dragged it expecting the
-      // AI to "read" it.
-      //
-      // Only attempted for connectors with an API endpoint that can return
-      // the page body cheaply from a URL. Notion is currently the only one
-      // wired in (its /v1/blocks/{id}/children is exactly what we already
-      // use at sync time). Live fetch is bounded to one connector call
-      // per turn and capped at ~5s wall clock to keep chat latency sane.
-      if (!body && label === 'Notion') {
-        try {
-          const liveBody = await liveRefetchNotionPageBody(userId, url);
-          if (liveBody && liveBody.length > 0) {
-            body = liveBody;
-            bodySource = 'live-refetch';
-            console.log(`📡 live-refetch succeeded for ${url}: ${liveBody.length} chars`);
-            // Best-effort: persist the freshly fetched body back into the
-            // vault note so future turns hit the cached path instead of
-            // re-fetching. Fire-and-forget; never blocks chat response.
-            persistLiveFetchedBody({ userId, noteId: row.id, content: row.content, freshBody: liveBody })
-              .catch((e) => console.warn(`⚠️ persist live-fetched body for ${row.id} failed:`, e?.message || e));
-          }
-        } catch (e) {
-          console.warn(`⚠️ live-refetch threw for ${url}:`, e?.message || e);
-        }
-      }
       const summary = String(row.ai_summary || '').trim();
       const signals = row.ai_signals && typeof row.ai_signals === 'object' ? row.ai_signals : null;
       const themes = Array.isArray(signals?.themes) ? signals.themes.filter(Boolean).slice(0, 8).join(', ') : '';
@@ -2524,21 +2369,7 @@ async function fetchConnectedToolsSection(authHeader, userId) {
     return '';
   }
 
-  let rows = [];
-  try {
-    const { data, error } = await client
-      .from('social_connections')
-      .select('provider, account_handle, account_display_name, account_email, status')
-      .eq('user_id', userId)
-      .in('status', ['active', 'paused']);
-    if (error) {
-      console.warn('⚠️ fetchConnectedToolsSection query:', error?.message || error);
-    } else if (Array.isArray(data)) {
-      rows = data;
-    }
-  } catch (e) {
-    console.warn('⚠️ fetchConnectedToolsSection:', e?.message || e);
-  }
+  const rows = [];
 
   // Custom API connections (universal bring-your-own-key apps). These are
   // ACTIONABLE via lykn_call_app, not just synced sources, so they get their
@@ -2555,18 +2386,7 @@ async function fetchConnectedToolsSection(authHeader, userId) {
     console.warn('⚠️ fetchConnectedToolsSection custom:', e?.message || e);
   }
 
-  // OAuth-backed action apps (e.g. Slack connected via one-click OAuth) the
-  // agent can ALSO call through lykn_call_app — surfaced in the actionable
-  // block so the model knows it can act, not just that the tool is "connected".
-  let oauthActionApps = [];
-  try {
-    oauthActionApps = await listOAuthBackedApps(client, userId);
-  } catch (e) {
-    console.warn('⚠️ fetchConnectedToolsSection oauth-action:', e?.message || e);
-  }
-  // A custom connection with the same slug wins (it's the user's explicit BYO).
-  const customSlugs = new Set(customConns.map((c) => c.slug));
-  oauthActionApps = oauthActionApps.filter((a) => !customSlugs.has(a.slug));
+  const oauthActionApps = [];
 
   if (rows.length === 0 && customConns.length === 0 && oauthActionApps.length === 0) {
     connectedToolsSectionCache.set(userId, { text: '', at: Date.now() });
@@ -6905,6 +6725,8 @@ const PROJECT_WRITE_TOOLS = new Set([
 // ── Custom connections — extracted to server/routes/connections.routes.js (Wave 2)
 // 5 routes register here, in their original order.
 registerCustomConnectionsRoutes(app, { requireAuth, supabaseAdmin, invalidateConnectedToolsCache });
+registerCalendarConnectionRoutes(app, { requireAuth, supabaseAdmin, PORT });
+registerCursorCredentialRoutes(app, { requireAuth, supabaseAdmin });
 registerMcpRoutes(app, { requireAuth, supabaseAdmin, PORT });
 
 registerCustomModelRoutes(app, { requireAuth, supabaseAdmin });
@@ -13601,18 +13423,6 @@ registerFeedsRoutes(app, {
   isUrlSafe,
 });
 
-// ── Connector OAuth framework — extracted to
-// server/routes/connectionsOAuth.routes.js (Wave 5). 8 routes (OAuth
-// start, /oauth/callback/:provider, connect-info, connect-token,
-// connections list/sync/patch/delete) register here, in their original
-// order — still the last routes before the global error handler.
-registerConnectionsOAuthRoutes(app, {
-  requireAuth,
-  supabaseAdmin,
-  PORT,
-  invalidateConnectedToolsCache,
-});
-
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ============================================
@@ -13758,36 +13568,27 @@ if (process.env.NODE_ENV !== 'test') {
       console.log('→ RSS poller: ⚪ disabled (set RSS_POLLER_ENABLED=1 to enable)');
     }
 
-    // Connector poller — same on/off rules as RSS. Polls /user/starred
-    // (GitHub), /saved (Reddit), Notion pages, Gmail inbox, Calendar,
-    // etc. on each connection's configured interval. On serverless,
-    // schedule a 1-minute cron against
-    //   POST /api/connections/poll-due
-    // with `Authorization: Bearer ${ADMIN_INGEST_SECRET}`.
-    const explicitConnToggle = process.env.CONNECTOR_POLLER_ENABLED;
-    const connectorPollerOn =
-      explicitConnToggle === '1' || explicitConnToggle === 'true'
+    const explicitCalendarToggle = process.env.CALENDAR_POLLER_ENABLED;
+    const calendarPollerOn =
+      explicitCalendarToggle === '1' || explicitCalendarToggle === 'true'
         ? true
-        : explicitConnToggle === '0' || explicitConnToggle === 'false'
+        : explicitCalendarToggle === '0' || explicitCalendarToggle === 'false'
           ? false
           : !isServerless;
-    if (connectorPollerOn && supabaseAdmin) {
-      // 60s default tick (was 90s). The per-connection
-      // `sync_interval_minutes` floor is 5 minutes, so a faster tick
-      // doesn't burn provider quota — it just reduces the lag between
-      // a connection becoming due and the next sync running. Combined
-      // with the 15-minute default interval set in saveConnection, a
-      // newly-connected provider should see new mail / docs in the
-      // vault within ~15 minutes of it landing upstream.
+    if (calendarPollerOn && supabaseAdmin) {
       const intervalMs = Math.max(
         15_000,
-        Number(process.env.CONNECTOR_POLLER_INTERVAL_MS) || 60_000,
+        Number(process.env.CALENDAR_POLLER_INTERVAL_MS) || 60_000,
       );
-      const poller = makeConnectorPoller({ supabaseAdmin, intervalMs });
-      poller.start();
+      const calendarTick = () => {
+        pollDueCalendarConnections(supabaseAdmin)
+          .catch((error) => console.warn('⚠️ calendar poller:', error?.message || error));
+      };
+      setTimeout(calendarTick, 9_000);
+      setInterval(calendarTick, intervalMs);
     } else {
       console.log(
-        '→ Connector poller: ⚪ disabled (set CONNECTOR_POLLER_ENABLED=1 or schedule a cron against POST /api/connections/poll-due)',
+        '→ Calendar poller: ⚪ disabled (set CALENDAR_POLLER_ENABLED=1 to enable)',
       );
     }
 
@@ -13810,32 +13611,5 @@ if (process.env.NODE_ENV !== 'test') {
       console.log('→ Cursor build poller: ⚪ disabled (set CONNECTOR_TOKEN_KEY to enable; unset CURSOR_BUILDS_DISABLED. Builds run on each user\'s own connected Cursor account.)');
     }
 
-    // Quick boot summary of which providers are wired up.
-    const providers = Object.keys(CONNECTOR_REGISTRY);
-    if (providers.length) {
-      console.log('→ Connectors:');
-      for (const id of providers) {
-        const ok = isProviderConfigured(id);
-        const adapter = CONNECTOR_REGISTRY[id];
-        const hint = envPrefixFor(id);
-        // Token-mode adapters with an envHint print the full var name;
-        // OAuth adapters get the standard `<PREFIX>_CLIENT_ID/_SECRET` form.
-        const missingMsg = adapter?.envHint
-          ? `set ${hint}`
-          : adapter?.authMode === 'token'
-            ? `(uses user-supplied credentials)`
-            : adapter?.authMode === 'per-instance'
-              ? `(registers per-instance at connect time)`
-              : `set ${hint}_CLIENT_ID/_SECRET`;
-        console.log(
-          `   - ${id}: ${ok ? '✅ configured' : `⚪ not configured (${missingMsg})`}`,
-        );
-      }
-      if (!process.env.CONNECTOR_TOKEN_KEY) {
-        console.log(
-          '   ⚠️  CONNECTOR_TOKEN_KEY missing. Generate with: openssl rand -hex 32',
-        );
-      }
-    }
   });
 }
