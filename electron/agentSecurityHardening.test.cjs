@@ -162,10 +162,11 @@ const ANY_USERDATA = require("node:fs").mkdtempSync(
   path.join(require("node:os").tmpdir(), "lykn-sec-local-"),
 );
 
-// A genuinely risky command (shell redirection is in RISKY_COMMAND_PATTERNS) so
-// the approval gate must fire — but inert if it ever wrongly executed (writes
-// to /dev/null). We never expect it to run in the bypass cases.
-const RISKY_INERT = "echo blocked > /dev/null";
+// A genuinely CONSEQUENTIAL command (rm is in the consequential tier — the
+// routine tier no longer stops for approval by design) so the approval gate
+// must fire — but inert if it ever wrongly executed (the path never exists).
+// We never expect it to run in the bypass cases.
+const RISKY_INERT = "rm -rf /tmp/lykn-sec-test-never-exists";
 
 test("Fix2: raw approved:true from a renderer cannot bypass the gate", async () => {
   const registry = createLocalApprovalRegistry();
@@ -212,12 +213,15 @@ test("Fix2: the legitimate mint→confirm→re-run flow works", async () => {
 test("Fix2: a token minted for one command cannot approve a different command", async () => {
   const registry = createLocalApprovalRegistry();
   const handler = makeHandler(registry, ANY_USERDATA);
-  const minted = await handler({ name: "local_run_command", args: { command: "echo a > /dev/null" } });
+  const minted = await handler({
+    name: "local_run_command",
+    args: { command: "rm -rf /tmp/lykn-sec-a-never-exists" },
+  });
   assert.equal(typeof minted.approvalToken, "string");
   // Swap the command but keep the token — the token is bound to the original.
   const res = await handler({
     name: "local_run_command",
-    args: { command: "echo b > /dev/null" },
+    args: { command: "rm -rf /tmp/lykn-sec-b-never-exists" },
     approvalToken: minted.approvalToken,
   });
   assert.equal(res.needsApproval, true, "the token does not authorize a different command");

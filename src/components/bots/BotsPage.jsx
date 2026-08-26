@@ -9,7 +9,7 @@
 // live in the shared botsClient singleton, so this window and the home chat
 // bar's Bot dropdown are two views of the same team.
 import { useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { Pause, Play, Trash2, X, Zap } from "lucide-react";
 import BotAvatar, { BOT_QUIRKS, botMood, botPresence } from "@/components/bots/BotAvatar";
 import { inkById, inkColor } from "@/lib/appearance";
 import { useAppearance } from "@/lib/useAppearance";
@@ -21,10 +21,22 @@ import {
   botSeed,
 } from "@/lib/bots/botStore";
 import { addBot, botsAvailable, removeBot, useBots } from "@/lib/bots/botsClient";
+import {
+  createRoutine,
+  deleteRoutine,
+  routinesAvailable,
+  runRoutineNow,
+  setRoutineEnabled,
+  useRoutines,
+} from "@/lib/routines/routinesClient";
 
 export default function BotsPage() {
   const desktop = botsAvailable();
   const { bots, agentStates, live } = useBots();
+  // Which Bot's routines are open below the team strip. Clicking a chip
+  // selects it; dismissing a Bot clears a stale selection.
+  const [selectedBotId, setSelectedBotId] = useState("");
+  const selectedBot = bots.find((b) => b.id === selectedBotId) || null;
 
   if (!desktop) {
     return (
@@ -59,10 +71,16 @@ export default function BotsPage() {
               const agent = agentStates[bot.agentId];
               const liveState = live[bot.agentId];
               const presence = botPresence(bot, agent, liveState);
+              const selected = bot.id === selectedBotId;
               return (
                 <span
                   key={bot.id}
-                  className="group flex items-center gap-2 rounded-full bg-black/[0.045] py-1.5 pl-2 pr-2.5 dark:bg-white/[0.07]"
+                  className={`group flex cursor-pointer items-center gap-2 rounded-full py-1.5 pl-2 pr-2.5 transition-colors ${
+                    selected
+                      ? "bg-black/[0.09] ring-1 ring-black/20 dark:bg-white/[0.12] dark:ring-white/25"
+                      : "bg-black/[0.045] hover:bg-black/[0.07] dark:bg-white/[0.07] dark:hover:bg-white/[0.1]"
+                  }`}
+                  onClick={() => setSelectedBotId(selected ? "" : bot.id)}
                 >
                   <BotAvatar
                     face={bot.face}
@@ -80,7 +98,11 @@ export default function BotsPage() {
                   <button
                     type="button"
                     title={`Dismiss ${bot.name}`}
-                    onClick={() => removeBot(bot.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (selectedBotId === bot.id) setSelectedBotId("");
+                      removeBot(bot.id);
+                    }}
                     className="rounded-full p-0.5 text-black/30 opacity-0 transition-opacity hover:text-red-500 group-hover:opacity-100 dark:text-white/30"
                   >
                     <X className="h-3 w-3" />
@@ -89,11 +111,156 @@ export default function BotsPage() {
               );
             })}
           </div>
+          {selectedBot && routinesAvailable() ? <BotRoutines bot={selectedBot} /> : null}
         </div>
       ) : null}
     </div>
   );
 }
+
+/* ── Routines — standing work this Bot runs on its own ──────────────────── */
+
+const RUN_STATUS_LABEL = {
+  running: "Running…",
+  completed: "Done",
+  failed: "Failed",
+  cancelled: "Stopped",
+  missed: "Missed (asleep)",
+  skipped: "Skipped (busy)",
+  waiting_for_user: "Needs you",
+  waiting_for_approval: "Needs approval",
+};
+
+function BotRoutines({ bot }) {
+  const routines = useRoutines(bot.id);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState("");
+  const [creating, setCreating] = useState(false);
+
+  const create = async () => {
+    const instruction = draft.trim();
+    if (!instruction || creating) return;
+    setCreating(true);
+    setError("");
+    const result = await createRoutine({
+      instruction,
+      botId: bot.id,
+      bot: {
+        id: bot.id,
+        name: bot.name,
+        persona: bot.persona,
+        face: bot.face,
+        eyes: bot.eyes,
+        color: bot.color,
+        chatId: bot.chatId || "",
+      },
+    });
+    setCreating(false);
+    if (result?.ok) {
+      setDraft("");
+    } else {
+      setError(
+        String(result?.error || "").startsWith("could_not_parse_trigger")
+          ? "Say when it should run — like \u201cevery weekday at 8\u201d or \u201cwhen a PDF appears in Downloads\u201d."
+          : result?.error || "Could not create that routine.",
+      );
+    }
+  };
+
+  return (
+    <div className="mt-6 rounded-2xl border border-black/10 p-4 dark:border-white/10">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-black/35 dark:text-white/35">
+        {bot.name}&rsquo;s routines
+      </p>
+      <p className="mt-1 text-[0.72rem] text-black/40 dark:text-white/40">
+        Standing work {bot.name} runs on its own — on a schedule, or when something happens.
+      </p>
+
+      {routines.length > 0 ? (
+        <ul className="mt-3 space-y-2">
+          {routines.map((routine) => (
+            <RoutineRow key={routine.id} routine={routine} />
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-3 text-[0.78rem] text-black/40 dark:text-white/45">
+          No routines yet.
+        </p>
+      )}
+
+      <div className="mt-3">
+        <input
+          value={draft}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            if (error) setError("");
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void create();
+          }}
+          placeholder={`e.g. Every weekday at 8, check competitor pricing`}
+          maxLength={600}
+          className="w-full rounded-xl border border-black/10 bg-transparent px-3 py-2 text-[0.8rem] outline-none placeholder:text-black/30 focus:border-black/25 dark:border-white/10 dark:placeholder:text-white/30 dark:focus:border-white/30"
+        />
+        {error ? (
+          <p className="mt-1.5 text-[0.72rem] text-red-500/90">{error}</p>
+        ) : (
+          <p className="mt-1.5 text-[0.72rem] text-black/35 dark:text-white/35">
+            Describe the work and when — press Enter to add it.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RoutineRow({ routine }) {
+  const lastRun = routine.lastRunAt ? new Date(routine.lastRunAt).toLocaleString() : "";
+  return (
+    <li
+      className={`rounded-xl bg-black/[0.035] px-3 py-2 dark:bg-white/[0.05] ${
+        routine.enabled ? "" : "opacity-60"
+      }`}
+    >
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[0.8rem] font-medium">{routine.name}</p>
+          <p className="truncate text-[0.7rem] text-black/40 dark:text-white/45">
+            {routine.triggerLabel}
+            {routine.running ? " · running now" : lastRun ? ` · last ran ${lastRun}` : ""}
+            {!routine.enabled ? " · paused" : ""}
+          </p>
+        </div>
+        <button
+          type="button"
+          title="Run now"
+          onClick={() => runRoutineNow(routine.id)}
+          className="rounded-full p-1.5 text-black/40 transition-colors hover:bg-black/[0.06] hover:text-black/80 dark:text-white/40 dark:hover:bg-white/[0.09] dark:hover:text-white/90"
+        >
+          <Zap className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          title={routine.enabled ? "Pause" : "Resume"}
+          onClick={() => setRoutineEnabled(routine.id, !routine.enabled)}
+          className="rounded-full p-1.5 text-black/40 transition-colors hover:bg-black/[0.06] hover:text-black/80 dark:text-white/40 dark:hover:bg-white/[0.09] dark:hover:text-white/90"
+        >
+          {routine.enabled ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+        </button>
+        <button
+          type="button"
+          title="Delete routine"
+          onClick={() => deleteRoutine(routine.id)}
+          className="rounded-full p-1.5 text-black/30 transition-colors hover:bg-red-500/10 hover:text-red-500 dark:text-white/30"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    </li>
+  );
+}
+
+export { RUN_STATUS_LABEL };
 
 /* ── The builder — look, name, instructions. That becomes the agent. ────── */
 

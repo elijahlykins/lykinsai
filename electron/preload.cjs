@@ -262,6 +262,35 @@ contextBridge.exposeInMainWorld("lykn", {
     ipcRenderer.on("lykn:task-event", fn);
     return () => ipcRenderer.removeListener("lykn:task-event", fn);
   },
+  // Bot Routines — durable schedules/monitors owned by main. The renderer
+  // reads and edits definitions; execution stays in the task runtime.
+  routinesList: (botId) => ipcRenderer.invoke("lykn:routines-list", botId ? { botId } : {}),
+  routineCreate: (payload) => ipcRenderer.invoke("lykn:routine-create", payload || {}),
+  routineUpdate: (routineId, patch) =>
+    ipcRenderer.invoke("lykn:routine-update", { routineId, patch: patch || {} }),
+  routineSetEnabled: (routineId, enabled) =>
+    ipcRenderer.invoke("lykn:routine-set-enabled", { routineId, enabled: !!enabled }),
+  routineDelete: (routineId) => ipcRenderer.invoke("lykn:routine-delete", { routineId }),
+  routineRunNow: (routineId) => ipcRenderer.invoke("lykn:routine-run-now", { routineId }),
+  routineRuns: (routineId, limit) =>
+    ipcRenderer.invoke("lykn:routine-runs", { routineId, limit }),
+  activitySnapshot: () => ipcRenderer.invoke("lykn:activity-snapshot", {}),
+  taskStop: (taskId) => ipcRenderer.invoke("lykn:task-stop", { taskId }),
+  onRoutinesChanged: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:routines-changed", fn);
+    return () => ipcRenderer.removeListener("lykn:routines-changed", fn);
+  },
+  onActivityNotification: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:activity-notification", fn);
+    return () => ipcRenderer.removeListener("lykn:activity-notification", fn);
+  },
+  onActivityOpen: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:activity-open", fn);
+    return () => ipcRenderer.removeListener("lykn:activity-open", fn);
+  },
   // Local Mode — Vault switch that grants LYKN file/terminal access on this
   // device. Tools execute in main (never in the renderer or on the server).
   localModeGet: () => ipcRenderer.invoke("lykn:local-mode-get"),

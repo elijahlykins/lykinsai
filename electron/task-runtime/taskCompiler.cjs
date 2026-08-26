@@ -154,11 +154,111 @@ function compileLocalTask(input = {}, options = {}) {
   });
 }
 
+/** Default wall-clock ceiling for an unattended routine occurrence. */
+const ROUTINE_DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * Compile one Routine occurrence into a canonical Task.
+ *
+ * The DURABLE Routine definition is the authority: the objective is built
+ * from the stored instructions every time, so accumulated model reasoning
+ * from past runs can never rewrite what the Routine does. The current
+ * occurrence's trigger context (which file appeared, which process exited)
+ * travels as a clearly-labeled factual context block — data for this run,
+ * never a new instruction.
+ *
+ * Capabilities and approval policy come from the Routine record verbatim.
+ * Monitored external content has no path into this compiler, so it cannot
+ * expand capabilities, change the approval policy, or alter the objective.
+ */
+function compileRoutineTask(input = {}, options = {}) {
+  const routine = input.routine && typeof input.routine === "object" ? input.routine : {};
+  const instructions = String(routine.instructions || "").trim();
+  if (!instructions) throw new TypeError("Routine task requires routine.instructions");
+  if (!String(routine.id || "").trim()) throw new TypeError("Routine task requires routine.id");
+  const now = String(options.now || new Date().toISOString());
+  const id = String(options.id || newTaskId());
+
+  // Whitelisted, bounded trigger facts. Anything else in the context object
+  // is dropped — the trigger cannot smuggle prose into the objective.
+  const context = input.triggerContext && typeof input.triggerContext === "object" ? input.triggerContext : {};
+  const contextLines = [];
+  if (context.reason) contextLines.push(`Trigger: ${String(context.reason).slice(0, 120)}`);
+  if (context.occurredAt) contextLines.push(`Occurred at: ${String(context.occurredAt).slice(0, 40)}`);
+  if (context.late === true) contextLines.push("This occurrence ran late (the machine was asleep at the scheduled time).");
+  if (context.path) contextLines.push(`Watched path: ${String(context.path).slice(0, 300)}`);
+  if (Array.isArray(context.files) && context.files.length) {
+    contextLines.push(`Files: ${context.files.map((f) => String(f).slice(0, 120)).slice(0, 20).join(", ")}`);
+  }
+  if (context.processName) contextLines.push(`Process: ${String(context.processName).slice(0, 120)}`);
+
+  const objective = contextLines.length
+    ? `${instructions}\n\n[Current occurrence]\n${contextLines.join("\n")}`
+    : instructions;
+
+  const bot = sanitizeBot(routine.bot || input.bot);
+  return createTask({
+    id,
+    runId: String(input.runId || id),
+    objective,
+    successCriteria: [DEFAULT_SUCCESS],
+    scope: {
+      summary: DEFAULT_SCOPE,
+      resources: [],
+    },
+    doNot: [
+      "Modify this routine's own definition, schedule, or permissions.",
+      DEFAULT_DO_NOT,
+    ],
+    capabilities: cleanList(routine.capabilities, 20),
+    budgets: {
+      maxRounds: input.budgets?.maxRounds,
+      maxRecoveries: input.budgets?.maxRecoveries,
+      timeoutMs: Number.isFinite(input.budgets?.timeoutMs)
+        ? input.budgets.timeoutMs
+        : ROUTINE_DEFAULT_TIMEOUT_MS,
+      maxChildExecutors: input.budgets?.maxChildExecutors,
+    },
+    approval: {
+      policy:
+        String(routine.approvalPolicy || "") === "standing_authorization"
+          ? "standing_authorization"
+          : "preserve_executor_security_gates",
+      state: "not_requested",
+    },
+    cancellation: {
+      state: "active",
+      signal: options.signal || null,
+    },
+    origin: {
+      type: "bot",
+      bot,
+      routine: {
+        id: String(routine.id),
+        name: String(routine.name || "").slice(0, 80),
+        triggerType: String(routine.trigger?.type || ""),
+      },
+    },
+    association: {
+      botId: String(routine.botId || bot?.id || "").trim(),
+      routineId: String(routine.id),
+      routineRunId: String(input.runId || "").trim(),
+      chatId: String(routine.bot?.chatId || "").trim(),
+      agentId: String(input.agentId || "").trim(),
+    },
+    status: TASK_STATUSES.CREATED,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
 module.exports = {
   compileBotTask,
   compileLocalTask,
+  compileRoutineTask,
   compileLocalCapabilities,
   DEFAULT_SUCCESS,
   DEFAULT_SCOPE,
   DEFAULT_DO_NOT,
+  ROUTINE_DEFAULT_TIMEOUT_MS,
 };

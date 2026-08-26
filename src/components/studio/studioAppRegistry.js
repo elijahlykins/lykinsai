@@ -2,6 +2,7 @@
 // they open (floating window, stage tab, dock entry, split pane), plus the
 // shared chrome constants the shell's surfaces are painted with.
 import {
+  Activity,
   CalendarDays,
   Folder,
   FolderKanban,
@@ -83,6 +84,16 @@ export const WINDOW_APPS = {
     width: 960,
     height: 680,
   },
+  // LYKN Activity — what every Bot is doing right now (with Stop), all
+  // routines across Bots (pause / run now / delete), and recent routine
+  // runs. Notification clicks land here or on the owning Bot.
+  activity: {
+    label: "Activity",
+    icon: Activity,
+    src: "/activity",
+    width: 620,
+    height: 700,
+  },
 };
 
 export const SECTIONS = [
@@ -95,6 +106,7 @@ export const SECTIONS = [
   { id: "files", label: "Files", icon: Folder },
   { id: "browser", label: "Browser", icon: BrowserMark },
   { id: "bots", label: "Bots", icon: BotMark },
+  { id: "activity", label: "Activity", icon: Activity },
   { id: "calendar", label: "Calendar", icon: CalendarDays },
   { id: "todos", label: "To-dos", icon: ListTodo },
   { id: "settings", label: "Settings", icon: Settings },
@@ -132,6 +144,7 @@ export const NAV_ITEMS = [
   { id: "dashboard", label: "Home", icon: Home, action: "tab" },
   { id: "browser", label: "Browser", icon: BrowserMark, action: "tab" },
   { id: "bots", label: "Bots", icon: BotMark, action: "tab" },
+  { id: "activity", label: "Activity", icon: Activity, action: "tab" },
   { id: "projects", label: "Projects", icon: FolderKanban, action: "tab" },
   { id: "vault", label: "Vault", icon: Folder, action: "tab" },
   { id: "files", label: "Files", icon: Folder, action: "tab" },

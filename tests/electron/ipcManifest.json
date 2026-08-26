@@ -1,11 +1,16 @@
 {
   "generatedBy": "tests/electron/ipcSurface.cjs",
-  "channelCount": 219,
-  "uniqueChannelCount": 219,
-  "handleCount": 158,
+  "channelCount": 228,
+  "uniqueChannelCount": 228,
+  "handleCount": 167,
   "onCount": 61,
   "duplicateCount": 0,
   "entries": [
+    {
+      "mode": "handle",
+      "channel": "lykn:activity-snapshot",
+      "file": "ipc/routines.cjs"
+    },
     {
       "mode": "handle",
       "channel": "lykn:add-live-watch-rule",
@@ -863,6 +868,41 @@
     },
     {
       "mode": "handle",
+      "channel": "lykn:routine-create",
+      "file": "ipc/routines.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:routine-delete",
+      "file": "ipc/routines.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:routine-run-now",
+      "file": "ipc/routines.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:routine-runs",
+      "file": "ipc/routines.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:routine-set-enabled",
+      "file": "ipc/routines.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:routine-update",
+      "file": "ipc/routines.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:routines-list",
+      "file": "ipc/routines.cjs"
+    },
+    {
+      "mode": "handle",
       "channel": "lykn:save-file-as",
       "file": "ipc/localFiles.cjs"
     },
@@ -985,6 +1025,11 @@
       "mode": "handle",
       "channel": "lykn:suggest",
       "file": "ipc/overlayAi.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:task-stop",
+      "file": "ipc/routines.cjs"
     },
     {
       "mode": "handle",

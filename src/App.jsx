@@ -1,6 +1,7 @@
 import '@/lib/installAuthFetch';
 import React, { Suspense, useEffect } from "react";
 import { Toaster } from "@/components/ui/toaster";
+import ActivityNotificationBridge from "@/components/activity/ActivityNotificationBridge";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { queryClientInstance } from '@/lib/query-client';
@@ -613,6 +614,7 @@ function App() {
         <TooltipProvider delayDuration={420} skipDelayDuration={200}>
           <AppRoutes />
           <Toaster />
+          <ActivityNotificationBridge />
         </TooltipProvider>
       </SupabaseAuthProvider>
     </QueryClientProvider>

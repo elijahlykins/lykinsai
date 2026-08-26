@@ -20,6 +20,7 @@ import SettingsPage from "@/pages/Settings";
 import LyknCalendarPage from "@/components/calendar/LyknCalendarPage";
 import LyknTodosPage from "@/components/todos/LyknTodosPage";
 import BotsPage from "@/components/bots/BotsPage";
+import ActivityPanel from "@/components/activity/ActivityPanel";
 import HomeChatBar from "@/components/macdesktop/HomeChatBar";
 
 export default function StudioSurface({ entry, windowed = false }) {
@@ -49,6 +50,7 @@ export default function StudioSurface({ entry, windowed = false }) {
               <Route path="/calendar" element={<LyknCalendarPage windowed={windowed} />} />
               <Route path="/todos" element={<LyknTodosPage windowed={windowed} />} />
               <Route path="/bots" element={<BotsPage />} />
+              <Route path="/activity" element={<ActivityPanel />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="*" element={null} />
             </Routes>

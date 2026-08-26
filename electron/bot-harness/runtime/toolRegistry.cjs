@@ -66,6 +66,18 @@ const TOOLS = [
     requiresLocalMode: true,
   },
   {
+    name: "create_routine",
+    summary:
+      "Set up a recurring or triggered routine this bot will run on its own — a schedule (\"every weekday at 8\") or a watch (\"when a PDF appears in Downloads\"). Creating it runs nothing yet.",
+    // Creating a routine is reversible (pause/delete one click away) and the
+    // user asked for it in the same breath — the consequential surface is the
+    // work each occurrence does, which the routine's own capability envelope
+    // and the runtime's approval tiers govern.
+    risk: "low",
+    verify: false,
+    terminal: false,
+  },
+  {
     name: "browser",
     summary:
       "Open the real browser and operate a live website or the user's own online account — send, buy, book, post, submit, check their mail. Always asks the user first.",

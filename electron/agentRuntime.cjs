@@ -30,7 +30,7 @@ const {
   LocalExecutor,
   toHarnessResult,
 } = require("./task-runtime/executors/localExecutor.cjs");
-const { compileLocalTask } = require("./task-runtime/taskCompiler.cjs");
+const { compileLocalTask, compileRoutineTask } = require("./task-runtime/taskCompiler.cjs");
 // Local Mode task runner (files + terminal on the user's machine). Only used
 // when the user enabled Local Mode from the Vault switch.
 const localSystem = require("./localSystem.cjs");
@@ -6793,6 +6793,10 @@ function createAgentRuntime(deps) {
           maxRounds,
           allowedTools,
           capabilities: task.capabilities,
+          // Routine Tasks carry standing authorization: ordinary work inside
+          // their capability envelope runs unattended; consequential actions
+          // still pause through awaitLocalApproval below.
+          standingAuthorization: task.approval?.policy === "standing_authorization",
           onProgress: (p) => {
             if (gen !== agent.generation) return;
             context.progress?.(p);
@@ -6927,6 +6931,47 @@ function createAgentRuntime(deps) {
     return `${(atWord > max * 0.6 ? cut.slice(0, atWord) : cut).replace(/[\s,.;:—-]+$/, "")}…`;
   }
 
+  // ── Bot Routines bridge ─────────────────────────────────────────────────
+  // The routine runtime lives outside this module (main wires it after both
+  // exist). The harness's create_routine tool and routine occurrences reach
+  // it through this late-bound seam; before wiring, the tool reports itself
+  // unavailable instead of failing the whole task.
+  let routineBridge = null;
+  function setRoutineBridge(bridge) {
+    routineBridge = bridge && typeof bridge === "object" ? bridge : null;
+  }
+
+  /** Harness executor: natural-language routine creation from a Bot chat. */
+  function makeCreateRoutineExecutor(agent) {
+    return async ({ instruction }) => {
+      if (!routineBridge?.createFromInstruction) {
+        return { ok: false, output: "", summary: "Routines aren't available in this build." };
+      }
+      const bot = agent.botProfile || null;
+      if (!bot?.id) {
+        return {
+          ok: false,
+          output: "",
+          summary:
+            "Routines belong to a bot, and this chat isn't running as one — ask the user to use one of their bots.",
+        };
+      }
+      const result = routineBridge.createFromInstruction(String(instruction || ""), { bot, botId: bot.id });
+      if (!result?.ok) {
+        return { ok: false, output: "", summary: `Could not create the routine: ${result?.error || "unknown error"}` };
+      }
+      const r = result.routine;
+      const summary = [
+        `Routine created: "${r.name}".`,
+        `Runs: ${r.triggerLabel || "manually"}.`,
+        `Allowed to: ${(r.capabilities || []).join(", ") || "reply only"}.`,
+        `Notifications: ${r.notificationPolicy}.`,
+        "The user can pause, run, or delete it from this bot's page.",
+      ].join(" ");
+      return { ok: true, output: summary, summary };
+    };
+  }
+
   async function runBotHarnessTask(agent, ask, attachments, gen, { primaryTool = "" } = {}) {
     const canonicalTask = taskRuntime.get(agent.activeTaskId);
     if (!canonicalTask) throw new Error("canonical_bot_task_missing");
@@ -7015,6 +7060,7 @@ function createAgentRuntime(deps) {
       build_artifact: streamTool("build"),
       generate_image: streamTool("image"),
       local_computer: localChild,
+      create_routine: makeCreateRoutineExecutor(agent),
       browser: (args) => browserOptInGate.execute({ ...args, task: canonicalTask }),
     };
 
@@ -7061,6 +7107,237 @@ function createAgentRuntime(deps) {
       });
     }
     return res.answer || res.output || "Done.";
+  }
+
+  /**
+   * Run one Routine occurrence: compile the durable Routine definition into a
+   * fresh canonical Task, register it with the TaskRuntime (which stays the
+   * execution authority), and drive it through the same BotExecutor loop the
+   * interactive path uses — same identity, same tools, same verification.
+   *
+   * Differences from the chat path, on purpose:
+   *   - the run is headless: it never steals an agent mid-conversation (a
+   *     busy paired agent means a dedicated worker is created for this run
+   *     and closed after), never raises windows, never writes chat rows;
+   *   - the browser tool answers with an honest refusal instead of parking an
+   *     opt-in question nobody is present to answer (deferred, documented);
+   *   - waiting_for_user / waiting_for_approval END the occurrence as a
+   *     "waiting" outcome — the notification service tells the user, and the
+   *     conversation continues in the bot's chat when they arrive.
+   */
+  async function runRoutineOccurrence({
+    routine,
+    runId,
+    triggerContext = {},
+    onTaskCreated = null,
+    onApprovalRequired = null,
+  } = {}) {
+    if (!routine?.id) return { status: "failed", error: "routine_missing" };
+
+    // Prefer the bot's existing idle headless agent; otherwise a dedicated
+    // worker for this run.
+    let agent = [...agents.values()].find(
+      (a) => a && !isMainAgent(a) && a.headless && a.botProfile?.id === routine.botId && !a.busy,
+    );
+    let dedicated = false;
+    if (!agent) {
+      const created = createAgent({
+        silent: true,
+        headless: true,
+        activate: false,
+        bot: routine.bot,
+        title: routine.bot?.name || routine.name || "Routine",
+        goal: routine.name || routine.instructions,
+      });
+      if (!created?.ok) return { status: "failed", error: created?.error || "agent_unavailable" };
+      agent = agents.get(created.agentId);
+      dedicated = true;
+    }
+    if (!agent.botProfile) agent.botProfile = sanitizeBotProfile(routine.bot);
+
+    const canonicalTask = taskRuntime.register(
+      compileRoutineTask({ routine, runId, triggerContext, agentId: agent.id }),
+    );
+    try {
+      onTaskCreated?.(canonicalTask.id);
+    } catch {
+      /* observer only */
+    }
+
+    agent.activeTaskId = canonicalTask.id;
+    agent.generation += 1;
+    const gen = agent.generation;
+    agent.abort = new AbortController();
+    agent.busy = true;
+    agent.status = "running";
+    agent.skill = "bot";
+    agent.step = `Routine: ${routine.name || "working"}`;
+    agent.updatedAt = new Date().toISOString();
+    emitProgress(agent.id, { status: "running", step: agent.step, skill: "bot" });
+    emitList();
+
+    try {
+      const modelUsage = { taskId: canonicalTask.id, calls: 0, inputTokens: 0, outputTokens: 0, upstreamMs: 0, byStage: {} };
+      const model = browserAgent.createAgentModel({
+        apiBase,
+        getAuthToken,
+        onUsage: (usage) => {
+          modelUsage.calls += 1;
+          modelUsage.inputTokens += usage.inputTokens || 0;
+          modelUsage.outputTokens += usage.outputTokens || 0;
+          modelUsage.upstreamMs += usage.upstreamMs || 0;
+        },
+      });
+      const streamTool = (skill) => async ({ instruction, signal }) => {
+        if (signal?.aborted) return { ok: false, output: "", summary: "cancelled" };
+        const out = await streamChat(agent, instruction, [], skill, gen, { suppressDone: true, signal });
+        if (signal?.aborted) return { ok: false, output: "", summary: "cancelled" };
+        const text = String(out || "").trim();
+        return { ok: !!text, output: text, summary: text.slice(0, 500) };
+      };
+      const localChild = async ({ instruction, signal, task, progress }) => {
+        const out = await localExecutor.execute(task || canonicalTask, {
+          signal,
+          instruction,
+          progress,
+          local: { agent, gen, instruction },
+        });
+        return toHarnessResult(out);
+      };
+      const browserRefusal = async () => ({
+        ok: false,
+        output: "",
+        summary:
+          "The live browser isn't available in unattended routine runs yet. Use research_report for web information, or reply with what you can determine without the browser.",
+      });
+
+      // The routine's capability envelope decides which executors exist in
+      // this run. A missing executor reads as "not available in this run" to
+      // the harness — the envelope is enforced in code, not in prompt text.
+      const caps = new Set(Array.isArray(canonicalTask.capabilities) ? canonicalTask.capabilities : []);
+      const hasLocal =
+        caps.has("local_computer") || [...caps].some((c) => c.startsWith("files.") || c.startsWith("local."));
+      const executors = {
+        reply: streamTool("general"),
+        ...(caps.has("research_report") ? { research_report: streamTool("research") } : {}),
+        ...(caps.has("research_report") ? { edit_report: streamTool("report-edit") } : {}),
+        ...(caps.has("build_artifact") ? { build_artifact: streamTool("build") } : {}),
+        ...(caps.has("generate_image") ? { generate_image: streamTool("image") } : {}),
+        ...(hasLocal ? { local_computer: localChild } : {}),
+        browser: browserRefusal,
+      };
+      const primaryTool = hasLocal && routine.trigger?.type !== "schedule"
+        ? "local_computer"
+        : caps.has("research_report")
+          ? "research_report"
+          : "";
+
+      agent.lastBotModelUsage = modelUsage;
+      const execution = await taskRuntime.execute(canonicalTask.id, botExecutor, {
+        executorName: "bot",
+        model,
+        executors,
+        conversationHistory: [],
+        attachmentsNote: "",
+        localMode: localModeEnabled(),
+        primaryTool,
+        onApproval: (request) => {
+          try {
+            onApprovalRequired?.(request);
+          } catch {
+            /* notification is best-effort */
+          }
+          return awaitBrowseApproval(agent, { question: request?.question });
+        },
+        onProgress: (p) => {
+          if (gen !== agent.generation) return;
+          const status = botHarnessStatusLine(p);
+          if (!status) return;
+          agent.step = trimStatusLine(status, 240);
+          emitProgress(agent.id, { status: "running", step: agent.step, skill: agent.skill });
+        },
+      });
+      const res = execution.result || {};
+      const status = execution.task?.status || res.status || "failed";
+      return {
+        taskId: canonicalTask.id,
+        status,
+        output: String(res.answer || res.output || res.question || execution.task?.completion?.output || "").trim(),
+        error: status === "failed" ? String(execution.task?.completion?.error || res.error || "") : "",
+        usage: modelUsage,
+      };
+    } catch (e) {
+      const runtimeTask = taskRuntime.get(canonicalTask.id);
+      if (runtimeTask && !isTerminalTaskStatus(runtimeTask.status)) {
+        if (e?.name === "AbortError") taskRuntime.cancel(canonicalTask.id, "aborted");
+        else taskRuntime.fail(canonicalTask.id, e?.message || String(e));
+      }
+      return {
+        taskId: canonicalTask.id,
+        status: e?.name === "AbortError" ? "cancelled" : "failed",
+        output: "",
+        error: e?.name === "AbortError" ? "Stopped." : e?.message || String(e),
+      };
+    } finally {
+      if (gen === agent.generation) {
+        agent.busy = false;
+        if (agent.status === "running") agent.status = "idle";
+        agent.step = "";
+        agent.updatedAt = new Date().toISOString();
+        schedulePersist();
+        emitProgress(agent.id, { status: agent.status, step: "" });
+      }
+      // A worker created solely for this occurrence does not linger in the
+      // rail; the outcome lives in the RoutineRun history.
+      if (dedicated) {
+        try {
+          closeAgent(agent.id);
+        } catch {
+          /* already gone */
+        }
+      }
+      emitList();
+    }
+  }
+
+  /** Stop one canonical task by id — the global stop control's seam. */
+  function stopTask(taskId) {
+    const id = String(taskId || "").trim();
+    if (!id) return { ok: false, error: "task_id_required" };
+    const task = taskRuntime.get(id);
+    if (!task) return { ok: false, error: "not_found" };
+    if (!isTerminalTaskStatus(task.status)) taskRuntime.cancel(id, "user_stop");
+    const owner = [...agents.values()].find((a) => a.activeTaskId === id);
+    if (owner) {
+      abortAgent(owner, "stopped");
+      owner.step = "Stopped";
+      owner.updatedAt = new Date().toISOString();
+      schedulePersist();
+      emitProgress(owner.id, { status: "idle", step: "Stopped" });
+    }
+    return { ok: true, taskId: id };
+  }
+
+  /** Every non-terminal canonical task, for the Activity surface. */
+  function listActiveTasks() {
+    const rows = [];
+    for (const agent of agents.values()) {
+      if (!agent.activeTaskId) continue;
+      const task = taskRuntime.get(agent.activeTaskId);
+      if (!task || isTerminalTaskStatus(task.status)) continue;
+      rows.push({
+        taskId: task.id,
+        status: task.status,
+        objective: String(task.objective || "").slice(0, 200),
+        botId: task.association?.botId || agent.botProfile?.id || "",
+        botName: agent.botProfile?.name || agent.title || "",
+        routineId: task.association?.routineId || "",
+        agentId: agent.id,
+        step: agent.step || "",
+        startedAt: task.startedAt || task.createdAt || "",
+      });
+    }
+    return rows;
   }
 
   /**
@@ -12339,6 +12616,12 @@ function createAgentRuntime(deps) {
     disposeAll,
     publicAgent,
     getTask: (taskId) => taskRuntime.get(taskId),
+    // Bot Routines: occurrence execution, the late-bound bridge for the
+    // harness's create_routine tool, and the global Activity/stop seams.
+    runRoutineOccurrence,
+    setRoutineBridge,
+    stopTask,
+    listActiveTasks,
     // Test-only: hand back the internal mutable agent so security tests can
     // seed a pending choice and exercise the REAL resolveChoice attestation.
     // This is never forwarded to a renderer — the runtime object lives only in

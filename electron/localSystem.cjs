@@ -214,35 +214,50 @@ function isLocalToolName(name) {
 // Risk classification
 // ---------------------------------------------------------------------------
 
-const RISKY_COMMAND_PATTERNS = [
-  /\bsudo\b/i,
-  /\brm\b/i,
+/**
+ * CONSEQUENTIAL commands — approval is about commitment, irreversibility,
+ * money, credentials, and external impact, not about "the terminal ran".
+ * These patterns are matched against the WHOLE command string, so a routine
+ * command chained with a consequential one (`npm test && rm -rf dist`) is
+ * still consequential.
+ *
+ * Ordinary development work — running tests and builds, installing packages
+ * for the requested work, git status/diff/commit, writing files via
+ * redirection, moving/copying files — is ROUTINE and executes without a
+ * human pause when the task holds a shell capability. That is the product
+ * contract for a capable computer agent; the destructive/external tier below
+ * is the defense-in-depth that remains.
+ */
+const CONSEQUENTIAL_COMMAND_PATTERNS = [
+  /\bsudo\b/i, // privilege escalation
+  /\brm\b/i, // deletion (files.delete capability still gates the shape)
   /\brmdir\b/i,
-  /\bmv\b/i,
-  /\bchmod\b/i,
-  /\bchown\b/i,
-  /\bkill(all)?\b/i,
-  /\bshutdown\b|\breboot\b/i,
-  /\bdiskutil\b|\bmkfs\b|\bdd\b/i,
-  /\blaunchctl\b|\bdefaults\s+write\b/i,
-  /\bgit\s+push\b/i,
-  /\bgit\s+reset\s+--hard\b/i,
-  /\bnpm\s+(install|i|uninstall|publish)\b/i,
-  /\byarn\s+(add|remove)\b/i,
-  /\bpnpm\s+(add|install|remove)\b/i,
-  /\bbrew\s+(install|uninstall|upgrade)\b/i,
-  /\bpip3?\s+(install|uninstall)\b/i,
-  /curl[^|;&]*\|\s*(ba|z)?sh/i,
-  /wget[^|;&]*\|\s*(ba|z)?sh/i,
-  /\bosascript\b/i,
-  /(^|[^>])>{1,2}\s*\S/, // shell redirection writes a file
-  /\btee\b/i,
-  /\btruncate\b/i,
-  /\bln\s+-s/i,
+  /\bshred\b|\bsrm\b/i,
+  /\bchmod\b/i, // permission changes
+  /\bchown\b|\bchgrp\b/i,
+  /\bkill(all)?\b|\bpkill\b/i, // process termination can lose unsaved work
+  /\bshutdown\b|\breboot\b|\bhalt\b/i,
+  /\bdiskutil\b|\bmkfs\b|\bdd\b|\bfdisk\b/i, // disk surgery
+  /\blaunchctl\b|\bdefaults\s+write\b/i, // system configuration
   /\bcrontab\b/i,
-  /\bsecurity\b/i, // macOS keychain
+  /\bsecurity\b/i, // macOS keychain / credentials
+  /\bpasswd\b/i,
+  /\bgit\s+push\b/i, // leaves the machine
+  /\bgit\s+reset\s+--hard\b/i, // destroys local work
+  /\bgit\s+clean\s+-[a-z]*f/i,
+  /\b(npm|yarn|pnpm)\s+(publish|unpublish|deprecate)\b/i, // public registry
+  /\b(npm|yarn|pnpm)\s+(login|adduser|token)\b/i, // credentials
+  /curl[^|;&]*\|\s*(ba|z)?sh/i, // pipe-to-shell installs
+  /wget[^|;&]*\|\s*(ba|z)?sh/i,
+  /\bosascript\b/i, // arbitrary app scripting
+  /\btruncate\b/i,
+  /\bmkfifo\b|\bmknod\b/i,
 ];
 
+/**
+ * Read-only command prefixes: what `local.shell.read` may run, and what a
+ * task with no shell capability can never be tricked into exceeding.
+ */
 const SAFE_COMMAND_PREFIXES = [
   "ls", "pwd", "cat", "head", "tail", "wc", "file", "stat", "du", "df",
   "which", "whoami", "date", "uname", "echo", "printenv", "env",
@@ -250,6 +265,31 @@ const SAFE_COMMAND_PREFIXES = [
   "git status", "git log", "git diff", "git branch", "git show", "git remote",
   "npm ls", "npm view", "node --version", "npm --version", "python3 --version",
 ];
+
+/**
+ * Classify one shell command by CONSEQUENCE, independent of capability.
+ *
+ * @returns {{ tier: "routine"|"consequential", readOnly: boolean, reason: string }}
+ *   routine       — ordinary reversible work: run without a human pause when
+ *                   the task's capabilities license the command.
+ *   consequential — commitment/irreversibility/credentials/system/external:
+ *                   always requires live approval, standing authorization or
+ *                   not.
+ */
+function classifyCommandConsequence(command, cwd) {
+  const cmd = String(command || "").trim();
+  const lower = cmd.toLowerCase();
+  const readOnly = SAFE_COMMAND_PREFIXES.some((p) => lower === p || lower.startsWith(p + " "));
+  const matched = CONSEQUENTIAL_COMMAND_PATTERNS.find((re) => re.test(cmd));
+  if (matched) {
+    return { tier: "consequential", readOnly: false, reason: `matches ${matched}` };
+  }
+  const resolvedCwd = cwd ? resolveUserPath(cwd) : homeDir();
+  if (!isInsideHome(resolvedCwd)) {
+    return { tier: "consequential", readOnly: false, reason: "cwd outside home" };
+  }
+  return { tier: "routine", readOnly, reason: "" };
+}
 
 function homeDir() {
   return os.homedir();
@@ -421,18 +461,17 @@ function classifyRisk(name, args = {}) {
       };
     }
     case "local_run_command": {
+      // Consequence-based, not "unknown = approval": routine development
+      // commands (tests, builds, installs, git status/commit, redirection
+      // into working files) run without a pause; commitment, destruction,
+      // credentials, system config, and external pushes still require one.
       const cmd = String(args.command || "").trim();
-      const lower = cmd.toLowerCase();
-      const isSafePrefix = SAFE_COMMAND_PREFIXES.some(
-        (p) => lower === p || lower.startsWith(p + " ")
-      );
-      const hasChaining = /[;&|]/.test(cmd) && !/^\s*(grep|rg|find)\b/.test(lower);
-      const matchesRisky = RISKY_COMMAND_PATTERNS.some((re) => re.test(cmd));
-      const cwd = args.cwd ? resolveUserPath(args.cwd) : homeDir();
-      const outsideHome = !isInsideHome(cwd);
-      const risky = matchesRisky || outsideHome || (!isSafePrefix && hasChaining) || !isSafePrefix;
+      const consequence = classifyCommandConsequence(cmd, args.cwd);
+      const risky = consequence.tier === "consequential";
       return {
         risky,
+        readOnly: consequence.readOnly,
+        tier: consequence.tier,
         summary: risky ? `Run command: ${cmd.slice(0, 300)}` : "",
       };
     }
@@ -1294,6 +1333,7 @@ module.exports = {
   LOCAL_TOOL_NAMES,
   isLocalToolName,
   classifyRisk,
+  classifyCommandConsequence,
   configure,
   configureExtraction,
   readLocalMode,

@@ -46,6 +46,7 @@ const {
 } = require("./net/safeFetch.cjs");
 const overlayConstants = require("./windows/overlayConstants.cjs");
 const { initializeElectronServices } = require("./services/initializeElectronServices.cjs");
+const { createRoutineRuntime } = require("./bot-routines/routineRuntime.cjs");
 const { registerAllIpc } = require("./ipc/index.cjs");
 const { attachDesktopAuth } = require("./auth/desktopAuth.cjs");
 const { attachAutoUpdate } = require("./updater/autoUpdate.cjs");
@@ -1097,6 +1098,7 @@ let agentSidebarWindow = null;
 let agentSidebarHeight = 360;
 let agentSidebarOpen = false;
 let agentRuntime = null;
+let routineRuntime = null;
 // Inline browser-new-tab conversations receive the same live agent events as
 // the regular LYKN chat, scoped to their paired browser agent.
 const browserWelcomeChatStreams = new Map();
@@ -4712,6 +4714,62 @@ function initAgentRuntime() {
   return agentRuntime;
 }
 
+// BOT ROUTINES: durable schedules/monitors that spawn canonical Tasks.
+// The routine runtime owns WHEN (store + scheduler + monitors + notifications);
+// the agent runtime stays the execution authority for each occurrence.
+function initRoutineRuntime() {
+  if (routineRuntime) return routineRuntime;
+  const runtime = initAgentRuntime();
+  routineRuntime = createRoutineRuntime({
+    userDataPath: app.getPath("userData"),
+    emit: emitAgentToUi,
+    native: {
+      isSupported: () => Notification.isSupported(),
+      create: (opts) => new Notification(opts),
+    },
+    // Notification click: surface the app and let the renderer route to the
+    // bot's board / routine (App-level listener on lykn:activity-open).
+    onOpenNotification: (deepLink) => {
+      try {
+        if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+        else {
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      } catch (_) {
+        /* window may be tearing down */
+      }
+      emitAgentToUi("lykn:activity-open", deepLink || {});
+    },
+    executeTask: async ({ routine, runId, triggerContext, onTaskCreated }) =>
+      runtime.runRoutineOccurrence({
+        routine,
+        runId,
+        triggerContext,
+        onTaskCreated,
+        // Consequential actions inside an unattended run park the task as
+        // waiting_for_approval — this is the "come approve it" ping.
+        onApprovalRequired: (request) => {
+          routineRuntime?.notifications?.notify({
+            botId: routine.botId,
+            routineId: routine.id,
+            runId,
+            title: `${routine.bot?.name || "Bot"} needs approval: ${routine.name}`,
+            body: String(request?.question || "A consequential action needs your approval.").slice(0, 240),
+            urgency: "high",
+          });
+        },
+      }),
+  });
+  // The harness's create_routine tool reaches routines through this seam.
+  runtime.setRoutineBridge({
+    createFromInstruction: (instruction, opts) =>
+      routineRuntime.createRoutineFromInstruction(instruction, opts),
+  });
+  routineRuntime.start();
+  return routineRuntime;
+}
+
 // ⌘+L: toggle the floating glass bar. Screen capture happens silently at ask
 // time (see streamScreenAnswer) so the bar always reflects the live screen and
 // the user never sees the screenshot.
@@ -5818,6 +5876,7 @@ function bindShellContext() {
   d.planOwnedBrowserNext = planOwnedBrowserNext;
   d.whenAgentRuntimeLoaded = whenAgentRuntimeLoaded;
   d.initAgentRuntime = initAgentRuntime;
+  d.getRoutineRuntime = initRoutineRuntime;
   if (typeof d.showOverlay !== "function") d.showOverlay = showOverlay;
   if (typeof d.toggleOverlay !== "function") d.toggleOverlay = toggleOverlay;
   if (typeof d.registerGlobalHotkey !== "function") d.registerGlobalHotkey = registerGlobalHotkey;
@@ -6107,6 +6166,20 @@ function bindShellContext() {
   // closed it) → no Dock icon. The tray + ⌘L are the way back in.
   updateDockVisibility();
 
+  // Bot Routines live for the whole app lifetime (tray-resident included):
+  // schedules must fire with no window open.
+  initRoutineRuntime();
+  // Timers don't run while the machine sleeps; on wake, reconcile every
+  // schedule against the real clock (missed-run policies) and take one
+  // honest observation per active monitor.
+  powerMonitor.on("resume", () => {
+    try {
+      routineRuntime?.reconcile("wake");
+    } catch (err) {
+      console.warn("[routines] wake reconcile failed:", err?.message || err);
+    }
+  });
+
   // Never block a system shutdown/restart: flip the quit flag the moment the
   // OS announces it so the before-quit reroute below stands down.
   powerMonitor.on("shutdown", () => {
@@ -6152,6 +6225,12 @@ app.on("will-quit", () => {
   extensionBridge?.stop?.();
   macFiles.closeWatchers();
   globalShortcut.unregisterAll();
+  // Stop routine timers/watchers and flush the store synchronously — will-quit
+  // cannot await, and routine state must be durable across the restart.
+  if (routineRuntime) {
+    void routineRuntime.shutdown();
+    routineRuntime.store.persistNowSync();
+  }
   // Checkpoints the WAL so the database file on disk is complete on its own —
   // matters for snapshots and for anything the user copies out.
   localStore.shutdown();

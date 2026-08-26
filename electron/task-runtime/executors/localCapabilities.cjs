@@ -119,16 +119,22 @@ const DELETE_COMMAND = /^(rm|rmdir)\b/i;
  * Whether this shell command is licensed. local_run_command must still pass
  * classifyRisk / approval; this only answers "is the capability present".
  *
+ * local.shell.read licenses READ-ONLY commands: the classifier's explicit
+ * readOnly verdict when present (the consequence classifier reports it), the
+ * legacy `risky !== true` heuristic otherwise, so pre-tier callers keep their
+ * behavior. It never expands to routine-but-mutating commands like installs.
+ *
  * @param {string} command
  * @param {string[]} capabilities
- * @param {{ risky?: boolean }} [risk]
+ * @param {{ risky?: boolean, readOnly?: boolean }} [risk]
  */
 function commandPermitted(command, capabilities, risk = {}) {
   const caps = capList(capabilities);
   if (hasBlanket(caps) || hasAny(caps, ["local.shell.execute"])) return true;
   const cmd = String(command || "").trim();
   if (!cmd) return false;
-  if (hasAny(caps, ["local.shell.read"]) && risk.risky !== true) return true;
+  const readOnly = risk.readOnly !== undefined ? risk.readOnly === true : risk.risky !== true;
+  if (hasAny(caps, ["local.shell.read"]) && readOnly) return true;
   if (hasAny(caps, ["files.move"]) && MOVE_COMMAND.test(cmd)) return true;
   if (hasAny(caps, ["files.delete"]) && DELETE_COMMAND.test(cmd)) return true;
   return false;

@@ -279,6 +279,14 @@ async function runLocalAgentTask({
   onApprovalNeeded = null,
   onUsage = null,
   runTool = null,
+  // Standing authorization (Task approval.policy "standing_authorization",
+  // carried by Bot Routines): ordinary work inside the task's explicit
+  // capability envelope — reads, writes to working files, routine shell
+  // commands — runs without per-action approval, because nobody is at the
+  // keyboard to click Approve at 8 AM. CONSEQUENTIAL actions (destructive
+  // commands, credentials, external pushes — classifyRisk's risky tier for
+  // commands) still pause for live approval regardless of this flag.
+  standingAuthorization = false,
 }) {
   const history = [];
   const usage = emptyUsage();
@@ -349,6 +357,10 @@ async function runLocalAgentTask({
       return { blocked: true, summary: "previously declined — not retried" };
     }
 
+    if (READ_TOOLS.has(tool) && !readAccessGranted && standingAuthorization) {
+      // files.read inside the routine's envelope IS the standing grant.
+      readAccessGranted = true;
+    }
     if (READ_TOOLS.has(tool) && !readAccessGranted) {
       onProgress({ phase: "awaiting_approval", tool, summary: "Look through your files" });
       let allowed = false;
@@ -376,7 +388,16 @@ async function runLocalAgentTask({
 
     const risk = localSystem.classifyRisk(tool, args);
     let approved = true;
-    if (risk.risky) {
+    // Standing authorization auto-approves ordinary FILE writes/edits inside
+    // the capability envelope. Shell commands never ride this branch: a
+    // command classifyRisk marks risky is consequential-tier by definition
+    // now, and consequential actions always take the live-approval path
+    // below, standing authorization or not.
+    const standingCovers =
+      standingAuthorization &&
+      risk.risky &&
+      (tool === "local_write_file" || tool === "local_edit_file");
+    if (risk.risky && !standingCovers) {
       onProgress({ phase: "awaiting_approval", tool, summary: risk.summary, event: "local.approval_required" });
       if (typeof onApprovalNeeded === "function") {
         approved = await onApprovalNeeded({
