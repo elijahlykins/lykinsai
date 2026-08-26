@@ -51,7 +51,7 @@ import { createClient } from '@supabase/supabase-js';
 import {
   encryptTokenWithKey,
   decryptTokenWithKey,
-} from '../connectors-service.js';
+} from '../lib/security/credentialStore.js';
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const BATCH_SIZE = 100;
