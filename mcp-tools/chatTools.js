@@ -9,14 +9,12 @@
 // AND the per-provider schema translators so the same tool surface works
 // across OpenAI / Anthropic / Gemini / Grok native function calling.
 //
-// Adding a tool to in-app chat = include it in CHAT_TOOL_NAMES below and
-// teach the in-app system prompt when to call it. The when-to-call policy in
-// server.js is split: an always-on core (LYKN_CHAT_TOOL_GUIDANCE, incl. the
-// CAPABILITIES MENU so the model always KNOWS the tool exists) plus
-// intent-gated detail blocks (TOOL_GUIDANCE_*) composed per-turn by
-// buildChatToolGuidance(). Add the tool to the right block AND extend the menu
-// + the block's intent regex so it isn't silently undocumented. The schema
-// converters below pick the tool up automatically.
+// Adding a tool to in-app chat = include it in CHAT_TOOL_NAMES below,
+// add a row in mcp-tools/firstPartyCapabilities.js, and keep the when-to-call
+// policy in server.js in sync (slim guidance lists the disclosed names;
+// LYKN_CHAT_TOOL_GUIDANCE remains the Create/Imagine detail menu). The schema
+// converters below pick the tool up automatically. Per-turn disclosure is
+// FirstPartyCapabilityResolver → FirstPartyToolResolver, not a full dump.
 //
 // We deliberately do NOT re-export the full LYKN_TOOLS list. The
 // defaults for in-app chat should always be an explicit whitelist; broad

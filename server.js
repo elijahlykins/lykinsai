@@ -141,6 +141,21 @@ import {
 import { CHAT_TOOLS, buildChatToolCtx, providerForModel, resolveChatModelLabel, supportsTools } from './mcp-tools/chatTools.js';
 import { LOCAL_TOOL_NAMES, looksLikeLocalSystemAsk, mightBeBrowserTaskAsk } from './mcp-tools/localTools.js';
 import {
+  AGENTS_APPS_CODE_INTENT_RE,
+  ARTIFACT_BUILD_VERB_RE,
+  MAKING_INTENT_RE,
+  MANAGED_SURFACE_INTENT,
+  messageWantsAgentTools,
+  messageWantsPageFetch,
+  messageWantsProjectContext,
+  messageWantsSavedRecall,
+  messageWantsUserRecallCore,
+  messageWantsWebTools,
+} from './mcp-tools/chatIntentSignals.js';
+import {
+  resolveChatTurnDisclosure,
+} from './mcp-tools/firstPartyCapabilities.js';
+import {
   formatBoundProjectGuidance,
   loadWritableProject,
   stampActiveProject,
@@ -439,10 +454,6 @@ const BOARD_ACTION_PATTERN = /\b(make\s+(it|this|that)\s+(bigger|smaller|larger|
 // tax that a chatty "what do you do?" was incurring.
 const AI_IDENTITY_QUERY_PATTERN = /^(?:so\s+|hey\s*,?\s*|hi\s*,?\s*|hello\s*,?\s*|ok(?:ay)?\s*,?\s*|um\s*,?\s*|wait\s*,?\s*)?(?:what(?:'s| is| are) (?:this|that|lykn|you|your (?:job|role|purpose|deal|thing))|what(?:'s| is| are) (?:your )?(?:purpose|point|goal)|what (?:do|can|could|would) you (?:do|help|offer|provide|make|build|handle)|who (?:are|r) (?:you|u)|who(?:'s| is) this|tell me (?:about|who) (?:you|yourself|this|lykn)|describe (?:yourself|this|lykn)|explain (?:yourself|this|lykn|what (?:you|this) (?:do|is|are))|how (?:do|does) (?:you|this|lykn) work|why should i (?:use|care)|what (?:can|could) (?:this|lykn|you) do|how (?:can|do) you help|what (?:is|are) (?:lykn|you)\b)/i;
 const SHORT_REPLY_MAX_WORDS = 5;
-
-// The user's native, AI-managed surfaces. Any reference to these is a tool
-// job (read or write), so classifyEnrichment must keep the agent loop on.
-const MANAGED_SURFACE_INTENT = /\b(to-?dos?|to-?do\s*lists?|task\s*lists?|tasks?|checklists?|calendars?|agendas?|schedules?|scheduling|events?|reminders?|remind\s+me|my\s+(?:list|plate|day|week|month|plans?|agenda|schedule))\b/i;
 
 function classifyEnrichment(text, opts = {}) {
   if (!text) return 'none';
@@ -4220,321 +4231,6 @@ const LYKN_GLASS_MEMORY_ADDENDUM = [
   '=== END GLASS ===',
 ].join('\n');
 
-/** Live-web / freshness / capability asks that need search+fetch tools. */
-function messageWantsWebTools(msg, opts = {}) {
-  return webSearchIntent.messageWantsWebTools(msg, opts);
-}
-
-/**
- * Site-wide / beyond-viewport page asks. Glass already knows the open-tab URL —
- * these should arm lykn_web_fetch (and never ask the user to paste the link).
- */
-function messageWantsPageFetch(msg) {
-  const t = String(msg || '').trim().toLowerCase();
-  if (!t) return false;
-  if (
-    /\b(?:rest of|remainder of|other (?:parts?|sections?)|below the fold|further down|whole|entire|full)\b.{0,48}\b(?:page|site|website|web\s?page|landing)\b/.test(
-      t,
-    )
-  ) {
-    return true;
-  }
-  if (
-    /\b(?:page|site|website|web\s?page|landing)\b.{0,48}\b(?:rest|whole|entire|full|other sections?|below)\b/.test(
-      t,
-    )
-  ) {
-    return true;
-  }
-  if (
-    /\b(?:see|read|review|parse|check|look at)\b.{0,32}\b(?:the\s+)?(?:whole|entire|full)\b.{0,32}\b(?:page|site|website)\b/.test(
-      t,
-    )
-  ) {
-    return true;
-  }
-  if (
-    /\b(?:website|web\s?site|landing\s?page|homepage|home\s?page|(?:my|this|the)\s+site)\b/.test(t) &&
-    /\b(?:better|improve|improvement|feedback|review|audit|critique|redesign|sections?|overall|whole|entire|rest)\b/.test(
-      t,
-    )
-  ) {
-    return true;
-  }
-  return false;
-}
-
-/**
- * True only when the user wants OAuth / API connected-app tools
- * (lykn_list_apps / lykn_call_app) — not when they want the browser to open
- * Notion/Gmail/etc. and click through on screen.
- */
-function messageWantsConnectedAppApis(msg) {
-  const t = String(msg || '');
-  if (!t.trim()) return false;
-  if (/\bconnected apps?\b/i.test(t)) return true;
-  if (/\b(?:lykn_)?(?:list|call)_apps?\b/i.test(t)) return true;
-  if (
-    /\b(?:notion|gmail|slack|todoist|linear|outlook|google\s*sheets?)\s+(?:api|connection|integration|oauth)\b/i.test(
-      t,
-    )
-  ) {
-    return true;
-  }
-  if (
-    /\b(?:use|via|through|with)\s+my\s+(?:notion|gmail|slack|todoist|linear|outlook)\s*(?:connection|integration|oauth|api)?\b/i.test(
-      t,
-    )
-  ) {
-    return true;
-  }
-  // On-screen / browse work — never route to connected-app APIs.
-  if (
-    /\b(?:go\s+to|open|visit|navigate|pull\s+up|launch|browser|tab|click|type|write|share|sign[- ]?in|log[- ]?in|on\s+(?:the\s+)?screen|in\s+(?:the\s+)?browser|create\s+(?:a\s+)?(?:new\s+)?page|new\s+page)\b/i.test(
-      t,
-    ) ||
-    /https?:\/\//i.test(t) ||
-    /\bnotion\.so\b/i.test(t)
-  ) {
-    return false;
-  }
-  // Slack/Todoist/Linear without browse verbs → API is a reasonable default.
-  if (/\b(?:slack|todoist|linear)\b/i.test(t)) return true;
-  return false;
-}
-
-/**
- * Tiny intent → tool allowlist. Prefer a handful of schemas over the full
- * ~34K-token CHAT_TOOLS dump so tool turns stay ChatGPT-fast.
- * Returns null when the ask is too broad / ambiguous to safely narrow.
- */
-/** Maker / Create-panel tools — stripped in exclusive non-Create modes. */
-const CHAT_MAKER_TOOL_NAMES = new Set([
-  'lykn_build_react_artifact',
-  'lykn_build_template',
-  'lykn_build_spreadsheet',
-  'lykn_manage_file',
-  'lykn_render_video',
-  'lykn_generate_chart',
-  'lykn_generate_diagram',
-  'lykn_build_with_cursor',
-  'lykn_check_cursor_build',
-]);
-
-function resolveIntentChatToolNames(msg, opts = {}) {
-  const t = String(msg || '');
-  const set = new Set();
-  const add = (...names) => {
-    for (const n of names) if (n) set.add(n);
-  };
-
-  // Exclusive composer modes: only the tools that mode is for. Mentions of
-  // "pitch deck" / "create a report" inside Deep research must NOT unlock
-  // builders (that hijacked research turns into phantom Create builds).
-  if (opts.deepResearch || opts.exclusiveComposerMode === 'research') {
-    return ['lykn_web_search', 'lykn_web_fetch'];
-  }
-  if (opts.translateMode || opts.exclusiveComposerMode === 'translate') {
-    return [];
-  }
-  if (
-    (opts.forceImage && !opts.forceArtifact) ||
-    opts.exclusiveComposerMode === 'image'
-  ) {
-    return ['lykn_generate_image', 'lykn_process_image'];
-  }
-  if (opts.exclusiveComposerMode === 'web') {
-    return ['lykn_web_search', 'lykn_web_fetch'];
-  }
-
-  if (opts.forceImage) add('lykn_generate_image', 'lykn_process_image');
-  if (opts.artifactToolName) add(opts.artifactToolName);
-  if (opts.activeArtifactEditable && opts.activeArtifactTool) {
-    add(opts.activeArtifactTool);
-  }
-
-  const wantsManaged = MANAGED_SURFACE_INTENT.test(t);
-  const wantsVault =
-    messageWantsSavedRecall(t) ||
-    /\b(?:save|add|put)\b.{0,40}\b(?:vault|note|notes)\b/i.test(t);
-  const wantsProject =
-    messageWantsProjectContext(t) ||
-    (opts.inProject && /\b(?:save|update|add|push|note|remember|write)\b/i.test(t));
-  const wantsWeb =
-    opts.forceWebSearch ||
-    opts.deepResearch ||
-    messageWantsWebTools(t, { conversation: opts.conversation });
-  const wantsPageFetch =
-    opts.forcePageFetch ||
-    messageWantsPageFetch(t) ||
-    // Glass already knows the open tab — any site/page ask can fetch it.
-    (!!opts.pageUrl &&
-      opts.overlayAsk &&
-      /\b(?:website|web\s?site|landing\s?page|homepage|home\s?page|(?:my|this|the)\s+site|this\s+page)\b/i.test(
-        t,
-      ));
-  const wantsCalc = /\b(?:calculate|compute|solve|integrate|derivative|differentiate|exact\s+math)\b/i.test(t);
-  const wantsCursor =
-    typeof AGENTS_APPS_CODE_INTENT_RE !== 'undefined' &&
-    AGENTS_APPS_CODE_INTENT_RE.test(t);
-
-  if (wantsManaged) {
-    add(
-      'lykn_listTodos', 'lykn_createTodo', 'lykn_updateTodo', 'lykn_deleteTodo',
-      'lykn_listEvents', 'lykn_createEvent', 'lykn_updateEvent', 'lykn_deleteEvent',
-      'lykn_listReminders', 'lykn_createReminder', 'lykn_updateReminder',
-      'lykn_get_current_time',
-    );
-  }
-  if (wantsVault) {
-    add(
-      'lykn_open_app',
-      'lykn_createVaultNote', 'lykn_saveFileToVault', 'lykn_saveLinkToVault',
-    );
-  }
-  if (wantsProject) {
-    add(
-      'lykn_listProjects', 'lykn_resolveProject', 'lykn_getProjectState',
-      'lykn_getProjectNeurons', 'lykn_pushProjectState', 'lykn_setActiveProject',
-      'lykn_createProject', 'lykn_updateProject', 'lykn_addProjectNeurons',
-      'lykn_uploadToProject',
-    );
-  }
-  if (wantsWeb) add('lykn_web_search', 'lykn_web_fetch');
-  else if (wantsPageFetch) add('lykn_web_fetch');
-  if (wantsCalc) add('lykn_calculate', 'lykn_symbolic_math', 'lykn_run_python');
-  if (wantsCursor) {
-    add('lykn_build_with_cursor', 'lykn_check_cursor_build');
-  }
-
-  // Ambiguous "make/build" without a forced artifact — don't guess the full
-  // maker suite; null means caller should keep a broader list or rely on
-  // forceArtifact path. Skip when the "build me a …" is only an example inside
-  // a brainstorm (otherwise ideation chats unlock every lykn_build_* tool).
-  const brainstormOnly =
-    typeof artifactBuildIntent?.isHypotheticalOrBrainstormBuildMention === 'function' &&
-    artifactBuildIntent.isHypotheticalOrBrainstormBuildMention(t);
-  const wantsMake =
-    !brainstormOnly &&
-    typeof MAKING_INTENT_RE !== 'undefined' &&
-    MAKING_INTENT_RE.test(t) &&
-    typeof ARTIFACT_BUILD_VERB_RE !== 'undefined' &&
-    ARTIFACT_BUILD_VERB_RE.test(t);
-  if (wantsMake && !opts.artifactToolName && !opts.forceImage) {
-    return null;
-  }
-
-  if (set.size === 0) return null;
-  return [...set];
-}
-
-/** Short tool policy when only a tiny allowlist is attached. */
-function buildSlimChatToolGuidance(toolNames) {
-  const names = (Array.isArray(toolNames) ? toolNames : []).filter(Boolean);
-  const hasLocal = names.some((n) => n.startsWith('local_'));
-  return [
-    '=== TOOL CALLING (lean) ===',
-    'You have a small set of tools for THIS turn only:',
-    names.map((n) => `  • ${n}`).join('\n') || '  (none)',
-    ...(hasLocal
-      ? [
-          "The local_* tools run live on the user's Mac (Local Mode is ON). For any ask about " +
-            'their files, folders, apps, or system, CALL THEM — never claim local access is unavailable.',
-        ]
-      : []),
-    'Call a tool silently when it is needed; never invent tool syntax in your reply.',
-    'Never invent URLs, chart links, or claim a tool ran if it did not.',
-    'If they named a news outlet or asked for headlines, call lykn_web_search now — do not ask for a link or screenshot.',
-    'If a needed tool is not listed, answer from context or say briefly what the user should arm (Build mode / Generate image / etc.).',
-    '=== END TOOL CALLING ===',
-  ].join('\n');
-}
-
-/**
- * True when this turn actually needs the agent tool loop (todos, vault,
- * web, build, apps, etc.). Ordinary Q&A / screen reads should stay lean —
- * no 70+ tool schemas and no 30K tool-guidance prefill (ChatGPT-fast path).
- */
-function messageWantsAgentTools(msg, opts = {}) {
-  if (opts.forceImage || opts.artifactToolName || opts.activeArtifactEditable) return true;
-  if (opts.forceWebSearch || opts.deepResearch) return true;
-  const t = String(msg || '');
-  if (!t.trim()) return false;
-  if (MANAGED_SURFACE_INTENT.test(t)) return true;
-  if (typeof AGENTS_APPS_CODE_INTENT_RE !== 'undefined' && AGENTS_APPS_CODE_INTENT_RE.test(t)) return true;
-  if (
-    typeof MAKING_INTENT_RE !== 'undefined' &&
-    MAKING_INTENT_RE.test(t) &&
-    typeof ARTIFACT_BUILD_VERB_RE !== 'undefined' &&
-    ARTIFACT_BUILD_VERB_RE.test(t) &&
-    !(
-      typeof artifactBuildIntent?.isHypotheticalOrBrainstormBuildMention === 'function' &&
-      artifactBuildIntent.isHypotheticalOrBrainstormBuildMention(t)
-    )
-  ) {
-    return true;
-  }
-  if (messageWantsSavedRecall(t)) return true;
-  if (messageWantsProjectContext(t)) return true;
-  if (opts.inProject && /\b(?:save|update|add|push|note|remember|write)\b/i.test(t)) return true;
-  if (messageWantsWebTools(t, { conversation: opts.conversation })) return true;
-  if (opts.forcePageFetch || messageWantsPageFetch(t)) return true;
-  if (/\b(?:calculate|compute|solve|integrate|derivative|differentiate)\b/i.test(t)) return true;
-  if (/\b(?:save|add|put)\b.{0,40}\b(?:vault|note|notes)\b/i.test(t)) return true;
-  if (/\b(?:create|make|generate|build)\b.{0,40}\b(?:image|picture|photo|chart|graph|diagram|deck|slideshow|spreadsheet|app|dashboard|video|mp4)\b/i.test(t)) {
-    return true;
-  }
-  return false;
-}
-
-/**
- * True when the user explicitly asks about / to use a project in their message.
- * Ambient topic-fit is NOT enough — project tools/context are opt-in.
- */
-function messageWantsProjectContext(msg) {
-  const t = String(msg || '').toLowerCase();
-  if (!t) return false;
-  if (/\b(?:my\s+)?projects?\b/.test(t)) return true;
-  if (/\b(?:start|create|make|open|switch(?:\s+to)?|set|resume|focus)\b.{0,48}\bproject\b/.test(t)) return true;
-  if (/\b(?:add|save|put|push|update|note|write|drop)\b.{0,48}\b(?:to|in|on|into)\b.{0,32}\b(?:my\s+)?project\b/.test(t)) return true;
-  if (/\b(?:which|what)\s+project\b/.test(t)) return true;
-  if (/\bin\s+(?:the|my|this|that)\s+project\b/.test(t)) return true;
-  return false;
-}
-
-/** True when the user is asking for something from the Vault Finder / AI Drive / saved files. */
-function messageWantsSavedRecall(msg) {
-  const t = String(msg || '').toLowerCase();
-  if (!t) return false;
-  // Bare "vault" / AI Drive / Finder. Do NOT match connected-app brands
-  // (Notion, Gmail, Drive, …) — that library is gone.
-  if (/\b(?:my\s+)?vault\b/.test(t)) return true;
-  if (/\b(?:ai\s*drive|image\s*gen|artifacts?\s+folder)\b/.test(t)) return true;
-  if (/\b(?:what\s+(?:have|did)\s+i\s+save|i\s+saved|something\s+i\s+saved|what\s+i\s+saved)\b/.test(t)) return true;
-  if (/\bsaved\s+(?:note|notes|file|files|image|images|pic|pics|photo|photos|doc|docs|link|links|article|articles|artifact|artifacts|stuff|item|items)\b/.test(t)) return true;
-  if (/\bfrom\s+(?:my\s+)?(?:vault|ai\s*drive)\b/.test(t)) return true;
-  if (/\b(?:pull|bring|show|open|find|get|grab|look\s+up)\b.{0,48}\b(?:vault|saved|artifact|artifacts|ai\s*drive|my\s+(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|documents?))\b/.test(t)) return true;
-  if (/\b(?:do\s+i\s+have|have\s+i|anything|something)\b.{0,40}\b(?:saved|in\s+(?:my\s+)?vault|in\s+the\s+vault|in\s+(?:my\s+)?ai\s*drive)\b/.test(t)) return true;
-  return false;
-}
-
-/**
- * True when the user is asking LYKN to recall what it knows about *them*
- * (identity / prefs / people) — not projects, not vault.
- */
-function messageWantsUserRecallCore(msg) {
-  const t = String(msg || '').toLowerCase();
-  if (!t) return false;
-  if (/\bwhat\s+do\s+you\s+know\s+about\s+me\b/.test(t)) return true;
-  if (/\bwhat\s+have\s+you\s+(?:learned|picked\s+up)\s+about\s+me\b/.test(t)) return true;
-  if (/\btell\s+me\s+about\s+(?:myself|me)\b/.test(t)) return true;
-  if (/\bwhat\s+do\s+you\s+(?:remember|recall)\s+about\s+me\b/.test(t)) return true;
-  if (/\bremind\s+me\s+what\s+you\s+know\b/.test(t)) return true;
-  if (/\bhow\s+well\s+do\s+you\s+know\s+me\b/.test(t)) return true;
-  if (/\bwhat(?:'s|\s+is)\s+your\s+(?:read|sense|take)\s+on\s+me\b/.test(t)) return true;
-  if (/\bwho\s+(?:am\s+i|do\s+you\s+think\s+i\s+am)\b/.test(t)) return true;
-  return false;
-}
 
 /** Follow-ups that mean "expand the portrait you just gave", not a new topic. */
 function messageWantsUserRecallDeepen(msg) {
@@ -5710,15 +5406,10 @@ const TOOL_GUIDANCE_EXTERIOR = [
   '    user arms "Generate image" mode); the result renders inline on its own.',
 ].join('\n');
 
-// Intent detectors for the gated blocks above. Deliberately broad. The
-// SCHEDULING block reuses MANAGED_SURFACE_INTENT (defined near the enrichment
-// classifier). MAKING_INTENT covers both "make a thing" and "compute / search
-// the web" turns (it gates VISUAL + EXTERIOR, which are the produce/compute
-// tools). AGENTS_APPS_CODE covers other models, connected-app calls, and
-// Cursor coding builds.
-const MAKING_INTENT_RE = /\b(slideshow|slide|deck|presentation|pitch|keynote|document|doc|report|essay|memo|worksheet|handout|spreadsheet|sheet|csv|table|chart|graph|plot|diagram|flow ?chart|mind ?map|mermaid|image|picture|photo|logo|poster|icon|illustration|drawing|render|mock ?up|prototype|wireframe|landing ?page|web ?page|mini[- ]?app|webapp|html|video|mp4|animation|animate|motion graphics?|game|platformer|fighter|rpg|shooter|puzzle|speech|audio|voice ?over|narration|podcast|transcribe|transcript|ocr|parse|pdf|translate|translation|calculate|calculation|compute|equation|solve|integral|integrate|derivative|differentiate|simplify|factor|run (?:code|this|python|js|javascript)|python|javascript|script|search (?:the )?web|web search|google (?:it|that|this)|look (?:it|that|this)? ?up|online|latest)\b/i;
+// Intent detectors for the gated blocks above. Deliberately broad.
+// MAKING_INTENT / AGENTS_APPS_CODE / MANAGED_SURFACE_INTENT live in
+// mcp-tools/chatIntentSignals.js (shared with first-party disclosure).
 const MAKING_VERB_RE = /\b(make|build|create|generate|draw|design|produce|write me|put together|turn (?:this|that|it) into|convert)\b/i;
-const AGENTS_APPS_CODE_INTENT_RE = /\b(connected app|my app|apps?|api|integration|integrate with|endpoint|call (?:my|the|an)|post to|fix (?:the|this|that|a)? ?bug|pull request|open a pr|build with cursor|cursor (?:agent|build|cloud)|cloud agent|code ?base|repo|repository|implement|refactor|deploy|ship (?:it|this|the))\b/i;
 
 // ── "+" → Create panel parity for typed / spoken requests ────────────────────
 // The "+" → Create submenu (OmniaPlusMenu.tsx) lets the user pick a deck /
@@ -5757,7 +5448,6 @@ const ARTIFACT_INTENT_NOUNS = [
   // text reply, where the model often dumped raw HTML into the chat body.
   { type: 'document',  re: /(documents?|\bdocs?\b|google ?docs?|word ?docs?|report|essay|memo|white ?paper|one[- ]?pager|cover letter|letter|write[- ]?up)/i },
 ];
-const ARTIFACT_BUILD_VERB_RE = /\b(?:make|build|create|generate|design|draft|produce|prepare|compose|put together|whip up|mock up|draw up|draw|write|give|need|want|turn (?:this|that|it) into)\b(?:\s+(?:me|us))?\s+(?:a|an|the|some|my|another|one)\s+/i;
 // Soft verbs ("want/need/give me a …") are everyday English for looking at
 // something that already exists. Hard verbs commission a deliverable.
 const ARTIFACT_SOFT_BUILD_VERB_RE = /\b(?:give|need|want)\b/i;
@@ -9572,8 +9262,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // result. Ignored unless tools are on for the turn.
     const streamLocalMode = req.body?.localMode === true;
     if (streamLocalMode) console.log('🖥️ Stream: Local Mode armed (desktop client)');
-    /** True when resolveIntentChatToolNames produced a tiny allowlist. */
+    /** True when first-party disclosure attached a small tool set (slim guidance). */
     let streamLeanToolSet = false;
+    let streamDisclosure = null;
     let model = normalizedModel;
     console.log('[LYKN-STREAM] workspaceContext received:', workspaceContext ? `${String(workspaceContext).length} chars` : 'EMPTY/MISSING');
 
@@ -9760,34 +9451,30 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       useTools = useTools || names.length > 0;
       console.log('🎯 Main agent delegation + web tools enabled');
     }
-    // Forced image generation: exclusive image tools only. Custom-model /
-    // agent whitelists often still include vault search — appending generate
-    // image was not enough, and the model would search/dump random notes
-    // after a successful image turn.
-    if (forceImage && !forceArtifact) {
-      streamChatToolNames = ['lykn_generate_image', 'lykn_process_image'];
-      useTools = true;
-      console.log('🖼 Stream: exclusive image tool set (vault/web/build stripped)');
-    } else if (forceImage) {
-      const names = Array.isArray(streamChatToolNames) ? [...streamChatToolNames] : [];
-      if (!names.includes('lykn_generate_image')) names.push('lykn_generate_image');
-      streamChatToolNames = names;
-      useTools = true;
-    } else if (!Array.isArray(streamChatToolNames)) {
-      // Intent-scoped tiny allowlist (ChatGPT-fast). Fall back to the broad
-      // default only when intent is ambiguous (e.g. open-ended "make…" ask).
-      // Image/speech/chart stay opt-in via forceImage / artifactToolName.
-      const leanNames = resolveIntentChatToolNames(String(text || ''), {
-        forceImage,
-        forceWebSearch,
-        forceArtifact,
+    const brainstormBuildMention =
+      !forceArtifact &&
+      artifactBuildIntent.isHypotheticalOrBrainstormBuildMention(String(text || ''));
+    const customToolsOff = Boolean(
+      (streamChatAgentCtx?.agent || streamCustomModelCtx.customModel) &&
+      !useTools &&
+      !forceImage &&
+      !artifactToolName &&
+      !activeArtifactEditable,
+    );
+    if (!customToolsOff) {
+      const ceiling = Array.isArray(streamChatToolNames) ? [...streamChatToolNames] : null;
+      streamDisclosure = resolveChatTurnDisclosure({
+        message: String(text || ''),
+        conversation,
+        exclusiveComposerMode,
         deepResearch,
         translateMode,
-        exclusiveComposerMode,
+        forceImage,
+        forceArtifact,
+        forceWebSearch,
         forcePageFetch,
         pageUrl: overlayPageUrl,
         overlayAsk: !!overlayAsk,
-        conversation,
         artifactToolName,
         activeArtifactEditable,
         activeArtifactTool: activeArtifact?.toolName,
@@ -9796,173 +9483,40 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           String(projectId || '').trim() ||
           readCustomModelLinkedProjectId(streamCustomModelCtx.customModel),
         ),
+        localMode: streamLocalMode,
+        allowNewArtifactBuild,
+        lockOutArtifactBuilds,
+        brainstormBuildMention,
+        vagueBuildAsk,
+        agentBrowser: Boolean(agentMode || toolDraft || req.body?.ownedBrowser === true),
+        ceilingToolNames: ceiling,
       });
-      if (leanNames && leanNames.length) {
-        streamChatToolNames = leanNames;
-        streamLeanToolSet = true;
-        console.log(`⚡ Stream: lean tool set (${leanNames.length}): ${leanNames.join(', ')}`);
-      } else if (Array.isArray(leanNames) && leanNames.length === 0 && lockOutArtifactBuilds) {
-        // Exclusive mode with an empty allowlist (e.g. translate) — no tools.
-        streamChatToolNames = [];
-        streamLeanToolSet = true;
-        useTools = false;
-        console.log('🔒 Stream: exclusive mode — empty tool allowlist');
-      } else {
-        streamChatToolNames = CHAT_TOOLS
-          .map((t) => t.name)
-          .filter(
-            (n) =>
-              n !== 'lykn_generate_image' &&
-              n !== 'lykn_generate_speech' &&
-              n !== 'lykn_generate_chart' &&
-              n !== 'lykn_generate_diagram',
-          );
-      }
-    }
-    // Agent Mode / owned browser: never use OAuth "connected apps" APIs —
-    // work happens by clicking the live browser screen.
-    if (
-      (agentMode || toolDraft || req.body?.ownedBrowser === true) &&
-      Array.isArray(streamChatToolNames)
-    ) {
-      const beforeApps = streamChatToolNames.length;
-      streamChatToolNames = streamChatToolNames.filter(
-        (n) => n !== 'lykn_list_apps' && n !== 'lykn_call_app',
-      );
-      if (streamChatToolNames.length !== beforeApps) {
-        console.log('🧭 Stream: stripped connected-app tools (agent browser uses the screen)');
-      }
-    }
-    // Regular chat / exclusive modes / brainstorm: strip Create/Build makers
-    // unless this turn is refining an already-open artifact (or Create is armed).
-    const brainstormBuildMention =
-      !forceArtifact &&
-      artifactBuildIntent.isHypotheticalOrBrainstormBuildMention(String(text || ''));
-    const stripMakers =
-      !allowNewArtifactBuild || lockOutArtifactBuilds || brainstormBuildMention || vagueBuildAsk;
-    if (stripMakers && Array.isArray(streamChatToolNames)) {
-      const keepEditTool =
-        activeArtifactEditable && activeArtifact?.toolName
-          ? String(activeArtifact.toolName)
-          : null;
-      const before = streamChatToolNames.length;
-      streamChatToolNames = streamChatToolNames.filter(
-        (n) =>
-          (keepEditTool && n === keepEditTool) ||
-          (!CHAT_MAKER_TOOL_NAMES.has(n) &&
-            (forceImage || (n !== 'lykn_generate_image' && n !== 'lykn_process_image'))),
-      );
-      if (streamChatToolNames.length !== before) {
-        console.log(
-          `🔒 Stream: stripped maker tools (${allowNewArtifactBuild ? (lockOutArtifactBuilds ? 'exclusive mode' : 'brainstorm') : 'regular chat'}) (${before} → ${streamChatToolNames.length})`,
-        );
-      }
-      streamLeanToolSet = true;
-    }
-    // Forced artifact build from the "+" → Create submenu: same guarantee as
-    // image — ensure the builder tool is whitelisted and keep the agent loop on
-    // so tool_choice can force the call.
-    if (artifactToolName && allowNewArtifactBuild && !lockOutArtifactBuilds && !brainstormBuildMention) {
-      const names = Array.isArray(streamChatToolNames) ? [...streamChatToolNames] : undefined;
-      if (names && !names.includes(artifactToolName)) {
-        names.push(artifactToolName);
-        streamChatToolNames = names;
-      }
-      useTools = true;
-    }
-    // Artifact open in the preview popup: keep the matching builder tool available
-    // so a plain-language edit can patch it in place.
-    if (activeArtifactEditable) {
-      const editToolName = String(activeArtifact.toolName || 'lykn_build_template');
-      const names = Array.isArray(streamChatToolNames) ? [...streamChatToolNames] : undefined;
-      if (names && !names.includes(editToolName)) {
-        names.push(editToolName);
-        streamChatToolNames = names;
-      }
-      useTools = true;
-    }
-    // Glass: makers only when this turn's forced/open builder needs them.
-    // Always strip chart/diagram/webapp otherwise — including follow-ups
-    // (overlayScreenContext false) where the old gate left tools available.
-    const GLASS_SCREEN_MAKER_TOOLS = new Set([
-      'lykn_generate_chart',
-      'lykn_generate_diagram',
-      'lykn_build_react_artifact',
-    ]);
-    if (overlayAsk && Array.isArray(streamChatToolNames)) {
-      const keepMakers = new Set();
-      if (artifactToolName) keepMakers.add(artifactToolName);
-      if (activeArtifactEditable && activeArtifact?.toolName) {
-        keepMakers.add(String(activeArtifact.toolName));
-      }
-      const before = streamChatToolNames.length;
-      streamChatToolNames = streamChatToolNames.filter(
-        (n) => !GLASS_SCREEN_MAKER_TOOLS.has(n) || keepMakers.has(n),
-      );
-      if (streamChatToolNames.length !== before) {
-        console.log(
-          '🪟 Stream: Glass — stripping chart/diagram/webapp builders (Build mode / Create only)',
-        );
-      }
-    }
-    // Glass site-wide ask: guarantee web_fetch even if lean intent missed it.
-    if (
-      (forcePageFetch || (overlayAsk && overlayPageUrl && messageWantsPageFetch(String(text || '')))) &&
-      Array.isArray(streamChatToolNames) &&
-      !streamChatToolNames.includes('lykn_web_fetch')
-    ) {
-      streamChatToolNames = [...streamChatToolNames, 'lykn_web_fetch'];
-      useTools = true;
-      console.log('🌐 Stream: Glass — adding lykn_web_fetch for open-tab / full-page ask');
-    }
-    // Glass: vault read/surface tools only on explicit saved-recall asks.
-    // Prompt-only "zero vault tools" was not enough — the model still searched.
-    const GLASS_VAULT_TOOLS = new Set([
-      'lykn_loadNeuron',
-      'lykn_loadNeurons',
-    ]);
-    if (
-      overlayAsk &&
-      !messageWantsSavedRecall(String(text || '')) &&
-      Array.isArray(streamChatToolNames)
-    ) {
-      const before = streamChatToolNames.length;
-      streamChatToolNames = streamChatToolNames.filter((n) => !GLASS_VAULT_TOOLS.has(n));
-      if (streamChatToolNames.length !== before) {
-        console.log('🪟 Stream: Glass — stripping vault tools (no saved-recall ask)');
-      }
-    }
-    // Project tools — only when chat is scoped/bound to a project, or the
-    // user explicitly asked about a project. Stops ambient AUTO-CONNECT.
-    const PROJECT_AGENT_TOOLS = new Set([
-      'lykn_listProjects',
-      'lykn_resolveProject',
-      'lykn_getProjectState',
-      'lykn_getProjectNeurons',
-      'lykn_pushProjectState',
-      'lykn_setActiveProject',
-      'lykn_createProject',
-      'lykn_updateProject',
-      'lykn_deleteProject',
-      'lykn_mergeProjects',
-      'lykn_addProjectNeurons',
-      'lykn_removeProjectNeurons',
-    ]);
-    {
-      const inProject = Boolean(
-        scopedProjectId ||
-        String(projectId || '').trim() ||
-        readCustomModelLinkedProjectId(streamCustomModelCtx.customModel),
-      );
-      const wantsProject = messageWantsProjectContext(String(text || ''));
-      if (!inProject && !wantsProject && Array.isArray(streamChatToolNames)) {
-        const before = streamChatToolNames.length;
-        streamChatToolNames = streamChatToolNames.filter((n) => !PROJECT_AGENT_TOOLS.has(n));
-        if (streamChatToolNames.length !== before) {
-          console.log('📁 Stream: stripping project tools (not scoped / no project ask)');
+      streamChatToolNames = streamDisclosure.firstPartyToolNames;
+      if (streamOrchestrationCtx?.isMainAgent) {
+        for (const toolName of [
+          'lykn_delegate_to_sub_model',
+          'lykn_list_sub_model_tasks',
+          'lykn_get_sub_model_task',
+        ]) {
+          if (!streamChatToolNames.includes(toolName)) streamChatToolNames.push(toolName);
         }
       }
+      streamLeanToolSet = streamDisclosure.useSlimGuidance;
+      if (streamDisclosure.keepToolsOn) useTools = true;
+      if (streamDisclosure.exclusive && streamChatToolNames.length === 0) {
+        useTools = false;
+        console.log('🔒 Stream: exclusive mode — empty tool allowlist');
+      }
+      const inspect = streamDisclosure.inspect || {};
+      console.log(
+        `🧭 Stream: first-party disclosure capabilities=${(streamDisclosure.capabilities || []).join(',') || '(none)'} ` +
+          `tools=${inspect.count ?? streamChatToolNames.length} bytes=${inspect.bytes ?? 0} ~${inspect.approxTokens ?? 0} tokens` +
+          (streamDisclosure.fallback && streamDisclosure.fallback !== 'none'
+            ? ` fallback=${streamDisclosure.fallback}`
+            : ''),
+      );
     }
+
     // Custom AI instructions are Studio+. Strip them for basic-tier callers.
     if (streamPlan.modelTier === 'basic' && userPrompt) {
       userPrompt = undefined;
@@ -10253,8 +9807,8 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       useTools = false;
       console.log('🪟 Stream: useTools disabled for Glass casual ack');
     }
-    // Lean ChatGPT-fast path: skip the agent loop (and its ~34K-token tool
-    // schemas + ~30K tool guidance) unless this turn actually needs a tool.
+    // Lean ChatGPT-fast path: skip the agent loop unless this turn actually
+    // needs a disclosed tool. Simple chat stays at 0 schemas.
     const streamActionIntent = messageWantsAgentTools(streamPureUserMessage || text, {
       forceImage,
       forceWebSearch,
@@ -10272,11 +9826,8 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     if (
       useTools &&
       !streamActionIntent &&
-      // Local Mode keeps the tool loop armed for EVERY substantive turn — the
-      // model decides when to touch the user's files. Keyword-guessing here
-      // made "can you see my projects folder?" randomly lose local access.
-      // (Greeting-tier turns are still stripped by the casual gate above.)
-      !streamLocalMode &&
+      !streamLocalIntent &&
+      !streamDisclosure?.keepToolsOn &&
       !forceImage &&
       !artifactToolName &&
       !activeArtifactEditable &&
@@ -10285,6 +9836,15 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     ) {
       useTools = false;
       console.log('⚡ Stream: lean path — tools off (no action intent; skip tool schemas + guidance)');
+    }
+    if (
+      useTools &&
+      Array.isArray(streamChatToolNames) &&
+      streamChatToolNames.length === 0 &&
+      !(streamDisclosure?.externalTools?.length)
+    ) {
+      useTools = false;
+      console.log('⚡ Stream: no disclosed tools — skipping agent loop');
     }
 
     const streamOverlayMsg = streamPureUserMessage || streamSearchText || '';
@@ -10323,6 +9883,16 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         ? '⚡ Stream: Glass fast-lean — slim persona, no enrichment'
         : '⚡ Stream: chat fast-lean — slim persona, no enrichment');
     }
+    const streamNeedsPersonalMemory =
+      streamWantsUserRecall ||
+      (streamInProject && !useTools) ||
+      (Boolean(overlayAsk) && !streamFastLean && !useTools && !streamOverlayWantsSaved);
+    // Glass/in-app lean + tool-only turns: no memory round-trips.
+    const streamSkipUserFacts =
+      (!isChatIntent && !overlayAsk) ||
+      streamFastLean ||
+      streamWantsPureGreeting ||
+      (!streamNeedsPersonalMemory && !streamWantsUserRecall);
 
     if (isChatIntent) {
       _ck('before buildLyknStreamPrompt');
@@ -10906,16 +10476,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // this is the policy.
     if (useTools) {
       // Tiny allowlists get a short policy block (~few hundred chars) instead
-      // of the ~30K full LYKN_CHAT_TOOL_GUIDANCE dump.
+      // of the full LYKN_CHAT_TOOL_GUIDANCE dump.
       if (streamLeanToolSet && Array.isArray(streamChatToolNames) && streamChatToolNames.length) {
-        // Local Mode: the local_* schemas are appended to the lean allowlist
-        // later (effectiveChatToolNames) — they must be listed HERE too, or
-        // the "tools for THIS turn only" policy convinces the model its live
-        // local tools don't exist and it refuses local file asks.
-        const slimNames = streamLocalMode
-          ? [...streamChatToolNames, ...LOCAL_TOOL_NAMES]
-          : streamChatToolNames;
-        prompt += '\n\n' + buildSlimChatToolGuidance(slimNames);
+        prompt += '\n\n' + buildSlimChatToolGuidance(streamChatToolNames);
       } else {
         prompt += '\n\n' + buildChatToolGuidance(streamPureUserMessage || streamSearchText, {
           // Fresh Create / image turns get the full visual + design brief.
@@ -11651,6 +11214,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
 
       const ab = makeProviderAbort();
       let geminiRes;
+      // Hoisted above the try: the MAX_TOKENS handling further down logs the
+      // cap, and a `const` inside the try block would be out of scope there.
+      let _strmGemCap = 0;
       try {
         const { system: strmGemSys, user: strmGemUser } = splitPromptForProvider(prompt);
         const geminiParts = [{ text: strmGemUser }];
@@ -11669,7 +11235,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
             }
           } catch (imgErr) { console.warn('⚠️ Stream: failed to fetch image for Gemini:', imgErr.message); }
         }
-        const _strmGemCap = clampForProvider(pickOutputCap({
+        _strmGemCap = clampForProvider(pickOutputCap({
           hasImages: imageUrls.length > 0,
           deepResearch,
           // No intent: pre-generation classifyActionType always returns
@@ -11953,16 +11519,16 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // tools alongside the regular chat tools. They execute client-side; the
     // server only relays. Register a per-turn stream so the desktop can post
     // results back and match them to the awaiting call.
-    const streamLocalToolsEnabled = useTools && !!toolProvider && streamLocalMode;
+    const disclosedLocalToolNames = (Array.isArray(streamChatToolNames) ? streamChatToolNames : [])
+      .filter((n) => LOCAL_TOOL_NAMES.includes(n));
+    const streamLocalToolsEnabled =
+      useTools && !!toolProvider && streamLocalMode && disclosedLocalToolNames.length > 0;
     if (streamLocalToolsEnabled) {
       localToolStreamId = `lt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
     }
     let effectiveChatToolNames = streamChatToolNames;
     if (streamLocalToolsEnabled) {
-      const base = Array.isArray(streamChatToolNames)
-        ? [...streamChatToolNames]
-        : [...CHAT_TOOLS.map((t) => t.name)];
-      effectiveChatToolNames = [...base, ...LOCAL_TOOL_NAMES];
+      effectiveChatToolNames = Array.isArray(streamChatToolNames) ? [...streamChatToolNames] : [];
       if (req.user?.id) registerLocalToolStream(localToolStreamId, req.user.id);
     }
     if (useTools && toolProvider) {
@@ -11977,55 +11543,41 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         ? rawAgentSys +
           '\n\n[LOCAL MODE — ACTIVE]\n' +
           'Local Mode is ON for this turn. You HAVE live access to the user\'s Mac through the ' +
-          'local_* tools: local_list_dir, local_read_file, local_search_files, local_pull_file ' +
-          '(brings any file — including images — into the chat), local_write_file, ' +
-          'local_edit_file, local_run_command, local_synced_folders, local_running_apps, ' +
-          'local_read_app, and local_open_app, local_open_path, and local_organize_desktop. ' +
-          'To CHANGE a file the user already has, prefer local_edit_file — it replaces an ' +
-          'exact snippet and leaves the rest of the file untouched; read the file first so ' +
-          'oldText matches verbatim. Use local_write_file only for new files or full ' +
-          'rewrites. Your filesystem ' +
-          'access is scoped to the folders the user synced with LYKN — call ' +
-          'local_synced_folders first when you are unsure what you can reach, or when a tool ' +
-          'reports a path is not synced. local_running_apps tells you which apps are open on ' +
-          'their Mac and which is frontmost. local_open_app opens a Mac app as a normal ' +
-          'window — use it whenever they ask to ' +
-          'open, launch, or pull up an app. local_open_path opens a FILE in the preview pop ' +
-          '(same overlay as every other image and document) and a FOLDER in the Vault Finder. ' +
-          'Use it for paths or named files/folders. local_organize_desktop tidies the icons on their LYKN Home ' +
-          'desktop into a grid, optionally sorted by kind, name, or date — use it for "organize ' +
-          'my desktop", "clean up my desktop", or "sort my desktop by name". It only moves icons ' +
-          'on screen and never touches anything on disk, so do not warn them about losing files. ' +
-          'Reads may show the user a one-time permission ' +
-          'prompt; writes and risky commands always ask them per action. When the user asks ' +
-          'about their files, folders, apps, or system, CALL THE TOOLS — never claim local ' +
-          'access is unavailable or ask them to enable it (the switch is already on). Ignore ' +
-          'any earlier statements in this conversation that said local access was off; those ' +
-          'were transient errors. If a tool returns an error, relay that exact error honestly ' +
-          'instead of inventing a reason. When the ask targets a place on their MACHINE ' +
-          '(Downloads, Desktop, Documents, a folder, a drive), use ONLY the local_* tools — ' +
-          'NEVER call lykn_searchVault or rummage a connected-apps library. Those are gone. ' +
-          'Things LYKN built are in [AI DRIVE] (open with lykn_open_app). The Vault Finder is ' +
-          'this same window: AI Drive plus these Mac folders. ' +
-          'If the user does not say where a file lives, assume their local machine (especially ' +
-          'when this conversation has been about their local files). When local_pull_file succeeds, the file is automatically shown ' +
-          'to the user as a card in the chat — NEVER write its URL into your reply (hand-copied ' +
-          'signed URLs corrupt and break); just mention the file by name.' +
-          '\n\n[BROWSER AGENT — AVAILABLE]\n' +
-          'You also have local_browser_agent: it hands a task to LYKN\'s browser agent, which ' +
-          'opens a real tab on the user\'s desktop and operates websites while they watch — ' +
-          'navigating, clicking, typing, filling forms, working inside web apps. YOU decide ' +
-          'when a task belongs there: use it when the user asks you to go DO something on a ' +
-          'website or in a web product ("open mailchimp and create the campaign", "check my ' +
-          'email and reply to Sarah", "fill out the form on that site"). Answer questions ' +
-          'yourself; draft content in chat when they want words; use lykn_web_search / ' +
-          'lykn_web_fetch when you just need to read the web. Never claim you cannot operate ' +
-          'websites, and never fake having done browser work — if the task belongs in the ' +
-          'browser, call the tool and tell the user it\'s running there.'
+          `local_* tools disclosed this turn: ${disclosedLocalToolNames.join(', ')}. ` +
+          'Call only those tools. If a needed local action is not listed, say so rather than ' +
+          'inventing a tool name. ' +
+          (disclosedLocalToolNames.includes('local_edit_file')
+            ? 'To CHANGE a file the user already has, prefer local_edit_file — it replaces an ' +
+              'exact snippet and leaves the rest of the file untouched; read the file first so ' +
+              'oldText matches verbatim. Use local_write_file only for new files or full rewrites. '
+            : '') +
+          'Filesystem access is scoped to the folders the user synced with LYKN' +
+          (disclosedLocalToolNames.includes('local_synced_folders')
+            ? ' — call local_synced_folders first when you are unsure what you can reach.'
+            : '.') +
+          ' Reads may show the user a one-time permission prompt; writes and risky commands ' +
+          'always ask them per action. When the user asks about their files, folders, apps, or ' +
+          'system, CALL THE TOOLS — never claim local access is unavailable or ask them to ' +
+          'enable it (the switch is already on). Ignore any earlier statements in this ' +
+          'conversation that said local access was off; those were transient errors. If a tool ' +
+          'returns an error, relay that exact error honestly instead of inventing a reason. ' +
+          'When the ask targets a place on their MACHINE (Downloads, Desktop, Documents, a ' +
+          'folder, a drive), use ONLY the local_* tools — NEVER call lykn_searchVault. ' +
+          (disclosedLocalToolNames.includes('local_pull_file')
+            ? 'When local_pull_file succeeds, the file is automatically shown to the user as a ' +
+              'card in the chat — NEVER write its URL into your reply.'
+            : '') +
+          (disclosedLocalToolNames.includes('local_browser_agent')
+            ? '\n\n[BROWSER AGENT — AVAILABLE]\n' +
+              'You also have local_browser_agent: it hands a task to LYKN\'s browser agent, which ' +
+              'opens a real tab on the user\'s desktop and operates websites while they watch. ' +
+              'Use it when the user asks you to go DO something on a website or in a web product. ' +
+              'Use lykn_web_search / lykn_web_fetch when you just need to read the web.'
+            : '')
         : rawAgentSys;
       if (streamLocalToolsEnabled) {
         console.log(
-          `🖥️ local tools offered: ${LOCAL_TOOL_NAMES.filter((n) => effectiveChatToolNames?.includes?.(n)).length}/${LOCAL_TOOL_NAMES.length}`,
+          `🖥️ local tools offered: ${disclosedLocalToolNames.length}/${LOCAL_TOOL_NAMES.length}`,
         );
       }
 
@@ -12247,7 +11799,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
             // desktop client instead of executing them here, and provide the
             // awaiter that ships the call out and waits for the posted result.
             if (streamLocalToolsEnabled && localToolStreamId) {
-              base.localToolNames = LOCAL_TOOL_NAMES;
+              base.localToolNames = disclosedLocalToolNames;
               base.awaitLocalTool = (call, record) =>
                 new Promise((resolve) => {
                   const start = Date.now();
