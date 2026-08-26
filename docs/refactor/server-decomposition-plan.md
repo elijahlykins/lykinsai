@@ -1,6 +1,7 @@
 # server.js Decomposition Plan
 
-**Status:** Waves 0–2 complete.
+**Status:** Waves 0–3 complete.
+**PRODUCT DIRECTION (2026-08-26):** Synthesis is planned legacy infrastructure pending Memory Architecture Replacement. Existing extracted `synthesis.routes.js` is retained as an isolation boundary, not as a commitment to the architecture. Do not invest dedicated architectural/dedup/cleanup effort in Synthesis-only code; do not behaviorally change or delete it yet. The inline `GET /api/synthesis/profile/revisions` stays where it is.
 Wave 0 (2026-08-26) added the safety harness: `tests/server/` + `serverRouteManifest.json` + `npm run test:server` (see `tests/server/README.md`).
 Wave 1 (2026-08-26) extracted the first four route domains into `server/routes/` with zero manifest drift: `youtube.routes.js` (8 routes), `webtools.routes.js` (3), `usage.routes.js` (3), `feeds.routes.js` (9, incl. the poll-due cron trio + `verifyAdminIngestSecret`, whose only callers are those three routes).
 `server.js`: 27,839 → 26,654 lines.
@@ -8,8 +9,12 @@ Wave 2 (2026-08-26) extracted three moderate domains, 31 routes, zero manifest d
 `GET /api/synthesis/profile/revisions` stayed in server.js — it registers inside the learning/user-model band and moving it would change registration order.
 Shared server-local functions (`createSynthesisUserClient`, `invalidateConnectedToolsCache`, `invalidateUserModelCache`, `replaceSynthesisChunks`, `deleteSynthesisChunksForSource`, `runUserProfileLlmAndUpsert`, `runIntakeProfileSynthesisAndUpsert`, `enrichVaultNoteSummary` (also a server.js export), `backfillVaultText`, `safeErr`) were passed as deps, not moved. `lib/securityRegressions.test.mjs` now scans server.js + `server/routes/*.js` so the static guards follow moved code.
 `server.js`: 26,654 → 25,136 lines.
+Wave 3 (2026-08-26) extracted three long-term live domains, 26 routes, zero manifest drift: `files.routes.js` (6 routes: extract-text, parse-spreadsheet, vault save-image/save-file, files process/search; docx/xlsx/pptx/odt extraction helpers moved with it; the shared `indexVaultNoteForSearch` + `SIGNED_URL_TTL_SECONDS` are passed), `desktop.routes.js` (9 routes: the Glass browser-agent belt + desktop chats + `POST /api/ai/name-chat`; `getBrowserControlProvider`/`pickBrowserControlModel` are exported back to server.js because the bootstrap startup banner logs them), `voice.routes.js` (11 routes: tts, realtime session/tool/screen, tune-instructions, ElevenLabs signed-url/voices, the custom-LLM proxy at 3 alias paths + `_debug`).
+All voice-exclusive mutable state (`voiceSessionGrounding`/`voiceScreenByUser` Maps, `customLlmStats`, `lastCustomLlmError`, the tts + elevenlabs-voices memCaches, `VOICE_SESSION_SECRET`) moved into the once-run registrar closure — single instance, env read after dotenv, same init semantics.
+Left in server.js and passed as deps: `currentTimeContextLine`/`localTimeContextLine` (shared with the chat prompt path) and `buildRealtimeSynthesisGrounding` + `gatherVoiceBriefingData`/`formatVoiceBriefingInstructionBlock`/`buildVoiceBriefingOffer` + `fetchSynthesisRetrievalSection` (synthesis-coupled — LEGACY CANDIDATE, pending Memory Architecture Replacement).
+`server.js`: 25,136 → 21,123 lines.
 Pattern used: `registerXRoutes(app, deps)` with full literal paths (§7), registered at the exact original position in server.js; bootstrap-owned singletons (limiters, `supabaseAdmin`, `upload`, `requireAuth`/`requireAppAccess`, `isUrlSafe`, `sha256`) are passed as focused deps; stateless external services are imported directly by the router modules.
-Waves 1–2 deliberately left in place: `authLimiter`-gated authFlows, all services, all pollers, all global middleware, AI/chat streaming, billing/Stripe, OAuth infrastructure.
+Waves 1–3 deliberately left in place: `authLimiter`-gated authFlows, all services, all pollers, all global middleware, AI/chat streaming, billing/Stripe, OAuth infrastructure, learning/user-model routes.
 **Audited:** 2026-08-25, against `server.js` at 27,839 lines (working tree, unstaged frontend work by other agents present but no server changes).
 Line numbers in §2–§6 refer to that pre-Wave-1 snapshot; re-verify against HEAD before each extraction.
 **Absolute goal:** take `server.js` from ~27,800 lines to a small bootstrap/orchestration file with **zero runtime behavior change**.
