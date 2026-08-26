@@ -54,6 +54,17 @@ test("create → restart → the routine is still there, trigger intact", async 
   assert.equal(loaded.enabled, true);
 });
 
+test("a routine can reference a connectionId without storing a secret", () => {
+  const store = makeStore();
+  const routine = sampleRoutine(store, {
+    connectionIds: ["conn_work_gmail", "Bearer secret-token-value"],
+  });
+  assert.deepEqual(routine.connectionIds, ["conn_work_gmail"]);
+  const json = JSON.stringify(routine);
+  assert.ok(!json.includes("Bearer"));
+  assert.ok(!json.includes("secret-token"));
+});
+
 test("an invalid trigger cannot be persisted", () => {
   const store = makeStore();
   assert.throws(() => sampleRoutine(store, { trigger: { type: "telepathy" } }), TypeError);

@@ -88,6 +88,7 @@ function botRuntimeIdentity(bot) {
     eyes: bot.eyes,
     color: bot.color,
     chatId: bot.chatId,
+    ...(Array.isArray(bot.connectionIds) ? { connectionIds: bot.connectionIds } : {}),
   };
 }
 
@@ -97,6 +98,7 @@ function canonicalTaskInput(bot, task, teammates = []) {
     botTaskId: task.id,
     botId: bot.id,
     chatId: bot.chatId,
+    ...(Array.isArray(bot.connectionIds) ? { connectionIds: bot.connectionIds } : {}),
     teammates: teammates.map((teammate) => ({
       id: teammate.id,
       name: teammate.name,

@@ -1445,18 +1445,19 @@ export const CONNECTORS = [
   {
     id: "mcp",
     category: "automation",
-    name: "MCP Servers (inbound)",
+    name: "MCP Servers",
     color: "#0F172A",
-    auth: "Per-server config",
-    pulls: ["Any MCP-compatible tool"],
+    auth: "Remote MCP URL",
+    pulls: ["Live tools from the source app"],
     realtime: "Live",
-    status: "soon",
+    status: "available",
+    authMode: "mcp",
     // LYKN as MCP CLIENT: the user points LYKN at someone else's MCP
     // server and its tools become callable from LYKN chat. This is the
     // only MCP direction we support - LYKN is not exposed as an MCP
     // server to outside AI models.
     summary:
-      "Coming soon: point LYKN at any MCP server and its tools become available in chat.",
+      "Point LYKN at any remote MCP server. Tools stay live in the source app. Vault is not used unless you explicitly save something.",
   },
   {
     id: "zapier",

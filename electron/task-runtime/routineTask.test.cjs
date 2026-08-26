@@ -37,6 +37,14 @@ test("each occurrence is a fresh task tied to bot, routine, and run", () => {
   assert.equal(first.origin.routine.id, "routine-7");
 });
 
+test("routine connectionIds copy onto the Task and never include secrets", () => {
+  const task = compileRoutineTask({
+    routine: { ...ROUTINE, connectionIds: ["conn_work", "secret.token"] },
+    runId: "rrun-9",
+  });
+  assert.deepEqual(task.association.connectionIds, ["conn_work"]);
+});
+
 test("the objective comes from the durable definition, identically every run", () => {
   const first = compileRoutineTask({ routine: ROUTINE, runId: "r1" });
   const second = compileRoutineTask({ routine: ROUTINE, runId: "r2" });

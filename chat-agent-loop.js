@@ -877,7 +877,7 @@ async function runOpenAiCompatLoop({
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: `${providerLabel} API key missing` };
   }
-  const tools = buildOpenAiTools(chatToolNames);
+  const tools = buildOpenAiTools(chatToolNames, ctx?.extraChatTools);
   if (!tools) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
   }
@@ -1165,7 +1165,7 @@ async function runAnthropicLoop({
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'ANTHROPIC_API_KEY missing' };
   }
-  const tools = buildAnthropicTools(chatToolNames);
+  const tools = buildAnthropicTools(chatToolNames, ctx?.extraChatTools);
   if (!tools) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
   }
@@ -1451,7 +1451,7 @@ async function runGeminiLoop({
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'GOOGLE_API_KEY missing' };
   }
-  const tools = buildGeminiTools(chatToolNames);
+  const tools = buildGeminiTools(chatToolNames, ctx?.extraChatTools);
   if (!tools) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
   }

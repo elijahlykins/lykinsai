@@ -74,6 +74,23 @@ function sanitizeBotSnapshot(raw) {
   return snapshot.id || snapshot.name ? snapshot : null;
 }
 
+function cleanConnectionIds(value) {
+  if (value === undefined || value === null) return undefined;
+  const list = Array.isArray(value) ? value : [value];
+  return [
+    ...new Set(
+      list
+        .map((item) => String(item || "").trim())
+        .filter((id) => {
+          if (!id || id.length > 80) return false;
+          if (/token|secret|bearer|password/i.test(id)) return false;
+          if (id.includes(".")) return false;
+          return /^[a-zA-Z0-9_-]+$/.test(id);
+        }),
+    ),
+  ].slice(0, 20);
+}
+
 function cleanCapabilities(value) {
   return [...new Set((Array.isArray(value) ? value : []).map((c) => String(c || "").trim()).filter(Boolean))].slice(
     0,
@@ -236,6 +253,7 @@ function createRoutineStore({ userDataPath, now = () => Date.now(), onChange = (
       instructions,
       trigger,
       capabilities: cleanCapabilities(input.capabilities),
+      connectionIds: cleanConnectionIds(input.connectionIds),
       approvalPolicy: oneOf(input.approvalPolicy, APPROVAL_POLICIES, "standing_authorization"),
       notificationPolicy: oneOf(input.notificationPolicy, NOTIFICATION_POLICIES, "always"),
       concurrencyPolicy: oneOf(input.concurrencyPolicy, CONCURRENCY_POLICIES, "skip"),
@@ -268,6 +286,7 @@ function createRoutineStore({ userDataPath, now = () => Date.now(), onChange = (
       monitors.delete(routine.id);
     }
     if (patch.capabilities !== undefined) routine.capabilities = cleanCapabilities(patch.capabilities);
+    if (patch.connectionIds !== undefined) routine.connectionIds = cleanConnectionIds(patch.connectionIds);
     if (patch.notificationPolicy !== undefined) {
       routine.notificationPolicy = oneOf(patch.notificationPolicy, NOTIFICATION_POLICIES, routine.notificationPolicy);
     }

@@ -1,6 +1,10 @@
 // ============================================================================
-// mcp-tools/listApps.js — discover the user's custom API connections
+// mcp-tools/listApps.js — LEGACY custom-connection discovery
 // ============================================================================
+// Isolated / legacy. Universal external tools now go through MCP
+// (lib/mcp + ExternalToolResolver). Do not treat this as the future
+// action layer. Not deleted until MCP parity is proven.
+
 // Read. Lists the apps the user attached via Connections → Custom API (their
 // own API keys). The agent calls this to learn which connections exist, each
 // one's slug (how to reference it in lykn_call_app), what it's for, and whether

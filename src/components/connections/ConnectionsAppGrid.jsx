@@ -16,6 +16,7 @@ import OAuthConnectDialog from "@/components/connections/OAuthConnectDialog";
 import TokenConnectDialog from "@/components/connections/TokenConnectDialog";
 import CustomApiDialog from "@/components/connections/CustomApiDialog";
 import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
+import McpConnectionsPanel from "@/components/connections/McpConnectionsPanel";
 
 // Unified "app store" view for the Connections page. Everything LYKN
 // can plug into renders as the same tile shape so the answer to "what
@@ -119,6 +120,9 @@ export default function ConnectionsAppGrid({
   // right dialog: Custom API manager, token-paste, or OAuth popup.
   const openInboundConnector = useCallback((authConnector) => {
     if (!authConnector) return;
+    if (authConnector.id === "mcp" || authConnector.authMode === "mcp") {
+      return;
+    }
     if (authConnector.customApi) {
       setCustomApiOpen(true);
       return;
@@ -202,6 +206,7 @@ export default function ConnectionsAppGrid({
       for (const c of CONNECTORS) {
         if (c.category !== cat.id) continue;
         if (c.customApi) continue;
+        if (c.id === "mcp") continue;
         if (!CONNECTABLE_INPUT_STATUSES.has(c.status)) continue;
         nativeIds.add(c.id);
         tiles.push({ key: `input:${c.id}`, kind: "input", connector: c });
@@ -494,6 +499,10 @@ export default function ConnectionsAppGrid({
           </div>
         )}
       </section>
+
+      {!(inlinePicker && picker) && user && (
+        <McpConnectionsPanel user={user} embedded={embedded} />
+      )}
 
       {/* ── Launcher card ──────────────────────────────────────────── */}
       {/* When the picker is inline (Settings or wake preview) it replaces the

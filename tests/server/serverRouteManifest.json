@@ -4,13 +4,13 @@
     "Ordered registration surface of server.js (Express app). Entry order IS the contract:",
     "Express matches in registration order, so any reordering here is a behavior change."
   ],
-  "routeCount": 127,
+  "routeCount": 134,
   "middlewareCount": 6,
   "byMethod": {
-    "DELETE": 4,
-    "GET": 38,
+    "DELETE": 5,
+    "GET": 40,
     "PATCH": 5,
-    "POST": 80
+    "POST": 84
   },
   "byDomain": {
     "account": 8,
@@ -26,6 +26,7 @@
     "feeds": 9,
     "files": 6,
     "learning": 1,
+    "other": 7,
     "platform": 4,
     "synthesis": 5,
     "usage": 3,
@@ -431,6 +432,111 @@
         "<anonymous>"
       ],
       "domain": "connections",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/mcp/connections",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/mcp/connections",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/mcp/connections/:id/refresh",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/mcp/connections/:id/reconnect",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/mcp/connections/:id/health",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "path": "/api/mcp/connections/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/mcp/connections/:id/tools/call",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
       "flags": [
         "auth"
       ]

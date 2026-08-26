@@ -2863,6 +2863,14 @@ function createAgentRuntime(deps) {
       eyes: String(raw.eyes || "").trim().slice(0, 60),
       color: String(raw.color || "").trim().slice(0, 60),
       chatId: String(raw.chatId || "").trim().slice(0, 160),
+      ...(Array.isArray(raw.connectionIds)
+        ? {
+            connectionIds: raw.connectionIds
+              .map((item) => String(item || "").trim())
+              .filter((id) => id && !/token|secret|bearer/i.test(id) && !id.includes("."))
+              .slice(0, 20),
+          }
+        : {}),
     };
   }
 
@@ -11309,6 +11317,7 @@ function createAgentRuntime(deps) {
           agentId: agent.id,
           parentTaskId: request.parentTaskId,
           teammates: request.teammates,
+          connectionIds: request.connectionIds || bot?.connectionIds || agent.botProfile?.connectionIds,
         });
       }
       agent.activeTaskId = canonicalTask.id;

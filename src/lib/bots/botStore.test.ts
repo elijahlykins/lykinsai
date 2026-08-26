@@ -51,6 +51,17 @@ test("a new hire is a durable persona with an empty desk", () => {
   assert.notEqual(createBot({ name: "Y" }).chatId, bot.chatId);
 });
 
+test("Bot connectionIds are an allowlist and never keep secrets", () => {
+  const bot = createBot({
+    name: "Mailer",
+    connectionIds: ["conn_work", "sk-secret.token", "Bearer abc"],
+  });
+  assert.deepEqual(bot.connectionIds, ["conn_work"]);
+  const revived = parseBots(serializeBots([bot]));
+  assert.deepEqual(revived[0].connectionIds, ["conn_work"]);
+  assert.ok(!serializeBots([bot]).includes("sk-secret"));
+});
+
 test("an unknown face part or color falls back instead of breaking the avatar", () => {
   const bot = createBot({ name: "X", face: "toaster", eyes: "laser", color: "plaid" });
   assert.equal(bot.face, BOT_FACES[0].id);
