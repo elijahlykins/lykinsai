@@ -4,11 +4,11 @@
     "Ordered registration surface of server.js (Express app). Entry order IS the contract:",
     "Express matches in registration order, so any reordering here is a behavior change."
   ],
-  "routeCount": 143,
+  "routeCount": 147,
   "middlewareCount": 6,
   "byMethod": {
     "DELETE": 6,
-    "GET": 43,
+    "GET": 47,
     "PATCH": 7,
     "POST": 87
   },
@@ -26,7 +26,7 @@
     "feeds": 8,
     "files": 6,
     "learning": 1,
-    "other": 22,
+    "other": 26,
     "platform": 4,
     "synthesis": 5,
     "usage": 3,
@@ -657,6 +657,51 @@
       "methods": [
         "GET"
       ],
+      "path": "/api/mcp/catalog",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/mcp/suggestions",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/mcp/attention",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
       "path": "/api/mcp/connections",
       "chain": [
         "requireAuth",
@@ -733,6 +778,21 @@
         "POST"
       ],
       "path": "/api/mcp/connections/:id/reconnect",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/mcp/connections/:id/detail",
       "chain": [
         "requireAuth",
         "<anonymous>"

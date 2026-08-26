@@ -10750,6 +10750,8 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
             manager: getMcpManager(supabaseAdmin),
             userId: req.user.id,
             text: String(text || ''),
+            botConnectionIds: req.body?.botConnectionIds,
+            connectionIds: req.body?.connectionIds,
           });
           if (mcpTurn.tools.length) {
             mcpChatTools = bindMcpChatHandlers(mcpTurn.tools, mcpTurn.bindings, {
@@ -10767,6 +10769,18 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
                 .map((c) => `${c.connectionName} (${c.connectionId})`)
                 .join(', ') +
               '.';
+          } else if (mcpTurn.resolution?.reason === 'missing_capability') {
+            const names = (mcpTurn.suggestions || []).map((item) => item.name).filter(Boolean);
+            getMcpManager(supabaseAdmin).noteAttention(req.user.id, {
+              type: 'missing_capability',
+              title: names[0] ? `Connect ${names[0]}` : 'Connect a service',
+              catalogId: mcpTurn.suggestions?.[0]?.catalogId || null,
+              needs: mcpTurn.resolution.needs || [],
+            });
+            prompt +=
+              '\n\n[MCP CONNECTIONS — NEEDS CONNECTION]\n' +
+              'This task needs an external connection the user does not have yet. Tell them which service to connect. Do not invent OAuth URLs. Do not browse or install MCP servers. ' +
+              (names.length ? `Suggested services: ${names.join(', ')}.` : '');
           }
         } catch (e) {
           console.warn('⚠️ mcp turn resolve skipped:', e?.message || e);

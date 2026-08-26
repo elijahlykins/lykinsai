@@ -23,12 +23,12 @@ export default function ConnectionsAppGrid({
         <div className="flex items-center gap-2">
           <PlugZap className="h-4 w-4 text-blue-500" />
           <h2 className="text-sm font-semibold text-black dark:text-white">
-            External connections
+            Connections
           </h2>
         </div>
         <p className="mt-1 text-xs leading-relaxed text-black/50 dark:text-white/50">
-          Connect authoritative apps for live access. External data stays in its source
-          unless you explicitly save something to Vault.
+          Connect almost anything. Marketplace installs connections, not Vault syncs.
+          External data stays in its source unless you explicitly save it.
         </p>
       </div>
 
@@ -38,38 +38,43 @@ export default function ConnectionsAppGrid({
         </div>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        <ConnectionCard
-          icon={CalendarDays}
-          title="Calendars"
-          description="Google Calendar and Apple iCloud, imported read-only into the LYKN calendar."
-          action="Manage"
-          onClick={() => navigate("/calendar?sync=1")}
-        />
-        <ConnectionCard
-          icon={Code2}
-          title="Cursor Cloud"
-          description="Use your encrypted Cursor API key for cloud-agent builds and pull requests."
-          action="Manage"
-          onClick={() => setCursorOpen(true)}
-        />
-        <ConnectionCard
-          icon={DatabaseZap}
-          title="Custom API"
-          description="Call an API you control with a server-injected key and explicit write policy."
-          action="Configure"
-          onClick={() => setCustomApiOpen(true)}
-        />
-        <ConnectionCard
-          icon={Link2}
-          title="More apps"
-          description="Add any standards-compliant MCP server by URL without provider-specific LYKN code."
-          action="Add above"
-          onClick={() => document.getElementById("mcp-connections")?.scrollIntoView({
-            behavior: "smooth",
-            block: "start",
-          })}
-        />
+      <div>
+        <h3 className="text-[11px] font-semibold uppercase tracking-wide text-black/35 dark:text-white/35">
+          Specialized
+        </h3>
+        <div className="mt-2 grid gap-3 sm:grid-cols-2">
+          <ConnectionCard
+            icon={CalendarDays}
+            title="Calendars"
+            description="Google Calendar and Apple iCloud, imported read-only into the LYKN calendar."
+            action="Manage"
+            onClick={() => navigate("/calendar?sync=1")}
+          />
+          <ConnectionCard
+            icon={Code2}
+            title="Cursor Cloud"
+            description="Use your encrypted Cursor API key for cloud-agent builds and pull requests."
+            action="Manage"
+            onClick={() => setCursorOpen(true)}
+          />
+          <ConnectionCard
+            icon={DatabaseZap}
+            title="Custom API"
+            description="Call an API you control with a server-injected key and explicit write policy."
+            action="Configure"
+            onClick={() => setCustomApiOpen(true)}
+          />
+          <ConnectionCard
+            icon={Link2}
+            title="Remote targets"
+            description="SSH machines and GitHub workflows live in the Remote Targets section below."
+            action="See below"
+            onClick={() => document.getElementById("remote-targets")?.scrollIntoView({
+              behavior: "smooth",
+              block: "start",
+            })}
+          />
+        </div>
       </div>
 
       {wakePreview && (

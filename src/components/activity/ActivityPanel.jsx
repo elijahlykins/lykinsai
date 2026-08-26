@@ -4,7 +4,9 @@
 // glance. Data comes straight from the main-process activity snapshot
 // (electron/ipc/routines.cjs) so this window agrees with notifications and
 // the Bot pages by construction.
+import { useEffect, useState } from "react";
 import { Pause, Play, Square, Trash2, Zap } from "lucide-react";
+import { mcpFetch, openConnectionsSettings } from "@/lib/mcp/mcpApi";
 import {
   deleteRoutine,
   routinesAvailable,
@@ -27,6 +29,14 @@ function timeAgo(iso) {
 
 export default function ActivityPanel() {
   const { tasks, routines, recentRuns } = useActivity();
+  const [attention, setAttention] = useState([]);
+
+  useEffect(() => {
+    mcpFetch("/api/mcp/attention")
+      .then((res) => res.json())
+      .then((data) => setAttention(Array.isArray(data.items) ? data.items : []))
+      .catch(() => setAttention([]));
+  }, [tasks, routines]);
 
   if (!routinesAvailable()) {
     return (
@@ -50,6 +60,38 @@ export default function ActivityPanel() {
   return (
     <div className="h-full min-h-0 overflow-y-auto px-6 py-6 text-black/80 dark:text-white/85">
       <div className="mx-auto max-w-lg">
+        {attention.length > 0 ? (
+          <Section title="Needs Attention" hint="">
+            {attention.map((item, index) => (
+              <li
+                key={`${item.connectionId || item.catalogId || item.title}-${index}`}
+                className="flex items-center gap-3 rounded-xl bg-amber-500/10 px-3 py-2.5"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[0.8rem] font-medium">{item.title}</p>
+                  <p className="truncate text-[0.7rem] text-black/45 dark:text-white/45">
+                    {item.type === "missing_capability"
+                      ? "Task needs a connection"
+                      : "Connection authorization waiting"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="rounded-full bg-black px-2.5 py-1 text-[0.7rem] font-medium text-white dark:bg-white dark:text-black"
+                  onClick={() =>
+                    openConnectionsSettings({
+                      search: item.title?.replace(/^Connect\s+/, ""),
+                      catalogId: item.catalogId,
+                    })
+                  }
+                >
+                  Connect
+                </button>
+              </li>
+            ))}
+          </Section>
+        ) : null}
+
         <Section
           title="Watching"
           hint={watching.length ? "" : "No monitors are watching right now."}

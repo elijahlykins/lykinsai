@@ -20,7 +20,8 @@ import {
   BOT_FACES,
   botSeed,
 } from "@/lib/bots/botStore";
-import { addBot, botsAvailable, removeBot, useBots } from "@/lib/bots/botsClient";
+import { addBot, botsAvailable, removeBot, setBotConnectionIds, useBots } from "@/lib/bots/botsClient";
+import { mcpFetch } from "@/lib/mcp/mcpApi";
 import {
   createRoutine,
   deleteRoutine,
@@ -111,11 +112,76 @@ export default function BotsPage() {
               );
             })}
           </div>
+          {selectedBot ? <BotConnections bot={selectedBot} /> : null}
           {selectedBot && routinesAvailable() ? <BotRoutines bot={selectedBot} /> : null}
         </div>
       ) : null}
     </div>
   );
+}
+
+function BotConnections({ bot }) {
+  const [connections, setConnections] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    mcpFetch("/api/mcp/connections")
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled) setConnections(Array.isArray(data.connections) ? data.connections : []);
+      })
+      .catch(() => {
+        if (!cancelled) setConnections([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const assigned = Array.isArray(bot.connectionIds) ? bot.connectionIds : null;
+  const toggle = (id) => {
+    const current = assigned == null ? connections.map((conn) => conn.id) : [...assigned];
+    const next = current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
+    setBotConnectionIds(bot.id, next);
+  };
+
+  return (
+    <div className="mt-6 rounded-2xl border border-black/10 p-4 dark:border-white/10">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-black/35 dark:text-white/35">
+        Connections
+      </p>
+      <p className="mt-1 text-[0.72rem] text-black/40 dark:text-white/40">
+        {assigned == null
+          ? `${bot.name} can use every connected app until you pick a subset.`
+          : assigned.length === 0
+            ? `${bot.name} cannot use external apps.`
+            : `${bot.name} can only use the checked connections.`}
+      </p>
+      {connections.length === 0 ? (
+        <p className="mt-3 text-[0.78rem] text-black/40">No MCP connections yet.</p>
+      ) : (
+        <ul className="mt-3 space-y-1.5">
+          {connections.map((conn) => {
+            const checked = assigned == null || assigned.includes(conn.id);
+            return (
+              <li key={conn.id}>
+                <label className="flex items-center gap-2 text-[0.8rem]">
+                  <input type="checkbox" checked={checked} onChange={() => toggle(conn.id)} />
+                  <span className="truncate">{conn.accountLabel || conn.name}</span>
+                  <span className="text-[0.68rem] text-black/40">{statusDot(conn.status)}</span>
+                </label>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function statusDot(status) {
+  if (status === "connected") return "Connected";
+  if (status === "authentication_required" || status === "authorizing") return "Needs connect";
+  return "Offline";
 }
 
 /* ── Routines — standing work this Bot runs on its own ──────────────────── */
@@ -155,6 +221,7 @@ function BotRoutines({ bot }) {
     const result = await createRoutine({
       instruction,
       botId: bot.id,
+      connectionIds: bot.connectionIds,
       bot: {
         id: bot.id,
         name: bot.name,
@@ -227,6 +294,17 @@ function BotRoutines({ bot }) {
 function RoutineRow({ routine }) {
   const lastRun = routine.lastRunAt ? new Date(routine.lastRunAt).toLocaleString() : "";
   const lastChecked = routine.lastCheckedAt ? timeAgo(routine.lastCheckedAt) : "";
+  const [connections, setConnections] = useState([]);
+  useEffect(() => {
+    mcpFetch("/api/mcp/connections")
+      .then((res) => res.json())
+      .then((data) => setConnections(Array.isArray(data.connections) ? data.connections : []))
+      .catch(() => setConnections([]));
+  }, []);
+  const assignedId = Array.isArray(routine.connectionIds) ? routine.connectionIds[0] : null;
+  const assigned = assignedId ? connections.find((conn) => conn.id === assignedId) : null;
+  const needsConnection =
+    assignedId && assigned && assigned.status && assigned.status !== "connected";
   return (
     <li
       className={`rounded-xl bg-black/[0.035] px-3 py-2 dark:bg-white/[0.05] ${
@@ -242,6 +320,28 @@ function RoutineRow({ routine }) {
             {routine.watching && !routine.running ? " · watching" : ""}
             {!routine.enabled ? " · paused" : ""}
           </p>
+          {assignedId ? (
+            <p className="truncate text-[0.68rem] text-black/35 dark:text-white/40">
+              Connection: {assigned?.accountLabel || assigned?.name || "Needs connection"}
+              {needsConnection ? " · Needs connection" : ""}
+            </p>
+          ) : (
+            <p className="truncate text-[0.68rem] text-black/35 dark:text-white/40">
+              Connection: all assigned to this Bot
+            </p>
+          )}
+          {needsConnection ? (
+            <button
+              type="button"
+              className="mt-1 text-[0.68rem] font-medium text-blue-600 dark:text-blue-400"
+              onClick={() => {
+                window.history.replaceState(null, "", "/settings?section=connections");
+                window.dispatchEvent(new Event("lykn-open-connections"));
+              }}
+            >
+              Reconnect
+            </button>
+          ) : null}
           {routine.watchingCondition ? (
             <p className="truncate text-[0.68rem] text-black/35 dark:text-white/40">
               {routine.watchingCondition}

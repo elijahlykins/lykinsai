@@ -44,7 +44,7 @@
     "test:folders": "node --test src/lib/lyknFolders.test.mjs",
     "test:rag": "node --test lib/rag/rag.test.mjs",
     "test:tools": "node --test mcp-tools/openApp.test.mjs mcp-tools/githubTools.test.mjs",
-    "test:mcp": "node --test tests/mcp/universalMcp.test.mjs tests/mcp/oauthTrust.test.mjs tests/mcp/parityProof.test.mjs electron/task-runtime/mcpExecutor.test.cjs",
+    "test:mcp": "node --test tests/mcp/universalMcp.test.mjs tests/mcp/oauthTrust.test.mjs tests/mcp/parityProof.test.mjs tests/mcp/marketplace.test.mjs tests/mcp/localStdio.test.mjs electron/task-runtime/mcpExecutor.test.cjs",
     "test:store": "node --test electron/localStore/localStore.test.cjs",
     "test:embed": "node --test electron/localStore/embed.test.cjs",
     "test:import": "node --test electron/localStore/import.test.cjs",

@@ -9,6 +9,7 @@
 import { useEffect, useState } from "react";
 import {
   BOTS_STORAGE_KEY,
+  assignBotConnections,
   bindRuntimeTask,
   botForAgent,
   createBot,
@@ -201,6 +202,11 @@ export function addBot(draft) {
   const bot = createBot(draft);
   setBots([...load(), bot]);
   return bot;
+}
+
+/** Missing/undefined = all connections. Empty array = none. */
+export function setBotConnectionIds(botId, connectionIds) {
+  patchBot(botId, (b) => assignBotConnections(b, connectionIds));
 }
 
 /**

@@ -85,7 +85,7 @@ export default function RemoteTargetsSection() {
   };
 
   return (
-    <div className="mt-8">
+    <div id="remote-targets" className="mt-8">
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">
           <Server className="w-4 h-4 text-black/60 dark:text-white/60" />

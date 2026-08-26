@@ -174,7 +174,17 @@ export function createBot(input: {
   };
 }
 
-function cleanConnectionIds(value: unknown): string[] | undefined {
+export function assignBotConnections(bot: Bot, connectionIds: string[] | undefined): Bot {
+  const cleaned = cleanConnectionIds(connectionIds);
+  if (cleaned === undefined) {
+    const next = { ...bot };
+    delete next.connectionIds;
+    return next;
+  }
+  return { ...bot, connectionIds: cleaned };
+}
+
+export function cleanConnectionIds(value: unknown): string[] | undefined {
   if (value === undefined || value === null) return undefined;
   const list = Array.isArray(value) ? value : [value];
   return [
