@@ -9,217 +9,217 @@
     {
       "mode": "handle",
       "channel": "lykn:add-live-watch-rule",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-browser-ai-mode",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-browser-ensure-mic",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-browser-history-list",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-browser-history-open",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-browser-history-remove",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-browser-pick-files",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-browser-transcribe",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-browser-visible",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-browser-welcome-send",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-chat-get",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-chat-set",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-choice-resolve",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-close",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-create",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:agent-finished-popup-close",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:agent-finished-popup-open",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-history",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-list",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-mode-set",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-recents-list",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-recents-remove",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-reset-main",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-send",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-set-headless",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-show-browser",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-show-step",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:agent-sidebar-resize",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:agent-sidebar-set",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-stage-back",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:agent-stage-chrome-height",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-stage-close-tab",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-stage-download",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-stage-forward",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:agent-stage-menu-overlay",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-stage-navigate",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-stage-new-tab",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-stage-reload",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-stage-select",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:agent-stage-set",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-stage-toggle-incognito",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-stop",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:agent-switch",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
@@ -234,22 +234,22 @@
     {
       "mode": "handle",
       "channel": "lykn:app-install",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/apps.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:app-list",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/apps.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:app-open",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/apps.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:app-permissions",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/apps.cjs"
     },
     {
       "mode": "on",
@@ -259,32 +259,32 @@
     {
       "mode": "handle",
       "channel": "lykn:app-set-icon",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/apps.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:app-set-permission",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/apps.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:app-uninstall",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/apps.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:app-verify",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/apps.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:artifact-code",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:ask",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
@@ -329,57 +329,57 @@
     {
       "mode": "handle",
       "channel": "lykn:browser-capability",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:browser-execute",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:browser-plan",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:chrome-sync-run",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:chrome-sync-status",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:clean-transcript",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:clear-live-watch-rules",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:collapse",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:download-file",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:ensure-mic",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:ensure-overlay-session",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
@@ -399,87 +399,87 @@
     {
       "mode": "handle",
       "channel": "lykn:fetch-as-data-url",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:files-copy",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:files-duplicate",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:files-list",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:files-mkdir",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:files-move",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:files-rename",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:files-roots",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:files-thumbnail",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:files-trash",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:files-unwatch",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:files-watch",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:focus-overlay-composer",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:get-content-protection",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:get-live-watch",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:get-night-briefs",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:get-overlay-session",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "on",
@@ -489,7 +489,7 @@
     {
       "mode": "on",
       "channel": "lykn:hide-overlay",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
@@ -504,97 +504,97 @@
     {
       "mode": "on",
       "channel": "lykn:lang-picker-close",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:lang-picker-resize",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:lang-picker-select",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:lang-picker-set",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:lang-picker-state",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:list-chats",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:list-projects",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:live-assist",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:live-cmd",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:live-push",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:live-set",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:local-mode-get",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localMode.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:local-mode-set",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localMode.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:local-tool-run",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localMode.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:mac-app-launch",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:mac-app-quit",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:mac-apps-list",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:mac-apps-running",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:mac-apps-watch",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
@@ -609,92 +609,92 @@
     {
       "mode": "handle",
       "channel": "lykn:mac-fs-home",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:mac-fs-list",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:mac-fs-open",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:mac-sync-folder",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:mac-sync-get",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:mac-sync-pick-folder",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:mac-sync-set",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:meeting-chunk",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:meeting-notes",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:menu-close",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:menu-cmd",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:menu-resize",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:menu-set",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:menu-state",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:move-by",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:move-end",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:native-share",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:new-overlay-session",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
@@ -769,7 +769,7 @@
     {
       "mode": "on",
       "channel": "lykn:open-app-chat",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
@@ -779,82 +779,82 @@
     {
       "mode": "on",
       "channel": "lykn:open-main",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:open-url",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:open-vault",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:panel-cmd",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:panel-push",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:panel-resize",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:panel-set",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:pick-files",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:pick-open-files",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:picker-close",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:picker-resize",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:picker-select",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:picker-set",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:picker-state",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:reset-overlay-position",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:resize",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
@@ -864,147 +864,147 @@
     {
       "mode": "handle",
       "channel": "lykn:save-file-as",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:save-overlay-session",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:save-to-downloads",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localFiles.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:save-vault-note",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:screen-context",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:seed-artifact-from-url",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:set-content-protection",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:set-live-watch",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:show-overlay",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:snip-cancel",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:snip-commit",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:snip-screen",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:store-run",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/localMode.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:studio-bar-send",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:studio-browser-close",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:studio-browser-set",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:studio-browser-warm",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:studio-fullscreen-get",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:studio-fullscreen-set",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:studio-minimize",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:studio-open-artifact",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:studio-open-url",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:studio-set",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayShell.cjs"
     },
     {
       "mode": "on",
       "channel": "lykn:studio-window-control",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:suggest",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:transcribe",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:voice-screen",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:voice-signed-url",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",
       "channel": "lykn:voice-tool",
-      "file": "ipc/overlayIpc.cjs"
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "handle",

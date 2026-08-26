@@ -59,6 +59,8 @@ const { attachOverlaySettings } = require("./overlay/settings.cjs");
 const { attachLiveWatch } = require("./overlay/liveWatch.cjs");
 const { attachOverlaySessions } = require("./overlay/sessions.cjs");
 const { attachWelcomeOnboarding } = require("./windows/welcomeOnboarding.cjs");
+const { attachBrowserAutomation } = require("./os/browserAutomation.cjs");
+const { attachAskPipeline } = require("./overlay/askPipeline.cjs");
 
 // Intel-Mac glass fallback: see GLASS_FALLBACK in shell/appEnv.cjs.
 
@@ -4734,21 +4736,7 @@ function createTray(...a) { return d.createTray(...a); }
 
 // Strip the hidden control tags the chat models emit so they never leak into
 // the overlay bubble (the web app strips these too, server-side prompt aside).
-function stripHiddenTags(s) {
-  return String(s || "")
-    .replace(/<\/?(?:learned|reason|applied)>[\s\S]*?<\/(?:learned|reason|applied)>/gi, "")
-    .replace(/<\/?(?:learned|reason|applied)\b[^>]*>/gi, "")
-    .replace(/\[TAG_NOTES:[^\]]*\]/gi, "")
-    // Legacy [[HIGHLIGHT: …]] tags (screen glow feature removed) — strip if
-    // an older model or cached prompt still emits them.
-    .replace(/\[\[\s*HIGHLIGHT\s*:[^\]]*\]\]/gi, "")
-    // Brand is always LYKN (all caps) — leave lykn.io / lykn_* / lykn-* alone
-    // (hyphen: overlay markers like lykn-artifact: / lykn-video:).
-    .replace(/\b[Ll][Yy][Kk][Nn]\b(?!\.io\b)(?![_\-/])/g, "LYKN")
-    // Normalize overlay markers to lykn_artifact: / lykn_video: / lykn_vault:
-    // (underscore form). Covers LYKN-artifact from older brand rewrites and hyphen forms.
-    .replace(/!\[(?:LYKN|lykn)[-_](artifact|video|vault):/gi, (_, kind) => `![lykn_${String(kind).toLowerCase()}:`);
-}
+function stripHiddenTags(...a) { return d.stripHiddenTags(...a); }
 
 // Overlay session seeds for vault pull-ups → Build / Image edit.
 // Declared above the vault marker helpers that write them.
@@ -4762,572 +4750,59 @@ let lastOverlayPageFingerprint = "";
  * Parse `[ATTACHMENTS_JSON:…]` from vault note content (CJS twin of
  * lib/vault/attachmentsMarker.js — main cannot import that ESM module).
  */
-function parseVaultAttachmentsFromContent(content) {
-  const MARKER = "[ATTACHMENTS_JSON:";
-  const raw = String(content || "");
-  const start = raw.indexOf(MARKER);
-  if (start === -1) return [];
-  const jsonStart = start + MARKER.length;
-  if (raw[jsonStart] !== "[") return [];
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  let jsonEnd = -1;
-  for (let i = jsonStart; i < raw.length; i += 1) {
-    const ch = raw[i];
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    if (inString) {
-      if (ch === "\\") escape = true;
-      else if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-    if (ch === "[") depth += 1;
-    else if (ch === "]") {
-      depth -= 1;
-      if (depth === 0) {
-        jsonEnd = i + 1;
-        break;
-      }
-    }
-  }
-  if (jsonEnd === -1) return [];
-  try {
-    const parsed = JSON.parse(raw.slice(jsonStart, jsonEnd));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
+function parseVaultAttachmentsFromContent(...a) { return d.parseVaultAttachmentsFromContent(...a); }
 
-function stripVaultAttachmentsMarker(content) {
-  const MARKER = "[ATTACHMENTS_JSON:";
-  const raw = String(content || "");
-  const start = raw.indexOf(MARKER);
-  if (start === -1) return raw.trim();
-  // Cheap strip: drop from marker to matching close (same scanner as parse).
-  const atts = parseVaultAttachmentsFromContent(raw);
-  if (!atts.length && start >= 0) {
-    // Malformed marker — cut from marker to end of first line-ish chunk.
-    return raw.slice(0, start).replace(/\n{3,}/g, "\n\n").trim();
-  }
-  const spanStart = start;
-  // Re-scan for markerEnd including trailing ].
-  const jsonStart = start + MARKER.length;
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  let jsonEnd = -1;
-  for (let i = jsonStart; i < raw.length; i += 1) {
-    const ch = raw[i];
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    if (inString) {
-      if (ch === "\\") escape = true;
-      else if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-    if (ch === "[") depth += 1;
-    else if (ch === "]") {
-      depth -= 1;
-      if (depth === 0) {
-        jsonEnd = i + 1;
-        break;
-      }
-    }
-  }
-  let markerEnd = jsonEnd > 0 ? jsonEnd : raw.length;
-  if (raw[markerEnd] === "]") markerEnd += 1;
-  return `${raw.slice(0, spanStart)}${raw.slice(markerEnd)}`
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
+function stripVaultAttachmentsMarker(...a) { return d.stripVaultAttachmentsMarker(...a); }
 
 /** Classify a vault attachment for Glass view mode (image / html / video / other). */
-function classifyVaultAttachmentForOverlay(att) {
-  if (!att || typeof att !== "object") return "other";
-  // Match VaultAttachment: explicit non-"file" type wins; "file" falls through
-  // to mime/extension so saved React artifacts still preview as HTML.
-  const type = String(att.type || "").toLowerCase();
-  if (type === "image" || type === "html" || type === "video") return type;
-  const mime = String(att.mimeType || att.mime_type || "")
-    .toLowerCase()
-    .split(";")[0]
-    .trim();
-  if (mime.startsWith("image/")) return "image";
-  if (mime === "text/html") return "html";
-  if (mime.startsWith("video/")) return "video";
-  const src = String(att.name || att.url || att.storagePath || att.storage_path || "")
-    .split("?")[0]
-    .toLowerCase();
-  if (/\.(jpe?g|png|gif|webp|svg|bmp|heic|heif|tiff)$/i.test(src)) return "image";
-  if (/\.html?$/i.test(src)) return "html";
-  if (/\.(mp4|webm|mov|m4v)$/i.test(src)) return "video";
-  if (/^data:image\//i.test(String(att.url || ""))) return "image";
-  if (type && type !== "file" && type !== "other") return type;
-  return "other";
-}
+function classifyVaultAttachmentForOverlay(...a) { return d.classifyVaultAttachmentForOverlay(...a); }
 
 /** In-memory HTML for lykn-artifact:// iframe previews in Glass. */
 const artifactHtmlCache = new Map(); // key -> html string
 
-function cacheArtifactHtmlForOverlay(html) {
-  const body = String(html || "");
-  if (!body.trim()) return "";
-  const key = crypto.randomUUID().replace(/-/g, "");
-  artifactHtmlCache.set(key, body);
-  while (artifactHtmlCache.size > 40) {
-    const oldest = artifactHtmlCache.keys().next().value;
-    artifactHtmlCache.delete(oldest);
-  }
-  return `lykn-artifact://${key}`;
-}
+function cacheArtifactHtmlForOverlay(...a) { return d.cacheArtifactHtmlForOverlay(...a); }
 
-function isOverlayFirstPartyHost(hostname) {
-  const host = String(hostname || "")
-    .toLowerCase()
-    .replace(/^\[|\]$/g, "");
-  if (!host) return false;
-  if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
-  if (host === "artifacts.lykn.io" || host === "api.lykn.io" || host === "lykn.io") return true;
-  try {
-    const apiHost = new URL(API_BASE).hostname.toLowerCase();
-    if (host === apiHost) return true;
-  } catch {
-    /* ignore */
-  }
-  return false;
-}
+function isOverlayFirstPartyHost(...a) { return d.isOverlayFirstPartyHost(...a); }
 
 /** Fetch media bytes; allow our own API/localhost (file-proxy in dev). */
-async function fetchOverlayMedia(url) {
-  const u = String(url || "").trim();
-  if (!u) return null;
-  let host = "";
-  try {
-    host = new URL(u).hostname;
-  } catch {
-    return null;
-  }
-  try {
-    if (isOverlayFirstPartyHost(host)) {
-      return await fetch(u);
-    }
-    return await safeFetchMain(u);
-  } catch (e) {
-    console.warn("[overlay-vault] media fetch failed:", e?.message || e);
-    return null;
-  }
-}
+async function fetchOverlayMedia(...a) { return d.fetchOverlayMedia(...a); }
 
 // macOS share sheet: AirDrop / Photos / Mail want a file, not a signed link.
 // Pull the asset into a temp folder once per URL and hand the path to the
 // sharing item. Files live in the OS temp dir, so cleanup is the OS's job.
-const SHARE_STAGE_MAX_BYTES = 128 * 1024 * 1024;
-const shareStagedFiles = new Map();
 
-async function stageNativeShareFile(url, nameHint = "") {
-  const cached = shareStagedFiles.get(url);
-  if (cached && fsSync.existsSync(cached)) return cached;
-  try {
-    const res = await fetchOverlayMedia(url);
-    if (!res || !res.ok) return "";
-    const declared = Number(res.headers.get("content-length") || 0);
-    if (declared > SHARE_STAGE_MAX_BYTES) return "";
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (!buf.length || buf.length > SHARE_STAGE_MAX_BYTES) return "";
-    const mime = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
 
-    let filename = String(nameHint || "").trim();
-    if (!filename) {
-      try {
-        filename = decodeURIComponent(new URL(url).pathname.split("/").pop() || "");
-      } catch {
-        /* fall through to the generic name */
-      }
-    }
-    filename =
-      filename.replace(/[/\\:*?"<>|]+/g, "-").replace(/^\.+/, "").slice(0, 120) ||
-      "LYKN item";
-    if (!/\.[a-z0-9]{1,8}$/i.test(filename)) {
-      filename += {
-        "image/png": ".png",
-        "image/jpeg": ".jpg",
-        "image/webp": ".webp",
-        "image/gif": ".gif",
-        "image/svg+xml": ".svg",
-        "image/heic": ".heic",
-        "video/mp4": ".mp4",
-        "video/quicktime": ".mov",
-        "video/webm": ".webm",
-        "audio/mpeg": ".mp3",
-        "audio/wav": ".wav",
-        "audio/mp4": ".m4a",
-        "application/pdf": ".pdf",
-        "text/html": ".html",
-        "text/csv": ".csv",
-        "text/plain": ".txt",
-      }[mime] || "";
-    }
 
-    const dir = path.join(
-      app.getPath("temp"),
-      `lykn-share-${crypto.randomBytes(6).toString("hex")}`,
-    );
-    await fs.mkdir(dir, { recursive: true });
-    const target = path.join(dir, filename);
-    await fs.writeFile(target, buf);
-    shareStagedFiles.set(url, target);
-    return target;
-  } catch (err) {
-    console.warn("[share] staging failed:", err?.message || err);
-    return "";
-  }
-}
+async function stageNativeShareFile(...a) { return d.stageNativeShareFile(...a); }
 
-async function mintStorageSignedUrl(storagePath, bucket, token) {
-  const res = await fetch(`${API_BASE}/api/storage/signed-url`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ storagePath, bucket }),
-  });
-  if (!res.ok) return "";
-  const data = await res.json().catch(() => null);
-  return String(data?.signedUrl || "").trim();
-}
+async function mintStorageSignedUrl(...a) { return d.mintStorageSignedUrl(...a); }
 
 /**
  * HTML artifacts must NOT use raw Supabase signed URLs in an iframe (wrong
  * MIME / frame-ancestors → blank). Prefer a public file-proxy URL; in local
  * API / private-proxy cases, fetch the HTML in main and serve via lykn-artifact://.
  */
-async function resolveVaultHtmlDisplayUrl(att, token) {
-  const storagePath = String(att.storagePath || att.storage_path || "").trim();
-  const bucket = String(att.storageBucket || att.storage_bucket || "user-files").trim();
-  const filename = String(att.name || "").trim() || "artifact.html";
-
-  const materializeFromUrl = async (url) => {
-    const res = await fetchOverlayMedia(url);
-    if (!res || !res.ok) return "";
-    const html = await res.text().catch(() => "");
-    return cacheArtifactHtmlForOverlay(html);
-  };
-
-  if (storagePath && token) {
-    try {
-      const res = await fetch(`${API_BASE}/api/storage/file-proxy-url`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ storagePath, bucket, filename }),
-      });
-      if (res.ok) {
-        const data = await res.json().catch(() => null);
-        const proxyUrl = String(data?.url || "").trim();
-        if (/^https?:\/\//i.test(proxyUrl) && !/supabase\.co\/storage\//i.test(proxyUrl)) {
-          const pub = await assertPublicHttpUrl(proxyUrl);
-          if (pub.ok) return proxyUrl;
-          // localhost / private API file-proxy — pull bytes into local scheme.
-          const local = await materializeFromUrl(proxyUrl);
-          if (local) return local;
-        }
-      } else {
-        console.warn("[overlay-vault] file-proxy-url", res.status);
-      }
-    } catch (e) {
-      console.warn("[overlay-vault] file-proxy mint failed:", e?.message || e);
-    }
-
-    try {
-      const signed = await mintStorageSignedUrl(storagePath, bucket, token);
-      if (signed) {
-        const local = await materializeFromUrl(signed);
-        if (local) return local;
-      }
-    } catch (e) {
-      console.warn("[overlay-vault] signed html materialize failed:", e?.message || e);
-    }
-  }
-
-  const fallback = String(att.url || "").trim();
-  if (/^https?:\/\//i.test(fallback) && !/supabase\.co\/storage\//i.test(fallback)) {
-    const pub = await assertPublicHttpUrl(fallback);
-    if (pub.ok) return fallback;
-    const local = await materializeFromUrl(fallback);
-    if (local) return local;
-  }
-  // Last resort: supabase URL as bytes → local scheme (never as iframe src).
-  if (/^https?:\/\//i.test(fallback) && /supabase\.co\/storage\//i.test(fallback)) {
-    const local = await materializeFromUrl(fallback);
-    if (local) return local;
-  }
-  return "";
-}
+async function resolveVaultHtmlDisplayUrl(...a) { return d.resolveVaultHtmlDisplayUrl(...a); }
 
 /** Fresh signed / file-proxy URL so Glass can iframe/img vault media. */
-async function resolveVaultAttachmentDisplayUrl(att, token) {
-  if (!att || typeof att !== "object") return "";
-  const kind = classifyVaultAttachmentForOverlay(att);
-  if (kind === "html") return resolveVaultHtmlDisplayUrl(att, token);
+async function resolveVaultAttachmentDisplayUrl(...a) { return d.resolveVaultAttachmentDisplayUrl(...a); }
 
-  const storagePath = String(att.storagePath || att.storage_path || "").trim();
-  const bucket = String(att.storageBucket || att.storage_bucket || "user-files").trim();
-  if (storagePath && token) {
-    try {
-      const signed = await mintStorageSignedUrl(storagePath, bucket, token);
-      if (/^https?:\/\//i.test(signed)) return signed;
-    } catch {
-      /* fall through */
-    }
-  }
-  const fallback = String(att.url || "").trim();
-  return /^https?:\/\//i.test(fallback) || /^data:image\//i.test(fallback) ? fallback : "";
-}
-
-function vaultOpenCardMarkdown(kind, id, title, subtitle) {
-  const safeTitle = String(title || "Saved item").replace(/[\]\n\r]/g, " ").slice(0, 100) || "Saved item";
-  const safeSub = String(subtitle || "")
-    .replace(/["\n\r]/g, " ")
-    .slice(0, 160);
-  const href = `lykn-vault://${encodeURIComponent(kind)}/${encodeURIComponent(id)}`;
-  return safeSub
-    ? `![lykn_vault:${safeTitle}](${href} "${safeSub}")`
-    : `![lykn_vault:${safeTitle}](${href})`;
-}
+function vaultOpenCardMarkdown(...a) { return d.vaultOpenCardMarkdown(...a); }
 
 /**
  * Build Glass view-mode markers from lykn_loadNeuron / lykn_loadNeurons.
  * Vault images → md-img, HTML → lykn_artifact iframe, else Open card.
  * Also seeds lastOverlayReactArtifact when an editable React source is found.
  */
-async function overlayVaultMarkersFromToolResult(toolName, result) {
-  const name = String(toolName || "");
-  const entries = [];
-  if (!result || typeof result !== "object") return "";
-
-  if (/loadNeurons$/i.test(name) && Array.isArray(result.results)) {
-    for (const entry of result.results) {
-      if (entry && entry.ok === true) entries.push(entry);
-    }
-  } else if (result.ok === true) {
-    entries.push(result);
-  }
-
-  const lines = [];
-  const seen = new Set();
-  let token = null;
-  const ensureToken = async () => {
-    if (token !== null) return token;
-    try {
-      token = (await getAuthToken()) || "";
-    } catch {
-      token = "";
-    }
-    return token;
-  };
-
-  for (const entry of entries) {
-    const kind = String(entry.kind || "").toLowerCase();
-    let id = "";
-    let title = "";
-    let subtitle = "";
-    if (kind === "vault") {
-      id =
-        String(entry.note?.id || "").trim() ||
-        String(entry.node_id || "")
-          .replace(/^vault_/i, "")
-          .trim();
-      title = String(entry.note?.title || entry.display || "Vault item")
-        .replace(/\s+/g, " ")
-        .trim();
-      const body = stripVaultAttachmentsMarker(String(entry.note?.content || ""))
-        .replace(/\s+/g, " ")
-        .trim();
-      subtitle = body.slice(0, 140);
-    } else if (kind === "belief") {
-      id =
-        String(entry.belief?.id || "").trim() ||
-        String(entry.node_id || "")
-          .replace(/^belief_/i, "")
-          .trim();
-      title = String(entry.belief?.text || entry.display || "Belief")
-        .replace(/\s+/g, " ")
-        .trim();
-      subtitle = "Core belief";
-    } else if (kind === "fact") {
-      id =
-        String(entry.fact?.id || "").trim() ||
-        String(entry.node_id || "")
-          .replace(/^fact_/i, "")
-          .trim();
-      title = String(entry.fact?.text || entry.display || "Fact")
-        .replace(/\s+/g, " ")
-        .trim();
-      subtitle = "Preference / fact";
-    } else if (kind === "concept") {
-      id =
-        String(entry.concept?.id || entry.concept?.slug || "").trim() ||
-        String(entry.node_id || "")
-          .replace(/^concept_/i, "")
-          .trim();
-      title = String(entry.concept?.label || entry.display || "Concept")
-        .replace(/\s+/g, " ")
-        .trim();
-      subtitle = "Concept";
-    } else {
-      continue;
-    }
-    if (!id || seen.has(`${kind}:${id}`)) continue;
-    seen.add(`${kind}:${id}`);
-    const safeTitle = title.replace(/[\]\n\r]/g, " ").slice(0, 100) || "Saved item";
-
-    // Vault media: render the same view as Vault (image / live artifact / video).
-    if (kind === "vault") {
-      const atts = parseVaultAttachmentsFromContent(entry.note?.content || "");
-      const primary = atts.find((a) => a && typeof a === "object") || null;
-      if (primary) {
-        const mediaKind = classifyVaultAttachmentForOverlay(primary);
-        const auth = await ensureToken();
-        const mediaUrl = await resolveVaultAttachmentDisplayUrl(primary, auth);
-        if (mediaUrl && mediaKind === "image") {
-          lines.push(`![${safeTitle}](${mediaUrl})`);
-          lines.push(vaultOpenCardMarkdown("vault", id, safeTitle, "Image · Open in Vault"));
-          lastOverlayVaultImage = { url: mediaUrl, title: safeTitle };
-          continue;
-        }
-        if (mediaUrl && mediaKind === "html") {
-          lines.push(`![lykn_artifact:${safeTitle}](${mediaUrl})`);
-          lines.push(vaultOpenCardMarkdown("vault", id, safeTitle, "Artifact · Open in Vault"));
-          // Seed Build-mode refine before the card lands so Edit → Build works.
-          try {
-            const code = await extractReactArtifactCodeFromResult({
-              file_url: mediaUrl,
-              title: safeTitle,
-            });
-            if (code && String(code).trim()) {
-              lastOverlayReactArtifact = {
-                toolName: "lykn_build_react_artifact",
-                title: safeTitle,
-                code: String(code),
-              };
-            }
-          } catch {
-            /* non-React HTML still previews; Build starts fresh */
-          }
-          continue;
-        }
-        if (mediaUrl && mediaKind === "video") {
-          lines.push(`![lykn_video:${safeTitle}](${mediaUrl})`);
-          lines.push(vaultOpenCardMarkdown("vault", id, safeTitle, "Video · Open in Vault"));
-          continue;
-        }
-      }
-    }
-
-    lines.push(vaultOpenCardMarkdown(kind, id, safeTitle, subtitle));
-    if (lines.length >= 12) break;
-  }
-  return lines.length ? `\n\n${lines.join("\n\n")}\n\n` : "";
-}
+async function overlayVaultMarkersFromToolResult(...a) { return d.overlayVaultMarkersFromToolResult(...a); }
 
 // While streaming, a control tag can arrive split across deltas. Trim any
 // unfinished "[[..." tail so raw markup never flashes in the bubble.
-function trimPartialControlTagTail(s) {
-  return String(s || "")
-    .replace(/\[\[(?![\s\S]*\]\])[\s\S]*$/, "")
-    .replace(/\[$/, "");
-}
+function trimPartialControlTagTail(...a) { return d.trimPartialControlTagTail(...a); }
 
-function parseJsonFromAiText(text) {
-  const raw = stripHiddenTags(String(text || "")).trim();
-  const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fence ? fence[1].trim() : raw;
-  try {
-    return JSON.parse(candidate);
-  } catch {
-    const start = candidate.indexOf("{");
-    const end = candidate.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(candidate.slice(start, end + 1));
-      } catch {
-        return null;
-      }
-    }
-  }
-  return null;
-}
+function parseJsonFromAiText(...a) { return d.parseJsonFromAiText(...a); }
 
-async function fetchAiStreamCompletion(token, body, { timeoutMs = 60000 } = {}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${API_BASE}/api/ai/stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-  if (!res.ok) {
-    const err = await errorFromAiResponse(res);
-    return { error: humanizeStreamError(err) };
-  }
-  const ctype = res.headers.get("content-type") || "";
-  if (!ctype.includes("text/event-stream") || !res.body) {
-    const data = await res.json().catch(() => null);
-    const text = stripHiddenTags(data?.response || data?.answer || data?.text || "");
-    return text.trim() ? { text } : { error: "Empty AI response" };
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  let accumulated = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const lines = buf.split("\n");
-    buf = lines.pop() || "";
-    for (const line of lines) {
-      const t = line.trim();
-      if (!t.startsWith("data:")) continue;
-      const payload = t.slice(t.indexOf(":") + 1).trim();
-      if (!payload || payload === "[DONE]") continue;
-      try {
-        const j = JSON.parse(payload);
-        if (typeof j.t === "string") accumulated += j.t;
-        else if (j.error) return { error: String(j.error) || "Stream error" };
-      } catch {
-        /* ignore keepalive */
-      }
-    }
-  }
-  const text = stripHiddenTags(accumulated).trim();
-  return text ? { text } : { error: "Empty AI response" };
-  } catch (e) {
-    if (e && e.name === "AbortError") return { error: "Quiz solve timed out (60s)" };
-    return { error: e && e.message ? e.message : "Stream request failed" };
-  } finally {
-    clearTimeout(timer);
-  }
-}
+async function fetchAiStreamCompletion(...a) { return d.fetchAiStreamCompletion(...a); }
 
 // ── Auth token access ───────────────────────────────────────────────────────
 // The web app keeps the Supabase session in localStorage (sb-<ref>-auth-token)
@@ -5640,18 +5115,7 @@ async function pushOverlaySessionToApp(...a) { return d.pushOverlaySessionToApp(
 // browser-execute. Left here because extracting it requires a brace-safe
 // splitter (destructured params + regex literals) and it is shared with the
 // Agent Harness browser-execute path.
-function runOsascript(script, timeout = 4000) {
-  return new Promise((resolve) => {
-    execFile("osascript", ["-e", script], { timeout }, (err, stdout, stderr) => {
-      if (err) {
-        const msg = String((stderr || "") + " " + (err.message || "")).trim();
-        resolve({ error: msg || String(err.code || err) });
-        return;
-      }
-      resolve({ out: String(stdout || "").trim() });
-    });
-  });
-}
+function runOsascript(...a) { return d.runOsascript(...a); }
 
 const BROWSER_APP_NAMES = [
   "Google Chrome",
@@ -5685,148 +5149,15 @@ const BROWSER_PICK_PRIORITY = {
 };
 const DEPRIORITIZED_BROWSERS = new Set(["Safari Technology Preview"]);
 
-async function listRunningBrowserApps() {
-  if (automationOk.systemEvents === false) return [];
+async function listRunningBrowserApps(...a) { return d.listRunningBrowserApps(...a); }
 
-  const listLiteral = `{${BROWSER_APP_NAMES.map((n) => `"${n}"`).join(", ")}}`;
-  // Match running *process* names — never `tell application "Arc"` unless Arc is
-  // actually open. Probing every app in the allowlist triggers macOS "Where is Arc?"
-  // file-picker dialogs for browsers that aren't installed.
-  const pickScript = `
-tell application "System Events"
-  set procNames to name of every process
-end tell
-set allBrowsers to ${listLiteral}
-set out to ""
-repeat with b in allBrowsers
-  if procNames contains (b as string) then
-    if out is "" then
-      set out to (b as string)
-    else
-      set out to out & "|" & (b as string)
-    end if
-  end if
-end repeat
-return out
-`;
-  const runPick = () => runOsascript(pickScript, 8000);
-  const pick =
-    automationOk.systemEvents === true
-      ? await runPick()
-      : await withPermissionPrompt("automation:system-events", runPick);
-  if (pick.error) {
-    console.log("[scrape] browser-detect error:", pick.error);
-    if (isAutomationDeniedError(pick.error)) {
-      automationOk.systemEvents = false;
-      console.log(
-        "[scrape] → Grant Automation permission: System Settings → Privacy & " +
-          "Security → Automation → enable System Events for LYKN/Electron.",
-      );
-    }
-    return [];
-  }
-  automationOk.systemEvents = true;
-  return String(pick.out || "")
-    .split("|")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
+async function readBrowserFrontTabUrl(...a) { return d.readBrowserFrontTabUrl(...a); }
 
-async function readBrowserFrontTabUrl(appName, { anyScheme = false, allowPrompt = true } = {}) {
-  if (automationOk.browsers[appName] === false) return null;
+async function readBrowserTabUrl(...a) { return d.readBrowserTabUrl(...a); }
 
-  const accept = (u) => {
-    const url = String(u || "").trim();
-    if (!url) return null;
-    if (anyScheme) return url;
-    return /^https?:\/\//i.test(url) ? url : null;
-  };
-  const isSafari = /^Safari/.test(appName);
-  const script = isSafari
-    ? `tell application "${appName}" to get URL of current tab of front window`
-    : `tell application "${appName}" to get URL of active tab of front window`;
+function rankBrowserCandidates(...a) { return d.rankBrowserCandidates(...a); }
 
-  const run = () => runOsascript(script, 6000);
-  // Known-allowed browsers skip the mutex; first contact (or unknown) is serialized.
-  const r =
-    automationOk.browsers[appName] === true || !allowPrompt
-      ? await run()
-      : await withPermissionPrompt(`automation:${appName}`, run);
-
-  if (r.error) {
-    console.log(`[scrape] url-read error (${appName}):`, r.error);
-    if (isAutomationDeniedError(r.error)) {
-      automationOk.browsers[appName] = false;
-      console.log(`[scrape] → Grant Automation permission for ${appName} under LYKN/Electron.`);
-    }
-    return null;
-  }
-  automationOk.browsers[appName] = true;
-  return accept(r.out);
-}
-
-async function readBrowserTabUrl(appName, { anyScheme = false, allowPrompt = true } = {}) {
-  if (automationOk.browsers[appName] === false) return null;
-
-  const front = await readBrowserFrontTabUrl(appName, { anyScheme, allowPrompt });
-  if (front) return front;
-  if (/^Safari/.test(appName)) return null;
-
-  const accept = (u) => {
-    const url = String(u || "").trim();
-    if (!url) return null;
-    if (anyScheme) return url;
-    return /^https?:\/\//i.test(url) ? url : null;
-  };
-  // Follow-up window walk: only after front-tab already marked this browser allowed
-  // (or we're retrying without a new prompt). Avoids a second Allow dialog.
-  if (automationOk.browsers[appName] !== true && allowPrompt) return null;
-
-  const r = await runOsascript(
-    `tell application "${appName}"
-      if (count of windows) is 0 then return ""
-      repeat with w in windows
-        try
-          set u to URL of active tab of w
-          if u is not "" then return u
-        end try
-      end repeat
-      return ""
-    end tell`,
-    6000,
-  );
-  if (r.error) {
-    console.log(`[scrape] url-read error (${appName}):`, r.error);
-    if (isAutomationDeniedError(r.error)) {
-      automationOk.browsers[appName] = false;
-    }
-    return null;
-  }
-  automationOk.browsers[appName] = true;
-  const url = accept(r.out);
-  if (url) return url;
-  if (anyScheme && String(r.out || "").trim()) return String(r.out).trim();
-  return null;
-}
-
-function rankBrowserCandidates(candidates) {
-  let pool = candidates.slice();
-  const hasMainBrowser = pool.some((n) => !DEPRIORITIZED_BROWSERS.has(n));
-  if (hasMainBrowser) {
-    pool = pool.filter((n) => !DEPRIORITIZED_BROWSERS.has(n));
-  }
-  pool.sort(
-    (a, b) => (BROWSER_PICK_PRIORITY[b] ?? 40) - (BROWSER_PICK_PRIORITY[a] ?? 40),
-  );
-  return pool;
-}
-
-function pickBestBrowserTarget(targets) {
-  if (!targets.length) return null;
-  const ranked = rankBrowserCandidates(targets.map((t) => t.appName));
-  const order = new Map(ranked.map((name, i) => [name, i]));
-  return targets.slice().sort((a, b) => (order.get(a.appName) ?? 99) - (order.get(b.appName) ?? 99))[0];
-}
+function pickBestBrowserTarget(...a) { return d.pickBestBrowserTarget(...a); }
 
 /**
  * Try at most one not-yet-denied browser for a URL in this action.
@@ -5834,743 +5165,82 @@ function pickBestBrowserTarget(targets) {
  * Known-allowed browsers may be checked without a new dialog; only one unknown
  * browser may prompt per call.
  */
-async function resolveOneBrowserHttpTarget(candidates, { frontWindowOnly = false } = {}) {
-  const ranked = rankBrowserCandidates(candidates).filter(
-    (name) => automationOk.browsers[name] !== false,
-  );
-  if (!ranked.length) return null;
+async function resolveOneBrowserHttpTarget(...a) { return d.resolveOneBrowserHttpTarget(...a); }
 
-  // Prefer browsers already allowed this session (no new dialog).
-  const known = ranked.filter((name) => automationOk.browsers[name] === true);
-  const unknown = ranked.filter((name) => automationOk.browsers[name] !== true);
-  const tryOrder = [...known, ...unknown];
+async function listBrowserHttpTargets(...a) { return d.listBrowserHttpTargets(...a); }
 
-  let promptedUnknown = false;
-  for (const appName of tryOrder) {
-    const alreadyOk = automationOk.browsers[appName] === true;
-    if (!alreadyOk && promptedUnknown) break;
-    if (!alreadyOk) promptedUnknown = true;
-
-    const url = frontWindowOnly
-      ? await readBrowserFrontTabUrl(appName, { allowPrompt: !alreadyOk })
-      : await readBrowserTabUrl(appName, { allowPrompt: !alreadyOk });
-    if (url) return { appName, url };
-
-    // Denied mid-attempt — do not immediately blast the next browser.
-    if (automationOk.browsers[appName] === false) break;
-    // Unknown prompt burned with no URL — stop; next user action can try another.
-    if (!alreadyOk) break;
-  }
-  return null;
-}
-
-async function listBrowserHttpTargets({ frontWindowOnly = false } = {}) {
-  const candidates = await listRunningBrowserApps();
-  const one = await resolveOneBrowserHttpTarget(candidates, { frontWindowOnly });
-  return one ? [one] : [];
-}
-
-async function describeBrowserTabProblem() {
-  const candidates = await listRunningBrowserApps();
-  if (!candidates.length) {
-    return {
-      error: "no_browser",
-      message: "Open Chrome (or another browser) with a website loaded, then try again.",
-    };
-  }
-  // One browser only — same fan-out guard as Glass scrape.
-  const httpTarget = await resolveOneBrowserHttpTarget(candidates, { frontWindowOnly: false });
-  if (httpTarget?.url) return null;
-  const ranked = rankBrowserCandidates(candidates).filter(
-    (name) => automationOk.browsers[name] !== false,
-  );
-  const probe = ranked.find((name) => automationOk.browsers[name] === true) || ranked[0];
-  if (probe) {
-    const raw = await readBrowserTabUrl(probe, {
-      anyScheme: true,
-      allowPrompt: automationOk.browsers[probe] !== true,
-    });
-    if (raw && /^(chrome|about|edge|brave|arc):/i.test(raw)) {
-      return {
-        error: "new_tab",
-        message:
-          "This tab is a blank new-tab page, so there's nothing to click or type on yet. " +
-          "Go to a real site first (e.g. youtube.com or google.com), then try again.",
-      };
-    }
-  }
-  return {
-    error: "no_browser",
-    message:
-      "No usable browser tab found. Open an https:// page (not chrome://newtab), then try again.",
-  };
-}
+async function describeBrowserTabProblem(...a) { return d.describeBrowserTabProblem(...a); }
 
 // Prefer the Chrome Live Feed extension (works on macOS + Windows). Fall back
 // to AppleScript tab discovery on macOS when the extension isn't connected.
-async function getActiveBrowserTarget() {
-  const ext = extensionBridge?.getSnapshot?.(12_000);
-  if (ext?.url && /^https?:/i.test(ext.url)) {
-    console.log(`[scrape] active tab via extension: ${ext.url}`);
-    return {
-      appName: "Google Chrome",
-      url: ext.url,
-      title: ext.title || "",
-      source: "extension",
-    };
-  }
-
-  if (!IS_MAC) {
-    console.log("[scrape] no extension tab (Windows needs Chrome Live Feed for live page text)");
-    return null;
-  }
-
-  // Two-step so the AppleScript always compiles:
-  //   1) list running browsers (System Events — at most one Automation prompt),
-  //   2) read URL from one preferred browser (at most one more Allow dialog).
-  if (automationOk.systemEvents === false) {
-    console.log("[scrape] System Events Automation previously denied — skip AppleScript");
-    return null;
-  }
-  const candidates = await listRunningBrowserApps();
-  if (!candidates.length) {
-    console.log("[scrape] no browser frontmost or running");
-    return null;
-  }
-  // Prefer front-window tabs; if those are empty, widen to any window on the
-  // same already-allowed browser (no second Allow dialog).
-  let best = await resolveOneBrowserHttpTarget(candidates, { frontWindowOnly: true });
-  if (!best && candidates.some((n) => automationOk.browsers[n] === true)) {
-    best = await resolveOneBrowserHttpTarget(candidates, { frontWindowOnly: false });
-  }
-  if (!best) {
-    console.log("[scrape] browsers running but none have an http(s) tab:", candidates.join(", "));
-    return null;
-  }
-  console.log(`[scrape] active browser URL: ${best.url} (${best.appName})`);
-  return best;
-}
+async function getActiveBrowserTarget(...a) { return d.getActiveBrowserTarget(...a); }
 
 // Run a small JS snippet in the active browser tab via AppleScript.
 // Snippet must NOT contain double quotes or backslashes (AppleScript-safe).
-async function evalBrowserJs(appName, js, timeoutMs = 6000) {
-  if (!IS_MAC || !appName) return { error: "unsupported" };
-  if (automationOk.browsers[appName] === false) return { error: "automation_denied" };
-  const isSafari = /^Safari/.test(appName);
-  const script = isSafari
-    ? `tell application "${appName}" to do JavaScript "${js}" in current tab of front window`
-    : `tell application "${appName}" to execute active tab of front window javascript "${js}"`;
-  const run = () => runOsascript(script, timeoutMs);
-  const r =
-    automationOk.browsers[appName] === true
-      ? await run()
-      : await withPermissionPrompt(`automation-dom:${appName}`, run);
-  if (r.error) {
-    if (isAutomationDeniedError(r.error)) {
-      automationOk.browsers[appName] = false;
-    }
-    return { error: r.error };
-  }
-  automationOk.browsers[appName] = true;
-  return { out: (r.out || "").trim() };
-}
+async function evalBrowserJs(...a) { return d.evalBrowserJs(...a); }
 
 // Read LIVE rendered text from the active tab. Extension bridge first (cross-
 // platform); AppleScript JS injection on macOS as fallback.
 // Returns "title\n<body text>" or null.
-async function getBrowserPageText(appName) {
-  const ext = extensionBridge?.getSnapshot?.(12_000);
-  if (ext?.text && ext.text.length > 40) {
-    const title = String(ext.title || "").trim();
-    const body = String(ext.text || "").trim();
-    return title ? `${title}\n${body}` : body;
-  }
-
-  // No double quotes or backslashes in this JS so it embeds cleanly in the
-  // AppleScript double-quoted string (AppleScript treats \n etc. as escapes).
-  const js =
-    "(function(){var e=document.querySelector('article')||document.querySelector('main')||document.body;" +
-    "var t=(document.title||'')+String.fromCharCode(10)+(e?e.innerText:'');return t.slice(0,15000);})()";
-  const r = await evalBrowserJs(appName, js, 6000);
-  if (r.error) {
-    if (/turned off|not allowed|Allow JavaScript|Apple Events/i.test(String(r.error))) {
-      console.log(
-        `[scrape] live-DOM read off for ${appName} — enable "Allow JavaScript from ` +
-          `Apple Events" (Chrome: View → Developer). Falling back to HTTP fetch.`,
-      );
-    } else if (r.error !== "automation_denied" && r.error !== "unsupported") {
-      console.log(`[scrape] live-DOM read error (${appName}):`, r.error);
-    }
-    return null;
-  }
-  const out = String(r.out || "").trim();
-  return out.length > 40 ? out : null;
-}
+async function getBrowserPageText(...a) { return d.getBrowserPageText(...a); }
 
 // Decode base64 JSON payloads from browser JS (same pattern as browserAct).
-function decodeBrowserJsPayload(out) {
-  if (!out) return null;
-  try {
-    const json = Buffer.from(String(out).trim(), "base64").toString("utf8");
-    return JSON.parse(json);
-  } catch {
-    return null;
-  }
-}
+function decodeBrowserJsPayload(...a) { return d.decodeBrowserJsPayload(...a); }
 
 // Flattened full-document text as base64 JSON — avoids osascript truncating
 // multiline return values (the bug behind ~400-char "full page" scrapes).
 // No double quotes or backslashes — AppleScript-safe (same rule as browserAct).
-const READ_FULL_PAGE_TEXT_JS =
-  "(function(){var root=document.querySelector('main')||document.querySelector('article')||document.body;" +
-  "var raw=(document.title||'')+String.fromCharCode(10)+(root?(root.innerText||root.textContent||''):'');" +
-  "var t=(''+raw).split(String.fromCharCode(10)).join(' ').split(String.fromCharCode(13)).join(' ')" +
-  ".split(String.fromCharCode(9)).join(' ');" +
-  "while(t.indexOf('  ')>=0)t=t.split('  ').join(' ');t=t.trim().slice(0,24000);" +
-  "return btoa(unescape(encodeURIComponent(JSON.stringify({t:t,y:Math.floor(window.scrollY||0)," +
-  "h:Math.max(document.body.scrollHeight,document.documentElement.scrollHeight)||0," +
-  "vh:Math.floor(window.innerHeight||800)}))));})()";
 
-async function readBrowserFullPageTextOnce(appName) {
-  const r = await evalBrowserJs(appName, READ_FULL_PAGE_TEXT_JS, 8000);
-  if (r.error || !r.out) return { error: r.error || "empty", text: "", y: 0, h: 0, vh: 800 };
-  const payload = decodeBrowserJsPayload(r.out);
-  if (!payload || typeof payload.t !== "string") {
-    // Fallback: plain string (older path / non-base64).
-    const plain = String(r.out || "").trim();
-    return { text: plain, y: 0, h: 0, vh: 800 };
-  }
-  return {
-    text: String(payload.t || "").trim(),
-    y: Number(payload.y) || 0,
-    h: Number(payload.h) || 0,
-    vh: Math.max(Number(payload.vh) || 800, 400),
-  };
-}
+
+async function readBrowserFullPageTextOnce(...a) { return d.readBrowserFullPageTextOnce(...a); }
 
 // Full-page TEXT read of the open tab — no scrolling, no screenshots.
 // Page copy is usually already in the DOM (lazy hooks only gate animations /
 // heavy demos). Base64 return avoids osascript truncating multiline text.
 // HTTP fetch still can't replace this for SPA shells (empty #root).
-async function getBrowserFullPageText(appName) {
-  if (!IS_MAC || !appName) return null;
-  if (automationOk.browsers[appName] === false) return null;
+async function getBrowserFullPageText(...a) { return d.getBrowserFullPageText(...a); }
 
-  const snap = await readBrowserFullPageTextOnce(appName);
-  if (snap.error && !snap.text) {
-    if (snap.error !== "automation_denied" && snap.error !== "unsupported") {
-      console.log(`[scrape] full-page read error (${appName}):`, snap.error);
-    }
-    return getBrowserPageText(appName);
-  }
-  if (snap.text && snap.text.length > 40) {
-    console.log(`[scrape] OK (full-page text) — ${snap.text.length} chars`);
-    return snap.text;
-  }
-  return getBrowserPageText(appName);
-}
+async function navigateBrowserTab(...a) { return d.navigateBrowserTab(...a); }
 
-async function navigateBrowserTab(appName, url) {
-  if (!IS_MAC || !appName || !url) return { ok: false, error: "unsupported" };
-  if (automationOk.browsers[appName] === false) return { ok: false, error: "automation_denied" };
-  const safeUrl = String(url).trim().replace(/"/g, "");
-  if (!/^https?:\/\//i.test(safeUrl)) return { ok: false, error: "invalid_url" };
-  const isSafari = /^Safari/.test(appName);
-  const script = isSafari
-    ? `tell application "${appName}" to set URL of current tab of front window to "${safeUrl}"`
-    : `tell application "${appName}" to set URL of active tab of front window to "${safeUrl}"`;
-  const run = () => runOsascript(script, 6000);
-  const r =
-    automationOk.browsers[appName] === true
-      ? await run()
-      : await withPermissionPrompt(`automation-nav:${appName}`, run);
-  if (r.error) {
-    if (isAutomationDeniedError(r.error)) automationOk.browsers[appName] = false;
-    return { ok: false, error: r.error };
-  }
-  automationOk.browsers[appName] = true;
-  return { ok: true };
-}
-
-async function waitForBrowserUrl(appName, wantUrl, { timeoutMs = 9000 } = {}) {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  let wantPath = "";
-  try {
-    wantPath = new URL(wantUrl).pathname.replace(/\/$/, "") || "/";
-  } catch {
-    return false;
-  }
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const cur = await readBrowserFrontTabUrl(appName, { allowPrompt: false });
-    if (cur) {
-      try {
-        const p = new URL(cur).pathname.replace(/\/$/, "") || "/";
-        if (p === wantPath) return true;
-      } catch {
-        /* keep waiting */
-      }
-    }
-    await sleep(250);
-  }
-  return false;
-}
+async function waitForBrowserUrl(...a) { return d.waitForBrowserUrl(...a); }
 
 /**
  * If the user asks about another page on the same site (Download, Pricing…),
  * resolve an absolute URL. Uses recent chat history for short "check it" follow-ups.
  */
-function resolveLinkedSitePage(userText, currentUrl, history) {
-  let t = String(userText || "").trim();
-  if (!t) return null;
-  if (/^(ok[,.]?\s+)?(check|look at|review|open|see|read)\s+it[.!?]*$/i.test(t) && Array.isArray(history)) {
-    const recent = history
-      .slice(-8)
-      .map((h) => String(h?.content || h?.text || h?.message || ""))
-      .join(" ");
-    t = `${recent} ${t}`;
-  }
-  let origin = "";
-  let currentPath = "";
-  try {
-    const u = new URL(String(currentUrl || "").trim());
-    if (!/^https?:$/i.test(u.protocol)) return null;
-    origin = u.origin;
-    currentPath = u.pathname.replace(/\/$/, "") || "/";
-  } catch {
-    return null;
-  }
+function resolveLinkedSitePage(...a) { return d.resolveLinkedSitePage(...a); }
 
-  const aliases = [
-    {
-      path: "/download",
-      re: /\b(?:download(?:s)?\s+page|page\s+for\s+downloads?|(?:check|review|open|visit|go to|look at|see|read)\s+(?:the\s+)?download(?:s)?(?:\s+page)?)\b/i,
-    },
-    {
-      path: "/pricing",
-      re: /\b(?:pricing\s+page|(?:check|review|open|visit|go to|look at|see|read)\s+(?:the\s+)?pricing(?:\s+page)?)\b/i,
-    },
-    {
-      path: "/news",
-      re: /\b(?:news\s+page|(?:check|review|open|visit|go to|look at|see|read)\s+(?:the\s+)?(?:news|blog)(?:\s+page)?)\b/i,
-    },
-    {
-      path: "/support",
-      re: /\b(?:support\s+page|(?:check|review|open|visit|go to|look at|see|read)\s+(?:the\s+)?support(?:\s+page)?)\b/i,
-    },
-    {
-      path: "/privacy",
-      re: /\b(?:privacy\s+(?:page|policy)|(?:check|review|open|visit|go to|look at|see|read)\s+(?:the\s+)?privacy(?:\s+(?:page|policy))?)\b/i,
-    },
-    {
-      path: "/terms",
-      re: /\b(?:terms(?:\s+of\s+service)?\s+page|(?:check|review|open|visit|go to|look at|see|read)\s+(?:the\s+)?terms(?:\s+of\s+service)?)\b/i,
-    },
-    {
-      path: "/",
-      re: /\b(?:home\s*page|landing\s*page|(?:check|review|open|visit|go to|look at|see|read)\s+(?:the\s+)?(?:home|landing)(?:\s+page)?)\b/i,
-    },
-  ];
-
-  for (const a of aliases) {
-    if (!a.re.test(t)) continue;
-    const normalized = a.path.replace(/\/$/, "") || "/";
-    if (normalized === currentPath) return null;
-    return a.path === "/" ? `${origin}/` : `${origin}${a.path}`;
-  }
-
-  const pathHit = t.match(
-    /\b(?:https?:\/\/(?:www\.)?lykn\.io)?(\/(?:download|pricing|news|support|privacy|terms|product)(?:\/[\w-]*)?)\b/i,
-  );
-  if (pathHit) {
-    const p = pathHit[1].replace(/\/$/, "") || "/";
-    if (p === currentPath) return null;
-    try {
-      return new URL(pathHit[1], origin).toString();
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-function decodeHtmlEntities(s) {
-  if (!s) return "";
-  return String(s)
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#0?39;|&apos;/gi, "'")
-    .replace(/&#(\d+);/g, (_, n) => {
-      try {
-        return String.fromCodePoint(parseInt(n, 10));
-      } catch {
-        return "";
-      }
-    })
-    .replace(/&#x([0-9a-f]+);/gi, (_, n) => {
-      try {
-        return String.fromCodePoint(parseInt(n, 16));
-      } catch {
-        return "";
-      }
-    });
-}
+function decodeHtmlEntities(...a) { return d.decodeHtmlEntities(...a); }
 
 // Fetch a web page and extract its readable text. Best-effort HTML→text with no
 // dependencies: drop scripts/styles/nav chrome, prefer <article>/<main> content,
 // strip tags, decode entities, collapse whitespace, and cap the length.
-async function scrapePageText(url) {
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 9000);
-    let res;
-    try {
-      // SSRF-safe: DNS + private-IP deny, re-check every redirect hop.
-      res = await safeFetchMain(url, {
-        signal: ctrl.signal,
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-          Accept: "text/html,application/xhtml+xml",
-        },
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!res || !res.ok) return null;
-    const ctype = res.headers.get("content-type") || "";
-    if (!/text\/html|application\/xhtml/i.test(ctype)) return null;
-
-    let html = await res.text();
-    const titleM = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-    const title = titleM ? decodeHtmlEntities(titleM[1]).replace(/\s+/g, " ").trim() : "";
-
-    // Strip non-content elements before extracting text.
-    html = html
-      .replace(/<!--[\s\S]*?-->/g, " ")
-      .replace(/<script[\s\S]*?<\/script>/gi, " ")
-      .replace(/<style[\s\S]*?<\/style>/gi, " ")
-      .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
-      .replace(/<svg[\s\S]*?<\/svg>/gi, " ")
-      .replace(/<(nav|header|footer|aside|form)[\s\S]*?<\/\1>/gi, " ");
-
-    // Prefer the main article body when the page marks one up.
-    const main =
-      html.match(/<article[^>]*>([\s\S]*?)<\/article>/i) ||
-      html.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
-    const source = main ? main[1] : html;
-
-    const text = decodeHtmlEntities(
-      source
-        .replace(/<\/(p|div|li|h[1-6]|tr|section)>/gi, "\n")
-        .replace(/<br\s*\/?>/gi, "\n")
-        .replace(/<[^>]+>/g, " "),
-    )
-      .replace(/[ \t\f\v]+/g, " ")
-      .replace(/\n\s*\n\s*\n+/g, "\n\n")
-      .replace(/^[ \t]+|[ \t]+$/gm, "")
-      .trim();
-
-    if (!text) return null;
-    return { url, title, text: text.slice(0, 12000) };
-  } catch {
-    return null;
-  }
-}
+async function scrapePageText(...a) { return d.scrapePageText(...a); }
 
 // Pull the YouTube video id from a watch / youtu.be / shorts / embed URL.
-function parseYouTubeId(url) {
-  try {
-    const u = new URL(url);
-    const host = u.hostname.replace(/^www\./, "");
-    if (host === "youtu.be") return u.pathname.slice(1).split("/")[0] || null;
-    if (host === "youtube.com" || host === "m.youtube.com" || host === "music.youtube.com") {
-      if (u.pathname === "/watch") return u.searchParams.get("v");
-      const m = u.pathname.match(/^\/(shorts|embed|live|v)\/([^/?#]+)/);
-      if (m) return m[2];
-    }
-  } catch {
-    /* not a URL */
-  }
-  return null;
-}
+function parseYouTubeId(...a) { return d.parseYouTubeId(...a); }
 
 // Fetch the transcript from INSIDE the user's tab. YouTube now binds timedtext
 // URLs to the originating session/IP, so a server fetch returns empty — but an
 // in-page fetch uses the user's own session and works. AppleScript can't await a
 // promise, so we kick off the fetch (stashing the result on window.__lyknYT) and
 // then poll for it.
-async function getBrowserYouTubeTranscript(appName) {
-  if (!appName) return null;
-  const isSafari = /^Safari/.test(appName);
-  const wrap = (js) =>
-    isSafari
-      ? `tell application "${appName}" to do JavaScript "${js}" in current tab of front window`
-      : `tell application "${appName}" to execute active tab of front window javascript "${js}"`;
-
-  // No double quotes or backslashes in this JS (it embeds in an AppleScript
-  // double-quoted string). json3 captions parse cleanly into events[].segs[].
-  const kick =
-    "(function(){try{var r=window.ytInitialPlayerResponse;" +
-    "var tt=r&&r.captions&&r.captions.playerCaptionsTracklistRenderer&&r.captions.playerCaptionsTracklistRenderer.captionTracks;" +
-    "if(!tt||!tt.length){window.__lyknYT={status:'notracks'};return 'notracks';}" +
-    "var en=tt.filter(function(t){return /^en/i.test(t.languageCode||'')&&t.kind!=='asr';});" +
-    "var en2=tt.filter(function(t){return /^en/i.test(t.languageCode||'');});" +
-    "var pick=en[0]||en2[0]||tt[0];var u=pick.baseUrl;" +
-    "if(u.indexOf('fmt=')<0){u+=(u.indexOf('?')<0?'?':'&')+'fmt=json3';}" +
-    "window.__lyknYT={status:'loading',title:document.title};" +
-    "fetch(u).then(function(x){return x.text();}).then(function(txt){var out='';" +
-    "try{var j=JSON.parse(txt);if(j&&j.events){out=j.events.map(function(e){return (e.segs||[]).map(function(s){return s.utf8||'';}).join('');}).join(' ');}}catch(e){out=txt;}" +
-    "window.__lyknYT={status:'done',title:document.title,text:(out||'').slice(0,20000)};})" +
-    ".catch(function(e){window.__lyknYT={status:'error'};});return 'started';}" +
-    "catch(e){window.__lyknYT={status:'error'};return 'error';}})()";
-
-  const start = await runOsascript(wrap(kick), 6000);
-  if (start.error) {
-    if (/turned off|Allow JavaScript|Apple Events/i.test(start.error)) {
-      console.log(
-        `[scrape] yt: live-DOM JS off for ${appName} — enable "Allow JavaScript from Apple Events".`,
-      );
-    } else {
-      console.log("[scrape] yt kick error:", start.error);
-    }
-    return null;
-  }
-  if (/notracks|^error$/.test((start.out || "").trim())) return null;
-
-  const pollJs =
-    "(function(){try{return JSON.stringify(window.__lyknYT||null);}catch(e){return '';}})()";
-  for (let i = 0; i < 18; i++) {
-    await new Promise((r) => setTimeout(r, 350));
-    const p = await runOsascript(wrap(pollJs), 4000);
-    if (p.error || !p.out) continue;
-    let obj = null;
-    try {
-      obj = JSON.parse(p.out);
-    } catch {
-      continue;
-    }
-    if (!obj) continue;
-    if (obj.status === "done" && obj.text) {
-      const text = String(obj.text).replace(/\s+/g, " ").trim();
-      if (text) return { title: obj.title || "", text: text.slice(0, 16000) };
-      return null;
-    }
-    if (obj.status === "error" || obj.status === "notracks") return null;
-  }
-  return null;
-}
+async function getBrowserYouTubeTranscript(...a) { return d.getBrowserYouTubeTranscript(...a); }
 
 // Parse YouTube timedtext payloads — json3 (preferred) or legacy XML.
-function parseYouTubeCaptionBody(body) {
-  const raw = String(body || "").trim();
-  if (!raw) return "";
-  try {
-    const j = JSON.parse(raw);
-    if (j && Array.isArray(j.events)) {
-      const text = j.events
-        .map((e) => (e.segs || []).map((s) => s.utf8 || "").join(""))
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (text) return text;
-    }
-  } catch {
-    /* not json3 — try XML below */
-  }
-  const parts = [...raw.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)].map((m) =>
-    decodeHtmlEntities(m[1].replace(/<[^>]+>/g, " ")),
-  );
-  return parts.join(" ").replace(/\s+/g, " ").trim();
-}
+function parseYouTubeCaptionBody(...a) { return d.parseYouTubeCaptionBody(...a); }
 
 /** Explicit ask to spend Whisper on video audio — not ordinary "what's this about?". */
-function overlayMessageWantsVideoTranscribe(msg) {
-  const t = String(msg || "");
-  if (!t.trim()) return false;
-  return (
-    /\b(?:transcribe(?:\s+(?:this|the|it|video|audio|that))?|transcription)\b/i.test(t) ||
-    /\b(?:full\s+transcript|(?:get|fetch|pull|download|grab)\s+(?:me\s+)?(?:the\s+)?transcript)\b/i.test(t) ||
-    /\b(?:from\s+(?:the\s+)?(?:spoken\s+)?audio|whisper\s+(?:it|this|the\s+video))\b/i.test(t)
-  );
-}
+function overlayMessageWantsVideoTranscribe(...a) { return d.overlayMessageWantsVideoTranscribe(...a); }
 
 // Captions-only by default (in-tab → timedtext → API fast). Whisper is slow and
 // opt-in — only when the user explicitly asks to transcribe.
-async function fetchYouTubeTranscriptViaApi(videoId, { onStatus, allowWhisper } = {}) {
-  const token = await getAuthToken().catch(() => null);
-  if (!token) {
-    console.log("[scrape] yt api transcript skipped — no auth token");
-    return null;
-  }
-  const headers = { Authorization: `Bearer ${token}` };
-  const pull = async (qs, status) => {
-    if (status) {
-      try { onStatus?.(status); } catch { /* ignore */ }
-    }
-    const res = await fetch(
-      `${API_BASE}/api/youtube/transcript?id=${encodeURIComponent(videoId)}${qs}`,
-      { headers },
-    );
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}));
-      console.log(
-        `[scrape] yt api transcript HTTP ${res.status}:`,
-        errBody?.error || res.statusText,
-      );
-      return null;
-    }
-    return res.json().catch(() => null);
-  };
-
-  try {
-    // Fast captions-only pass first.
-    let data = await pull("&fast=1", "Reading the video transcript…");
-    let text = String(data?.transcript || "").trim();
-    let source = String(data?.source || "").toLowerCase();
-
-    // Whisper only when the user explicitly asked — never auto on caption miss.
-    if (
-      allowWhisper &&
-      (!text || source === "description_fallback") &&
-      source !== "whisper_full"
-    ) {
-      data = await pull(
-        "&retryWhisper=1",
-        "No captions found — transcribing the video audio…",
-      );
-      text = String(data?.transcript || "").trim();
-      source = String(data?.source || "").toLowerCase();
-    } else if (
-      !allowWhisper &&
-      (!text || source === "description_fallback")
-    ) {
-      console.log("[scrape] yt api: no captions — skipping Whisper (not requested)");
-    }
-
-    // Still only a description → don't pretend we have spoken content.
-    if (!text || source === "description_fallback") return null;
-
-    return {
-      title: "",
-      text: text.slice(0, 16000),
-      source,
-    };
-  } catch (e) {
-    console.log("[scrape] yt api transcript error:", e?.message || e);
-    return null;
-  }
-}
+async function fetchYouTubeTranscriptViaApi(...a) { return d.fetchYouTubeTranscriptViaApi(...a); }
 
 // Fetch a YouTube video's caption transcript. Tries the in-page method first
 // (reliable, uses the user's session), then a local timedtext fetch, then the
 // LYKN backend captions path. Whisper only when allowWhisper is set.
-async function fetchYouTubeTranscript(videoId, appName, { onStatus, allowWhisper } = {}) {
-  const inPage = await getBrowserYouTubeTranscript(appName);
-  if (inPage && inPage.text) {
-    console.log("[scrape] yt transcript via live tab");
-    return inPage;
-  }
-
-  let title = "";
-  let tracks = null;
-
-  // 1) Live tab — most reliable (bypasses YouTube's bot checks).
-  if (appName && !/^Safari/.test(appName)) {
-    const js =
-      "(function(){try{var r=window.ytInitialPlayerResponse;" +
-      "var t=r&&r.captions&&r.captions.playerCaptionsTracklistRenderer&&r.captions.playerCaptionsTracklistRenderer.captionTracks;" +
-      "return JSON.stringify({title:document.title,tracks:t||[]});}catch(e){return '';}})()";
-    const r = await runOsascript(
-      `tell application "${appName}" to execute active tab of front window javascript "${js}"`,
-      6000,
-    );
-    if (!r.error && r.out) {
-      try {
-        const parsed = JSON.parse(r.out);
-        title = parsed.title || "";
-        if (Array.isArray(parsed.tracks) && parsed.tracks.length) tracks = parsed.tracks;
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-
-  // 2) Fallback: fetch the watch page HTML and regex out the caption tracks.
-  if (!tracks) {
-    try {
-      const res = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-          "Accept-Language": "en-US,en;q=0.9",
-        },
-      });
-      const html = await res.text();
-      if (!title) {
-        const tm = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-        if (tm) title = decodeHtmlEntities(tm[1]).replace(/\s*-\s*YouTube\s*$/, "").trim();
-      }
-      const m = html.match(/"captionTracks":(\[.*?\])(?:,"audioTracks"|,"translationLanguages"|\})/);
-      if (m) {
-        try {
-          tracks = JSON.parse(m[1].replace(/\\u0026/g, "&"));
-        } catch {
-          /* ignore */
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-  }
-
-  if (Array.isArray(tracks) && tracks.length) {
-    // Prefer a manually-authored English track, then any English, then the first.
-    const pick =
-      tracks.find((t) => /^en/i.test(t.languageCode || "") && t.kind !== "asr") ||
-      tracks.find((t) => /^en/i.test(t.languageCode || "")) ||
-      tracks[0];
-    let baseUrl = pick && pick.baseUrl;
-    if (baseUrl) {
-      baseUrl = baseUrl.replace(/\\u0026/g, "&");
-      if (baseUrl.indexOf("fmt=") < 0) {
-        baseUrl += (baseUrl.indexOf("?") < 0 ? "?" : "&") + "fmt=json3";
-      }
-      try {
-        const res = await fetch(baseUrl, {
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
-              "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-          },
-        });
-        const text = parseYouTubeCaptionBody(await res.text());
-        if (text) {
-          console.log("[scrape] yt transcript via timedtext");
-          return { title, text: text.slice(0, 16000) };
-        }
-      } catch {
-        /* fall through to API */
-      }
-    }
-  }
-
-  // 3) LYKN backend captions (fast). Whisper only if the user asked to transcribe.
-  const viaApi = await fetchYouTubeTranscriptViaApi(videoId, { onStatus, allowWhisper });
-  if (viaApi && viaApi.text) {
-    console.log(`[scrape] yt transcript via API (${viaApi.source || "unknown"})`);
-    if (title && !viaApi.title) viaApi.title = title;
-    return viaApi;
-  }
-
-  return title ? { title, text: "" } : null;
-}
+async function fetchYouTubeTranscript(...a) { return d.fetchYouTubeTranscript(...a); }
 
 let overlayAskGeneration = 0;
 let overlayAskAbort = null;
@@ -6581,450 +5251,28 @@ let overlayAskAbort = null;
 // the project the user was just looking at, instead of landing unfiled.
 let overlayActiveProjectId = null;
 
-async function extractReactArtifactCodeFromHtml(html) {
-  const m =
-    /<script id="lykn-artifact-source" type="application\/json">([\s\S]*?)<\/script>/.exec(
-      String(html || ""),
-    );
-  if (!m) return "";
-  try {
-    const code = JSON.parse(m[1]);
-    return typeof code === "string" ? code : "";
-  } catch {
-    return "";
-  }
-}
+async function extractReactArtifactCodeFromHtml(...a) { return d.extractReactArtifactCodeFromHtml(...a); }
 
-async function extractReactArtifactCodeFromResult(result) {
-  if (typeof result?.artifact_code === "string" && result.artifact_code.trim()) {
-    return result.artifact_code;
-  }
-  const url = pickArtifactUrl(result);
-  if (!url) return "";
-  // Glass-local vault materialization.
-  if (/^lykn-artifact:\/\//i.test(url)) {
-    try {
-      const key = new URL(url).hostname.replace(/\/$/, "");
-      return extractReactArtifactCodeFromHtml(artifactHtmlCache.get(key) || "");
-    } catch {
-      return "";
-    }
-  }
-  if (!/^https?:\/\//i.test(url)) return "";
-  try {
-    const res = await fetchOverlayMedia(url);
-    if (!res || !res.ok) return "";
-    return extractReactArtifactCodeFromHtml(await res.text());
-  } catch {
-    return "";
-  }
-}
+async function extractReactArtifactCodeFromResult(...a) { return d.extractReactArtifactCodeFromResult(...a); }
 
 // Pull a LYKN project UUID out of a workspace URL like
 // "https://lykn.io/projects/<uuid>" or "http://localhost:5174/projects/<uuid>".
 // Returns null for any other page (vault, settings, non-LYKN sites).
-function extractLyknProjectId(url) {
-  const m = /\/projects\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(
-    String(url || ""),
-  );
-  return m ? m[1] : null;
-}
+function extractLyknProjectId(...a) { return d.extractLyknProjectId(...a); }
 
-function isRetryableStreamError(err) {
-  const msg = String(err?.message || err || "").toLowerCase();
-  return (
-    /terminated|econnreset|econnrefused|socket hang up|network|fetch failed|aborted|unexpected end|broken pipe|reset by peer/.test(
-      msg,
-    ) && !/sign in|not authenticated|401|403|429/.test(msg)
-  );
-}
+function isRetryableStreamError(...a) { return d.isRetryableStreamError(...a); }
 
-function humanizeStreamError(err, { forceImage = false } = {}) {
-  const msg = String(err?.message || err || "").trim();
-  // Never surface the old "trouble connecting" / "Request failed:" framing —
-  // stalls during image gen looked like a dead network when the provider
-  // was still working.
-  if (
-    /trouble connecting|didn't work — try again|Couldn't create that image/i.test(msg)
-  ) {
-    return forceImage
-      ? "Couldn't create that image — try again in a moment."
-      : "That didn't work — try again in a moment.";
-  }
-  if (/terminated|econnreset|socket hang up|broken pipe|reset by peer/i.test(msg)) {
-    return forceImage
-      ? "Couldn't create that image — try again in a moment."
-      : "That didn't work — try again in a moment.";
-  }
-  if (/aborted/i.test(msg)) return "Request was cancelled.";
-  // Only reached after the automatic refresh-and-retry also failed, so the
-  // session really is gone (signed out elsewhere / refresh token revoked).
-  if (/\(401\)/.test(msg)) {
-    return "Your LYKN session expired. Open the main LYKN window to sign back in, then try again.";
-  }
-  // Monthly plan quota (checkAiUsageLimit) — keep the server's wording when
-  // present; otherwise fall back to a clear upgrade nudge.
-  if (/ai_limit_reached|used all .+ (AI )?requests this month/i.test(msg)) {
-    if (/used all .+ requests this month/i.test(msg)) return msg;
-    return "You've used all your LYKN AI requests this month. Upgrade your plan or add a top-up to continue.";
-  }
-  // Burst / provider / express-rate-limit 429 — not "you spammed us", just
-  // temporarily unavailable. Don't retry-spam the same window.
-  if (/\(429\)|rate limit|too many requests|temporarily unavailable/i.test(msg)) {
-    return "LYKN is temporarily unavailable. Please wait a moment and try again.";
-  }
-  if (forceImage) return "Couldn't create that image — try again in a moment.";
-  return msg || "That didn't work — try again in a moment.";
-}
+function humanizeStreamError(...a) { return d.humanizeStreamError(...a); }
 
 /** Turn a non-OK /api/ai/* response into an Error with a useful message. */
-async function errorFromAiResponse(res) {
-  let body = null;
-  try {
-    body = await res.clone().json();
-  } catch {
-    /* ignore parse errors */
-  }
-  if (res.status === 429) {
-    if (body?.error === "ai_limit_reached") {
-      return new Error(
-        body.message ||
-          "You've used all your LYKN AI requests this month. Upgrade your plan or add a top-up to continue.",
-      );
-    }
-    return new Error("LYKN backend error (429).");
-  }
-  if (body?.message && typeof body.message === "string" && body.message.trim()) {
-    return new Error(body.message.trim());
-  }
-  if (body?.error && typeof body.error === "string" && body.error.trim()) {
-    return new Error(body.error.trim());
-  }
-  return new Error(`LYKN backend error (${res.status}).`);
-}
+async function errorFromAiResponse(...a) { return d.errorFromAiResponse(...a); }
 
 /** Glass: only render vault Open/image cards when the user asked for saved stuff. */
-function overlayUserWantsVaultSurface(userText, history) {
-  const t = String(userText || "").trim();
-  if (!t) return false;
-  // Require an explicit vault/saved cue — bare "my notes" while Notes is open
-  // is screen talk, not a Vault surface ask.
-  const saved =
-    /\b(?:vault|saved|artifact|artifacts|from\s+(?:my\s+)?(?:vault|notion|drive|gmail|readwise)|what\s+(?:have|did)\s+i\s+save|something\s+i\s+saved|what\s+i\s+saved)\b/i.test(
-      t,
-    );
-  const view =
-    /\b(show|see|view|open|pull\s*(?:up|in)|bring\s*(?:up|in)|display|load|find|grab)\b/i.test(t);
-  if (saved && view) return true;
-  if (
-    /\b(?:show|see|open|pull|bring|display|load)\b.{0,48}\b(?:vault|saved|artifact|artifacts)\b/i.test(
-      t,
-    )
-  ) {
-    return true;
-  }
-  if (
-    /\b(?:show|see|open|pull|bring|display|load)\b.{0,48}\b(?:my|the|that|those)\b.{0,24}\b(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|links?|articles?)\b/i.test(
-      t,
-    ) &&
-    /\b(?:vault|saved)\b/i.test(t)
-  ) {
-    return true;
-  }
-  if (/^(?:\s*(?:yes|yep|yeah|yup|sure|ok|okay|k|please|do\s*it|go(?:\s*ahead)?)\b[\s.,!]*)+$/i.test(t)) {
-    const turns = Array.isArray(history) ? history : [];
-    for (let i = turns.length - 1; i >= 0; i--) {
-      const m = turns[i];
-      if (m?.role !== "assistant") continue;
-      return /\b(pull\s*(?:them|those|it|up|in)|bring\s*(?:them|those|it|up|in)|want\s*me\s*to\s*(?:pull|show|bring)|in\s*(?:your\s*)?vault|saved\s*(?:note|notes|item|items|image|images))\b/i.test(
-        String(m.content || ""),
-      );
-    }
-  }
-  return false;
-}
+function overlayUserWantsVaultSurface(...a) { return d.overlayUserWantsVaultSurface(...a); }
 
-async function readOverlayStreamResponse(res, send, opts = {}) {
-  const allowVaultSurface = opts.allowVaultSurface === true;
-  const ctype = res.headers.get("content-type") || "";
-  if (!res.ok || !res.body) {
-    throw await errorFromAiResponse(res);
-  }
+async function readOverlayStreamResponse(...a) { return d.readOverlayStreamResponse(...a); }
 
-  if (!ctype.includes("text/event-stream")) {
-    const data = await res.json().catch(() => null);
-    const raw = data?.response || data?.answer || data?.text || "";
-    const answer = stripHiddenTags(raw);
-    if (answer.trim()) send("lykn:answer-delta", { text: answer });
-    return answer;
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  let accumulated = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const lines = buf.split("\n");
-    buf = lines.pop() || "";
-    for (const line of lines) {
-      const t = line.trim();
-      if (!t.startsWith("data:")) continue;
-      const payload = t.slice(t.indexOf(":") + 1).trim();
-      if (!payload || payload === "[DONE]") continue;
-      try {
-        const j = JSON.parse(payload);
-        if (typeof j.t === "string") {
-          accumulated += j.t;
-          // Trim any unfinished "[[..." tail so a half-received tag never
-          // flashes in the bubble (stripHiddenTags handles completed tags).
-          send("lykn:answer-delta", {
-            text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
-          });
-        } else if (typeof j.status === "string" && j.status.trim()) {
-          send("lykn:answer-status", { status: j.status.trim() });
-        } else if (Array.isArray(j.sources) && j.sources.length) {
-          send("lykn:answer-sources", {
-            sources: j.sources
-              .filter((s) => s && typeof s.url === "string" && s.url.trim())
-              .slice(0, 40)
-              .map((s) => ({
-                title: String(s.title || "Source").trim().slice(0, 160),
-                url: String(s.url).trim(),
-              })),
-          });
-        } else if (j.tool_call && typeof j.tool_call === "object") {
-          const tc = j.tool_call;
-          maybeNotifyProjectsChangedFromTool(tc.name, tc.status, tc.result);
-          if (tc.status === "running") {
-            send("lykn:answer-status", { status: toolStatusLabel(tc.name) });
-          } else if (
-            tc.status === "done" &&
-            /generate_image$/.test(String(tc.name || "")) &&
-            tc.result &&
-            typeof tc.result.image_url === "string" &&
-            /^https?:\/\//.test(tc.result.image_url)
-          ) {
-            // Surface the generated image inline: append it as a standalone
-            // markdown image line, which the overlay's renderer turns into an
-            // <img> card. Living in `accumulated` means it also persists into
-            // the saved session like any other answer text.
-            accumulated += `\n\n![Generated image](${tc.result.image_url})\n\n`;
-            lastOverlayVaultImage = {
-              url: tc.result.image_url,
-              title: "Generated image",
-            };
-            send("lykn:answer-delta", {
-              text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
-            });
-            maybeOpenAgentStageDeliverable(opts, {
-              url: tc.result.image_url,
-              title: "Generated image",
-              kind: "image",
-            });
-            try {
-              opts.onAgentDeliverable?.({
-                kind: "image",
-                title: "Generated image",
-                url: tc.result.image_url,
-              });
-            } catch (_) {}
-            // Do not auto-vault — user must Save or ask the AI to keep it.
-          } else if (
-            tc.status === "done" &&
-            /build_react_artifact$/.test(String(tc.name || "")) &&
-            tc.result
-          ) {
-            // Build mode result: append a lykn_artifact marker line, which the
-            // overlay's renderer turns into a live iframe preview card with an
-            // "Open" affordance. Underscore form survives brand capitalization
-            // (lykn_* is excluded); hyphen form is normalized in stripHiddenTags.
-            const title = String(tc.result.title || "Interactive artifact")
-              .replace(/[\]\n\r]/g, " ")
-              .trim();
-            const fileUrl = resolveToolResultStageUrl(tc.result);
-            if (fileUrl) {
-              accumulated += `\n\n![lykn_artifact:${title}](${fileUrl})\n\n`;
-              send("lykn:answer-delta", {
-                text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
-              });
-              maybeOpenAgentStageDeliverable(opts, {
-                url: fileUrl,
-                title,
-                kind: "artifact",
-              });
-            }
-            // Do not auto-vault — user must Save or ask the AI to keep it.
-            // Cache source for the next refine turn (surgical edits).
-            // Await so Agent Mode can refine this artifact on the next turn.
-            try {
-              const code = await extractReactArtifactCodeFromResult(tc.result);
-              if (code && code.trim()) {
-                lastOverlayReactArtifact = {
-                  toolName: "lykn_build_react_artifact",
-                  title,
-                  code,
-                };
-                try {
-                  opts.onAgentDeliverable?.({
-                    kind: "artifact",
-                    toolName: "lykn_build_react_artifact",
-                    title,
-                    code,
-                    url: fileUrl || "",
-                  });
-                } catch (_) {}
-              }
-            } catch (_) {}
-          } else if (
-            tc.status === "done" &&
-            /render_video$/.test(String(tc.name || "")) &&
-            tc.result &&
-            typeof tc.result.file_url === "string" &&
-            /^https?:\/\//.test(tc.result.file_url)
-          ) {
-            // Remotion render result: a lykn_video marker line becomes an
-            // inline <video> card in the overlay's renderer (playable +
-            // downloadable), persisted in the session like images/artifacts.
-            const title = String(tc.result.title || "Video")
-              .replace(/[\]\n\r]/g, " ")
-              .trim();
-            accumulated += `\n\n![lykn_video:${title}](${tc.result.file_url})\n\n`;
-            send("lykn:answer-delta", {
-              text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
-            });
-            maybeOpenAgentStageDeliverable(opts, {
-              url: tc.result.file_url,
-              title,
-              kind: "video",
-            });
-            // Do not auto-vault — user must Save or ask the AI to keep it.
-          } else if (
-            tc.status === "done" &&
-            /generate_chart$/.test(String(tc.name || "")) &&
-            tc.result &&
-            typeof tc.result.chart_url === "string" &&
-            /^https?:\/\//.test(tc.result.chart_url)
-          ) {
-            // Standalone chart tool (not Build mode): inject a clean markdown
-            // image so Glass renders it — models often mangle the huge
-            // QuickChart URL when pasting it themselves.
-            const title = String(tc.result.title || "Chart")
-              .replace(/[\]\n\r]/g, " ")
-              .trim() || "Chart";
-            accumulated = accumulated
-              .replace(/\n*!\[([^\]]*)\]\(https?:\/\/(?:www\.)?quickchart\.io[^\s)]+\)\n*/gi, "\n")
-              .replace(/^!.*(?:quickchart\.io|%22%2C%22data|bkg=white).*$/gim, "");
-            accumulated += `\n\n![${title}](${tc.result.chart_url})\n\n`;
-            send("lykn:answer-delta", {
-              text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
-            });
-            maybeOpenAgentStageDeliverable(opts, {
-              url: tc.result.chart_url,
-              title,
-              kind: "chart",
-            });
-          } else if (
-            tc.status === "done" &&
-            /generate_diagram$/.test(String(tc.name || "")) &&
-            tc.result
-          ) {
-            // Mermaid fences don't render in Glass — show the Kroki preview
-            // image instead (same pattern as main-chat diagram cards).
-            const preview =
-              (typeof tc.result.preview_url === "string" && tc.result.preview_url) ||
-              (typeof tc.result.kroki_url === "string" && tc.result.kroki_url) ||
-              "";
-            if (/^https?:\/\//.test(preview)) {
-              const title = String(tc.result.title || "Diagram")
-                .replace(/[\]\n\r]/g, " ")
-                .trim() || "Diagram";
-              accumulated = accumulated
-                .replace(/\n*!\[([^\]]*)\]\(https?:\/\/(?:[\w.-]+\.)?kroki\.io[^\s)]+\)\n*/gi, "\n")
-                .replace(/```mermaid[\s\S]*?```/gi, "");
-              accumulated += `\n\n![${title}](${preview})\n\n`;
-              send("lykn:answer-delta", {
-                text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
-              });
-              maybeOpenAgentStageDeliverable(opts, {
-                url: preview,
-                title,
-                kind: "diagram",
-              });
-            }
-          } else if (
-            tc.status === "done" &&
-            tc.result &&
-            /(build_template|build_spreadsheet|manage_file|process_image)$/.test(
-              String(tc.name || ""),
-            )
-          ) {
-            // Other capability artifacts — open in Agent Browser when possible.
-            const title = String(tc.result.title || tc.result.filename || "File")
-              .replace(/[\]\n\r]/g, " ")
-              .trim() || "File";
-            const fileUrl = resolveToolResultStageUrl(tc.result);
-            if (fileUrl) {
-              maybeOpenAgentStageDeliverable(opts, {
-                url: fileUrl,
-                title,
-                kind: "artifact",
-              });
-            }
-          } else if (
-            tc.status === "done" &&
-            tc.result &&
-            /(^lykn_loadNeuron$|loadNeuron$)/.test(String(tc.name || ""))
-          ) {
-            // Vault pull-up only when the user asked for saved stuff this turn
-            // (or confirmed an offer). Blocks random loadNeuron on normal chat.
-            if (allowVaultSurface) {
-              const markers = await overlayVaultMarkersFromToolResult(tc.name, tc.result);
-              if (markers) {
-                accumulated += markers;
-                send("lykn:answer-delta", {
-                  text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
-                });
-              }
-            }
-          } else if (
-            tc.status === "done" &&
-            tc.result &&
-            /(^lykn_loadNeurons$|loadNeurons$)/.test(String(tc.name || ""))
-          ) {
-            if (allowVaultSurface) {
-              const markers = await overlayVaultMarkersFromToolResult(tc.name, tc.result);
-              if (markers) {
-                accumulated += markers;
-                send("lykn:answer-delta", {
-                  text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
-                });
-              }
-            }
-          }
-        } else if (j.error) {
-          throw new Error(String(j.error) || "Stream error.");
-        }
-      } catch (e) {
-        if (e instanceof SyntaxError) continue;
-        throw e;
-      }
-    }
-  }
-  // Also trim from the final text: if the stream died mid-tag, the unfinished
-  // "[[..." fragment must not persist in the saved answer.
-  return trimPartialControlTagTail(stripHiddenTags(accumulated));
-}
-
-function overlayMessageLooksScreenRelated(text) {
-  const t = String(text || "").trim().toLowerCase();
-  if (!t) return false;
-  return /\b(on (my|the) screen|what('| i)?s on|what do you see|do you see|are you seeing|this (page|site|tab|website|article|video|error|message|screen|one|problem|question)|look at|read (this|the|my)|what am i|explain (this|it)|summarize (this|it)|the (question|quiz|problem|error|answer)|fix (this|it)|help me with this|can you see|what is (this|that|on)|what are (these|those)|why (is|does|are)|how (do|does|can)|where (is|are)|who (is|are)|tell me about (this|the|what)|describe (this|the|what)|click|submit|solve (this|it|the)|answer (this|the|it)|is (this|that|it) (right|correct|wrong|good|true|false)|which (one|answer|option|choice)|what should i (pick|choose|select|do)|(next|this) one)\b/.test(
-    t,
-  );
-}
+function overlayMessageLooksScreenRelated(...a) { return d.overlayMessageLooksScreenRelated(...a); }
 
 // Much NARROWER than overlayMessageLooksScreenRelated (which is broad on
 // purpose for the "don't skip the screen" decision): this matches only when
@@ -7033,180 +5281,24 @@ function overlayMessageLooksScreenRelated(text) {
 // in front of them. Used to force the screenshot back on for text-rich pages,
 // which otherwise go text-only for speed — without a screenshot the model
 // can't answer visual / layout questions.
-function overlayMessageWantsScreenTranslate(text) {
-  const t = String(text || "").trim().toLowerCase();
-  // Empty / whitespace-only in Translate mode means "translate the screen".
-  if (!t) return true;
-  if (/\b(on (my|the) screen|my screen|the screen|this (screen|page)|on.?screen|what.?s on)\b/.test(t)) {
-    return true;
-  }
-  if (/\btranslat(e|ion|ing)?\b/.test(t) && /\b(this|that|it|here|everything|all|screen|page)\b/.test(t)) {
-    return true;
-  }
-  if (/^(please\s+)?translat(e|ion)(\s+please)?[.!?]*$/.test(t)) return true;
-  return false;
-}
+function overlayMessageWantsScreenTranslate(...a) { return d.overlayMessageWantsScreenTranslate(...a); }
 
-function overlayMessageWantsVisualGuidance(text) {
-  const t = String(text || "").trim().toLowerCase();
-  if (!t) return false;
-  // "do/can you see...", "are you seeing my screen", "look at this".
-  if (/\b(do|can|are) you see(ing)?\b/.test(t)) return true;
-  if (/\b(on (my|the) screen|look at (my|the|this)|screenshot|read (the |my )?screen)\b/.test(t)) return true;
-  // Translate-the-screen phrasing should keep pixels (or rich page text) in play.
-  if (/\btranslat(e|ion|ing)\b/.test(t) && /\b(screen|page|this|that|here|it|everything)\b/.test(t)) {
-    return true;
-  }
-  // Naming a concrete UI element ("the run button", "that settings icon") is
-  // about LAYOUT — the page text can't answer where it is or whether it shows.
-  if (
-    /\b(button|icon|tab|toolbar|menu|sidebar|panel|modal|dialog|field|input|toggle|checkbox|dropdown|slider)\b/.test(
-      t,
-    )
-  ) {
-    return true;
-  }
-  // Ads / analytics UI nouns — often charts and creatives the scrape misses.
-  if (
-    /\bthe (ad|ads|creative|campaign|graph|chart|plot|preview|audience|bid|budget|metric|ctr|cpc)\b/.test(
-      t,
-    )
-  ) {
-    return true;
-  }
-  // "I don't see / can't find ..." — the user is lost in the UI.
-  if (/\b(don'?t|can'?t|cannot|do not|unable to) (see|find|locate|spot)\b/.test(t)) return true;
-  // Pointing / navigation: the user wants to be SHOWN a spot in the UI.
-  if (
-    /\b(show me|point (me|it|to|at)|guide me|walk me through|where (is|are|do|does|can|should|it)|which one|click|press|tap)\b/.test(
-      t,
-    )
-  ) {
-    return true;
-  }
-  // A how-to anchored to something they're looking at: "how do I run this
-  // migration", "how can I enable that setting".
-  if (/\bhow (do|can|should) i\b/.test(t) && /\b(this|that|these|those|here|it)\b/.test(t)) {
-    return true;
-  }
-  return false;
-}
+function overlayMessageWantsVisualGuidance(...a) { return d.overlayMessageWantsVisualGuidance(...a); }
 
 // Short deictic follow-ups mid-chat ("what about this?", "and that one?")
 // usually point at the screen after a UI change — keep pixels, don't go text-only.
-function overlayMessageLooksScreenDeictic(text) {
-  const t = String(text || "").trim().toLowerCase();
-  if (!t || t.length > 280) return false;
-  if (/\b(compare|vs\.?|versus)\b/.test(t)) return true;
-  if (
-    /\b(this|that|these|those)\b/.test(t) &&
-    /\b(ad|ads|creative|campaign|graph|chart|plot|one|metric|number|result|results|preview|audience|bid|budget|option|setting)\b/.test(
-      t,
-    )
-  ) {
-    return true;
-  }
-  // Bare short deixis with history is almost always about the screen.
-  if (t.length <= 80 && /\b(this|that|these|those|here)\b/.test(t)) return true;
-  return false;
-}
+function overlayMessageLooksScreenDeictic(...a) { return d.overlayMessageLooksScreenDeictic(...a); }
 
-function overlayPageFingerprint(pageContext) {
-  if (!pageContext) return "";
-  const url = String(pageContext.url || "").trim();
-  const title = String(pageContext.title || "").trim();
-  if (!url && !title) return "";
-  // Include a short text head so SPA route changes without URL churn still count.
-  const head = String(pageContext.text || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 180);
-  return `${url}|${title}|${head}`;
-}
+function overlayPageFingerprint(...a) { return d.overlayPageFingerprint(...a); }
 
-function overlayMessageIsPhatic(text) {
-  const t = String(text || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[!?.…,]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!t || t.length > 80) return false;
-  if (overlayMessageLooksScreenRelated(t)) return false;
-  // Emoji-only acknowledgements.
-  if (/^(👍|🙏|🔥|💯|✅|🙌|😂|😄|🤝|👌)+$/.test(t)) return true;
-  // Acknowledgement phrases — a message is phatic when it's made up ONLY of these
-  // (plus a few filler words), so "gotcha thanks", "ok cool thanks so much", and
-  // "ah that makes sense" all count, not just single-word replies.
-  const ackPhrases =
-    /\b(awesome|great|perfect|nice one|nice|cool|thank you|thanks|thx|ty|got ?it|got ?cha|gotcha|gotchu|ok(?:ay)?|kk?|sounds (good|great)|that makes sense|makes sense|that helps|that helped|helpful|appreciate (it|that|you)|love it|wonderful|excellent|good (to know|stuff|call|point|looks)|good|understood|fair enough|sweet|bet|for sure|totally|yep|yup|yeah|yes|right on|exactly|100%|no worries|np|my bad|lol+|haha+|hah|cheers|alright|aight|roger|copy (that)?|all good|will do|word|dope|facts|solid|neat|ditto|same here|same|of course|np)\b/g;
-  const filler = /\b(and|i|you|me|so|then|just|really|very|much|the|a|an|to|know|ya|ah+|oh+|hmm+|well|now|then|man|dude|cool)\b/g;
-  const stripped = t
-    .replace(ackPhrases, " ")
-    .replace(filler, " ")
-    .replace(/[^a-z0-9%]/g, "")
-    .trim();
-  return stripped.length === 0;
-}
+function overlayMessageIsPhatic(...a) { return d.overlayMessageIsPhatic(...a); }
 
-function overlayMessageIsConversationFollowUp(text, history) {
-  if (!Array.isArray(history) || history.length < 1) return false;
-  const msg = String(text || "").trim();
-  if (!msg || overlayMessageLooksScreenRelated(msg)) return false;
-  if (overlayMessageIsPhatic(msg)) return true;
-  // Only skip the screen when the message clearly refers to the PRIOR CONVERSATION.
-  // Bare deictic words ("this", "it", "that") frequently point at the SCREEN, so
-  // they must NOT suppress screen capture on their own — otherwise the AI goes blind
-  // the moment there's any chat history. Require an explicit conversational anchor.
-  if (
-    msg.length <= 220 &&
-    /\b(you (said|mentioned|told me|wrote|asked|meant)|like you said|as you (said|mentioned)|earlier you|before you|your (last |previous )?(answer|reply|response|point)|expand( on)?|elaborate|go deeper|tell me more|more about (that|it|this)|what you (said|meant)|follow[- ]?up|one more thing|rephrase|reword|say (that|it) again|repeat (that|it))\b/i.test(
-      msg,
-    )
-  ) {
-    return true;
-  }
-  return false;
-}
+function overlayMessageIsConversationFollowUp(...a) { return d.overlayMessageIsConversationFollowUp(...a); }
 
 // Site-wide / beyond-viewport asks: the screenshot (and often the live DOM) only
 // covers what's on screen. These need a full-page fetch of the open tab URL —
 // never "paste the link" or "scroll down" when we already know the URL.
-function overlayMessageWantsFullPage(text) {
-  const t = String(text || "").trim().toLowerCase();
-  if (!t) return false;
-  if (
-    /\b(?:rest of|remainder of|other (?:parts?|sections?)|below the fold|further down|whole|entire|full)\b.{0,48}\b(?:page|site|website|web\s?page|landing)\b/.test(
-      t,
-    )
-  ) {
-    return true;
-  }
-  if (
-    /\b(?:page|site|website|web\s?page|landing)\b.{0,48}\b(?:rest|whole|entire|full|other sections?|below)\b/.test(
-      t,
-    )
-  ) {
-    return true;
-  }
-  if (
-    /\b(?:see|read|review|parse|check|look at)\b.{0,32}\b(?:the\s+)?(?:whole|entire|full)\b.{0,32}\b(?:page|site|website)\b/.test(
-      t,
-    )
-  ) {
-    return true;
-  }
-  // Feedback / audit of "the website" — hero screenshot alone is not enough.
-  if (
-    /\b(?:website|web\s?site|landing\s?page|homepage|home\s?page|(?:my|this|the)\s+site)\b/.test(t) &&
-    /\b(?:better|improve|improvement|feedback|review|audit|critique|redesign|sections?|overall|whole|entire|rest)\b/.test(
-      t,
-    )
-  ) {
-    return true;
-  }
-  return false;
-}
+function overlayMessageWantsFullPage(...a) { return d.overlayMessageWantsFullPage(...a); }
 
 // Last successfully scraped Glass tab — used when a follow-up needs the URL
 // even if the live browser target briefly fails to resolve.
@@ -7217,932 +5309,28 @@ let lastOverlayPageTitle = "";
 // conversation about that same page. Factored out of streamScreenAnswer so it can
 // run CONCURRENTLY with the screenshot + auth fetch (it was the slowest serial
 // step). Returns best-effort; never throws.
-async function gatherOverlayPageContext({
-  send,
-  superseded,
-  userText,
-  forceTranscribeVideo,
-  forceFullPage,
-  history,
-} = {}) {
-  let pageContext = null;
-  const wantFullPage = !!forceFullPage || overlayMessageWantsFullPage(userText);
-  try {
-    const target = await getActiveBrowserTarget();
-    console.log(
-      "[scrape] active browser URL:",
-      target ? `${target.url} (${target.appName})` : "(none detected)",
-    );
-    // Fall back to the last Glass tab when the live target blips but the user
-    // is clearly asking about the rest of that site.
-    const fallbackUrl =
-      !target?.url && wantFullPage && lastOverlayPageUrl ? lastOverlayPageUrl : "";
-    let effectiveUrl = (target && target.url) || fallbackUrl;
-    const effectiveApp = target?.appName || null;
-
-    // Same-site page ask ("check the Download page") — navigate, text-scrape,
-    // then return the user to where they were. Never invent that page's content.
-    const linkedUrl = resolveLinkedSitePage(
-      userText,
-      effectiveUrl || lastOverlayPageUrl,
-      history,
-    );
-    let restoredUrl = null;
-    if (linkedUrl && effectiveApp) {
-      restoredUrl = effectiveUrl || lastOverlayPageUrl || null;
-      send("lykn:answer-status", { status: "Opening that page…" });
-      console.log(`[scrape] navigate for linked page: ${linkedUrl}`);
-      const nav = await navigateBrowserTab(effectiveApp, linkedUrl);
-      if (nav.ok) {
-        const ready = await waitForBrowserUrl(effectiveApp, linkedUrl, { timeoutMs: 9000 });
-        if (!ready) await new Promise((r) => setTimeout(r, 600));
-        effectiveUrl = linkedUrl;
-      } else {
-        console.log(`[scrape] navigate failed: ${nav.error}`);
-      }
-    }
-
-    if (effectiveUrl) {
-      // Remember the LYKN project the user is viewing so writes (tasks,
-      // events, project state) scope to it — including on later follow-ups
-      // that skip this scrape.
-      const sniffedProjectId = extractLyknProjectId(effectiveUrl);
-      if (sniffedProjectId) overlayActiveProjectId = sniffedProjectId;
-
-      let title = fallbackUrl && !target?.url ? lastOverlayPageTitle : "";
-      let text = "";
-      let kind = "page";
-      let videoTranscriptMissing = false;
-
-      // YouTube: try captions (fast). Whisper audio transcription is opt-in
-      // only — "transcribe this" / "get the transcript" — not every ask.
-      const ytId = parseYouTubeId(effectiveUrl);
-      if (ytId) {
-        const allowWhisper =
-          !!forceTranscribeVideo || overlayMessageWantsVideoTranscribe(userText);
-        send("lykn:answer-status", {
-          status: allowWhisper
-            ? "Reading / transcribing the video…"
-            : "Reading the video transcript…",
-        });
-        const yt = await fetchYouTubeTranscript(ytId, effectiveApp, {
-          allowWhisper,
-          onStatus: (status) => {
-            if (!superseded()) send("lykn:answer-status", { status });
-          },
-        });
-        if (superseded()) return { pageContext: null, pastPageSection: "" };
-        if (yt && yt.text) {
-          title = yt.title || "";
-          text = yt.text;
-          kind = "video";
-          console.log(`[scrape] OK (yt transcript) — "${title || ytId}" (${text.length} chars)`);
-        } else {
-          console.log("[scrape] no transcript/captions available for video", ytId);
-          if (yt && yt.title) title = yt.title;
-          videoTranscriptMissing = true;
-        }
-      }
-
-      if (text) {
-        // already have video transcript — skip the DOM/HTTP path below
-        pageContext = { url: effectiveUrl, title, text: text.slice(0, 16000), kind };
-        lastOverlayPageUrl = effectiveUrl;
-        lastOverlayPageTitle = title || "";
-        send("lykn:page-source", { url: effectiveUrl, title });
-      } else {
-        const needFullText = wantFullPage || !!linkedUrl;
-        send("lykn:answer-status", {
-          status: needFullText ? "Reading the page text…" : "Reading the page…",
-        });
-        // 1) Live rendered DOM from the user's own tab.
-        // Site-wide / linked-page asks: scroll + accumulate TEXT only (no
-        // screenshots). HTTP fetch of SPA shells like lykn.io is empty.
-        if (effectiveApp) {
-          const live = needFullText
-            ? (await getBrowserFullPageText(effectiveApp)) ||
-              (await getBrowserPageText(effectiveApp))
-            : await getBrowserPageText(effectiveApp);
-          if (live) {
-            const nl = live.indexOf("\n");
-            title = (title || (nl > 0 ? live.slice(0, nl).trim() : "")).trim();
-            text = (nl > 0 ? live.slice(nl + 1) : live)
-              .replace(/[ \t]+/g, " ")
-              .replace(/\n{3,}/g, "\n\n")
-              .trim();
-            console.log(
-              `[scrape] OK (${needFullText ? "full-page DOM" : "live DOM"}) — "${title || "(no title)"}" (${text.length} chars)`,
-            );
-          }
-        }
-        // 2) HTTP fetch — only when live DOM failed, or as a supplement when
-        // site-wide text is still thin (SSR sites). SPA shells stay empty.
-        const THIN_PAGE_CHARS = 800;
-        if (!text || (needFullText && text.length < THIN_PAGE_CHARS)) {
-          const page = await scrapePageText(effectiveUrl);
-          if (page && page.text) {
-            title = title || page.title;
-            if (!text || page.text.length > text.length + 200) {
-              text = page.text;
-              console.log(`[scrape] OK (http) — "${title || "(no title)"}" (${text.length} chars)`);
-            } else {
-              console.log(
-                `[scrape] http shorter than DOM (${page.text.length} vs ${text.length}) — keeping DOM`,
-              );
-            }
-          }
-        }
-        if (text) {
-          pageContext = {
-            url: effectiveUrl,
-            title,
-            text: text.slice(0, needFullText ? 16000 : 12000),
-            // So the prompt can say "we only have the page/description" instead
-            // of the model inventing a fake "transcript fetch error".
-            ...(videoTranscriptMissing ? { videoTranscriptMissing: true } : {}),
-            ...(linkedUrl ? { linkedPage: true } : {}),
-          };
-          lastOverlayPageUrl = effectiveUrl;
-          lastOverlayPageTitle = title || "";
-          send("lykn:page-source", { url: effectiveUrl, title });
-        } else {
-          // Still surface the known URL so the model / server can web_fetch it.
-          if (needFullText) {
-            pageContext = {
-              url: effectiveUrl,
-              title: title || lastOverlayPageTitle || "",
-              text: "",
-              ...(linkedUrl ? { linkedPage: true } : {}),
-            };
-            send("lykn:page-source", { url: effectiveUrl, title: pageContext.title });
-          }
-          console.log("[scrape] failed to extract text from", effectiveUrl);
-        }
-      }
-
-      // Put the user back on the page they were viewing.
-      if (restoredUrl && effectiveApp && linkedUrl && restoredUrl !== linkedUrl) {
-        send("lykn:answer-status", { status: "Returning to your page…" });
-        await navigateBrowserTab(effectiveApp, restoredUrl);
-        // Keep pageContext.url as the linked page we actually read.
-      }
-    }
-  } catch (e) {
-    console.log("[scrape] error:", e && e.message ? e.message : e);
-  }
-
-  // Recall earlier ⌘L conversations the user had on this same page, so LYKN can
-  // pick up where it left off instead of starting cold each visit.
-  let pastPageSection = "";
-  if (pageContext && pageContext.url) {
-    try {
-      const store = await readOverlaySessionsStore();
-      pastPageSection = await buildPastPageConversationSection(
-        normalizeUrlForMatch(pageContext.url),
-        store.currentSessionId,
-      );
-    } catch {
-      /* best-effort */
-    }
-  }
-
-  return { pageContext, pastPageSection };
-}
+async function gatherOverlayPageContext(...a) { return d.gatherOverlayPageContext(...a); }
 
 // Overlay ask pipeline. Deferred from this pass: the function signature uses
 // a destructured parameter object, and a naive brace matcher truncates it.
-async function streamScreenAnswer(event, {
-  text,
-  history,
-  attachments,
-  forceImage,
-  buildMode,
-  deepResearch,
-  translateMode,
-  translateTargetLang,
-  transcribeVideo,
-  scopedProjectId,
-  scopedProjectName,
-}) {
-  const targetLang = String(translateTargetLang || "").trim().slice(0, 64);
-  const wc = event.sender;
-  const askGen = ++overlayAskGeneration;
-  if (overlayAskAbort) {
-    try {
-      overlayAskAbort.abort();
-    } catch {
-      /* ignore */
-    }
-  }
-  overlayAskAbort = new AbortController();
-  const askSignal = overlayAskAbort.signal;
-
-  const send = (channel, payload) => {
-    if (askGen !== overlayAskGeneration) return;
-    if (!wc.isDestroyed()) wc.send(channel, payload);
-  };
-  const superseded = () => askGen !== overlayAskGeneration || askSignal.aborted;
-
-  // Split dropped attachments into images (sent as image inputs) and text files
-  // (inlined into the prompt).
-  const atts = Array.isArray(attachments) ? attachments : [];
-  let imageAtts = atts.filter((a) => a && a.kind === "image" && a.dataUrl);
-  const textAtts = atts.filter((a) => a && a.kind === "text" && a.text);
-  // Image mode with no attach: use the last vault/generated image shown in Glass
-  // so the user can enter Image mode and edit that thing directly.
-  if (
-    forceImage &&
-    imageAtts.length === 0 &&
-    lastOverlayVaultImage &&
-    /^https?:\/\//i.test(String(lastOverlayVaultImage.url || ""))
-  ) {
-    try {
-      const res = await safeFetchMain(lastOverlayVaultImage.url);
-      if (res.ok) {
-        const buf = Buffer.from(await res.arrayBuffer());
-        const mime =
-          (res.headers.get("content-type") || "").split(";")[0].trim() || "image/png";
-        if (buf.length && /^image\//i.test(mime)) {
-          const name =
-            `${String(lastOverlayVaultImage.title || "image")
-              .replace(/[^\w.-]+/g, "-")
-              .slice(0, 40) || "image"}.png`;
-          imageAtts = [
-            {
-              kind: "image",
-              name,
-              dataUrl: `data:${mime};base64,${buf.toString("base64")}`,
-            },
-          ];
-        }
-      }
-    } catch {
-      /* keep empty — Image mode still works as a fresh generate */
-    }
-  }
-  const conversationFollowUp = overlayMessageIsConversationFollowUp(text, history);
-  // Translate-the-screen asks always need fresh page/screen grounding.
-  const screenTranslateAsk =
-    !!translateMode && overlayMessageWantsScreenTranslate(text);
-  // Site-wide / other-page asks need a fresh TEXT scrape — never skip, and
-  // never burn Screen Recording on a stack of scroll screenshots.
-  const wantsFullPage = overlayMessageWantsFullPage(text);
-  const linkedPageHint = resolveLinkedSitePage(
-    text,
-    lastOverlayPageUrl,
-    history,
-  );
-  const textOnlySiteRead = wantsFullPage || !!linkedPageHint;
-  const skipScreenContext =
-    !screenTranslateAsk &&
-    !textOnlySiteRead &&
-    conversationFollowUp &&
-    imageAtts.length === 0 &&
-    textAtts.length === 0;
-  const liveWatchSummary = !skipScreenContext ? getFreshLiveWatchSummary(4000) : "";
-
-  // Screen Recording only when we likely need pixels (explicit visual ask, or
-  // page scrape unavailable). Text-rich / full-page site reads stay text-only.
-  const explicitVisualAskEarly = overlayMessageWantsVisualGuidance(text);
-  const pageScrapeLikelyBlocked =
-    imageAtts.length > 0 ||
-    skipScreenContext ||
-    automationOk.systemEvents === false;
-  const likelyNeedsPixels =
-    !textOnlySiteRead &&
-    !skipScreenContext &&
-    imageAtts.length === 0 &&
-    (explicitVisualAskEarly || pageScrapeLikelyBlocked || screenTranslateAsk);
-  let screenAccess = { ok: true, status: screenCaptureStatus(), prompted: false };
-  if (likelyNeedsPixels) {
-    screenAccess = await ensureScreenRecordingAccess();
-    if (!screenAccess.ok) {
-      send("lykn:answer-error", {
-        message: screenRecordingDeniedMessage(screenAccess),
-      });
-      return;
-    }
-  }
-
-  // Immediate UI feedback while scrape/token run — don't wait for TTFT.
-  if (!skipScreenContext) {
-    send("lykn:answer-status", {
-      status: textOnlySiteRead
-        ? "Reading page text…"
-        : likelyNeedsPixels
-          ? "Reading screen…"
-          : "Reading page…",
-    });
-  } else {
-    send("lykn:answer-status", { status: "Thinking…" });
-  }
-
-  // Auth + page scrape first. Capture ONLY if we still need pixels after scrape
-  // — text-rich browser pages used to pay encode+upload cost for a screenshot
-  // we then threw away. Native apps / thin pages still capture as before.
-  const skipPageScrape =
-    imageAtts.length > 0 ||
-    skipScreenContext ||
-    (!!screenAccess.prompted && !textOnlySiteRead) ||
-    (automationOk.systemEvents === false && !textOnlySiteRead);
-  const pageContextPromise = !skipPageScrape
-    ? gatherOverlayPageContext({
-        send,
-        superseded,
-        userText: text,
-        // Menu → Transcribe video always allows Whisper even if wording is thin.
-        forceTranscribeVideo: !!transcribeVideo,
-        forceFullPage: textOnlySiteRead,
-        history,
-      })
-    : Promise.resolve({ pageContext: null, pastPageSection: "" });
-  const tokenPromise = getAuthToken().catch(() => null);
-  const explicitVisualAsk = explicitVisualAskEarly;
-
-  const [pageBundle, token] = await Promise.all([pageContextPromise, tokenPromise]);
-  if (superseded()) return;
-
-  const pageContext = pageBundle?.pageContext || null;
-  const pastPageSection = pageBundle?.pastPageSection || "";
-
-  if (!token) {
-    send("lykn:answer-error", {
-      message: "Sign in to LYKN first. Open the main LYKN window and log in, then try again.",
-    });
-    return;
-  }
-
-  const hasVideoTranscript = pageContext?.kind === "video" && !!pageContext?.text;
-  // If we scraped substantial page text, the text IS the context — so drop the
-  // screenshot and let the request go text-only. That keeps the backend on the
-  // fast model (no nano→gpt-4.1 vision upgrade) and shrinks the upload to almost
-  // nothing — the single biggest "feels instant" win for reading pages.
-  const RICH_PAGE_TEXT_CHARS = 600;
-  const hasRichPageText =
-    !!pageContext &&
-    pageContext.kind !== "video" &&
-    (pageContext.text?.length || 0) >= RICH_PAGE_TEXT_CHARS;
-  // A message that clearly wants VISUAL help ("do you see this?", "how do I
-  // run this?", "where do I click?") must keep the pixels even when the page
-  // is text-rich — the text-only fast path leaves the model blind to layout.
-  // Page fingerprint changes alone do NOT force a screenshot upload anymore;
-  // that was a common "every navigation feels slow" tax when page text is enough.
-  const pageFingerprint = overlayPageFingerprint(pageContext);
-  const hasChatHistory = Array.isArray(history) && history.length > 0;
-  // Screen-translate: prefer rich page text when available (more accurate than
-  // OCR); otherwise force a screenshot so native apps / thin pages still work.
-  const wantsVisualGuidance =
-    !textOnlySiteRead &&
-    !skipScreenContext &&
-    (explicitVisualAsk ||
-      (screenTranslateAsk && !hasRichPageText) ||
-      (!hasRichPageText && hasChatHistory && overlayMessageLooksScreenDeictic(text)));
-  const shouldCapture =
-    !textOnlySiteRead &&
-    !skipScreenContext &&
-    imageAtts.length === 0 &&
-    !hasVideoTranscript &&
-    !(forceImage && imageAtts.length) &&
-    (wantsVisualGuidance ||
-      (screenTranslateAsk && !hasRichPageText) ||
-      (!hasRichPageText && !liveWatchSummary));
-
-  let dataURL = null;
-  if (shouldCapture && screenCaptureStatus() === "granted") {
-    if (liveWatchSummary && liveWatchLastFrameUrl && !wantsVisualGuidance) {
-      dataURL = liveWatchLastFrameUrl;
-    } else {
-      send("lykn:answer-status", { status: "Reading screen…" });
-      dataURL = await capturePrimaryScreen({
-        maxWidth: 1536,
-        format: "jpeg",
-        quality: 82,
-      }).catch(() => null);
-    }
-  } else if (
-    !skipScreenContext &&
-    !hasRichPageText &&
-    !hasVideoTranscript &&
-    liveWatchSummary &&
-    liveWatchLastFrameUrl &&
-    !wantsVisualGuidance
-  ) {
-    // Thin page + live watch: reuse last frame without a fresh capture.
-    dataURL = liveWatchLastFrameUrl;
-  }
-  if (superseded()) return;
-
-  // Capture failure is only fatal when we have nothing else to ground on.
-  const hasPageGrounding =
-    !!(pageContext && (pageContext.text || pageContext.title || pageContext.url)) ||
-    !!liveWatchSummary ||
-    imageAtts.length > 0 ||
-    textAtts.length > 0;
-  if (shouldCapture && !dataURL && !hasPageGrounding) {
-    send("lykn:answer-error", { message: "Couldn't capture the screen." });
-    return;
-  }
-
-  // Live Watch already ran a recent vision pass — skip the screenshot upload when
-  // there's no scraped page text (games, native apps) to stay fast.
-  // Full-page / linked-page site reads are TEXT-ONLY — never attach a scroll
-  // of screenshots; the accumulated DOM text is the ground truth.
-  let attachScreenshot =
-    !textOnlySiteRead &&
-    !!dataURL &&
-    !hasVideoTranscript &&
-    (wantsVisualGuidance || (!hasRichPageText && !liveWatchSummary));
-  // Image mode with an attached image: the attachment IS the subject being
-  // generated from — a stray screen capture riding along just confuses the
-  // model about which image the user means (and could bleed screen content
-  // into the generation). Drop it; the attachment carries the pixels.
-  if (forceImage && imageAtts.length) attachScreenshot = false;
-  if (!skipScreenContext && pageFingerprint) {
-    lastOverlayPageFingerprint = pageFingerprint;
-  }
-  if (hasRichPageText && !attachScreenshot) {
-    console.log(
-      `[overlay-ask] text-rich page (${pageContext.text.length} chars) — skip screenshot capture/upload, staying on fast model`,
-    );
-  } else if (hasRichPageText && attachScreenshot) {
-    console.log(
-      `[overlay-ask] text-rich page (${pageContext.text.length} chars) but message wants visual guidance — keeping screenshot`,
-    );
-  }
-  // Keep this prompt tiny — server injects LYKN_GLASS_STREAM_PERSONA_SLIM
-  // (voice, vault/project/build gates, markdown). Here we only name the
-  // context modality so the model knows what the attachments/scrapes are.
-  let prompt = skipScreenContext
-    ? "Glass follow-up. Answer the latest message only — no screen re-brief."
-    : hasVideoTranscript
-    ? "Glass: video transcript below is authoritative. Answer from it; don't ask for the link."
-    : attachScreenshot
-    ? "Glass: attached image is the user's screen. Deictic asks ('this'/'that'/'here') → screen. " +
-      "General/small-talk → answer normally, don't narrate the screen. " +
-      OVERLAY_IGNORE_NOTE
-    : hasRichPageText
-    ? "Glass: page text below is your view of their screen. Deictic asks → page. General/small-talk → normal answer."
-    : "Glass: use attached image(s)/files if relevant; otherwise answer normally.";
-  if (deepResearch) {
-    prompt +=
-      "\n\nRESEARCH MODE: Multi-step deep research with citations. Prefer " +
-      "[DEEP_RESEARCH_EVIDENCE] / [RESEARCH_REPORT_INSTRUCTIONS] (or [WEB_SEARCH_RESULTS] " +
-      "fallback). Write a structured report with ## headers, key findings, caveats, then " +
-      "Sources as markdown links. Never invent URLs. Deliver as markdown in the reply ONLY — " +
-      "do NOT call lykn_build_* or create a side-panel artifact/deck. Mentions of pitch/investor " +
-      "are topic framing for this written report, not a Build request.";
-  }
-  if (translateMode) {
-    prompt += targetLang
-      ? `\n\nTRANSLATE MODE: Target language is ${targetLang} — do not ask which language. ` +
-        `If the user typed/dictated text to translate, translate that into ${targetLang}. ` +
-        `If they ask to translate the screen/page (or sent little/no text), translate all readable ` +
-        `on-screen or page text from the screenshot/page content below into ${targetLang}. ` +
-        `Lead with the translation; keep extras minimal.`
-      : "\n\nTRANSLATE MODE: Translate typed/dictated text, or on-screen/page content when they " +
-        "ask to translate the screen (or send little/no text), into the target language they name. " +
-        "If no target language is named, ask once briefly. Lead with the translation; keep extras minimal.";
-  }
-  if (transcribeVideo) {
-    prompt +=
-      "\n\nTRANSCRIBE VIDEO: Provide the spoken content from the transcript below (or say " +
-      "plainly if unavailable). Offer a clean transcript and a short summary.";
-  }
-  if (textAtts.length) {
-    prompt +=
-      "\n\nAttached files:\n" +
-      textAtts
-        .map((a) => `--- ${a.name || "file"} ---\n${String(a.text).slice(0, 8000)}`)
-        .join("\n\n");
-  }
-  if (pageContext && pageContext.kind === "video") {
-    prompt +=
-      "\n\nVideo transcript (authoritative; ignore if ask is unrelated):\n" +
-      `URL: ${pageContext.url}\n` +
-      (pageContext.title ? `Title: ${pageContext.title}\n` : "") +
-      `--- VIDEO TRANSCRIPT ---\n${pageContext.text}\n--- END ---`;
-  } else if (pageContext && pageContext.videoTranscriptMissing) {
-    prompt +=
-      "\n\nYouTube open but no captions/transcript — answer from title/description only; don't invent spoken content. " +
-      "If they need the spoken words, tell them briefly to ask you to \"transcribe\" the video.\n" +
-      `URL: ${pageContext.url}\n` +
-      (pageContext.title ? `Title: ${pageContext.title}\n` : "") +
-      `--- PAGE TEXT (not a transcript) ---\n${pageContext.text}\n--- END ---`;
-  } else if (pageContext) {
-    // When the screenshot rides along (visual-guidance asks), the image is the
-    // primary context — cap the scraped text hard so the prompt stays small
-    // and time-to-first-token stays low. Site-wide / full-page asks keep the
-    // full scrape so "rest of the website" isn't answered from the hero alone.
-    const pageBody =
-      attachScreenshot && !textOnlySiteRead
-        ? String(pageContext.text || "").slice(0, 3000)
-        : pageContext.text;
-    prompt += attachScreenshot
-      ? "\n\nPage open (screenshot primary; text supporting):\n" +
-        `URL: ${pageContext.url}\n` +
-        (pageContext.title ? `Title: ${pageContext.title}\n` : "") +
-        `--- PAGE TEXT ---\n${pageBody}\n--- END ---`
-      : "\n\nPage open (text primary):\n" +
-        `URL: ${pageContext.url}\n` +
-        (pageContext.title ? `Title: ${pageContext.title}\n` : "") +
-        `--- PAGE CONTENT ---\n${pageBody}\n--- END ---`;
-    if (pageContext.url) {
-      prompt +=
-        "\n\nPAGE URL / TEXT above is what you can see. " +
-        "Answer ONLY from that text (and any screenshot if attached). " +
-        "If they ask about a different page whose text is NOT above, do NOT pretend you opened it — " +
-        "say you don't have that page's content yet. Never narrate 'I'm checking X now' without X's text here.";
-    }
-    if (pageContext.linkedPage) {
-      prompt +=
-        "\n\nLINKED PAGE: the PAGE CONTENT above was loaded from the page they asked about " +
-        `(${pageContext.url}). Treat it as authoritative for that page.`;
-    }
-  } else if (textOnlySiteRead && lastOverlayPageUrl) {
-    prompt +=
-      "\n\nOpen tab URL (from earlier Glass scrape — page text unavailable this turn):\n" +
-      `URL: ${lastOverlayPageUrl}\n` +
-      (lastOverlayPageTitle ? `Title: ${lastOverlayPageTitle}\n` : "") +
-      "You do NOT currently have that page's body text. Say so briefly — do not invent the page.";
-  }
-  if (pastPageSection) {
-    prompt +=
-      "\n\nEarlier chats on this page (continuity; ignore if unrelated):\n" +
-      pastPageSection;
-  }
-  if (!skipScreenContext) {
-    const liveSection = getLiveWatchContextSection();
-    if (liveSection) prompt += liveSection;
-  }
-  prompt += `\n\nUser: ${String(text || "").slice(0, 4000)}`;
-
-  // Attach the screenshot only when we actually need it (no video transcript and
-  // no rich page text). Dropping it for text-rich pages keeps the request on the
-  // fast model and avoids a multi-hundred-KB upload.
-  const imageUrls = attachScreenshot
-    ? [dataURL, ...imageAtts.map((a) => a.dataUrl)]
-    : imageAtts.map((a) => a.dataUrl);
-  // Per-turn attachment metadata (same shape the web composer sends): tells
-  // the server which imageUrls entries are USER ATTACHMENTS vs the screen
-  // capture, so tools like lykn_generate_image can use the attached images as
-  // pixel references without ever treating the screenshot as one.
-  const attachmentIndexOffset = attachScreenshot ? 1 : 0;
-  const attachmentsMeta = imageAtts.map((a, i) => ({
-    type: "image",
-    name: a.name || "image",
-    imageIndex: attachmentIndexOffset + i,
-  }));
-
-  const body = {
-    model: "lykn",
-    intent: "ask",
-    text: String(text || "").slice(0, 4000),
-    prompt,
-    imageUrls,
-    // Keep tools available on follow-ups too. skipScreenContext only means "no
-    // fresh screen/page context needed" — it must NOT strip the agent loop, or
-    // action follow-ups ("add a task", "put that on my calendar", "mark it
-    // done") silently no-op while the model claims success. The backend's
-    // casual-turn gate still turns tools off for pure chit-chat.
-    useTools: !hasVideoTranscript,
-    // Web search: Deep research / explicit asks / live-freshness arm Serper.
-    // Everything else stays skipWebSearch for latency — the model can still
-    // call lykn_web_search via the agent loop when needed.
-    // Exclusive Glass composer mode — server locks Create inference in research/
-    // image/translate so "report for a pitch" stays a written research report.
-    ...(deepResearch
-      ? { composerMode: "research" }
-      : forceImage
-        ? { composerMode: "image" }
-        : translateMode
-          ? { composerMode: "translate" }
-          : buildMode
-            ? { composerMode: "create:webapp" }
-            : {}),
-    ...(deepResearch || overlayShouldForceWebSearch(String(text || ""))
-      ? {
-          skipWebSearch: false,
-          forceWebSearch: true,
-          ...(deepResearch ? { deepResearch: true } : {}),
-        }
-      : { skipWebSearch: true }),
-    ...(translateMode
-      ? {
-          translateMode: true,
-          ...(targetLang ? { translateTargetLang: targetLang } : {}),
-        }
-      : {}),
-    // Image mode (menu → "Create an image"): the server forces the
-    // lykn_generate_image tool (GPT Image 2), same as the web app's "+" →
-    // Generate image. Only ever set by an explicit user toggle.
-    ...(forceImage ? { forceImage: true, useTools: true } : {}),
-    // Build mode: refine the last artifact (session build or vault pull-up)
-    // when we have source; otherwise force a fresh React artifact. Only
-    // armed while the composer is in Build mode — normal chat must not
-    // keep patching the last artifact.
-    ...(() => {
-      if (!buildMode) return {};
-      const redesign = OVERLAY_REDESIGN_INTENT_RE.test(String(text || ""));
-      const cached =
-        lastOverlayReactArtifact &&
-        typeof lastOverlayReactArtifact.code === "string" &&
-        lastOverlayReactArtifact.code.trim()
-          ? lastOverlayReactArtifact
-          : null;
-      if (cached && !redesign) {
-        return { activeArtifact: cached, useTools: true };
-      }
-      return { forceArtifact: true, artifactType: "webapp", useTools: true };
-    })(),
-    overlayAsk: true,
-    // Server uses this to strip chart/diagram/webapp builders when the turn
-    // has live screen/page context and no explicit Create/Build ask.
-    overlayScreenContext: !skipScreenContext,
-    // Known open-tab URL + site-wide intent → server keeps web_fetch armed.
-    // Skip server HTTP pre-fetch when the scroll scrape already got rich text —
-    // SPA shells (lykn.io) return empty HTML over HTTP and confuse the model.
-    ...((pageContext?.url || (textOnlySiteRead && lastOverlayPageUrl))
-      ? { pageUrl: String(pageContext?.url || lastOverlayPageUrl).trim() }
-      : {}),
-    ...(textOnlySiteRead
-      ? {
-          forcePageFetch: true,
-          pageTextRich: String(pageContext?.text || "").trim().length >= 800,
-        }
-      : {}),
-    // Explicit project scope from the Glass Projects menu — not ambient URL
-    // sniffing. Server only injects [WHAT_IM_ON] / project tools when scoped
-    // or the user asked about a project in their message.
-    ...(scopedProjectId
-      ? {
-          scopedProjectId: String(scopedProjectId).trim(),
-          projectId: String(scopedProjectId).trim(),
-          ...(scopedProjectName
-            ? { scopedProjectName: String(scopedProjectName).trim().slice(0, 120) }
-            : {}),
-        }
-      : {}),
-    ...(attachmentsMeta.length ? { attachments: attachmentsMeta } : {}),
-    ...(Array.isArray(history) && history.length ? { conversation: history.slice(-8) } : {}),
-  };
-
-  try {
-    let lastErr = null;
-    let bearerToken = token;
-    let authRetried = false;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (superseded()) return;
-      if (attempt > 0) {
-        send("lykn:answer-status", { status: "Retrying…" });
-        await new Promise((r) => setTimeout(r, 700 * attempt));
-      } else {
-        send("lykn:answer-status", { status: hasVideoTranscript ? "Analyzing transcript…" : "Thinking…" });
-      }
-      try {
-        const res = await fetch(`${API_BASE}/api/ai/stream`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${bearerToken}`,
-          },
-          body: JSON.stringify(body),
-          signal: askSignal,
-        });
-        // 401 = the token we grabbed pre-flight was already dead (revoked, or
-        // expired between read and send). Force one real refresh through the
-        // app's Supabase client and retry — this is recoverable, not an error.
-        if (res.status === 401 && !authRetried) {
-          authRetried = true;
-          // Drop the in-memory cache so forceRefresh can't hand us the same
-          // dead JWT again — we need the live Supabase client to mint a new one.
-          cachedAuthToken = null;
-          cachedAuthTokenExpMs = 0;
-          const fresh = await getAuthToken({ forceRefresh: true }).catch(() => null);
-          if (superseded()) return;
-          if (fresh) {
-            bearerToken = fresh;
-            attempt -= 1; // don't burn a network-retry slot on the auth retry
-            continue;
-          }
-          // Refresh really failed (signed out / refresh token revoked).
-          throw new Error("LYKN backend error (401).");
-        }
-        const accumulated = await readOverlayStreamResponse(res, send, {
-          allowVaultSurface: overlayUserWantsVaultSurface(text, history),
-        });
-        if (superseded()) return;
-        send("lykn:answer-done", { text: accumulated });
-        return;
-      } catch (e) {
-        if (superseded()) return;
-        lastErr = e;
-        if (!isRetryableStreamError(e) || attempt >= 2) break;
-        console.log("[overlay-ask] retry after stream error:", e && e.message ? e.message : e);
-      }
-    }
-    send("lykn:answer-error", {
-      message: humanizeStreamError(lastErr, { forceImage: !!forceImage }),
-    });
-  } catch (e) {
-    if (superseded()) return;
-    send("lykn:answer-error", {
-      message: humanizeStreamError(e, { forceImage: !!forceImage }),
-    });
-  }
-}
+async function streamScreenAnswer(...a) { return d.streamScreenAnswer(...a); }
 
 // Capture the current screen and ask the vision model for a short text
 // description. Voice Mode can't receive images, so we feed this summary into the
 // live agent as contextual text — giving voice the same "sees your screen"
 // ability the typed overlay chat has.
-async function captureScreenDescription() {
-  const liveSummary = getFreshLiveWatchSummary(8000);
-  if (liveSummary) return { text: liveSummary, source: "live_watch" };
-
-  const access = await ensureScreenRecordingAccess();
-  console.log("[screen-context] capture status:", access.status);
-  if (!access.ok) return { error: "no_permission", ...access };
-  let dataURL = null;
-  try {
-    dataURL = await capturePrimaryScreen();
-  } catch (e) {
-    console.log("[screen-context] capture threw:", e && e.message);
-    return { error: "capture_failed" };
-  }
-  console.log("[screen-context] dataURL length:", dataURL ? dataURL.length : 0);
-  if (!dataURL) return { error: "capture_failed" };
-
-  const token = await getAuthToken();
-  console.log("[screen-context] has token:", !!token);
-  if (!token) return { error: "not_authenticated" };
-
-  const body = {
-    model: "lykn",
-    intent: "ask",
-    text: "Describe the user's current screen.",
-    prompt:
-      "The attached image is a screenshot of the user's current screen. In 2–4 short " +
-      "sentences, concisely describe what is on screen: the app/website, the page or view, " +
-      "any important visible text, and what the user appears to be doing. Do not greet, " +
-      "ask questions, or add commentary — just the description. " +
-      OVERLAY_IGNORE_NOTE,
-    imageUrls: [dataURL],
-    useTools: false,
-  };
-
-  try {
-    const res = await fetch(`${API_BASE}/api/ai/stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify(body),
-    });
-    console.log("[screen-context] /api/ai/stream status:", res.status, "ctype:", res.headers.get("content-type"));
-    if (!res.ok || !res.body) return { error: `screen_describe_failed_${res.status}` };
-
-    const ctype = res.headers.get("content-type") || "";
-    if (!ctype.includes("text/event-stream")) {
-      const data = await res.json().catch(() => null);
-      const answer = stripHiddenTags(data?.response || data?.answer || data?.text || "");
-      console.log("[screen-context] non-SSE answer length:", answer.length);
-      return { text: answer.trim() };
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    let accumulated = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const lines = buf.split("\n");
-      buf = lines.pop() || "";
-      for (const line of lines) {
-        const t = line.trim();
-        if (!t.startsWith("data:")) continue;
-        const payload = t.slice(t.indexOf(":") + 1).trim();
-        if (!payload || payload === "[DONE]") continue;
-        try {
-          const j = JSON.parse(payload);
-          if (typeof j.t === "string") accumulated += j.t;
-        } catch {
-          /* ignore keepalive */
-        }
-      }
-    }
-    const finalText = stripHiddenTags(accumulated).trim();
-    console.log("[screen-context] SSE answer length:", finalText.length, "preview:", finalText.slice(0, 120));
-    return { text: finalText };
-  } catch (e) {
-    console.log("[screen-context] fetch threw:", e && e.message);
-    return { error: `screen_describe_failed: ${e && e.message ? e.message : e}` };
-  }
-}
+async function captureScreenDescription(...a) { return d.captureScreenDescription(...a); }
 
 // Persist raw bytes to the vault via /api/vault/save-file. Best-effort.
-async function saveBufferToVault(buf, { title, filename, mime, token } = {}) {
-  if (!buf || !buf.length) return false;
-  try {
-    const authToken = token || (await getAuthToken());
-    if (!authToken) return false;
-    let name =
-      String(filename || "")
-        .replace(/[/\\:*?"<>|]+/g, "-")
-        .replace(/^\.+/, "")
-        .slice(0, 120) || "artifact";
-    const contentType =
-      String(mime || "").split(";")[0].trim() || "application/octet-stream";
-    if (!/\.[a-z0-9]{1,8}$/i.test(name)) {
-      const ext = {
-        "image/png": ".png",
-        "image/jpeg": ".jpg",
-        "image/webp": ".webp",
-        "image/gif": ".gif",
-        "image/svg+xml": ".svg",
-        "text/html": ".html",
-        "application/pdf": ".pdf",
-        "text/plain": ".txt",
-        "video/mp4": ".mp4",
-        "video/webm": ".webm",
-      }[contentType.toLowerCase()] || "";
-      name += ext;
-    }
-    const form = new FormData();
-    form.append("file", new Blob([buf], { type: contentType }), name);
-    form.append(
-      "title",
-      String(title || "").trim() || name.replace(/\.[a-z0-9]{1,8}$/i, ""),
-    );
-    form.append("source", "ai_artifact");
-    const vaultRes = await fetch(`${API_BASE}/api/vault/save-file`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${authToken}` },
-      body: form,
-    });
-    const vaultData = await vaultRes.json().catch(() => null);
-    return !!(vaultRes.ok && vaultData && vaultData.ok);
-  } catch {
-    return false;
-  }
-}
+async function saveBufferToVault(...a) { return d.saveBufferToVault(...a); }
 
 // Fetch a generated artifact URL and persist it to the vault. Used when the
 // overlay finishes an image / React build / video tool so artifacts land in
 // the vault without requiring a manual Download click. Best-effort.
-async function saveUrlToVault(url, { title, filename, token } = {}) {
-  const u = String(url || "").trim();
-  if (!/^https?:\/\//i.test(u)) return false;
-  try {
-    const authToken = token || (await getAuthToken());
-    if (!authToken) return false;
-    const res = await safeFetchMain(u);
-    if (!res.ok) return false;
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (!buf.length) return false;
-
-    let name = String(filename || "").trim();
-    if (!name) {
-      const cd = res.headers.get("content-disposition") || "";
-      const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
-      if (m) {
-        try {
-          name = decodeURIComponent(m[1]);
-        } catch {
-          name = m[1];
-        }
-      }
-    }
-    if (!name) {
-      try {
-        name = decodeURIComponent(new URL(u).pathname.split("/").pop() || "");
-      } catch {
-        /* fall through */
-      }
-    }
-    const mime =
-      (res.headers.get("content-type") || "").split(";")[0].trim() ||
-      "application/octet-stream";
-    return saveBufferToVault(buf, { title, filename: name, mime, token: authToken });
-  } catch {
-    return false;
-  }
-}
+async function saveUrlToVault(...a) { return d.saveUrlToVault(...a); }
 
 /** Pick the best downloadable URL from a capability tool result. */
-function pickArtifactUrl(result) {
-  if (!result || typeof result !== "object") return "";
-  for (const key of ["file_url", "image_url", "download_url", "primary_download"]) {
-    const v = result[key];
-    if (typeof v === "string" && /^https?:\/\//i.test(v)) return v;
-  }
-  if (Array.isArray(result.download_links)) {
-    for (const link of result.download_links) {
-      const v = link && link.url;
-      if (typeof v === "string" && /^https?:\/\//i.test(v)) return v;
-    }
-  }
-  return "";
-}
+function pickArtifactUrl(...a) { return d.pickArtifactUrl(...a); }
 
 
 /**
@@ -8267,6 +5455,23 @@ const d = {
 attachDesktopAuth(d);
 
 function bindShellContext() {
+  d.localStore = localStore;
+  d.macFiles = macFiles;
+  d.chromeSync = chromeSync;
+  d.localSystem = localSystem;
+  d.appDock = appDock;
+  d.localApprovals = localApprovals;
+  d.ownedBrowserAct = ownedBrowserAct;
+  d.agentRecentVisits = agentRecentVisits;
+  d.agentBrowserViews = agentBrowserViews;
+  d.agentBrowserMeta = agentBrowserMeta;
+  d.agentBrowserLabels = agentBrowserLabels;
+  d.agentIncognito = agentIncognito;
+  d.agentBrowserViewsReady = agentBrowserViewsReady;
+  d.agentBotShotIds = agentBotShotIds;
+  d.artifactHtmlCache = artifactHtmlCache;
+  d.OVERLAY_IGNORE_NOTE = OVERLAY_IGNORE_NOTE;
+  d.OVERLAY_REDESIGN_INTENT_RE = OVERLAY_REDESIGN_INTENT_RE;
   attachDesktopAuth(d);
   attachAutoUpdate(d);
   attachGlassChrome(d);
@@ -8278,6 +5483,8 @@ function bindShellContext() {
   attachOverlaySettings(d);
   attachLiveWatch(d);
   attachOverlaySessions(d);
+  attachBrowserAutomation(d);
+  attachAskPipeline(d);
   attachWelcomeOnboarding(d);
   Object.defineProperty(d, "pendingAuthTokens", { enumerable: true, get: () => pendingAuthTokens, set: (v) => { pendingAuthTokens = v; } });
   Object.defineProperty(d, "pendingDesktopAuthState", { enumerable: true, get: () => pendingDesktopAuthState, set: (v) => { pendingDesktopAuthState = v; } });
@@ -8616,22 +5823,22 @@ function bindShellContext() {
   if (typeof d.registerGlobalHotkey !== "function") d.registerGlobalHotkey = registerGlobalHotkey;
   if (typeof d.refreshTrayUpdateAffordance !== "function") d.refreshTrayUpdateAffordance = refreshTrayUpdateAffordance;
   if (typeof d.createTray !== "function") d.createTray = createTray;
-  d.stripHiddenTags = stripHiddenTags;
-  d.parseVaultAttachmentsFromContent = parseVaultAttachmentsFromContent;
-  d.stripVaultAttachmentsMarker = stripVaultAttachmentsMarker;
-  d.classifyVaultAttachmentForOverlay = classifyVaultAttachmentForOverlay;
-  d.cacheArtifactHtmlForOverlay = cacheArtifactHtmlForOverlay;
-  d.isOverlayFirstPartyHost = isOverlayFirstPartyHost;
-  d.fetchOverlayMedia = fetchOverlayMedia;
-  d.stageNativeShareFile = stageNativeShareFile;
-  d.mintStorageSignedUrl = mintStorageSignedUrl;
-  d.resolveVaultHtmlDisplayUrl = resolveVaultHtmlDisplayUrl;
-  d.resolveVaultAttachmentDisplayUrl = resolveVaultAttachmentDisplayUrl;
-  d.vaultOpenCardMarkdown = vaultOpenCardMarkdown;
-  d.overlayVaultMarkersFromToolResult = overlayVaultMarkersFromToolResult;
-  d.trimPartialControlTagTail = trimPartialControlTagTail;
-  d.parseJsonFromAiText = parseJsonFromAiText;
-  d.fetchAiStreamCompletion = fetchAiStreamCompletion;
+  if (typeof d.stripHiddenTags !== "function") d.stripHiddenTags = stripHiddenTags;
+  if (typeof d.parseVaultAttachmentsFromContent !== "function") d.parseVaultAttachmentsFromContent = parseVaultAttachmentsFromContent;
+  if (typeof d.stripVaultAttachmentsMarker !== "function") d.stripVaultAttachmentsMarker = stripVaultAttachmentsMarker;
+  if (typeof d.classifyVaultAttachmentForOverlay !== "function") d.classifyVaultAttachmentForOverlay = classifyVaultAttachmentForOverlay;
+  if (typeof d.cacheArtifactHtmlForOverlay !== "function") d.cacheArtifactHtmlForOverlay = cacheArtifactHtmlForOverlay;
+  if (typeof d.isOverlayFirstPartyHost !== "function") d.isOverlayFirstPartyHost = isOverlayFirstPartyHost;
+  if (typeof d.fetchOverlayMedia !== "function") d.fetchOverlayMedia = fetchOverlayMedia;
+  if (typeof d.stageNativeShareFile !== "function") d.stageNativeShareFile = stageNativeShareFile;
+  if (typeof d.mintStorageSignedUrl !== "function") d.mintStorageSignedUrl = mintStorageSignedUrl;
+  if (typeof d.resolveVaultHtmlDisplayUrl !== "function") d.resolveVaultHtmlDisplayUrl = resolveVaultHtmlDisplayUrl;
+  if (typeof d.resolveVaultAttachmentDisplayUrl !== "function") d.resolveVaultAttachmentDisplayUrl = resolveVaultAttachmentDisplayUrl;
+  if (typeof d.vaultOpenCardMarkdown !== "function") d.vaultOpenCardMarkdown = vaultOpenCardMarkdown;
+  if (typeof d.overlayVaultMarkersFromToolResult !== "function") d.overlayVaultMarkersFromToolResult = overlayVaultMarkersFromToolResult;
+  if (typeof d.trimPartialControlTagTail !== "function") d.trimPartialControlTagTail = trimPartialControlTagTail;
+  if (typeof d.parseJsonFromAiText !== "function") d.parseJsonFromAiText = parseJsonFromAiText;
+  if (typeof d.fetchAiStreamCompletion !== "function") d.fetchAiStreamCompletion = fetchAiStreamCompletion;
   if (typeof d.jwtExpiryMs !== "function") d.jwtExpiryMs = jwtExpiryMs;
   if (typeof d.cacheAuthToken !== "function") d.cacheAuthToken = cacheAuthToken;
   if (typeof d.readTokenFromWebContents !== "function") d.readTokenFromWebContents = readTokenFromWebContents;
@@ -8691,54 +5898,54 @@ function bindShellContext() {
   if (typeof d.buildPastPageConversationSection !== "function") d.buildPastPageConversationSection = buildPastPageConversationSection;
   if (typeof d.fetchAppChatsForOverlay !== "function") d.fetchAppChatsForOverlay = fetchAppChatsForOverlay;
   if (typeof d.pushOverlaySessionToApp !== "function") d.pushOverlaySessionToApp = pushOverlaySessionToApp;
-  d.runOsascript = runOsascript;
-  d.listRunningBrowserApps = listRunningBrowserApps;
-  d.readBrowserFrontTabUrl = readBrowserFrontTabUrl;
-  d.readBrowserTabUrl = readBrowserTabUrl;
-  d.rankBrowserCandidates = rankBrowserCandidates;
-  d.pickBestBrowserTarget = pickBestBrowserTarget;
-  d.resolveOneBrowserHttpTarget = resolveOneBrowserHttpTarget;
-  d.listBrowserHttpTargets = listBrowserHttpTargets;
-  d.describeBrowserTabProblem = describeBrowserTabProblem;
-  d.getActiveBrowserTarget = getActiveBrowserTarget;
-  d.evalBrowserJs = evalBrowserJs;
-  d.getBrowserPageText = getBrowserPageText;
-  d.decodeBrowserJsPayload = decodeBrowserJsPayload;
-  d.readBrowserFullPageTextOnce = readBrowserFullPageTextOnce;
-  d.getBrowserFullPageText = getBrowserFullPageText;
-  d.navigateBrowserTab = navigateBrowserTab;
-  d.waitForBrowserUrl = waitForBrowserUrl;
-  d.resolveLinkedSitePage = resolveLinkedSitePage;
-  d.decodeHtmlEntities = decodeHtmlEntities;
-  d.scrapePageText = scrapePageText;
-  d.parseYouTubeId = parseYouTubeId;
-  d.getBrowserYouTubeTranscript = getBrowserYouTubeTranscript;
-  d.parseYouTubeCaptionBody = parseYouTubeCaptionBody;
-  d.overlayMessageWantsVideoTranscribe = overlayMessageWantsVideoTranscribe;
-  d.fetchYouTubeTranscriptViaApi = fetchYouTubeTranscriptViaApi;
-  d.fetchYouTubeTranscript = fetchYouTubeTranscript;
-  d.extractReactArtifactCodeFromHtml = extractReactArtifactCodeFromHtml;
-  d.extractReactArtifactCodeFromResult = extractReactArtifactCodeFromResult;
-  d.extractLyknProjectId = extractLyknProjectId;
-  d.isRetryableStreamError = isRetryableStreamError;
-  d.humanizeStreamError = humanizeStreamError;
-  d.errorFromAiResponse = errorFromAiResponse;
-  d.overlayUserWantsVaultSurface = overlayUserWantsVaultSurface;
-  d.readOverlayStreamResponse = readOverlayStreamResponse;
-  d.overlayMessageLooksScreenRelated = overlayMessageLooksScreenRelated;
-  d.overlayMessageWantsScreenTranslate = overlayMessageWantsScreenTranslate;
-  d.overlayMessageWantsVisualGuidance = overlayMessageWantsVisualGuidance;
-  d.overlayMessageLooksScreenDeictic = overlayMessageLooksScreenDeictic;
-  d.overlayPageFingerprint = overlayPageFingerprint;
-  d.overlayMessageIsPhatic = overlayMessageIsPhatic;
-  d.overlayMessageIsConversationFollowUp = overlayMessageIsConversationFollowUp;
-  d.overlayMessageWantsFullPage = overlayMessageWantsFullPage;
-  d.gatherOverlayPageContext = gatherOverlayPageContext;
-  d.streamScreenAnswer = streamScreenAnswer;
-  d.captureScreenDescription = captureScreenDescription;
-  d.saveBufferToVault = saveBufferToVault;
-  d.saveUrlToVault = saveUrlToVault;
-  d.pickArtifactUrl = pickArtifactUrl;
+  if (typeof d.runOsascript !== "function") d.runOsascript = runOsascript;
+  if (typeof d.listRunningBrowserApps !== "function") d.listRunningBrowserApps = listRunningBrowserApps;
+  if (typeof d.readBrowserFrontTabUrl !== "function") d.readBrowserFrontTabUrl = readBrowserFrontTabUrl;
+  if (typeof d.readBrowserTabUrl !== "function") d.readBrowserTabUrl = readBrowserTabUrl;
+  if (typeof d.rankBrowserCandidates !== "function") d.rankBrowserCandidates = rankBrowserCandidates;
+  if (typeof d.pickBestBrowserTarget !== "function") d.pickBestBrowserTarget = pickBestBrowserTarget;
+  if (typeof d.resolveOneBrowserHttpTarget !== "function") d.resolveOneBrowserHttpTarget = resolveOneBrowserHttpTarget;
+  if (typeof d.listBrowserHttpTargets !== "function") d.listBrowserHttpTargets = listBrowserHttpTargets;
+  if (typeof d.describeBrowserTabProblem !== "function") d.describeBrowserTabProblem = describeBrowserTabProblem;
+  if (typeof d.getActiveBrowserTarget !== "function") d.getActiveBrowserTarget = getActiveBrowserTarget;
+  if (typeof d.evalBrowserJs !== "function") d.evalBrowserJs = evalBrowserJs;
+  if (typeof d.getBrowserPageText !== "function") d.getBrowserPageText = getBrowserPageText;
+  if (typeof d.decodeBrowserJsPayload !== "function") d.decodeBrowserJsPayload = decodeBrowserJsPayload;
+  if (typeof d.readBrowserFullPageTextOnce !== "function") d.readBrowserFullPageTextOnce = readBrowserFullPageTextOnce;
+  if (typeof d.getBrowserFullPageText !== "function") d.getBrowserFullPageText = getBrowserFullPageText;
+  if (typeof d.navigateBrowserTab !== "function") d.navigateBrowserTab = navigateBrowserTab;
+  if (typeof d.waitForBrowserUrl !== "function") d.waitForBrowserUrl = waitForBrowserUrl;
+  if (typeof d.resolveLinkedSitePage !== "function") d.resolveLinkedSitePage = resolveLinkedSitePage;
+  if (typeof d.decodeHtmlEntities !== "function") d.decodeHtmlEntities = decodeHtmlEntities;
+  if (typeof d.scrapePageText !== "function") d.scrapePageText = scrapePageText;
+  if (typeof d.parseYouTubeId !== "function") d.parseYouTubeId = parseYouTubeId;
+  if (typeof d.getBrowserYouTubeTranscript !== "function") d.getBrowserYouTubeTranscript = getBrowserYouTubeTranscript;
+  if (typeof d.parseYouTubeCaptionBody !== "function") d.parseYouTubeCaptionBody = parseYouTubeCaptionBody;
+  if (typeof d.overlayMessageWantsVideoTranscribe !== "function") d.overlayMessageWantsVideoTranscribe = overlayMessageWantsVideoTranscribe;
+  if (typeof d.fetchYouTubeTranscriptViaApi !== "function") d.fetchYouTubeTranscriptViaApi = fetchYouTubeTranscriptViaApi;
+  if (typeof d.fetchYouTubeTranscript !== "function") d.fetchYouTubeTranscript = fetchYouTubeTranscript;
+  if (typeof d.extractReactArtifactCodeFromHtml !== "function") d.extractReactArtifactCodeFromHtml = extractReactArtifactCodeFromHtml;
+  if (typeof d.extractReactArtifactCodeFromResult !== "function") d.extractReactArtifactCodeFromResult = extractReactArtifactCodeFromResult;
+  if (typeof d.extractLyknProjectId !== "function") d.extractLyknProjectId = extractLyknProjectId;
+  if (typeof d.isRetryableStreamError !== "function") d.isRetryableStreamError = isRetryableStreamError;
+  if (typeof d.humanizeStreamError !== "function") d.humanizeStreamError = humanizeStreamError;
+  if (typeof d.errorFromAiResponse !== "function") d.errorFromAiResponse = errorFromAiResponse;
+  if (typeof d.overlayUserWantsVaultSurface !== "function") d.overlayUserWantsVaultSurface = overlayUserWantsVaultSurface;
+  if (typeof d.readOverlayStreamResponse !== "function") d.readOverlayStreamResponse = readOverlayStreamResponse;
+  if (typeof d.overlayMessageLooksScreenRelated !== "function") d.overlayMessageLooksScreenRelated = overlayMessageLooksScreenRelated;
+  if (typeof d.overlayMessageWantsScreenTranslate !== "function") d.overlayMessageWantsScreenTranslate = overlayMessageWantsScreenTranslate;
+  if (typeof d.overlayMessageWantsVisualGuidance !== "function") d.overlayMessageWantsVisualGuidance = overlayMessageWantsVisualGuidance;
+  if (typeof d.overlayMessageLooksScreenDeictic !== "function") d.overlayMessageLooksScreenDeictic = overlayMessageLooksScreenDeictic;
+  if (typeof d.overlayPageFingerprint !== "function") d.overlayPageFingerprint = overlayPageFingerprint;
+  if (typeof d.overlayMessageIsPhatic !== "function") d.overlayMessageIsPhatic = overlayMessageIsPhatic;
+  if (typeof d.overlayMessageIsConversationFollowUp !== "function") d.overlayMessageIsConversationFollowUp = overlayMessageIsConversationFollowUp;
+  if (typeof d.overlayMessageWantsFullPage !== "function") d.overlayMessageWantsFullPage = overlayMessageWantsFullPage;
+  if (typeof d.gatherOverlayPageContext !== "function") d.gatherOverlayPageContext = gatherOverlayPageContext;
+  if (typeof d.streamScreenAnswer !== "function") d.streamScreenAnswer = streamScreenAnswer;
+  if (typeof d.captureScreenDescription !== "function") d.captureScreenDescription = captureScreenDescription;
+  if (typeof d.saveBufferToVault !== "function") d.saveBufferToVault = saveBufferToVault;
+  if (typeof d.saveUrlToVault !== "function") d.saveUrlToVault = saveUrlToVault;
+  if (typeof d.pickArtifactUrl !== "function") d.pickArtifactUrl = pickArtifactUrl;
   if (typeof d.saveDiagnosticsReport !== "function") d.saveDiagnosticsReport = saveDiagnosticsReport;
   if (typeof d.buildAppMenu !== "function") d.buildAppMenu = buildAppMenu;
   if (typeof d.onboardingMarkerPath !== "function") d.onboardingMarkerPath = onboardingMarkerPath;

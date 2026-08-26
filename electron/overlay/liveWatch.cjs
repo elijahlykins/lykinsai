@@ -44,6 +44,32 @@ function attachLiveWatch(d) {
   const screenCaptureStatus = (...a) => d.screenCaptureStatus(...a);
   const stripHiddenTags = (...a) => d.stripHiddenTags(...a);
   const writeOverlaySettings = (...a) => d.writeOverlaySettings(...a);
+  const { screenDiffRatio, textSimilarity } = require("../../lib/browserScreen.cjs");
+  const OVERLAY_IGNORE_NOTE = d.OVERLAY_IGNORE_NOTE;
+  const LIVE_WATCH_STATIC_MS = 2000;
+  const LIVE_WATCH_ACTIVE_MS = 500;
+  const LIVE_WATCH_BURST_MS = 200;
+  const LIVE_WATCH_BURST_DURATION_MS = 4000;
+  const LIVE_WATCH_VISION_MIN_MS = 2500;
+  const LIVE_WATCH_DIFF_VISION = 0.04;
+  const LIVE_WATCH_DIFF_MOTION = 0.02;
+  const LIVE_WATCH_DIFF_BURST = 0.12;
+  const LIVE_WATCH_SUMMARY_MAX_AGE_MS = 45000;
+  const LIVE_WATCH_SNAPSHOT_NOTE =
+    "CRITICAL — HOW CAPTURE WORKS: You receive still screenshots every 1–2 seconds, NOT " +
+    "live video. A frame that looks frozen or unchanged does NOT mean the user paused — " +
+    "active games, videos, and apps often look static between snapshots. Only say paused, " +
+    "idle, or stopped if you clearly see an explicit pause menu, pause icon, or PAUSED text " +
+    "on screen. Never infer pause from a static-looking image alone.";
+  const LIVE_WATCH_SCRAPE_MIN_MS = 3000;
+  const LIVE_WATCH_TEXT_MIN_MS = 2000;
+  const LIVE_WATCH_TEXT_CHANGE = 0.08;
+  const LIVE_WATCH_RULE_CHECK_MS = 3500;
+  const LIVE_WATCH_MAX_RULES = 8;
+  const LIVE_WATCH_CAPTURE_TIMEOUT_MS = 6000;
+  const LIVE_WATCH_VISION_TIMEOUT_MS = 35000;
+  const LIVE_WATCH_NAV_DIFF = 0.55;
+  const LIVE_WATCH_NAV_SETTLE_MS = 1400;
 
 function parseWatchRuleIntent(text) {
   const t = String(text || "").trim();
