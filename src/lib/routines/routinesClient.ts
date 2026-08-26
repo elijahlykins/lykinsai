@@ -65,6 +65,8 @@ export type ActiveTask = {
   botId: string;
   botName: string;
   routineId?: string;
+  /** Set when the task runs on a saved Remote Target (SSH host). */
+  remoteTargetId?: string;
   agentId: string;
   step?: string;
   startedAt?: string;

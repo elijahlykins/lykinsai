@@ -114,6 +114,14 @@ export default function ActivityPanel() {
                       · {routineName(task.routineId) || "routine"}
                     </span>
                   ) : null}
+                  {task.remoteTargetId ? (
+                    <span
+                      title="Running on a remote host over SSH"
+                      className="ml-1.5 rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[0.62rem] font-medium text-sky-600 dark:text-sky-400"
+                    >
+                      remote
+                    </span>
+                  ) : null}
                 </p>
                 <p className="truncate text-[0.7rem] text-black/45 dark:text-white/45">
                   {task.step || task.objective}

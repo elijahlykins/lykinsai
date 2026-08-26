@@ -3,6 +3,7 @@
 const crypto = require("node:crypto");
 const { createTask, TASK_STATUSES } = require("./task.cjs");
 const { compileLocalCapabilities } = require("./executors/localCapabilities.cjs");
+const { compileRemoteCapabilities } = require("../remote/remotePolicy.cjs");
 
 const DEFAULT_SUCCESS =
   "The requested work has been performed and the requested result can be returned.";
@@ -154,6 +155,68 @@ function compileLocalTask(input = {}, options = {}) {
   });
 }
 
+/**
+ * Compile a remote (SSH) Task. The target is referenced by ID in association —
+ * never by address, and never with credentials: the RemoteExecutor's host seam
+ * resolves the address and authRef from the RemoteTarget store in trusted host
+ * code. Capabilities are derived conservatively from the objective unless the
+ * caller (a routine record, a saved-target default) supplies them.
+ *
+ * This compiler does no model call and does not broaden diagnostic asks.
+ */
+function compileRemoteTask(input = {}, options = {}) {
+  const objective = String(input.objective || input.text || "").trim();
+  if (!objective) throw new TypeError("Remote task objective is required");
+  const remoteTargetId = String(input.remoteTargetId || "").trim();
+  if (!remoteTargetId) throw new TypeError("Remote task requires remoteTargetId");
+  const now = String(options.now || new Date().toISOString());
+  const id = String(options.id || newTaskId());
+  const explicitDoNot = cleanList(input.doNot, 12);
+  const doNot = explicitDoNot.includes(DEFAULT_DO_NOT)
+    ? explicitDoNot
+    : [...explicitDoNot, DEFAULT_DO_NOT];
+  return createTask({
+    id,
+    runId: id,
+    objective,
+    successCriteria: cleanList(input.successCriteria, 8).length
+      ? cleanList(input.successCriteria, 8)
+      : [DEFAULT_SUCCESS],
+    scope: {
+      summary: String(input.scope?.summary || input.scope || DEFAULT_SCOPE).trim() || DEFAULT_SCOPE,
+      resources: cleanList(input.scope?.resources, 20),
+    },
+    doNot,
+    capabilities: compileRemoteCapabilities(objective, {
+      explicit: cleanList(input.capabilities, 20),
+    }),
+    budgets: {
+      maxRounds: input.budgets?.maxRounds,
+      maxRecoveries: input.budgets?.maxRecoveries,
+      timeoutMs: input.budgets?.timeoutMs,
+      maxChildExecutors: input.budgets?.maxChildExecutors,
+    },
+    approval: {
+      policy: "preserve_executor_security_gates",
+      state: "not_requested",
+    },
+    cancellation: {
+      state: "active",
+      signal: options.signal || null,
+    },
+    origin: input.origin || { type: "agent" },
+    association: {
+      remoteTargetId,
+      agentId: String(input.agentId || input.association?.agentId || "").trim(),
+      chatId: String(input.chatId || input.association?.chatId || "").trim(),
+      parentTaskId: String(input.parentTaskId || input.association?.parentTaskId || "").trim(),
+    },
+    status: TASK_STATUSES.CREATED,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
 /** Default wall-clock ceiling for an unattended routine occurrence. */
 const ROUTINE_DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -261,8 +324,10 @@ function compileRoutineTask(input = {}, options = {}) {
 module.exports = {
   compileBotTask,
   compileLocalTask,
+  compileRemoteTask,
   compileRoutineTask,
   compileLocalCapabilities,
+  compileRemoteCapabilities,
   DEFAULT_SUCCESS,
   DEFAULT_SCOPE,
   DEFAULT_DO_NOT,

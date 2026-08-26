@@ -25,6 +25,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 import BillingDialog from '@/components/billing/BillingDialog';
 import ConnectionsAppGrid from '@/components/connections/ConnectionsAppGrid';
+import RemoteTargetsSection from '@/components/connections/RemoteTargetsSection';
 import { PrivacyBody } from '@/pages/Privacy';
 import { CookiePolicyBody } from '@/pages/CookiePolicy';
 import { DPABody } from '@/pages/DPA';
@@ -972,7 +973,10 @@ export default function SettingsModal({
   );
 
   const renderConnections = () => (
-    <ConnectionsAppGrid user={user} embedded />
+    <>
+      <ConnectionsAppGrid user={user} embedded />
+      <RemoteTargetsSection />
+    </>
   );
 
   // A doc's cross-links (Privacy → Cookie Policy, …) swap the popup instead of

@@ -1,8 +1,8 @@
 {
   "generatedBy": "tests/electron/ipcSurface.cjs",
-  "channelCount": 228,
-  "uniqueChannelCount": 228,
-  "handleCount": 167,
+  "channelCount": 233,
+  "uniqueChannelCount": 233,
+  "handleCount": 172,
   "onCount": 61,
   "duplicateCount": 0,
   "entries": [
@@ -850,6 +850,31 @@
       "mode": "handle",
       "channel": "lykn:picker-state",
       "file": "ipc/overlayShell.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:remote-target-create",
+      "file": "ipc/remoteTargets.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:remote-target-delete",
+      "file": "ipc/remoteTargets.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:remote-target-forget-trust",
+      "file": "ipc/remoteTargets.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:remote-target-update",
+      "file": "ipc/remoteTargets.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:remote-targets-list",
+      "file": "ipc/remoteTargets.cjs"
     },
     {
       "mode": "on",

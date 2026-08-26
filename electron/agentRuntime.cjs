@@ -30,12 +30,24 @@ const {
   LocalExecutor,
   toHarnessResult,
 } = require("./task-runtime/executors/localExecutor.cjs");
-const { compileLocalTask, compileRoutineTask } = require("./task-runtime/taskCompiler.cjs");
+const {
+  compileLocalTask,
+  compileRemoteTask,
+  compileRoutineTask,
+} = require("./task-runtime/taskCompiler.cjs");
 const { createBrowserObserveHost } = require("./bot-routines/browserObserveHost.cjs");
 // Local Mode task runner (files + terminal on the user's machine). Only used
 // when the user enabled Local Mode from the Vault switch.
 const localSystem = require("./localSystem.cjs");
 const { runLocalAgentTask, looksLikeLocalSystemAsk } = require("./localAgentTask.cjs");
+// Remote (SSH) execution: RemoteExecutor is the canonical boundary; the
+// transport (system ssh), trust store, and remote brain live under
+// electron/remote/. Credentials are resolved by the OS ssh client — never here.
+const { RemoteExecutor } = require("./task-runtime/executors/remoteExecutor.cjs");
+const { runRemoteAgentTask, looksLikeRemoteSystemAsk } = require("./remote/remoteAgentTask.cjs");
+const { connectRemoteSession } = require("./remote/remoteConnect.cjs");
+const { createSshTransport } = require("./remote/sshTransport.cjs");
+const { createRemoteTargetStore } = require("./remote/remoteTargetStore.cjs");
 const artifactBuildIntent = require("../lib/artifactBuildIntent.cjs");
 const workDestination = require("../lib/agentWorkDestination.cjs");
 
@@ -3744,6 +3756,16 @@ function createAgentRuntime(deps) {
     ) {
       skill = "local";
     }
+    // Remote (SSH) work: an explicit ssh/user@host ask, or a saved Remote
+    // Target mentioned by name, runs on that host through RemoteExecutor.
+    // Beats local: "ssh into dev-server and check the logs" is remote work
+    // even though "check the logs" alone would read as local.
+    if (
+      (skill === "general" || skill === "research" || skill === "build" || skill === "local") &&
+      looksLikeRemoteSystemAsk(q, { targetNames: remoteTargetNames() })
+    ) {
+      skill = "remote";
+    }
     // Headless agents (Bots) carry every LYKN tool except the browser: asks
     // that resolved to a browser venue fall back to a conversational answer.
     // The venue it WOULD have used is remembered so send() can offer the
@@ -3889,6 +3911,13 @@ function createAgentRuntime(deps) {
     }
     if (skill === "local") {
       return runLocalTaskViaExecutor(
+        agent,
+        String(stepMeta?.fullAsk || rawStep).trim() || rawStep,
+        gen,
+      );
+    }
+    if (skill === "remote") {
+      return runRemoteTaskViaExecutor(
         agent,
         String(stepMeta?.fullAsk || rawStep).trim() || rawStep,
         gen,
@@ -6862,6 +6891,311 @@ function createAgentRuntime(deps) {
     return String(result?.output || result?.answer || execution?.task?.completion?.output || "Done.").trim() || "Done.";
   }
 
+  // ── Remote (SSH) execution ──────────────────────────────────────────────
+  //
+  // RemoteExecutor is the fourth canonical executor. The host seam below owns
+  // everything the model must never see: resolving the RemoteTarget record
+  // (address, authRef reference), host trust (first-use fingerprint approval,
+  // HOST_KEY_CHANGED refusal), and the ssh transport. The Task carries only a
+  // remoteTargetId.
+
+  let remoteTargetStoreInstance = null;
+  function remoteTargets() {
+    if (!remoteTargetStoreInstance) {
+      remoteTargetStoreInstance = createRemoteTargetStore({ userDataPath });
+      remoteTargetStoreInstance.load();
+    }
+    return remoteTargetStoreInstance;
+  }
+
+  function remoteTargetNames() {
+    try {
+      return remoteTargets()
+        .list()
+        .map((t) => t.name)
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Pause the remote task for a consequential-action approval. Same choice
+   * mechanism as local approvals — main-issued nonce, exact-match resolution —
+   * with the remote context (target, environment, consequence) in the message:
+   * "LYKN wants to restart the Production API. Approve?"
+   */
+  function awaitRemoteApproval(agent, request) {
+    return new Promise((resolve) => {
+      const choiceId = newId();
+      const buttons = [
+        { id: "approve", label: "Approve" },
+        { id: "decline", label: "Decline" },
+      ];
+      const msg = String(
+        request?.question ||
+          `Approve this action on ${request?.target || "the remote host"} (${request?.environment || "unknown"})?`,
+      );
+      let settled = false;
+      const done = (approved) => {
+        if (settled) return;
+        settled = true;
+        taskRuntime.resolveApproval(agent.activeTaskId, approved);
+        agent.status = "running";
+        resolve(approved);
+      };
+      agent.pendingChoice = {
+        id: choiceId,
+        type: "remote-approval",
+        resolve: done,
+        buttons,
+        at: new Date().toISOString(),
+      };
+      agent.status = "waiting";
+      taskRuntime.requireApproval(agent.activeTaskId, {
+        choiceId,
+        type: "remote-approval",
+        question: msg,
+        tool: request?.tool || "remote_exec",
+      });
+      agent.step = "Waiting for your approval…";
+      agent.partialText = msg;
+      sendToAgentChannels(agent.id, "lykn:agent-choice", {
+        choiceId,
+        type: "remote-approval",
+        message: msg,
+        buttons,
+      });
+      sendToAgentChannels(agent.id, "lykn:agent-status", { status: "Waiting for your approval…" });
+      emitProgress(agent.id, { status: "waiting", step: "Waiting for your approval…", skill: "remote" });
+      try {
+        agent.abort?.signal?.addEventListener?.("abort", () => done(false), { once: true });
+      } catch {
+        /* no signal */
+      }
+    });
+  }
+
+  /**
+   * First-use host trust establishment. The fingerprint was retrieved
+   * out-of-band (ssh-keyscan) in host code; the user verifies it against the
+   * server's console/provider page before LYKN ever authenticates.
+   */
+  function awaitRemoteTrustEstablish(agent, { fingerprint, target }) {
+    const label = target?.name || target?.host || "this host";
+    return awaitRemoteApproval(agent, {
+      question:
+        `First connection to ${label} (${target?.host || "unknown host"}).\n\n` +
+        `SSH host key fingerprint:\n\`${fingerprint}\`\n\n` +
+        "Verify this fingerprint against the server before trusting it. Trust this host and connect?",
+      target: label,
+      environment: target?.environment || "unknown",
+      tool: "remote_connect",
+    });
+  }
+
+  const remoteKnownHostsFile = () => path.join(userDataPath, "remote-known-hosts");
+
+  function remoteStepLabel(p, targetName) {
+    switch (p?.event) {
+      case "remote.connecting":
+        return `Connecting to ${targetName}…`;
+      case "remote.connected":
+        return `Connected to ${targetName}`;
+      case "remote.command_started":
+        return `Running on ${targetName}: ${String(p.command || "").slice(0, 50)}…`;
+      case "remote.acting":
+        return String(p.reason || "").trim() || `Working on ${targetName}…`;
+      default:
+        return "";
+    }
+  }
+
+  const remoteExecutor = new RemoteExecutor({
+    runRemoteTask: async ({ task, maxRounds, instruction, context }) => {
+      const remote = context.remote || {};
+      const agent = remote.agent;
+      const gen = remote.gen;
+      if (!agent) {
+        return { ok: false, status: "failed", answer: "Remote executor is missing its host agent." };
+      }
+      const store = remoteTargets();
+      const target = store.getRaw(task.association?.remoteTargetId);
+      if (!target) {
+        return {
+          ok: false,
+          status: "failed",
+          answer:
+            "I couldn't find that remote target. Add or pick one under Settings → Connections → Remote Targets.",
+        };
+      }
+      const signal = composeAbortSignals(context.signal, agent.abort?.signal);
+      const onProgress = (p) => {
+        if (gen !== undefined && gen !== agent.generation) return;
+        context.progress?.(p);
+        const step = remoteStepLabel(p, target.name);
+        if (step) {
+          agent.step = step;
+          emitProgress(agent.id, { status: "running", step, skill: "remote" });
+          sendToAgentChannels(agent.id, "lykn:agent-status", { status: step });
+        }
+      };
+      // Trust-gated connect: first use pauses for fingerprint verification, a
+      // changed key refuses to connect. Never auto-accepted.
+      const connected = await connectRemoteSession({
+        target,
+        taskId: task.id,
+        runId: task.runId,
+        trustedFingerprint: target.trustedHostFingerprint,
+        signal,
+        createTransport: ({ target: t }) =>
+          createSshTransport({ target: t, knownHostsFile: remoteKnownHostsFile() }),
+        onTrustEstablish: ({ fingerprint }) => awaitRemoteTrustEstablish(agent, { fingerprint, target }),
+        onTrusted: ({ fingerprint }) => {
+          store.trustHostKey(target.id, fingerprint);
+        },
+        onProgress,
+      });
+      if (!connected.ok) {
+        return {
+          ok: false,
+          status: connected.status || "failed",
+          answer: connected.answer || "I couldn't connect to the remote host.",
+          waitingKind: connected.waitingKind || "",
+          reason: connected.reason || "",
+        };
+      }
+      const intoBot = agent.headless === true;
+      try {
+        return await runRemoteAgentTask({
+          goal: instruction || task.objective,
+          session: connected.session,
+          environment: target.environment,
+          capabilities: task.capabilities,
+          targetName: target.name,
+          conversationHistory: historyForPlanner(agent),
+          apiBase,
+          getAuthToken,
+          signal,
+          maxRounds,
+          onProgress,
+          onApprovalNeeded: (request) => awaitRemoteApproval(agent, request),
+          onUsage: (entry) => accumulateLocalUsage(agent, entry, intoBot),
+        });
+      } catch (e) {
+        if (signal?.aborted) {
+          return { ok: false, status: "cancelled", answer: "Task cancelled." };
+        }
+        return { ok: false, status: "failed", answer: `Remote task failed: ${e?.message || e}` };
+      } finally {
+        connected.session?.close?.();
+      }
+    },
+  });
+
+  /**
+   * Resolve which RemoteTarget an ask refers to: a saved target mentioned by
+   * name wins (its trust and environment are already configured); otherwise an
+   * explicit user@host in the ask becomes an ad-hoc target (environment
+   * "unknown" — conservative policy — until the user saves and classifies it).
+   */
+  function resolveRemoteTargetFromAsk(ask) {
+    const store = remoteTargets();
+    const q = String(ask || "").toLowerCase();
+    for (const t of store.list()) {
+      const name = String(t.name || "").trim().toLowerCase();
+      if (name && name.length >= 3 && q.includes(name)) return { target: t, saved: true };
+    }
+    const address = String(ask || "").match(/([A-Za-z0-9._-]+@[A-Za-z0-9._-]+(?::\d{1,5})?)/);
+    if (address) {
+      const resolved = store.resolveAdHoc(address[1]);
+      if (resolved.target) return { target: resolved.target, saved: resolved.saved };
+    }
+    const hostOnly = String(ask || "").match(/\bssh\s+(?:into|to|on)?\s*([A-Za-z0-9._-]{3,})/i);
+    if (hostOnly && hostOnly[1].includes(".")) {
+      const resolved = store.resolveAdHoc(hostOnly[1]);
+      if (resolved.target) return { target: resolved.target, saved: resolved.saved };
+    }
+    return { target: null, saved: false };
+  }
+
+  /** Canonical Task for a remote run — mirrors ensureLocalTask. */
+  function ensureRemoteTask(agent, remoteGoal, remoteTargetId) {
+    const objective = String(remoteGoal || "").trim() || "Remote task";
+    const active = taskRuntime.get(agent.activeTaskId);
+    if (active && !isTerminalTaskStatus(active.status)) {
+      if (
+        active.association?.remoteTargetId === remoteTargetId &&
+        (agent.headless || active.objective === objective)
+      ) {
+        return active;
+      }
+      taskRuntime.cancel(active.id, "superseded_by_new_task");
+    }
+    const task = taskRuntime.register(
+      compileRemoteTask({
+        objective,
+        remoteTargetId,
+        agentId: agent.id,
+        origin: { type: agent.headless ? "bot" : "agent" },
+        budgets: { maxRounds: 12 },
+      }),
+    );
+    agent.activeTaskId = task.id;
+    return task;
+  }
+
+  /**
+   * Run a remote (SSH) ask through TaskRuntime -> RemoteExecutor and hand back
+   * the user-facing string send() understands. Pauses (trust, approval,
+   * questions) go through offerAgentQuestion so they never read as done.
+   */
+  async function runRemoteTaskViaExecutor(agent, ask, gen) {
+    agent.skill = "remote";
+    agent.status = "running";
+
+    const { target } = resolveRemoteTargetFromAsk(ask);
+    if (!target) {
+      return offerAgentQuestion(
+        agent,
+        "Which remote host should I work on? Tell me like `deploy@dev.example.com`, or add a saved target under Settings → Connections.",
+        [],
+        { ask },
+      );
+    }
+
+    const step = `Working on ${target.name}…`;
+    agent.step = step;
+    emitProgress(agent.id, { status: "running", step, skill: "remote" });
+    sendToAgentChannels(agent.id, "lykn:agent-status", { status: step });
+
+    const task = ensureRemoteTask(agent, ask, target.id);
+    const execution = await taskRuntime.execute(task.id, remoteExecutor, {
+      executorName: "remote",
+      instruction: ask,
+      remote: { agent, gen, instruction: ask },
+    });
+    if (gen !== agent.generation) return "";
+    const result = execution?.result || null;
+    const status = String(execution?.task?.status || result?.status || "");
+    agent.lastDeliverableKind = "remote";
+
+    if (status === "cancelled" || result?.status === "aborted") {
+      return "";
+    }
+    if (status === "waiting_for_user" || status === "waiting_for_approval") {
+      return offerAgentQuestion(
+        agent,
+        result?.question || result?.output || "I need your input to continue.",
+        result?.questionOptions || [],
+        { ask },
+      );
+    }
+    return (
+      String(result?.output || result?.answer || execution?.task?.completion?.output || "Done.").trim() || "Done."
+    );
+  }
+
   // ── Bot harness ───────────────────────────────────────────────────────────
   //
   // Every task-shaped headless (Bot) turn runs through electron/bot-harness:
@@ -7380,6 +7714,7 @@ function createAgentRuntime(deps) {
         botId: task.association?.botId || agent.botProfile?.id || "",
         botName: agent.botProfile?.name || agent.title || "",
         routineId: task.association?.routineId || "",
+        remoteTargetId: task.association?.remoteTargetId || "",
         agentId: agent.id,
         step: agent.step || "",
         startedAt: task.startedAt || task.createdAt || "",
@@ -10634,7 +10969,7 @@ function createAgentRuntime(deps) {
     const pending = agent.pendingChoice;
     if (
       !pending ||
-      !["complex-tool", "send-approval", "local-approval", "browse-approval"].includes(pending.type)
+      !["complex-tool", "send-approval", "local-approval", "remote-approval", "browse-approval"].includes(pending.type)
     ) {
       return { ok: false, error: "no_pending_choice" };
     }
@@ -10669,9 +11004,11 @@ function createAgentRuntime(deps) {
       return { ok: true, agentId: agent.id, approved };
     }
 
-    // Local Mode approval — resolve the promise the paused local task is
-    // awaiting; the task loop continues (or safely skips) from there.
-    if (pending.type === "local-approval") {
+    // Local Mode / Remote approval — resolve the promise the paused task is
+    // awaiting; the task loop continues (or safely skips) from there. The
+    // remote variant covers consequential remote actions AND first-use host
+    // trust establishment, which share the same attested mechanism.
+    if (pending.type === "local-approval" || pending.type === "remote-approval") {
       const approved = btn === "approve";
       try {
         pending.resolve?.(approved);
@@ -12693,6 +13030,10 @@ function createAgentRuntime(deps) {
     setRoutineBridge,
     stopTask,
     listActiveTasks,
+    // Remote (SSH) targets: the durable store behind Settings → Remote Targets
+    // and the RemoteExecutor's target resolution. Exposed for IPC handlers;
+    // records leaving this seam are publicView-redacted by the store itself.
+    remoteTargets,
     observeRoutineBrowser: (trigger) => browserExecutor.observePassive({ target: trigger, query: trigger }),
     subscribeRoutineBrowser: (trigger, onEvent) => browserObserveHost.subscribe(trigger, onEvent),
     callMonitorModel: async (opts = {}) => {

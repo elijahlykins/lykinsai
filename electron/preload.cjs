@@ -291,6 +291,16 @@ contextBridge.exposeInMainWorld("lykn", {
     ipcRenderer.on("lykn:activity-open", fn);
     return () => ipcRenderer.removeListener("lykn:activity-open", fn);
   },
+  // Remote Targets — saved SSH hosts LYKN can operate on. The store, host
+  // trust, and every connection live in main; the renderer only manages the
+  // redacted definitions (never credentials — none are stored anywhere).
+  remoteTargetsList: () => ipcRenderer.invoke("lykn:remote-targets-list"),
+  remoteTargetCreate: (payload) => ipcRenderer.invoke("lykn:remote-target-create", payload || {}),
+  remoteTargetUpdate: (targetId, patch) =>
+    ipcRenderer.invoke("lykn:remote-target-update", { targetId, patch: patch || {} }),
+  remoteTargetDelete: (targetId) => ipcRenderer.invoke("lykn:remote-target-delete", { targetId }),
+  remoteTargetForgetTrust: (targetId) =>
+    ipcRenderer.invoke("lykn:remote-target-forget-trust", { targetId }),
   // Local Mode — Vault switch that grants LYKN file/terminal access on this
   // device. Tools execute in main (never in the renderer or on the server).
   localModeGet: () => ipcRenderer.invoke("lykn:local-mode-get"),
