@@ -275,3 +275,33 @@ test("switching a folder keeps the rest of the settings", () => {
   assert.equal(config.syncAll, false);
   assert.deepEqual(config.syncedFolders, [home]);
 });
+
+test("a traversal out of a synced folder is rejected", async () => {
+  write({ syncAll: false, syncedFolders: [desktop] });
+  const secret = path.join(home, "secret.txt");
+  fs.writeFileSync(secret, "private\n");
+  const result = await localSystem.run(
+    "local_read_file",
+    { path: path.join(desktop, "..", "secret.txt") },
+    { userDataPath: userData },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.error, /not synced/i);
+});
+
+test("an aborted shell command is killed instead of running to timeout", async () => {
+  write({ syncAll: true, syncedFolders: [] });
+  const controller = new AbortController();
+  const started = Date.now();
+  const pending = localSystem.run(
+    "local_run_command",
+    { command: "sleep 30" },
+    { userDataPath: userData, approved: true, signal: controller.signal },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  controller.abort();
+  const result = await pending;
+  assert.equal(result.ok, false);
+  assert.match(String(result.error || ""), /aborted/i);
+  assert.ok(Date.now() - started < 5000);
+});

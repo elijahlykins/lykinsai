@@ -130,6 +130,26 @@ export const AI_SURFACES = [
     ],
   },
   {
+    id: "local_agent",
+    name: "Agent Harness (local computer stages)",
+    description:
+      "LocalExecutor decide calls for filesystem and shell work on the user's machine. The server still meters them as browser_agent_decide (same structured endpoint and decide model); the Electron host also buckets them as local_decide on the canonical Task so local cost is visible separately from browser rounds.",
+    endpoint: "POST /api/desktop/agent-model",
+    file: "electron/localAgentTask.cjs, electron/task-runtime/executors/localExecutor.cjs",
+    lineRange: "callModel",
+    providers: ["openai", "anthropic", "grok"],
+    models: ["gpt-5.6-terra (BROWSER_AGENT_MODEL)"],
+    actionTypes: ["browser_agent_decide", "local_decide"],
+    tier: "high",
+    guestAccessible: false,
+    metered: true,
+    optimization:
+      "Skip the planner loop when the path is explicit and the task is read-only. Parent Task budgets bound local rounds; do not treat remaining rounds as a reason to continue.",
+    risks: [
+      "A nested Bot local child previously ran an independent 20-round budget inside one Bot round; the parent Task budget now governs.",
+    ],
+  },
+  {
     id: "youtube_transcribe",
     name: "YouTube transcription (Whisper)",
     description:

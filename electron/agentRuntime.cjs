@@ -26,7 +26,11 @@ const {
   BrowserExecutor,
   BrowserOptInGate,
 } = require("./task-runtime/executors/browserExecutor.cjs");
-const { LocalExecutorAdapter } = require("./task-runtime/executors/localExecutorAdapter.cjs");
+const {
+  LocalExecutor,
+  toHarnessResult,
+} = require("./task-runtime/executors/localExecutor.cjs");
+const { compileLocalTask } = require("./task-runtime/taskCompiler.cjs");
 // Local Mode task runner (files + terminal on the user's machine). Only used
 // when the user enabled Local Mode from the Vault switch.
 const localSystem = require("./localSystem.cjs");
@@ -3803,7 +3807,7 @@ function createAgentRuntime(deps) {
         );
       }
       if (botSkill === "local") {
-        return runLocalTask(agent, fullAsk, gen);
+        return runLocalTaskViaExecutor(agent, fullAsk, gen);
       }
       return streamChat(agent, rawStep, attachments, botSkill, gen, {
         suppressDone: multiActive,
@@ -3883,7 +3887,11 @@ function createAgentRuntime(deps) {
       return runMonitor(agent, rawStep, gen);
     }
     if (skill === "local") {
-      return runLocalTask(agent, String(stepMeta?.fullAsk || rawStep).trim() || rawStep, gen);
+      return runLocalTaskViaExecutor(
+        agent,
+        String(stepMeta?.fullAsk || rawStep).trim() || rawStep,
+        gen,
+      );
     }
     // Paste an existing sibling research report into Google Sheets (no re-research).
     if (skill === "sheets-fill" || looksLikePasteReportIntoSheets(rawStep)) {
@@ -6690,52 +6698,163 @@ function createAgentRuntime(deps) {
   }
 
   /**
-   * Run a Local Mode task (files + terminal) on the user's machine. Uses the
-   * modular local task runner; risky steps pause for approval via the agent
-   * choice mechanism. Returns the final user-facing summary.
+   * The canonical Task a local-computer run executes under.
+   *
+   * A Bot's local work IS its canonical task's continuation, so the active
+   * task is reused as-is. A normal agent resumes a non-terminal task only
+   * when the objective is the same local ask; a different ask supersedes it.
    */
-  async function runLocalTask(
-    agent,
-    ask,
-    gen,
-    { signal = agent.abort?.signal, structured = false } = {},
-  ) {
+  function ensureLocalTask(agent, localGoal) {
+    const objective = String(localGoal || "").trim() || "Local task";
+    const active = taskRuntime.get(agent.activeTaskId);
+    if (active && !isTerminalTaskStatus(active.status)) {
+      if (agent.headless || active.objective === objective) return active;
+      taskRuntime.cancel(active.id, "superseded_by_new_task");
+    }
+    const task = taskRuntime.register(
+      compileLocalTask({
+        objective,
+        agentId: agent.id,
+        origin: { type: agent.headless ? "bot" : "agent" },
+        budgets: { maxRounds: 12 },
+      }),
+    );
+    agent.activeTaskId = task.id;
+    return task;
+  }
+
+  function composeAbortSignals(a, b) {
+    if (!a) return b || null;
+    if (!b) return a;
+    if (a === b) return a;
+    const controller = new AbortController();
+    const forward = () => {
+      try {
+        controller.abort();
+      } catch {
+        /* ignore */
+      }
+    };
+    if (a.aborted || b.aborted) {
+      forward();
+      return controller.signal;
+    }
+    try {
+      a.addEventListener("abort", forward, { once: true });
+      b.addEventListener("abort", forward, { once: true });
+    } catch {
+      /* ignore */
+    }
+    return controller.signal;
+  }
+
+  function accumulateLocalUsage(agent, entry, intoBot = false) {
+    const sink =
+      intoBot && agent.lastBotModelUsage
+        ? agent.lastBotModelUsage
+        : (agent.lastModelUsage ||= {
+            calls: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            upstreamMs: 0,
+            byStage: {},
+          });
+    sink.calls += 1;
+    sink.inputTokens += entry.inputTokens || 0;
+    sink.outputTokens += entry.outputTokens || 0;
+    sink.upstreamMs += entry.upstreamMs || 0;
+    const stage = String(entry.stage || "local_decide");
+    const bucket =
+      sink.byStage[stage] ||
+      (sink.byStage[stage] = { calls: 0, inputTokens: 0, outputTokens: 0, upstreamMs: 0 });
+    bucket.calls += 1;
+    bucket.inputTokens += entry.inputTokens || 0;
+    bucket.outputTokens += entry.outputTokens || 0;
+    bucket.upstreamMs += entry.upstreamMs || 0;
+  }
+
+  const localExecutor = new LocalExecutor({
+    runLocalTask: async ({ task, allowedTools, maxRounds, instruction, context }) => {
+      const local = context.local || {};
+      const agent = local.agent;
+      const gen = local.gen;
+      if (!agent) {
+        return { ok: false, status: "failed", answer: "Local executor is missing its host agent." };
+      }
+      const signal = composeAbortSignals(context.signal, agent.abort?.signal);
+      const intoBot = agent.headless === true;
+      try {
+        return await runLocalAgentTask({
+          goal: instruction || task.objective,
+          apiBase,
+          getAuthToken,
+          conversationHistory: historyForPlanner(agent),
+          signal,
+          maxRounds,
+          allowedTools,
+          capabilities: task.capabilities,
+          onProgress: (p) => {
+            if (gen !== agent.generation) return;
+            context.progress?.(p);
+            if (p.phase === "acting" || p.event === "local.file_read" || p.event === "local.file_changed" || p.event === "local.command_started") {
+              const step =
+                String(p.reason || "").trim() ||
+                localStepLabel(p.tool, p.args) ||
+                agent.step ||
+                "Working on your Mac…";
+              agent.step = step;
+              emitProgress(agent.id, { status: "running", step, skill: "local" });
+              sendToAgentChannels(agent.id, "lykn:agent-status", { status: step });
+            }
+          },
+          onApprovalNeeded: ({ summary, tool }) => awaitLocalApproval(agent, { summary, tool }),
+          onUsage: (entry) => accumulateLocalUsage(agent, entry, intoBot),
+        });
+      } catch (e) {
+        if (signal?.aborted) {
+          return { ok: false, status: "cancelled", answer: "Task cancelled." };
+        }
+        return { ok: false, status: "failed", answer: `Local task failed: ${e?.message || e}` };
+      }
+    },
+  });
+
+  /**
+   * Run a Local Mode task through TaskRuntime -> LocalExecutor and hand back
+   * the user-facing string the rest of send() already understands. Waiting
+   * and approval pauses go through offerAgentQuestion so they cannot look
+   * like a completed turn.
+   */
+  async function runLocalTaskViaExecutor(agent, ask, gen) {
     agent.skill = "local";
     agent.status = "running";
     agent.step = "Working on your Mac…";
     emitProgress(agent.id, { status: "running", step: "Working on your Mac…", skill: "local" });
     sendToAgentChannels(agent.id, "lykn:agent-status", { status: "Working on your Mac…" });
 
-    let result;
-    try {
-      result = await runLocalAgentTask({
-        goal: ask,
-        apiBase,
-        getAuthToken,
-        conversationHistory: historyForPlanner(agent),
-        signal,
-        onProgress: (p) => {
-          if (gen !== agent.generation) return;
-          if (p.phase === "acting") {
-            const step = String(p.reason || "").trim() || localStepLabel(p.tool, p.args);
-            agent.step = step;
-            emitProgress(agent.id, { status: "running", step, skill: "local" });
-            sendToAgentChannels(agent.id, "lykn:agent-status", { status: step });
-          }
-        },
-        onApprovalNeeded: ({ summary, tool }) => awaitLocalApproval(agent, { summary, tool }),
-      });
-    } catch (e) {
-      result = { ok: false, status: "failed", answer: `Local task failed: ${e?.message || e}` };
-    }
-
-    if (gen !== agent.generation || signal?.aborted) {
-      const cancelled = { ok: false, status: "cancelled", answer: "Task cancelled." };
-      return structured ? cancelled : "";
-    }
-    agent.status = "running";
+    const task = ensureLocalTask(agent, ask);
+    const execution = await taskRuntime.execute(task.id, localExecutor, {
+      executorName: "local",
+      instruction: ask,
+      local: { agent, gen, instruction: ask },
+    });
+    if (gen !== agent.generation) return "";
+    const result = execution?.result || null;
+    const status = String(execution?.task?.status || result?.status || "");
     agent.lastDeliverableKind = "local";
-    return structured ? result : String(result?.answer || "Done.").trim() || "Done.";
+
+    if (status === "cancelled" || result?.status === "aborted") {
+      return "";
+    }
+    if (status === "waiting_for_user" || status === "waiting_for_approval") {
+      return offerAgentQuestion(
+        agent,
+        result?.question || result?.output || result?.localResult?.answer || "I need your input to continue.",
+        result?.questionOptions || [],
+        { ask },
+      );
+    }
+    return String(result?.output || result?.answer || execution?.task?.completion?.output || "Done.").trim() || "Done.";
   }
 
   // ── Bot harness ───────────────────────────────────────────────────────────
@@ -6865,10 +6984,16 @@ function createAgentRuntime(deps) {
       const text = String(out || "").trim();
       return { ok: !!text, output: text, summary: text.slice(0, 500) };
     };
-    const localAdapter = new LocalExecutorAdapter({
-      runLocalTask: ({ instruction, signal }) =>
-        runLocalTask(agent, instruction, gen, { signal, structured: true }),
-    });
+    const localChild = async ({ instruction, signal, task, progress }) => {
+      const canonical = task || canonicalTask;
+      const out = await localExecutor.execute(canonical, {
+        signal,
+        instruction,
+        progress,
+        local: { agent, gen, instruction },
+      });
+      return toHarnessResult(out);
+    };
     const browserOptInGate = new BrowserOptInGate({
       isDeclined: () =>
         !!(
@@ -6889,10 +7014,11 @@ function createAgentRuntime(deps) {
       edit_report: streamTool("report-edit"),
       build_artifact: streamTool("build"),
       generate_image: streamTool("image"),
-      local_computer: (args) => localAdapter.execute(args),
+      local_computer: localChild,
       browser: (args) => browserOptInGate.execute({ ...args, task: canonicalTask }),
     };
 
+    agent.lastBotModelUsage = modelUsage;
     const execution = await taskRuntime.execute(canonicalTask.id, botExecutor, {
       executorName: "bot",
       model,
@@ -6917,7 +7043,6 @@ function createAgentRuntime(deps) {
         emitProgress(agent.id, { status: "running", step: agent.step, skill: agent.skill });
       },
     });
-    agent.lastBotModelUsage = modelUsage;
     const res = execution.result || {
       status: execution.task?.status || "failed",
       answer: execution.task?.completion?.output || "",
@@ -11985,8 +12110,13 @@ function createAgentRuntime(deps) {
       // Task id rather than leaving it dangling.
       const runtimeTask = taskRuntime.get(agent.activeTaskId);
       if (agent.headless && runtimeTask && !isTerminalTaskStatus(runtimeTask.status)) {
-        if (waitingUser || waitingChoice) {
-          if (runtimeTask.status !== "waiting_for_approval") {
+        if (
+          waitingUser ||
+          waitingChoice ||
+          runtimeTask.status === "waiting_for_user" ||
+          runtimeTask.status === "waiting_for_approval"
+        ) {
+          if (runtimeTask.status !== "waiting_for_approval" && runtimeTask.status !== "waiting_for_user") {
             taskRuntime.waitForUser(runtimeTask.id, {
               question: String(agent.waitingUserAction || doneText || ""),
             });

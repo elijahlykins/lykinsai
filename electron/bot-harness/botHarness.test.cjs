@@ -232,6 +232,33 @@ test("an executor can park the whole turn on the user (browser opt-in)", async (
   assert.match(res.question, /open the browser/);
 });
 
+test("a local child that needs approval parks the turn instead of looking finished", async () => {
+  const { model } = fakeModel([
+    {
+      kind: "use_tool",
+      tool: "local_computer",
+      instruction: "delete the draft",
+      narration: "Removing the draft.",
+    },
+  ]);
+  const res = await harness.runBotTask({
+    goal: "delete the draft on disk",
+    bot: BOT,
+    model,
+    localMode: true,
+    executors: {
+      local_computer: async () => ({
+        terminal: "waiting_for_approval",
+        question: "Approve before I delete ~/Documents/draft.pdf?",
+      }),
+    },
+    primaryTool: "local_computer",
+  });
+  assert.equal(res.status, "waiting_for_approval");
+  assert.equal(res.parked, true);
+  assert.match(res.question, /delete/);
+});
+
 /* ── Verification and recovery ────────────────────────────────────────────── */
 
 test("a failed verification feeds guidance into the next round, and the retry can pass", async () => {

@@ -12,7 +12,15 @@ class BotExecutor {
       Object.entries(runtime.executors || {}).map(([name, executor]) => [
         name,
         typeof executor === "function" && typeof runtime.runChild === "function"
-          ? (input) => runtime.runChild(name, (signal) => executor({ ...(input || {}), signal }))
+          ? (input) =>
+              runtime.runChild(name, (signal) =>
+                executor({
+                  ...(input || {}),
+                  signal,
+                  task,
+                  progress: runtime.progress,
+                }),
+              )
           : executor,
       ]),
     );
@@ -82,7 +90,7 @@ class BotExecutor {
         narration: "Finishing with the direct path…",
       });
       const fallbackResult = await fallback({ instruction: task.objective, signal: runtime.signal });
-      if (fallbackResult?.status === "waiting_for_user") {
+      if (fallbackResult?.status === "waiting_for_user" || fallbackResult?.status === "waiting_for_approval") {
         return {
           ...fallbackResult,
           status: "waiting_for_user",
@@ -99,8 +107,16 @@ class BotExecutor {
         executor: `bot-${primaryTool || "reply"}-fallback`,
       };
     }
-    if (runtime.signal?.aborted || result?.status === "aborted") {
-      return { ok: false, status: "cancelled", output: result?.answer || "" };
+    if (runtime.signal?.aborted || result?.status === "aborted" || result?.status === "cancelled") {
+      return { ok: false, status: "cancelled", output: result?.answer || result?.output || "" };
+    }
+    if (result?.status === "waiting_for_user" || result?.status === "waiting_for_approval") {
+      return {
+        ...result,
+        status: result.status,
+        question: String(result.question || result.answer || result.output || ""),
+        executor: "bot-harness",
+      };
     }
     if (result?.status === "max_rounds") {
       return {

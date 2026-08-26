@@ -235,7 +235,7 @@ async function runBotTask({
 
     // An executor can end the whole turn itself — the browser tool parking
     // its opt-in question, the local runner waiting on a file approval.
-    if (result.terminal === "waiting_for_user") {
+    if (result.terminal === "waiting_for_user" || result.terminal === "waiting_for_approval") {
       taskState.recordToolRun(state, {
         tool: tool.name,
         instruction: decision.instruction,
@@ -243,12 +243,17 @@ async function runBotTask({
         summary: "handed back to the user",
       });
       onProgress({ phase: "waiting_for_user", question: result.question || "" });
-      return finish("waiting_for_user", result.question || result.output || "", {
-        question: result.question || "",
-        questionOptions: normalizeAnswerOptions(result.questionOptions),
-        needsUser: true,
-        parked: true,
-      });
+      return finish(
+        result.terminal === "waiting_for_approval" ? "waiting_for_approval" : "waiting_for_user",
+        result.question || result.output || "",
+        {
+          question: result.question || "",
+          questionOptions: normalizeAnswerOptions(result.questionOptions),
+          needsUser: true,
+          needsApproval: result.terminal === "waiting_for_approval",
+          parked: true,
+        },
+      );
     }
 
     const output = String(result.output || "");

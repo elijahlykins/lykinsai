@@ -6,89 +6,111 @@
  * of a web page. Reasoning goes through the same server structured endpoint
  * (POST /api/desktop/agent-model) so the Electron process holds no API keys.
  *
- * Reads run immediately; writes/deletes and risky commands go through the same
- * approval callback the browser agent uses for consequential actions.
+ * This module is the local brain behind LocalExecutor. It does not own a Task
+ * lifecycle: TaskRuntime supplies the objective, signal, parent budget, and
+ * approval/wait contract. Reads may run after a one-time grant; writes/deletes
+ * and risky commands go through the same approval callback the browser agent
+ * uses for consequential actions.
  */
 
 const localSystem = require("./localSystem.cjs");
+const {
+  ALL_LOCAL_TOOLS,
+  allowedToolNames,
+  commandPermitted,
+} = require("./task-runtime/executors/localCapabilities.cjs");
 
 const DEFAULT_MAX_ROUNDS = 20;
+const LOCAL_SAFETY_CEILING = 20;
 
-const DECISION_SCHEMA = {
-  type: "object",
-  properties: {
-    kind: { type: "string", enum: ["act", "finish", "ask_user"] },
-    tool: {
-      type: "string",
-      enum: [
-        "local_list_dir",
-        "local_read_file",
-        "local_search_files",
-        "local_write_file",
-        "local_edit_file",
-        "local_run_command",
-        "local_synced_folders",
-        "local_running_apps",
-        "local_read_app",
-        "local_open_app",
-        "local_open_path",
-      ],
-    },
-    args: {
-      type: "object",
-      properties: {
-        path: { type: "string" },
-        content: { type: "string" },
-        oldText: { type: "string" },
-        newText: { type: "string" },
-        replaceAll: { type: "boolean" },
-        overwrite: {
-          type: "boolean",
-          description:
-            "local_edit_file on a document (pdf/docx/rtf/odt/xlsx) only: replace the original file instead of writing a sibling '(edited)' copy",
-        },
-        command: { type: "string" },
-        cwd: { type: "string" },
-        namePattern: { type: "string" },
-        query: { type: "string" },
-        app: { type: "string" },
+const TOOL_ENUM = [...ALL_LOCAL_TOOLS];
+
+function decisionSchemaFor(allowedTools) {
+  const tools = TOOL_ENUM.filter((name) => !allowedTools || allowedTools.has(name));
+  return {
+    type: "object",
+    properties: {
+      kind: { type: "string", enum: ["act", "finish", "ask_user"] },
+      tool: {
+        type: "string",
+        enum: tools.length ? tools : TOOL_ENUM,
       },
-      additionalProperties: false,
+      args: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          content: { type: "string" },
+          oldText: { type: "string" },
+          newText: { type: "string" },
+          replaceAll: { type: "boolean" },
+          overwrite: {
+            type: "boolean",
+            description:
+              "local_edit_file on a document (pdf/docx/rtf/odt/xlsx) only: replace the original file instead of writing a sibling '(edited)' copy",
+          },
+          command: { type: "string" },
+          cwd: { type: "string" },
+          namePattern: { type: "string" },
+          query: { type: "string" },
+          app: { type: "string" },
+        },
+        additionalProperties: false,
+      },
+      reason: { type: "string", description: "Human-readable next step, one short sentence" },
+      answer: { type: "string", description: "Final user-facing answer when kind=finish" },
+      question: { type: "string", description: "Question for the user when kind=ask_user" },
     },
-    reason: { type: "string", description: "Human-readable next step, one short sentence" },
-    answer: { type: "string", description: "Final user-facing answer when kind=finish" },
-    question: { type: "string", description: "Question for the user when kind=ask_user" },
-  },
-  required: ["kind"],
-  additionalProperties: false,
+    required: ["kind"],
+    additionalProperties: false,
+  };
+}
+
+const DECISION_SCHEMA = decisionSchemaFor(null);
+
+const TOOL_LINES = {
+  local_list_dir: "- local_list_dir { path } — list a folder (read-only).",
+  local_read_file:
+    "- local_read_file { path } — read a file (read-only). Text files return as-is; documents — PDF, Word (docx/doc/rtf/odt), Excel (xlsx), PowerPoint (pptx) — are extracted to text, page by page or sheet by sheet.",
+  local_search_files:
+    "- local_search_files { path, namePattern, query } — find files or folders by name, or files by text (read-only).",
+  local_write_file: "- local_write_file { path, content } — create/overwrite a file (asks the user first).",
+  local_edit_file:
+    "- local_edit_file { path, oldText, newText, replaceAll?, overwrite? } — replace an exact snippet inside an existing file (asks the user first). Read the file first; oldText must match verbatim and be unique unless replaceAll. Text files edit in place. Documents work too: xlsx edits the matching cells and keeps formulas/formatting; PDF and Word/RTF/ODT are regenerated from their text, so styling is flattened. Document edits write a sibling 'name (edited).ext' by default and leave the original alone — pass overwrite: true only if the user asked to replace the original.",
+  local_run_command:
+    "- local_run_command { command, cwd } — run a shell command (safe ones run immediately; risky ones ask first).",
+  local_synced_folders:
+    "- local_synced_folders {} — list the folders the user synced with LYKN (your filesystem scope).",
+  local_running_apps: "- local_running_apps {} — see which apps are open and which is frontmost.",
+  local_read_app:
+    "- local_read_app { app } — read what's showing inside an app (Spotify: current track; browsers: active tab; others: on-screen text via Accessibility). Omit app for the frontmost one.",
+  local_open_app:
+    "- local_open_app { app } — open a Mac app and bring it into view on the user's desktop, like clicking it in the dock (runs immediately).",
+  local_open_path:
+    "- local_open_path { path } — open a file in LYKN's preview pop, or a folder in the Vault Finder.",
 };
 
-const SYSTEM_PROMPT = [
-  "You are LYKN operating directly on the user's Mac in Local Mode.",
-  "You can read, search, and write files and run terminal commands (zsh).",
-  "Work one step at a time, deciding from the results you observe.",
-  "",
-  "Tools:",
-  "- local_list_dir { path } — list a folder (read-only).",
-  "- local_read_file { path } — read a file (read-only). Text files return as-is; documents — PDF, Word (docx/doc/rtf/odt), Excel (xlsx), PowerPoint (pptx) — are extracted to text, page by page or sheet by sheet.",
-  "- local_search_files { path, namePattern, query } — find files or folders by name, or files by text (read-only).",
-  "- local_write_file { path, content } — create/overwrite a file (asks the user first).",
-  "- local_edit_file { path, oldText, newText, replaceAll?, overwrite? } — replace an exact snippet inside an existing file (asks the user first). Read the file first; oldText must match verbatim and be unique unless replaceAll. Text files edit in place. Documents work too: xlsx edits the matching cells and keeps formulas/formatting; PDF and Word/RTF/ODT are regenerated from their text, so styling is flattened. Document edits write a sibling 'name (edited).ext' by default and leave the original alone — pass overwrite: true only if the user asked to replace the original.",
-  "- local_run_command { command, cwd } — run a shell command (safe ones run immediately; risky ones ask first).",
-  "- local_synced_folders {} — list the folders the user synced with LYKN (your filesystem scope).",
-  "- local_running_apps {} — see which apps are open and which is frontmost.",
-  "- local_read_app { app } — read what's showing inside an app (Spotify: current track; browsers: active tab; others: on-screen text via Accessibility). Omit app for the frontmost one.",
-  "- local_open_app { app } — open a Mac app and bring it into view on the user's desktop, like clicking it in the dock (runs immediately).",
-  "- local_open_path { path } — open a file in LYKN's preview pop, or a folder in the Vault Finder.",
-  "",
-  "Rules:",
-  "- Explore with reads before writing or running mutating commands.",
-  "- Paths may be absolute, start with ~, or be relative to the home folder.",
-  "- File access is limited to the user's synced folders — check local_synced_folders if a path is refused.",
-  "- Use local_open_path for files and folders. Never open Finder as a substitute for opening a path.",
-  "- When the goal is done, return kind=finish with a concise summary of what you did.",
-  "- If you truly cannot proceed without the user, return kind=ask_user with a specific question.",
-].join("\n");
+function buildSystemPrompt(allowedTools) {
+  const tools = TOOL_ENUM.filter((name) => !allowedTools || allowedTools.has(name));
+  const lines = [
+    "You are LYKN operating directly on the user's Mac in Local Mode.",
+    "You can only use the tools listed below. Work one step at a time, deciding from the results you observe.",
+    "",
+    "Tools:",
+    ...tools.map((name) => TOOL_LINES[name]).filter(Boolean),
+    "",
+    "Rules:",
+    "- Explore with reads before writing or running mutating commands.",
+    "- Paths may be absolute, start with ~, or be relative to the home folder.",
+    "- File access is limited to the user's synced folders — check local_synced_folders if a path is refused.",
+    "- Use local_open_path for files and folders. Never open Finder as a substitute for opening a path.",
+    "- When the goal is done, return kind=finish with a concise summary of what you did.",
+    "- If you truly cannot proceed without the user, return kind=ask_user with a specific question.",
+    "- Do not keep looking for extra work after the requested result is in hand.",
+  ];
+  return lines.join("\n");
+}
+
+const SYSTEM_PROMPT = buildSystemPrompt(null);
 
 function summariseResult(result) {
   if (!result || typeof result !== "object") return String(result || "");
@@ -113,14 +135,78 @@ function summariseResult(result) {
   }
 }
 
-async function callModel({ apiBase, getAuthToken, fetchImpl }, { system, user, signal }) {
+function collectChangedFiles(history) {
+  const files = [];
+  for (const h of history || []) {
+    if (!h || h.approved === false) continue;
+    if (h.tool === "local_write_file" || h.tool === "local_edit_file") {
+      const p = String(h.args?.path || "").trim();
+      if (p) files.push(p);
+    }
+  }
+  return files;
+}
+
+function progressEventForTool(tool, args = {}, result = null) {
+  if (tool === "local_read_file" || tool === "local_list_dir" || tool === "local_search_files") {
+    return { event: "local.file_read", path: String(args.path || "") };
+  }
+  if (tool === "local_write_file" || tool === "local_edit_file") {
+    return { event: "local.file_changed", path: String(args.path || "") };
+  }
+  if (tool === "local_run_command") {
+    return result
+      ? {
+          event: "local.command_completed",
+          command: String(args.command || "").slice(0, 200),
+          ok: result.ok !== false,
+        }
+      : { event: "local.command_started", command: String(args.command || "").slice(0, 200) };
+  }
+  return { event: "local.progress", tool };
+}
+
+/**
+ * An explicit path plus a read-only ask can skip the planner loop.
+ * Returns null when the work is not obviously a single read/list.
+ */
+function tryDeterministicLocalAction(goal, allowedTools) {
+  const text = String(goal || "").trim();
+  if (!text) return null;
+  const writeish =
+    /\b(write|edit|create|save|overwrite|move|copy|rename|delete|remove|run|install|fix|replace)\b/i.test(
+      text,
+    );
+  if (writeish) return null;
+  const pathMatch = text.match(/(~\/[^\s"'`]+|\/(?:Users|users|home)\/[^\s"'`]+)/);
+  if (!pathMatch) return null;
+  const target = pathMatch[1].replace(/[.,;:]+$/, "");
+  const looksLikeList =
+    /\b(list|ls|what's in|whats in|show (me )?the (folder|directory|contents))\b/i.test(text);
+  if (looksLikeList && allowedTools.has("local_list_dir")) {
+    return { tool: "local_list_dir", args: { path: target } };
+  }
+  if (allowedTools.has("local_read_file")) {
+    return { tool: "local_read_file", args: { path: target } };
+  }
+  return null;
+}
+
+async function callModel({ apiBase, getAuthToken, fetchImpl, onUsage }, { system, user, schema, signal }) {
   const doFetch = fetchImpl || fetch;
   const token = await getAuthToken?.().catch(() => null);
   if (!token) throw new Error("not signed in");
+  const started = Date.now();
   const res = await doFetch(`${apiBase}/api/desktop/agent-model`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ stage: "decide", system, user, schema: DECISION_SCHEMA, maxTokens: 900 }),
+    body: JSON.stringify({
+      stage: "decide",
+      system,
+      user,
+      schema: schema || DECISION_SCHEMA,
+      maxTokens: 900,
+    }),
     signal,
   });
   if (!res.ok) {
@@ -131,13 +217,53 @@ async function callModel({ apiBase, getAuthToken, fetchImpl }, { system, user, s
   if (!data || data.ok === false || data.json == null) {
     throw new Error(`agent model returned no result: ${String(data?.error || "").slice(0, 160)}`);
   }
+  try {
+    onUsage?.({
+      stage: "local_decide",
+      model: data.model || "",
+      provider: data.provider || "",
+      inputTokens: Number(data.usage?.inputTokens) || 0,
+      outputTokens: Number(data.usage?.outputTokens) || 0,
+      upstreamMs: Number(data.upstreamMs) || Date.now() - started,
+    });
+  } catch {
+    /* accounting must never break a run */
+  }
   return data.json;
+}
+
+function emptyUsage() {
+  return { calls: 0, inputTokens: 0, outputTokens: 0, upstreamMs: 0, byStage: {} };
+}
+
+function addUsage(usage, entry) {
+  if (!usage || !entry) return;
+  usage.calls += 1;
+  usage.inputTokens += entry.inputTokens || 0;
+  usage.outputTokens += entry.outputTokens || 0;
+  usage.upstreamMs += entry.upstreamMs || 0;
+  const stage = String(entry.stage || "other");
+  const bucket =
+    usage.byStage[stage] ||
+    (usage.byStage[stage] = { calls: 0, inputTokens: 0, outputTokens: 0, upstreamMs: 0 });
+  bucket.calls += 1;
+  bucket.inputTokens += entry.inputTokens || 0;
+  bucket.outputTokens += entry.outputTokens || 0;
+  bucket.upstreamMs += entry.upstreamMs || 0;
+}
+
+function declineKey(tool, args) {
+  try {
+    return `${tool}:${JSON.stringify(args || {})}`;
+  } catch {
+    return String(tool);
+  }
 }
 
 /**
  * Run one local task to completion (or until user input / approval is needed).
  *
- * @returns {Promise<{ok:boolean, status:string, answer:string, history:Array}>}
+ * @returns {Promise<{ok:boolean, status:string, answer:string, history:Array, usage?:object}>}
  */
 async function runLocalAgentTask({
   goal,
@@ -147,11 +273,24 @@ async function runLocalAgentTask({
   conversationHistory = [],
   signal = null,
   maxRounds = DEFAULT_MAX_ROUNDS,
+  capabilities = null,
+  allowedTools = null,
   onProgress = () => {},
   onApprovalNeeded = null,
+  onUsage = null,
+  runTool = null,
 }) {
   const history = [];
+  const usage = emptyUsage();
   const aborted = () => signal?.aborted === true;
+  const tools =
+    allowedTools instanceof Set
+      ? allowedTools
+      : allowedToolNames(capabilities) || new Set(ALL_LOCAL_TOOLS);
+  const schema = decisionSchemaFor(tools);
+  const system = buildSystemPrompt(tools);
+  const executeTool = typeof runTool === "function" ? runTool : localSystem.run;
+  const rounds = Math.max(1, Math.min(LOCAL_SAFETY_CEILING, Number(maxRounds) || DEFAULT_MAX_ROUNDS));
   // Read-class tools ask once per task before the first file access; the
   // grant then covers the rest of this task. Writes/commands ask per action.
   const READ_TOOLS = new Set([
@@ -161,16 +300,181 @@ async function runLocalAgentTask({
     "local_pull_file",
   ]);
   let readAccessGranted = false;
+  const declined = new Set();
+
+  const recordUsage = (entry) => {
+    addUsage(usage, entry);
+    try {
+      onUsage?.(entry);
+    } catch {
+      /* ignore */
+    }
+  };
 
   const convo = (conversationHistory || [])
     .slice(-6)
     .map((m) => `${m?.role === "assistant" ? "LYKN" : "User"}: ${String(m?.content || "").slice(0, 400)}`)
     .join("\n");
 
-  onProgress({ phase: "planning" });
+  const cancelled = (answer = "Task cancelled.") => ({
+    ok: false,
+    status: "cancelled",
+    answer,
+    history,
+    usage,
+  });
 
-  for (let round = 1; round <= maxRounds; round += 1) {
-    if (aborted()) return { ok: false, status: "failed", answer: "Task aborted.", history };
+  const finishWith = (status, answer, extra = {}) => ({
+    ok: status !== "failed" && status !== "cancelled",
+    status,
+    answer: String(answer || "").trim() || (status === "completed" ? "Done." : ""),
+    history,
+    usage,
+    changedFiles: collectChangedFiles(history),
+    ...extra,
+  });
+
+  async function maybeApproveAndRun(tool, args) {
+    if (!localSystem.isLocalToolName(tool) || !tools.has(tool)) {
+      return { blocked: true, summary: "tool not permitted for this task" };
+    }
+    if (tool === "local_run_command") {
+      const risk = localSystem.classifyRisk(tool, args);
+      if (!commandPermitted(args.command, capabilities || ["local"], risk)) {
+        return { blocked: true, summary: "shell command not permitted for this task" };
+      }
+    }
+    const key = declineKey(tool, args);
+    if (declined.has(key)) {
+      return { blocked: true, summary: "previously declined — not retried" };
+    }
+
+    if (READ_TOOLS.has(tool) && !readAccessGranted) {
+      onProgress({ phase: "awaiting_approval", tool, summary: "Look through your files" });
+      let allowed = false;
+      if (typeof onApprovalNeeded === "function") {
+        const where = String(args.path || "").trim();
+        allowed = await onApprovalNeeded({
+          question: `Allow LYKN to look through your files${where ? ` (starting with ${where})` : ""} for this task?`,
+          summary: `Browse your files${where ? `: ${where}` : ""}`,
+          tool,
+          args,
+        }).catch(() => false);
+      }
+      if (aborted()) return { cancelled: true };
+      if (!allowed) {
+        declined.add(key);
+        return {
+          waiting: true,
+          needsApproval: true,
+          answer: "I need your permission to look through your files before I can do this.",
+          historyItem: { tool, args, approved: false, summary: "file access declined" },
+        };
+      }
+      readAccessGranted = true;
+    }
+
+    const risk = localSystem.classifyRisk(tool, args);
+    let approved = true;
+    if (risk.risky) {
+      onProgress({ phase: "awaiting_approval", tool, summary: risk.summary, event: "local.approval_required" });
+      if (typeof onApprovalNeeded === "function") {
+        approved = await onApprovalNeeded({
+          question: `Approve before I ${risk.summary}?`,
+          summary: risk.summary,
+          tool,
+          args,
+        }).catch(() => false);
+      } else {
+        approved = false;
+      }
+      if (aborted()) return { cancelled: true };
+      if (!approved) {
+        declined.add(key);
+        return {
+          waiting: true,
+          needsApproval: true,
+          answer: `I've prepared the next step but need your approval first: ${risk.summary}.`,
+          historyItem: { tool, args, approved: false, summary: "awaiting approval" },
+        };
+      }
+    }
+
+    if (tool === "local_run_command") {
+      onProgress(progressEventForTool(tool, args, null));
+    }
+    let result;
+    try {
+      result = await executeTool(tool, args, { approved, signal });
+    } catch (e) {
+      result = { ok: false, error: e?.message || String(e) };
+    }
+    if (aborted()) return { cancelled: true };
+    onProgress(progressEventForTool(tool, args, result));
+    return { result, approved };
+  }
+
+  onProgress({ phase: "planning", event: "local.progress" });
+
+  const deterministic = tryDeterministicLocalAction(goal, tools);
+  if (deterministic) {
+    if (aborted()) return cancelled();
+    const ran = await maybeApproveAndRun(deterministic.tool, deterministic.args);
+    if (ran.cancelled) return cancelled();
+    if (ran.waiting) {
+      return finishWith("waiting_for_user", ran.answer, {
+        needsUser: true,
+        needsApproval: ran.needsApproval === true,
+        history: [...history, ran.historyItem],
+      });
+    }
+    if (!ran.blocked) {
+      history.push({
+        tool: deterministic.tool,
+        args: deterministic.args,
+        approved: ran.approved,
+        summary: summariseResult(ran.result),
+      });
+      const wantsSummary = /\b(summar(y|ise|ize)|explain|what does|tell me about)\b/i.test(
+        String(goal || ""),
+      );
+      if (!wantsSummary) {
+        const raw = ran.result?.content || ran.result?.output || summariseResult(ran.result);
+        return finishWith("completed", String(raw || "Done.").trim() || "Done.");
+      }
+      // One finish-oriented call to phrase the already-fetched content. Not a planner loop.
+      try {
+        const decision = await callModel(
+          { apiBase, getAuthToken, fetchImpl, onUsage: recordUsage },
+          {
+            system:
+              "Summarize the local file result for the user. Return kind=finish with a concise answer. Do not call tools.",
+            user: `Goal: ${goal}\n\nResult:\n${summariseResult(ran.result)}`,
+            schema,
+            signal,
+          },
+        );
+        if (aborted()) return cancelled();
+        if (decision?.kind === "ask_user") {
+          return finishWith(
+            "waiting_for_user",
+            String(decision.question || "I need your input to continue.").trim(),
+            { needsUser: true },
+          );
+        }
+        return finishWith(
+          "completed",
+          String(decision?.answer || summariseResult(ran.result) || "Done.").trim() || "Done.",
+        );
+      } catch (e) {
+        if (aborted()) return cancelled();
+        return finishWith("completed", summariseResult(ran.result) || String(e?.message || "Done."));
+      }
+    }
+  }
+
+  for (let round = 1; round <= rounds; round += 1) {
+    if (aborted()) return cancelled();
 
     const historyText = history.length
       ? history
@@ -188,6 +492,7 @@ async function runLocalAgentTask({
       `Steps so far:\n${historyText}`,
       "",
       "Decide the single next action (act / finish / ask_user).",
+      "Stop when the requested result is in hand. Remaining rounds are not a reason to continue.",
     ]
       .filter(Boolean)
       .join("\n");
@@ -195,42 +500,43 @@ async function runLocalAgentTask({
     let decision;
     try {
       decision = await callModel(
-        { apiBase, getAuthToken, fetchImpl },
-        { system: SYSTEM_PROMPT, user, signal },
+        { apiBase, getAuthToken, fetchImpl, onUsage: recordUsage },
+        { system, user, schema, signal },
       );
     } catch (e) {
-      return {
-        ok: false,
-        status: "failed",
-        answer: `I couldn't reach the reasoning service: ${e?.message || e}`,
-        history,
-      };
+      if (aborted()) return cancelled();
+      return finishWith(
+        "failed",
+        `I couldn't reach the reasoning service: ${e?.message || e}`,
+      );
     }
+
+    if (aborted()) return cancelled();
 
     const kind = ["act", "finish", "ask_user"].includes(decision?.kind) ? decision.kind : "act";
 
     if (kind === "finish") {
-      return {
-        ok: true,
-        status: "completed",
-        answer: String(decision.answer || "Done.").trim() || "Done.",
-        history,
-      };
+      return finishWith(
+        "completed",
+        String(decision.answer || "Done.").trim() || "Done.",
+      );
     }
     if (kind === "ask_user") {
-      return {
-        ok: true,
-        status: "waiting_for_user",
-        needsUser: true,
-        answer: String(decision.question || "I need your input to continue.").trim(),
-        history,
-      };
+      return finishWith(
+        "waiting_for_user",
+        String(decision.question || "I need your input to continue.").trim(),
+        { needsUser: true },
+      );
     }
 
     const tool = String(decision.tool || "");
     const args = decision.args && typeof decision.args === "object" ? decision.args : {};
-    if (!localSystem.isLocalToolName(tool)) {
-      history.push({ tool: tool || "(none)", args, summary: "invalid tool — ignored" });
+    if (!localSystem.isLocalToolName(tool) || !tools.has(tool)) {
+      history.push({
+        tool: tool || "(none)",
+        args,
+        summary: "tool not permitted for this task — ignored",
+      });
       continue;
     }
 
@@ -239,76 +545,37 @@ async function runLocalAgentTask({
       tool,
       args,
       reason: String(decision.reason || "").slice(0, 160),
+      event: "local.progress",
     });
 
-    // First file access of this task — ask before touching anything.
-    if (READ_TOOLS.has(tool) && !readAccessGranted) {
-      onProgress({ phase: "awaiting_approval", tool, summary: "Look through your files" });
-      let allowed = false;
-      if (typeof onApprovalNeeded === "function") {
-        const where = String(args.path || "").trim();
-        allowed = await onApprovalNeeded({
-          question: `Allow LYKN to look through your files${where ? ` (starting with ${where})` : ""} for this task?`,
-          summary: `Browse your files${where ? `: ${where}` : ""}`,
-          tool,
-          args,
-        }).catch(() => false);
-      }
-      if (!allowed) {
-        return {
-          ok: true,
-          status: "waiting_for_user",
-          needsUser: true,
-          needsApproval: true,
-          answer: "I need your permission to look through your files before I can do this.",
-          history: [...history, { tool, args, approved: false, summary: "file access declined" }],
-        };
-      }
-      readAccessGranted = true;
+    const ran = await maybeApproveAndRun(tool, args);
+    if (ran.cancelled) return cancelled();
+    if (ran.waiting) {
+      return finishWith("waiting_for_user", ran.answer, {
+        needsUser: true,
+        needsApproval: ran.needsApproval === true,
+        history: [...history, ran.historyItem],
+      });
     }
-
-    const risk = localSystem.classifyRisk(tool, args);
-    let approved = true;
-    if (risk.risky) {
-      onProgress({ phase: "awaiting_approval", tool, summary: risk.summary });
-      if (typeof onApprovalNeeded === "function") {
-        approved = await onApprovalNeeded({
-          question: `Approve before I ${risk.summary}?`,
-          summary: risk.summary,
-          tool,
-          args,
-        }).catch(() => false);
-      } else {
-        approved = false;
-      }
-      if (!approved) {
-        return {
-          ok: true,
-          status: "waiting_for_user",
-          needsUser: true,
-          needsApproval: true,
-          answer: `I've prepared the next step but need your approval first: ${risk.summary}.`,
-          history: [...history, { tool, args, approved: false, summary: "awaiting approval" }],
-        };
-      }
+    if (ran.blocked) {
+      history.push({ tool, args, summary: ran.summary });
+      continue;
     }
-
-    let result;
-    try {
-      result = await localSystem.run(tool, args, { approved });
-    } catch (e) {
-      result = { ok: false, error: e?.message || String(e) };
-    }
-    history.push({ tool, args, approved, summary: summariseResult(result) });
+    history.push({
+      tool,
+      args,
+      approved: ran.approved,
+      summary: summariseResult(ran.result),
+    });
   }
 
-  return {
-    ok: true,
-    status: "failed",
-    answer: "I ran out of steps before finishing. Here's what I got through: " +
-      (history.slice(-3).map((h) => h.tool).join(", ") || "no completed steps") + ".",
-    history,
-  };
+  return finishWith(
+    "failed",
+    "I ran out of steps before finishing. Here's what I got through: " +
+      (history.slice(-3).map((h) => h.tool).join(", ") || "no completed steps") +
+      ".",
+    { reason: "round_budget_exhausted" },
+  );
 }
 
 /**
@@ -365,4 +632,10 @@ function looksLikeLocalSystemAsk(text) {
   return false;
 }
 
-module.exports = { runLocalAgentTask, looksLikeLocalSystemAsk, DECISION_SCHEMA };
+module.exports = {
+  runLocalAgentTask,
+  looksLikeLocalSystemAsk,
+  DECISION_SCHEMA,
+  tryDeterministicLocalAction,
+  LOCAL_SAFETY_CEILING,
+};

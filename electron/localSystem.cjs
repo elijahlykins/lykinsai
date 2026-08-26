@@ -276,15 +276,35 @@ function isInsideFolder(absPath, folder) {
 }
 
 /**
+ * Canonical form of a path for allowlist checks. Follows symlinks when the
+ * target or its parent exists so a link inside an approved root cannot
+ * escape, and so /var vs /private/var on macOS compare as the same folder.
+ */
+function canonicalPath(absPath) {
+  const abs = path.resolve(String(absPath || ""));
+  if (!abs) return "";
+  try {
+    return fs.realpathSync(abs);
+  } catch {
+    try {
+      return path.join(fs.realpathSync(path.dirname(abs)), path.basename(abs));
+    } catch {
+      return abs;
+    }
+  }
+}
+
+/**
  * How deeply a path is covered by a list of folders — the nesting depth of the
  * closest one that contains it, or -1 if none does. Depth is what lets two
  * lists disagree about the same path and still settle it.
  */
 function coverDepth(absPath, folders) {
+  const target = canonicalPath(absPath);
   let deepest = -1;
   for (const folder of Array.isArray(folders) ? folders : []) {
-    const resolved = path.resolve(String(folder || ""));
-    if (!resolved || !isInsideFolder(absPath, resolved)) continue;
+    const resolved = canonicalPath(folder);
+    if (!resolved || !isInsideFolder(target, resolved)) continue;
     const depth = resolved.split(path.sep).length;
     if (depth > deepest) deepest = depth;
   }
@@ -303,10 +323,11 @@ function coverDepth(absPath, folders) {
 function isAllowedPath(absPath, config) {
   if (!absPath) return false;
   if (!config) return true;
-  const excluded = coverDepth(absPath, config.excludedFolders);
-  if (excluded >= 0 && coverDepth(absPath, config.syncedFolders) <= excluded) return false;
+  const target = canonicalPath(absPath);
+  const excluded = coverDepth(target, config.excludedFolders);
+  if (excluded >= 0 && coverDepth(target, config.syncedFolders) <= excluded) return false;
   if (config.syncAll !== false) return true;
-  return coverDepth(absPath, config.syncedFolders) >= 0;
+  return coverDepth(target, config.syncedFolders) >= 0;
 }
 
 /**
@@ -702,9 +723,12 @@ async function editFileTool(args = {}) {
   };
 }
 
-function runCommand(args = {}) {
+function runCommand(args = {}, { signal } = {}) {
   const command = String(args.command || "").trim();
   if (!command) return Promise.resolve({ ok: false, error: "command is required" });
+  if (signal?.aborted) {
+    return Promise.resolve({ ok: false, command, error: "aborted", aborted: true });
+  }
   const cwd = args.cwd ? resolveUserPath(args.cwd) : homeDir();
   return new Promise((resolve) => {
     let out = "";
@@ -723,15 +747,39 @@ function runCommand(args = {}) {
     };
     child.stdout.on("data", append);
     child.stderr.on("data", append);
-    const timer = setTimeout(() => {
+    const finish = (payload) => {
       if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        signal?.removeEventListener?.("abort", onAbort);
+      } catch {
+        /* ignore */
+      }
+      resolve(payload);
+    };
+    const onAbort = () => {
       try {
         child.kill("SIGKILL");
       } catch {
         /* already dead */
       }
-      settled = true;
-      resolve({
+      finish({
+        ok: false,
+        command,
+        cwd,
+        error: "aborted",
+        aborted: true,
+        output: capText(out).text,
+      });
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* already dead */
+      }
+      finish({
         ok: false,
         command,
         cwd,
@@ -739,18 +787,28 @@ function runCommand(args = {}) {
         output: capText(out).text,
       });
     }, COMMAND_TIMEOUT_MS);
+    try {
+      signal?.addEventListener?.("abort", onAbort, { once: true });
+    } catch {
+      /* no signal */
+    }
     child.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ ok: false, command, cwd, error: err?.message || "spawn failed" });
+      finish({ ok: false, command, cwd, error: err?.message || "spawn failed" });
     });
     child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
+      if (signal?.aborted) {
+        finish({
+          ok: false,
+          command,
+          cwd,
+          error: "aborted",
+          aborted: true,
+          output: capText(out).text,
+        });
+        return;
+      }
       const { text, truncated } = capText(out);
-      resolve({ ok: code === 0, command, cwd, exitCode: code, output: text, truncated });
+      finish({ ok: code === 0, command, cwd, exitCode: code, output: text, truncated });
     });
   });
 }
@@ -1154,7 +1212,7 @@ async function readAppTool(args = {}) {
  *  - { needsApproval: true, summary } if the action is risky and not approved
  *  - a tool result object (always has ok: boolean)
  */
-async function run(name, args = {}, { approved = false, userDataPath = "" } = {}) {
+async function run(name, args = {}, { approved = false, userDataPath = "", signal = null } = {}) {
   if (!isLocalToolName(name)) {
     return { ok: false, error: `Unknown local tool: ${name}` };
   }
@@ -1211,7 +1269,7 @@ async function run(name, args = {}, { approved = false, userDataPath = "" } = {}
       case "local_edit_file":
         return await editFileTool(args);
       case "local_run_command":
-        return await runCommand(args);
+        return await runCommand(args, { signal });
       case "local_synced_folders":
         return syncedFoldersTool(config);
       case "local_running_apps":
@@ -1245,4 +1303,5 @@ module.exports = {
   isAllowedPath,
   resolveUserPath,
   run,
+  checkToolAccess,
 };

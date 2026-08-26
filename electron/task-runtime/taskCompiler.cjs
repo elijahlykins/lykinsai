@@ -2,6 +2,7 @@
 
 const crypto = require("node:crypto");
 const { createTask, TASK_STATUSES } = require("./task.cjs");
+const { compileLocalCapabilities } = require("./executors/localCapabilities.cjs");
 
 const DEFAULT_SUCCESS =
   "The requested work has been performed and the requested result can be returned.";
@@ -98,8 +99,65 @@ function compileBotTask(input = {}, options = {}) {
   });
 }
 
+/**
+ * Compile a dedicated local-computer Task for a normal Agent.
+ * Capabilities are derived from the objective unless the caller supplies them.
+ * This compiler does no model call and does not broaden read-only asks.
+ */
+function compileLocalTask(input = {}, options = {}) {
+  const objective = String(input.objective || input.text || "").trim();
+  if (!objective) throw new TypeError("Local task objective is required");
+  const now = String(options.now || new Date().toISOString());
+  const id = String(options.id || newTaskId());
+  const explicitDoNot = cleanList(input.doNot, 12);
+  const doNot = explicitDoNot.includes(DEFAULT_DO_NOT)
+    ? explicitDoNot
+    : [...explicitDoNot, DEFAULT_DO_NOT];
+  return createTask({
+    id,
+    runId: id,
+    objective,
+    successCriteria: cleanList(input.successCriteria, 8).length
+      ? cleanList(input.successCriteria, 8)
+      : [DEFAULT_SUCCESS],
+    scope: {
+      summary: String(input.scope?.summary || input.scope || DEFAULT_SCOPE).trim() || DEFAULT_SCOPE,
+      resources: cleanList(input.scope?.resources, 20),
+    },
+    doNot,
+    capabilities: compileLocalCapabilities(objective, {
+      explicit: cleanList(input.capabilities, 20),
+    }),
+    budgets: {
+      maxRounds: input.budgets?.maxRounds,
+      maxRecoveries: input.budgets?.maxRecoveries,
+      timeoutMs: input.budgets?.timeoutMs,
+      maxChildExecutors: input.budgets?.maxChildExecutors,
+    },
+    approval: {
+      policy: "preserve_executor_security_gates",
+      state: "not_requested",
+    },
+    cancellation: {
+      state: "active",
+      signal: options.signal || null,
+    },
+    origin: input.origin || { type: "agent" },
+    association: {
+      agentId: String(input.agentId || input.association?.agentId || "").trim(),
+      chatId: String(input.chatId || input.association?.chatId || "").trim(),
+      parentTaskId: String(input.parentTaskId || input.association?.parentTaskId || "").trim(),
+    },
+    status: TASK_STATUSES.CREATED,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
 module.exports = {
   compileBotTask,
+  compileLocalTask,
+  compileLocalCapabilities,
   DEFAULT_SUCCESS,
   DEFAULT_SCOPE,
   DEFAULT_DO_NOT,
