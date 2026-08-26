@@ -85,6 +85,21 @@ test('the 5 pre-limiter routes stay EXEMPT from the global limiter (current beha
   assert.equal(hasRateLimitHeader, false, '/api/health is registered before the limiter and must stay exempt');
 });
 
+test('artifacts rebuild stays limiter-EXEMPT and behind requireAuth (current behavior)', async () => {
+  // CHARACTERIZATION (Wave 7): POST /api/artifacts/react/rebuild registers
+  // BEFORE app.use('/api/', globalLimiter) and therefore never sees the
+  // limiter — a DEFERRED SECURITY FINDING preserved as-is by the extraction
+  // (server/routes/preLimiterPlatform.routes.js). requireAuth still gates it.
+  const res = await fetch(`${baseUrl}/api/artifacts/react/rebuild`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(res.status, 401, 'unauthenticated rebuild is rejected by requireAuth');
+  const hasRateLimitHeader = [...res.headers.keys()].some((k) => k.toLowerCase().startsWith('ratelimit'));
+  assert.equal(hasRateLimitHeader, false, 'rebuild route is registered before the limiter and must stay exempt');
+});
+
 test('unknown routes 404 via the Express default (no custom catch-all)', async () => {
   const res = await get('/api/zz-harness-does-not-exist');
   assert.equal(res.status, 404);
