@@ -173,3 +173,44 @@ props/callback expressions untouched.
 
 ### Result
 `Vault.jsx`: 9,649 → 9,498 lines (−151). New component file: 158 lines.
+
+---
+
+## Batch 5 — 2026-08-25 — Extract SourceFolderTile component
+
+### Change
+Moved the inline `SourceFolderTile` component (formerly `src/pages/Vault.jsx`
+lines 9455–9498, including banner docblock) into
+`src/components/vault/SourceFolderTile.jsx` (default export). Added one
+import in `Vault.jsx`.
+
+### Reason
+Final named-component extraction from Vault.jsx. Connector "app icon" tile
+with one visual responsibility; props only (`card`, `heightClass`), zero
+external dependencies (it does NOT use the module-level
+`resolveSourceFolder` cache — the page resolves connector config into the
+card before rendering; verified all three `resolveSourceFolder` call sites
+are page card-building code).
+
+### Selection note
+The batch goal was "slightly more connected than WhyEditor", but after
+Batches 3–4 only two named inline components remained (`SourceFolderTile`
+and the 10-line `VaultPickerTapOverlay`) — everything more connected is
+anonymous JSX closing over page-level state. Per the safety-first rule the
+less-connected candidate was chosen rather than forcing a state-owning
+boundary. Next step: map Vault.jsx state ownership before any hook
+extraction.
+
+### Behavioral change
+None intended. 44-line body verified byte-identical against
+`git show HEAD`; both call sites (lines ~3545 and ~7501) and their prop
+expressions untouched.
+
+### References checked
+- Exactly one definition repo-wide after move.
+- `Vault.jsx` refs: 1 import + 2 call sites; prop names/defaults identical.
+- ESLint on both files: 0 errors (8 pre-existing warnings).
+- `npm run build` (vite): success.
+
+### Result
+`Vault.jsx`: 9,498 → 9,455 lines (−43). New component file: 49 lines.
