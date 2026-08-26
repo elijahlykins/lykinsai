@@ -3,7 +3,6 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { supabase } from "@/lib/supabase";
 import { snapshotToSynthesisText } from "@/lib/synthesis/sourceText";
 import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
-import { scheduleUserProfileRefresh } from "@/lib/synthesis/profileRefresh";
 import type { NotePage } from "@/components/notes/NotesPanel";
 import { notifyBlocksCapIfApplicable } from "@/lib/lyknChat/blocksCapError";
 import { fetchMostRecentLyknChat } from "@/lib/lyknChat/fetchLyknChatsWithContext";
@@ -620,11 +619,8 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
             text: embedText,
             metadata: { title: savedTitle },
           });
-          // Grid saves are real evidence about what the user is working on —
-          // feed them into the user-model learner the same way vault saves do.
-          if (userId) scheduleUserProfileRefresh(userId);
         } catch {
-          /* synthesis embed is best-effort */
+          /* retrieval indexing is best-effort */
         }
       }
 
@@ -771,7 +767,7 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
           // ignore
         }
         // Explicit new-chat navigation — register the row immediately so
-        // sidebars and the synthesis layer list it before the first save.
+        // sidebars and the Projects workspace list it before the first save.
         try {
           const { error: insertErr } = await supabase
             .from("lykn_chats")

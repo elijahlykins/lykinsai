@@ -18,12 +18,12 @@
 // + the block's intent regex so it isn't silently undocumented. The schema
 // converters below pick the tool up automatically.
 //
-// We deliberately do NOT re-export the full SYNTHESIS_TOOLS list. The
+// We deliberately do NOT re-export the full LYKN_TOOLS list. The
 // defaults for in-app chat should always be an explicit whitelist; broad
 // write access via tool calls is exactly the failure mode that makes "the
 // chat nuked my projects" stories. New tools opt in here explicitly.
 
-import { SYNTHESIS_TOOLS_BY_NAME, errorContent } from './index.js';
+import { LYKN_TOOLS_BY_NAME, errorContent } from './index.js';
 import { EXTERIOR_TOOLS_BY_NAME } from './exterior/index.js';
 import { delegateToSubModelTool } from './delegateToSubModel.js';
 import { listSubModelTasksTool } from './listSubModelTasks.js';
@@ -56,7 +56,7 @@ import { openAppTool } from './openApp.js';
 import { LOCAL_CHAT_TOOLS_BY_NAME, LOCAL_TOOL_NAMES } from './localTools.js';
 
 const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
-  ...SYNTHESIS_TOOLS_BY_NAME,
+  ...LYKN_TOOLS_BY_NAME,
   ...EXTERIOR_TOOLS_BY_NAME,
   [delegateToSubModelTool.name]: delegateToSubModelTool,
   [listSubModelTasksTool.name]: listSubModelTasksTool,
@@ -77,35 +77,29 @@ const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
 // salience when picking between similarly-described options. Cluster by
 // rough "this is how a single conversation flows":
 //
-//   discovery → read   → cluster → mutate → propose-new
-//   listProjects → findConnections → addProjectNeurons /
-//   removeProjectNeurons → updateProject / setActiveProject / deleteProject →
-//   proposeFact
+//   discovery → read → attach Vault knowledge → mutate
+//   listProjects → searchVault → addProjectNeurons /
+//   removeProjectNeurons → updateProject / setActiveProject / deleteProject
 //
 // Read tools first because the agent loop's first call on most turns is
 // a read, and writes get more conservative when the model has already
 // seen the world via reads.
 export const CHAT_TOOL_NAMES = [
-  // ── Personal memory (production authority as of Phase 2) ─────────
+  // ── Personal memory (sole production authority) ──────────────────
   'memory_list',
   'memory_read',
   'memory_patch',
   'memory_create',
   'memory_forget',
-  // ── Identity reads (call early — these shape EVERY reply) ────────
-  'lykn_getBeliefs',
-  'lykn_getRules',
-  'lykn_getFacts',
+  // ── Server-enforced preferences ──────────────────────────────────
   'lykn_getUserPreferences',
   // ── Project / neuron reads ───────────────────────────────────────
   'lykn_listProjects',
   'lykn_resolveProject',
   'lykn_getProjectState',
   'lykn_getProjectNeurons',
-  'lykn_findConnections',
   'lykn_loadNeuron',
   'lykn_loadNeurons',
-  'lykn_getNeuronLinks',
   'lykn_getRecentActivity',
   // ── Project working-memory write (git-style, reversible) ─────────
   'lykn_pushProjectState',
@@ -127,13 +121,7 @@ export const CHAT_TOOL_NAMES = [
   'lykn_deleteProject',
   // ── Project merge (two-phase: dry-run preview → confirm commit) ──
   'lykn_mergeProjects',
-  // ── Cross-neuron edges + concept recency (low-risk writes) ───────
-  'lykn_createNeuronLink',
-  'lykn_touchConcept',
-  // ── Rule application telemetry (records belief→reply attribution) ─
-  'lykn_recordRuleApplication',
-  // ── New-neuron proposals (write into facts / vault — beliefs are user-only) ─
-  'lykn_proposeFact',
+  // ── Vault writes ──────────────────────────────────────────────────
   'lykn_createVaultNote',
   // Keep a GENERATED artifact (a doc/plan/deck/spreadsheet the model or a
   // capability tool just produced, or a sub-agent's report) in the vault —
@@ -442,15 +430,14 @@ export async function runChatTool(toolName, args, ctx, options = {}) {
 }
 
 /**
- * Build the ctx a synthesis tool handler expects from an Express `req`.
+ * Build the context a LYKN tool handler expects from an Express `req`.
  * This deliberately mirrors `buildToolCtx` in server.js (the voice path)
  * so the same tool handler behaves identically in chat and voice.
  *
  *   const ctx = buildChatToolCtx(req);
  *   await runChatTool('lykn_listProjects', args, ctx);
  *
- * Surface convention: in-app chat traffic is always `lykn-chat` (matches
- * what the <applied> tag funnel uses).
+ * Surface convention: in-app chat traffic is always `lykn-chat`.
  */
 /**
  * Label for the in-app chat model (custom display name or served model id).

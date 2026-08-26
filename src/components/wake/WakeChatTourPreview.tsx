@@ -7,7 +7,7 @@ import { getCollapsedPreview } from "@/lib/chatChunks";
 import { LYKN_ID } from "@/lib/modelCatalog";
 import { AI_GUEST_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
 import { WAKE_CHAT_TYPED_WELCOME } from "@/lib/wake/wakeChatTour";
-import { WAKE_WALKTHROUGH_GATE_TEXT } from "@/components/wake/wakeSynthesisAddMenu";
+import { WAKE_WALKTHROUGH_GATE_TEXT } from "@/components/wake/wakeWalkthrough";
 import {
   incrementWakeChatPreviewSendCount,
   readWakeChatPreviewSendCount,

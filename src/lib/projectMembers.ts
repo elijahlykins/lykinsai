@@ -1,5 +1,5 @@
 // Project collaboration data layer — the member roster + email invites for a
-// shared synthesis-layer project (lykn_project_members, migration 109).
+// shared LYKN project (lykn_project_members, migration 109).
 //
 // Scoped sharing: a project's OWNER can invite people by email as `editor`
 // (read + write the project's state / tasks / calendar) or `viewer` (read).

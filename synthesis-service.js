@@ -1,5 +1,5 @@
 // ============================================================================
-// synthesis-service.js — embed + store helper for the synthesis layer
+// synthesis-service.js — legacy-named vault retrieval index helper
 // ============================================================================
 // Self-contained mirror of the synthesis embed/store path in server.js, made
 // importable from backend modules that need to reindex on behalf of the user

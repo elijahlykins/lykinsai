@@ -1,8 +1,8 @@
 // ============================================================================
-// mcp-tools/index.js — registry of the synthesis-layer tools
+// mcp-tools/index.js — registry of LYKN in-app tools
 // ============================================================================
-// One source of truth for "what can LYKN's own AI do with the user's
-// synthesis layer." These are consumed by two in-app surfaces:
+// One source of truth for what LYKN's own AI can do for the user.
+// These are consumed by two in-app surfaces:
 //   • the text chat  — via the whitelist in chatTools.js
 //   • the voice agent — via the runMcp dispatcher in server.js
 //
@@ -12,8 +12,8 @@
 //
 // Tool shape:
 //   {
-//     name        : 'lykn_getBeliefs'
-//     title       : 'Get the user\'s active beliefs'
+//     name        : 'memory_list'
+//     title       : 'List the user\'s memory documents'
 //     description : Long, LLM-facing prose describing WHEN to call it.
 //                  This is the single biggest determinant of whether the
 //                  model uses the tool well. Spend tokens here, not in
@@ -37,13 +37,7 @@
 // Adding a new tool = drop a file in here, re-export it below, and add it
 // to CHAT_TOOL_NAMES in chatTools.js.
 
-import { getBeliefsTool } from './getBeliefs.js';
-import { getRulesTool } from './getRules.js';
-import { getFactsTool } from './getFacts.js';
 import { searchVaultTool } from './searchVault.js';
-import { getContextBlockTool } from './getContextBlock.js';
-import { recordRuleApplicationTool } from './recordRuleApplication.js';
-import { proposeFactTool } from './proposeFact.js';
 import { setActiveProjectTool } from './setActiveProject.js';
 import { pushProjectStateTool } from './pushProjectState.js';
 import { getProjectStateTool } from './getProjectState.js';
@@ -54,14 +48,10 @@ import { addProjectNeuronsTool } from './addProjectNeurons.js';
 import { removeProjectNeuronsTool } from './removeProjectNeurons.js';
 import { deleteProjectTool } from './deleteProject.js';
 import { mergeProjectsTool } from './mergeProjects.js';
-import { findConnectionsTool } from './findConnections.js';
 import { createVaultNoteTool } from './createVaultNote.js';
 import { loadNeuronTool } from './loadNeuron.js';
 import { loadNeuronsTool } from './loadNeurons.js';
 import { getProjectNeuronsTool } from './getProjectNeurons.js';
-import { createNeuronLinkTool } from './createNeuronLink.js';
-import { getNeuronLinksTool } from './getNeuronLinks.js';
-import { touchConceptTool } from './touchConcept.js';
 import { getUserPreferencesTool } from './getUserPreferences.js';
 import { updateUserPreferenceTool } from './updateUserPreference.js';
 import { getRecentActivityTool } from './getRecentActivity.js';
@@ -93,12 +83,8 @@ import { checkCursorBuildTool } from './checkCursorBuild.js';
 import { listAppsTool } from './listApps.js';
 import { callAppTool } from './callApp.js';
 
-export const SYNTHESIS_TOOLS = [
-  // Tier 1 — Core beliefs (governance, ratified)
-  getBeliefsTool,
-  getRulesTool,
-  recordRuleApplicationTool,
-  // Tier 2 — Project state (working memory, git-style)
+export const LYKN_TOOLS = [
+  // Project state (product working context)
   listProjectsTool,
   resolveProjectTool,
   setActiveProjectTool,
@@ -110,19 +96,14 @@ export const SYNTHESIS_TOOLS = [
   addProjectNeuronsTool,
   removeProjectNeuronsTool,
   getProjectNeuronsTool,
-  // Tier 3 — Identity facts (background, light-weight)
-  getFactsTool,
-  proposeFactTool,
-  // Phase 2 — Markdown memory (production personal-memory authority)
+  // Markdown memory (production personal-memory authority)
   memoryListTool,
   memoryReadTool,
   memoryPatchTool,
   memoryCreateTool,
   memoryForgetTool,
   // Cross-tier helpers
-  getContextBlockTool,
   searchVaultTool,
-  findConnectionsTool,
   loadNeuronTool,
   loadNeuronsTool,
   createVaultNoteTool,
@@ -131,10 +112,6 @@ export const SYNTHESIS_TOOLS = [
   // pasted-URL auto-scrape: the AI gets the page content in
   // [SCRAPED_WEB_PAGES] and can call this with a meaningful title.
   saveLinkToVaultTool,
-  // Synthesis graph — user-authored cross-neuron edges
-  createNeuronLinkTool,
-  getNeuronLinksTool,
-  touchConceptTool,
   // Reminders — time-anchored prompts the AI sets in text or voice mode
   createReminderTool,
   listRemindersTool,
@@ -172,8 +149,8 @@ export const SYNTHESIS_TOOLS = [
   getRecentActivityTool,
 ];
 
-export const SYNTHESIS_TOOLS_BY_NAME = Object.freeze(
-  Object.fromEntries(SYNTHESIS_TOOLS.map((t) => [t.name, t])),
+export const LYKN_TOOLS_BY_NAME = Object.freeze(
+  Object.fromEntries(LYKN_TOOLS.map((t) => [t.name, t])),
 );
 
 // ---------------------------------------------------------------------------

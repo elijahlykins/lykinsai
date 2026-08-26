@@ -1511,7 +1511,7 @@ export const CONNECTOR_STATUSES = {
 //
 // Every adapter under `/connectors/*.js` calls `saveConnectorNote(...)`
 // (or the Google/Apple equivalents) with a `source:` slug that lands on
-// `notes.source`. The synthesis layer keys provenance off that slug -
+// `notes.source`. The retrieval index keys provenance off that slug -
 // `get_belief_provenance` / `get_connector_synthesis_counts` aggregate
 // by `notes.source`, and the briefing / tile / graph UIs need to walk
 // from a catalog connector id back to its slugs to render footer chips

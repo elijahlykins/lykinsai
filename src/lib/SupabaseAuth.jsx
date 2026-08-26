@@ -415,7 +415,7 @@ export function SupabaseAuthProvider({ children }) {
 
     // "Start from the beginning": wipe the prototype walkthrough storage
     // so the next page load is indistinguishable from a fresh visitor —
-    // empty Synthesis Layer, no half-finished neuron list, walkthrough
+    // empty Projects workspace, no half-finished project list, walkthrough
     // step pointer reset.
     clearPrototypeState();
 

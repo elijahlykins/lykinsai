@@ -1,7 +1,7 @@
 // ============================================================================
 // mcp-tools/searchVault.js — MCP tool wrapper around hybrid vault search
 // ============================================================================
-// Engine lives in lib/rag/vaultHybrid.js so findConnections can share it
+// Engine lives in lib/rag/vaultHybrid.js so Vault retrieval paths share it
 // without a circular import through mcp-tools/index.js.
 
 import { jsonContent, errorContent } from './content.js';

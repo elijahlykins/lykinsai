@@ -7,9 +7,7 @@
 //     reconcile supersession so each (target, state_key) ends up with
 //     at most one non-superseded row (newer-wins),
 //   • dedupe + repoint lykn_project_neurons membership,
-//   • repoint lykn_user_model_facts.project_id (best-effort if 047
-//     hasn't been applied),
-//   • redirect lykn_user_synthesis_profile.active_project_id if it
+// //   • redirect lykn_user_preferences.active_project_id if it
 //     pointed at source,
 //   • hard-delete the source row (cascades clean up any stragglers).
 //
@@ -51,7 +49,7 @@ export const mergeProjectsTool = {
     'paraphrased duplicates ("LYKN MCP integration" vs "LYKN MCP work")',
     'and the user wants to keep ONE going forward. The merge is atomic',
     '(single Postgres transaction inside a SECURITY DEFINER function),',
-    'so it cannot leave the synthesis layer half-folded.',
+    'so it cannot leave the Projects workspace half-folded.',
     '',
     'TWO-PHASE FLOW (always run both unless the user has already',
     'reviewed the preview):',
@@ -75,7 +73,6 @@ export const mergeProjectsTool = {
     '  • Clustered neurons (lykn_project_neurons) — node_ids unique to',
     '    source move into target; node_ids already in target are',
     '    dropped from source (target\'s snapshot wins).',
-    '  • Identity facts (lykn_user_model_facts.project_id) — re-pointed.',
     '  • Active focus pointer — redirected to target if it was on source.',
     '',
     'WHAT IS NOT TOUCHED:',

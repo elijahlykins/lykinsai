@@ -116,13 +116,12 @@ export const COST_OPTIMIZATIONS = [
     category: "cap",
     title: "Intent-based output token caps",
     description:
-      "Single pickOutputCap() helper picks max output tokens by intent: chat 1500 (was 4096), JSON action 800 (was 8192), board_analysis_deep 2000, vault_search 600 (was 4096), discover_takeaway 500 (was 700). Applied to every chat path: OpenAI, Anthropic, Google, Grok — both stream and invoke.",
+      "Single pickOutputCap() helper picks max output tokens by intent: chat 1500 (was 4096), JSON action 800 (was 8192), board_analysis_deep 2000, and vault_search 600 (was 4096). Applied to every chat path: OpenAI, Anthropic, Google, Grok — both stream and invoke.",
     files: ["server.js"],
     surfaces: [
       "chat_stream",
       "chat_invoke",
       "vault_search",
-      "discover_takeaway",
     ],
     expectedSavings: {
       type: "percent",
@@ -166,24 +165,6 @@ export const COST_OPTIMIZATIONS = [
     provider: "openai",
   },
   {
-    id: "discover-nano",
-    shippedAt: "2026-05-06",
-    tier: 1,
-    category: "model_swap",
-    title: "Discover blurbs: gpt-4o-mini → gpt-4.1-nano",
-    description:
-      "generateDiscoverTakeaways now uses gpt-4.1-nano. Output is a 12–22 word editorial blurb where quality difference is invisible. Also bumped max_tokens from 700 → 500.",
-    files: ["server.js"],
-    surfaces: ["discover_takeaway"],
-    expectedSavings: {
-      type: "percent",
-      range: [85, 92],
-      scope: "Discover takeaway model spend",
-      note: "gpt-4.1-nano is roughly 10x cheaper per token than gpt-4o-mini.",
-    },
-    provider: "openai",
-  },
-  {
     id: "tts-cache",
     shippedAt: "2026-05-06",
     tier: 1,
@@ -201,25 +182,6 @@ export const COST_OPTIMIZATIONS = [
     },
     provider: "openai",
   },
-  {
-    id: "profile-refresh-throttle",
-    shippedAt: "2026-05-06",
-    tier: 1,
-    category: "debounce",
-    title: "Profile refresh: 24h TTL + evidence hash",
-    description:
-      "PROFILE_LLM_THROTTLE_MS bumped from 3 min → 24 h. Plus a per-user evidence-hash skip: if the conversation rows fed to the profile LLM are identical to the last successful run, skip the call entirely. Same inputs always produce the same JSON, so we'd just be paying twice for the same output.",
-    files: ["server.js"],
-    surfaces: ["profile_refresh", "fact_extraction"],
-    expectedSavings: {
-      type: "percent",
-      range: [80, 99],
-      scope: "profile_refresh + fact_extraction calls",
-      note: "Was firing every few chat turns when nothing material had changed.",
-    },
-    provider: "openai",
-  },
-
   // ─── Tier 2 — smart routing & defaults (shipped 2026-05-06) ─────────────
   {
     id: "unified-auto-fallback-nano",
@@ -254,24 +216,6 @@ export const COST_OPTIMIZATIONS = [
       scope: "Guest Anthropic input tokens (only when Gemini chain falls through to Claude)",
     },
     provider: "anthropic",
-  },
-  {
-    id: "profile-llm-nano",
-    shippedAt: "2026-05-06",
-    tier: 2,
-    category: "model_swap",
-    title: "Profile + intake LLMs: gpt-4o-mini → gpt-4.1-nano",
-    description:
-      "runIntakeProfileFromAnswers + runUserProfileLlmAndUpsert both produce a constrained JSON narrative (response_format: json_object). Quality difference between gpt-4o-mini and gpt-4.1-nano is invisible for this task, but pricing is ~33% lower. Also added a per-user prompt_cache_key so the static system prompt rides the OpenAI cache discount on subsequent refreshes.",
-    files: ["server.js"],
-    surfaces: ["intake_profile", "profile_refresh"],
-    expectedSavings: {
-      type: "percent",
-      range: [30, 50],
-      scope: "intake_profile + profile_refresh model spend",
-      note: "Refresh is also rate-limited to once per 24h with evidence-hash skip (Tier 1), so the multiplier is small but the per-call savings stack.",
-    },
-    provider: "openai",
   },
   {
     id: "describe-image-cap-and-cache",

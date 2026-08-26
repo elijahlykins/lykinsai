@@ -3315,15 +3315,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           onSaveArtifact={saveArtifactToVault}
           editingAppId={editingAppId}
           chatKey={chatId || routeChatId || ""}
-          onFactNeuronChange={(msgId, next) => {
-            setChatMessages((prev) =>
-              prev.map((m) =>
-                m.id === msgId
-                  ? { ...m, factNeuron: next || undefined }
-                  : m,
-              ),
-            );
-          }}
           composerInside={
             appSourceStrip ? (
               <AppSourceStrip

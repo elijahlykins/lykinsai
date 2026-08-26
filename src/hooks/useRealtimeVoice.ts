@@ -129,7 +129,7 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
       try { onDisplayDocumentRef.current?.(display); } catch { /* ignore */ }
       try { delete (output as { display?: unknown }).display; } catch { /* ignore */ }
     }
-    // Voice project writes bypass the chat SSE path — refresh Synthesis lists.
+    // Voice project writes bypass the chat SSE path — refresh project lists.
     if (
       (name === "create_project" || name === "set_active_project" || name === "add_to_project")
       && (output as { ok?: boolean })?.ok !== false

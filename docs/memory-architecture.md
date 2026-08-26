@@ -1,10 +1,11 @@
 # Memory Architecture — Database-Backed Markdown Memory Core
 
-Status: Phase 2 complete (Chat cutover). Production personal memory for Chat is Markdown Memory.
+Status: Phase 3 complete.
+Markdown Memory is the sole production personal-memory authority for Chat and Voice.
 Code: `server/memory/`.
 Schema: `supabase-migrations/124_lykn_memory_documents.sql`.
 Tests: `tests/memory/` (`npm run test:memory`).
-Phase 3 demolition of Synthesis is still deferred.
+The legacy Synthesis/User-Model/Belief runtime is retired.
 
 ## Core philosophy
 
@@ -46,10 +47,10 @@ server/memory/
   memoryRegistry.js     L1: compact active-memory metadata + prompt formatting
   memoryReader.js       L2: read one document with ownership/status/token limits
   memoryWriter.js       create / patch / forget pipeline (policy → CAS → history)
-  memoryResolver.js     the future Chat seam: L0+L1+L2 in one call, thread cache
+  memoryResolver.js     the production Chat seam: L0+L1+L2 in one call, thread cache
   memoryMaintenance.js  event/threshold compaction, one document at a time
   memoryTools.js        the five controlled tool operations + tool definitions
-  index.js              single import point for Phase 2
+  index.js              single import point for the production memory core
 ```
 
 ## Hybrid retrieval
@@ -70,7 +71,7 @@ All budgets live in `memoryConfig.js` and are one-line tunable.
 
 ## Tool surface
 
-`memory_list`, `memory_read`, `memory_patch`, `memory_create`, `memory_forget` — implemented in `memoryTools.js`, with declarative tool definitions for the Phase 2 chat wiring.
+`memory_list`, `memory_read`, `memory_patch`, `memory_create`, `memory_forget` — implemented in `memoryTools.js`, with declarative definitions shared by Chat and Voice.
 The model never touches the database or a filesystem; every call is scoped to the authenticated user and passes path validation and write policy.
 
 `memory_patch` is the preferred write: the model proposes one small operation, the server applies it.
@@ -113,19 +114,38 @@ No nightly global pass — that is the failure mode of the old system.
 Maintenance is event/threshold driven and per-document: `memoryNeedsCompaction` flags a document at 16,000 chars or ≥ 20% duplicate content lines, and `compactMemoryDocument` compacts that one document (deterministic dedupe; an optional async compactor hook exists for future LLM compaction with isolated cost).
 Summaries are deterministic (first content line + section map), recomputed on every write for free — no LLM in the write path.
 
-## Migration plan
+## Legacy migration compatibility
 
-- Phase 1: core built and tested beside Synthesis. Production Chat unchanged.
-- Phase 2 (this): Chat `/api/ai/invoke` and `/api/ai/stream` resolve personal memory through `resolveChatMemoryTurn` → `resolveMemoryContext`.
-  Trustworthy legacy facts (`stated` / `confirmed` / `corrected`) plus display name migrate idempotently with `source_type: 'migration'`.
-  The five memory tools are on the Chat whitelist.
-  A narrow dual-write bridge copies trusted `/api/learned` + confirm + `lykn_proposeFact` writes into Markdown.
-  Voice gets L0 memory in grounding and can dispatch the memory tools; beliefs/facts voice tools remain as a temporary bridge.
-  Discover still reads synthesis profile themes (no frontend consumer) — Phase 3 deletion candidate.
-  Nightly `runSynthesis` / `runConcepts` are still scheduled; they no longer feed Chat. Recommend disable in Phase 3.
-- Phase 3 (deferred): demolish the legacy Synthesis/User-Model/Beliefs/Concepts stack — routes, jobs, tables, caches, UI, leftover tools, and this dual-write bridge.
+The production write path writes directly through the Markdown Memory writer.
+There is no legacy-fact dual write.
+
+A narrow read-only compatibility path remains in `memoryMigration.js` for users who have not opened Chat since the Phase 2 deployment.
+On first authenticated memory resolution it imports only trustworthy `stated`, `confirmed`, and `corrected` facts plus the authenticated display name.
+It rejects inferred facts, never revives archived Markdown documents, never overwrites stronger explicit Markdown memory, records `source_type: migration`, and is idempotent.
+No belief, rule, concept, profile narrative, or attribution data migrates.
+
+## Retained systems
+
+Vault chunking and retrieval remain because they power document search.
+The vault reconciler remains for upload/index hygiene.
+Night Brief remains as a project-product workflow.
+Projects, project state, and `lykn_project_neurons` remain as product-owned project membership and state.
+Conversation memory remains for conversation continuity and is not personal memory.
+
+The historical `lykn_synthesis_chunks` name remains in the vault retrieval substrate.
+It does not make Synthesis a personal-memory authority.
+
+## Retired systems and database status
+
+Nightly Synthesis and Concepts jobs, legacy Chat prompt packs and caches, belief/rule/fact routes, legacy personal-memory tools, Voice bridges, Discover themes, and the Synthesis Layer UI are removed.
+The retained project focus pointer moved from `lykn_user_synthesis_profile` to `lykn_user_preferences.active_project_id`.
+The obsolete Synthesis neuron-cap triggers and helper functions are removed without deleting table data.
+
+Application runtime no longer depends on legacy beliefs, rules, result attributions, concepts, concept edges, user links, synthesis profile narrative, or synthesis-run tables.
+`lykn_user_model_facts` remains read-only solely for unmigrated-user compatibility.
+Legacy table drops are intentionally deferred until migration completion is measured and explicitly approved.
+No destructive user-data migration is bundled with the runtime demolition.
 
 ## Future
 
-Phase 3 removes the leftover Synthesis producers/consumers listed in `docs/memory-legacy-audit.md`.
-A user-visible Memory surface (view/edit/delete Profile, Preferences, Goals, Decisions, Projects) is still deferred — backend correctness was the Phase 2 priority.
+A user-visible Markdown Memory surface for viewing, editing, and deleting documents remains a product follow-up.

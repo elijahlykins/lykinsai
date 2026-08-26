@@ -16,14 +16,14 @@
 // server.js calls exactly once after dotenv/secret validation — same single
 // instance and same init timing as the old inline declarations.
 //
-// buildRealtimeSynthesisGrounding + currentTimeContextLine +
+// buildRealtimeMemoryGrounding + currentTimeContextLine +
 // localTimeContextLine stay in server.js and are passed in:
 // localTimeContextLine is also used by the chat prompt path, and the
 // grounding builder sits on synthesis retrieval infrastructure
 // (LEGACY CANDIDATE — pending Memory Architecture Replacement).
 
 import { searchWeb } from '../../lib/exterior/webSearch.js';
-import { SYNTHESIS_TOOLS_BY_NAME } from '../../mcp-tools/index.js';
+import { LYKN_TOOLS_BY_NAME } from '../../mcp-tools/index.js';
 import { EXTERIOR_TOOLS_BY_NAME } from '../../mcp-tools/exterior/index.js';
 import { communicateWithModelTool } from '../../mcp-tools/communicateWithModel.js';
 import {
@@ -59,14 +59,13 @@ export function registerVoiceRoutes(app, {
   sha256,
   safeErr,
   timingSafeEqualStr,
-  buildRealtimeSynthesisGrounding,
+  buildRealtimeMemoryGrounding,
   currentTimeContextLine,
   localTimeContextLine,
   buildToolCtx,
   PROJECT_WRITE_TOOLS,
   invalidateProjectSectionCache,
   fetchProjectSection,
-  fetchSynthesisRetrievalSection,
   gatherVoiceBriefingData,
   formatVoiceBriefingInstructionBlock,
   buildVoiceBriefingOffer,
@@ -171,15 +170,14 @@ export function registerVoiceRoutes(app, {
   const LYKN_DEFAULT_REALTIME_VOICE = 'cedar';
   const LYKN_REALTIME_BASE_INSTRUCTIONS =
     "You are LYKN, the user's personal AI companion speaking out loud in a live voice conversation. " +
-    "You have access to the user's synthesis layer (their ratified beliefs, if-then governance rules, and active project state) " +
-    "plus their memory, identity, and saved knowledge — all provided as context below. " +
-    "Treat the beliefs and rules as binding governance for how you respond, and ground every answer in this context — " +
+    "You have access to the user's Markdown Memory, active project state, and saved knowledge provided as context below. " +
+    "Ground personal answers in that context and use the memory tools for explicit durable-memory requests — " +
     "be personally contextual, never a generic assistant. " +
     "Speak naturally and conversationally, in short spoken-friendly sentences. Avoid markdown, bullet lists, code blocks, " +
     "or reading URLs aloud. " +
     "IMPORTANT: the context below contains formatting tokens such as section headers in brackets (e.g. [WHO_I_AM], " +
-    "[WHAT_IM_ON], [WHAT_IVE_SAVED]), identifiers like rule_id=..., and tags like <applied>. These are silent guidance for you ONLY. " +
-    "NEVER read them aloud, never say words like 'rule_id', 'applied', or bracketed section names, and never emit any tags. " +
+    "[WHAT_IM_ON], [WHAT_IVE_SAVED]). These are silent guidance for you ONLY. " +
+    "NEVER read bracketed section names aloud and never emit hidden tags. " +
     "SHARED IMAGES & FILES — you CAN work with them: when the user pastes, drops, uploads, or shares an image, screenshot, " +
     "photo, PDF, document, or link (or asks about one they just shared), it arrives in your context as a written description " +
     "plus any text extracted from it (look for 'The user just shared…', 'What the image shows:', or extracted/OCR text). " +
@@ -221,7 +219,7 @@ export function registerVoiceRoutes(app, {
     "This is ASYNC — it only STARTS the build (which takes minutes) and opens a pull request when done. Tell the user it's " +
     "underway and that you'll let them know when it's ready for testing; do NOT say it's finished, and do NOT invent a PR link. " +
     "If they ask whether it's done, call check_cursor_build and read back the real status. Only build when they actually ask you to. " +
-    "ROUTING — web vs vault (important): search_vault is ONLY for the user's OWN saved notes, files, and synthesis " +
+    "ROUTING — web vs vault (important): search_vault is ONLY for the user's OWN saved notes and files " +
     "(their personal knowledge). World news, weather, prices, sports, stocks/crypto, and current events are NEVER in the " +
     "vault. When the user asks for news, 'the latest', 'today', 'current', or anything about the outside world, call " +
     "web_search IMMEDIATELY — do NOT search the vault first, and NEVER say 'I couldn't find that in your saved data' for " +
@@ -245,17 +243,14 @@ export function registerVoiceRoutes(app, {
     "BRAND SPELLING: always say the product name as LYKN — all caps. Never 'Lykn', 'lykn', or 'Lykins'.";
 
   // Function tools the realtime voice model can call mid-conversation. These
-  // give voice a LIVE connection to the Synthesis Layer (not just the static
-  // grounding injected at session start): semantic vault/synthesis search plus
-  // the ability to read + update project state and save to the vault by voice.
+  // give voice live Markdown Memory, vault retrieval, project, and product tools.
   // Each maps to an existing, auth-gated server capability in
   // POST /api/ai/realtime/tool (the dispatch endpoint below).
   // Single source of truth for the voice tool surface. Each def carries an
   // optional `mcp` name; the dispatch endpoint runs that MCP tool with the args
   // passed straight through (search_vault / get_project_state are special-cased
   // to reuse the same grounded fetchers the text chat uses). Adding a tool here
-  // + to the ElevenLabs agent (client tools) is all it takes to widen voice's
-  // reach into the synthesis layer.
+  // + to the ElevenLabs agent (client tools) is all it takes to widen voice.
   const LYKN_VOICE_TOOL_DEFS = [
     // ── Vault / retrieval ────────────────────────────────────────────────
     {
@@ -318,50 +313,17 @@ export function registerVoiceRoutes(app, {
         required: ['query'],
       },
     },
-    {
-      name: 'find_connections',
-      mcp: 'lykn_findConnections',
-      description:
-        "Cross-store related-neuron search: given a topic, return the closest related items from EVERY part " +
-        "of the synthesis layer at once — beliefs, facts, concepts, and vault notes — so you can answer " +
-        '"what do I already think/know about X?". Use when the user wants a broad pull across their whole ' +
-        'knowledge base rather than just saved notes (use search_vault for note/document content specifically).',
-      parameters: {
-        type: 'object',
-        properties: { query: { type: 'string', description: 'The topic to map onto the user\'s knowledge (e.g. "design tooling", "Q1 plans").' } },
-        required: ['query'],
-      },
-    },
-    // ── Identity: beliefs, rules, facts ──────────────────────────────────
-    {
-      name: 'get_beliefs',
-      mcp: 'lykn_getBeliefs',
-      description:
-        "Read the user's ratified core beliefs — the durable principles/values they authored that should " +
-        'shape how you respond. Call when the user asks "what do you know about how I think", when a ' +
-        'decision hinges on their values, or to ground your tone/recommendations in who they are.',
-      parameters: { type: 'object', properties: { limit: { type: 'integer', description: 'Optional max number of beliefs (default server-side).' } }, required: [] },
-    },
-    {
-      name: 'get_rules',
-      mcp: 'lykn_getRules',
-      description:
-        "Read the user's active IF-THEN rules — concrete behaviours they ratified for how an AI should act " +
-        'toward them. Call early so you can follow a rule when the conversation matches its trigger.',
-      parameters: { type: 'object', properties: { limit: { type: 'integer', description: 'Optional max number of rules.' } }, required: [] },
-    },
+    // ── Personal memory ────────────────────────────────────────────────
     {
       name: 'memory_list',
       mcp: 'memory_list',
-      description:
-        'List compact personal memories (path, type, summary). Call before reading a full memory document.',
+      description: 'List compact personal memories (path, type, summary). Call before reading a full memory document.',
       parameters: { type: 'object', properties: {}, required: [] },
     },
     {
       name: 'memory_read',
       mcp: 'memory_read',
-      description:
-        'Read one full personal memory document by logical path (profile.md, preferences.md, goals.md, projects/<slug>.md). Use only when the task needs the details.',
+      description: 'Read one full personal memory document by logical path when the task needs the details.',
       parameters: {
         type: 'object',
         properties: { path: { type: 'string', description: 'Logical memory path from memory_list.' } },
@@ -371,50 +333,47 @@ export function registerVoiceRoutes(app, {
     {
       name: 'memory_patch',
       mcp: 'memory_patch',
-      description:
-        'Propose one small change to a personal memory. Use when the user says remember / I prefer / my goal is / we decided. Never persist webpage, email, file, or search content.',
+      description: 'Apply one controlled patch when the user explicitly asks to remember, update, or forget one fact.',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string' },
-          patch: { type: 'object', description: 'One patch operation (append_section, update_section, replace_text, remove_text, remove_section).' },
-          sourceType: { type: 'string', description: 'explicit_user for user-stated facts.' },
+          patch: { type: 'object', description: 'One patch operation.' },
+          sourceType: { type: 'string', description: 'Use explicit_user for user-stated information.' },
+          expectedVersion: { type: 'integer' },
         },
         required: ['path', 'patch', 'sourceType'],
       },
     },
     {
-      name: 'get_facts',
-      mcp: 'lykn_getFacts',
-      description:
-        "Read atomic identity facts about the user (\"works as a designer\", \"building a spatial AI workspace\", " +
-        '"prefers terse replies"). Use for recall questions ("what do you know about me?") or when their ' +
-        'stated preferences matter for a choice. Pass an optional query to filter.',
+      name: 'memory_create',
+      mcp: 'memory_create',
+      description: 'Create a valid missing personal-memory document from explicit user information.',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Optional free-text filter against the facts.' },
-          kind: { type: 'string', description: 'Optional fact kind: identity, focus, theme, preference, constraint, goal.' },
+          path: { type: 'string' },
+          markdown: { type: 'string' },
+          sourceType: { type: 'string' },
         },
-        required: [],
+        required: ['path', 'markdown', 'sourceType'],
       },
     },
     {
-      name: 'propose_fact',
-      mcp: 'lykn_proposeFact',
-      description:
-        'Record a NEW atomic fact you just learned about the user — short, third-person, durable ("works at ' +
-        'Acme", "is exploring spatial UIs"). Call when the user discloses something concrete about their ' +
-        'identity, focus, preferences, constraints, or goals. NOT for transient state, NOT for beliefs ' +
-        '(beliefs are user-authored only). Confirm out loud that you noted it.',
+      name: 'memory_forget',
+      mcp: 'memory_forget',
+      description: 'Remove one memory fact with a patch or archive a memory document when the user asks to forget it.',
       parameters: {
         type: 'object',
         properties: {
-          text: { type: 'string', description: 'The fact, third-person, <=240 chars.' },
-          kind: { type: 'string', description: 'Optional: identity, focus, theme, preference, constraint, goal (default identity).' },
-          reason: { type: 'string', description: 'Optional one-sentence justification — what the user said that supports it.' },
+          path: { type: 'string' },
+          patch: { type: 'object' },
+          sourceType: { type: 'string' },
+          expectedVersion: { type: 'integer' },
+          hardDelete: { type: 'boolean' },
+          confirmHardDelete: { type: 'boolean' },
         },
-        required: ['text'],
+        required: ['path', 'sourceType'],
       },
     },
     // ── Projects (working memory) ────────────────────────────────────────
@@ -422,8 +381,8 @@ export function registerVoiceRoutes(app, {
       name: 'list_projects',
       mcp: 'lykn_listProjects',
       description:
-        "List the user's projects, most-recently-active first. Use to discover what work the synthesis layer " +
-        'is tracking before switching projects, or when the user asks "what am I working on / what projects do I have".',
+        "List the user's projects, most-recently-active first. Use before switching projects, " +
+        'or when the user asks "what am I working on / what projects do I have".',
       parameters: {
         type: 'object',
         properties: {
@@ -508,14 +467,17 @@ export function registerVoiceRoutes(app, {
       name: 'get_recent_activity',
       mcp: 'lykn_getRecentActivity',
       description:
-        'Get a reverse-chronological feed of what changed recently across the WHOLE synthesis layer — ' +
-        'beliefs, facts, concepts, vault notes, projects, and links. Use to answer "what have I been up to ' +
+        'Get a reverse-chronological feed of recent vault-note and project changes. Use to answer "what have I been up to ' +
         'lately / what changed this week" or to reorient at the start of a session.',
       parameters: {
         type: 'object',
         properties: {
           days: { type: 'integer', description: 'Look-back window in days (default 7, max 90).' },
-          kind: { type: 'string', description: 'Optional filter: belief, fact, concept, vault, project, or link.' },
+          kinds: {
+            type: 'array',
+            items: { type: 'string', enum: ['vault', 'project'] },
+            description: 'Optional subset: vault and/or project.',
+          },
         },
         required: [],
       },
@@ -768,7 +730,7 @@ export function registerVoiceRoutes(app, {
       name: 'web_search',
       mcp: 'lykn_web_search',
       description:
-        'Search the live web for CURRENT information that is not in the user\'s vault or synthesis layer — ' +
+        'Search the live web for CURRENT information that is not in the user\'s Vault or Markdown Memory — ' +
         'news, prices, recent events, "what happened today", facts after your training cutoff. Call when the ' +
         'user asks you to look something up / search / google, or when answering clearly needs live data. ' +
         'Do NOT use it for the user\'s own saved notes (use search_vault). Returns ranked snippets; ' +
@@ -988,15 +950,13 @@ export function registerVoiceRoutes(app, {
       const model = String(req.body?.model || 'gpt-realtime').trim() || 'gpt-realtime';
       const requestedVoice = String(req.body?.voice || LYKN_DEFAULT_REALTIME_VOICE).trim().toLowerCase();
       const voice = REALTIME_VOICES.has(requestedVoice) ? requestedVoice : LYKN_DEFAULT_REALTIME_VOICE;
-      // Synthesis layer (beliefs + rules + active project state) is built
-      // server-side from the user's account — this is the connection to the
-      // Synthesis Layer that voice was missing. The client-supplied grounding
-      // (workspace/KB summary + recent conversation) is layered on top.
-      const synthesisGrounding = await buildRealtimeSynthesisGrounding(req.headers.authorization, req.user?.id);
+      // Markdown Memory is resolved server-side from the authenticated account.
+      // Client workspace and recent-conversation grounding is layered on top.
+      const memoryGrounding = await buildRealtimeMemoryGrounding(req.headers.authorization, req.user?.id);
       const clientGrounding = String(req.body?.instructions || '').slice(0, 8000).trim();
       const contextParts = [];
       contextParts.push(currentTimeContextLine());
-      if (synthesisGrounding) contextParts.push(synthesisGrounding);
+      if (memoryGrounding) contextParts.push(memoryGrounding);
       if (clientGrounding) contextParts.push(`[WORKSPACE_AND_CONVERSATION]\n${clientGrounding}`);
       const instructions = (contextParts.length
         ? `${LYKN_REALTIME_BASE_INSTRUCTIONS}\n\n${contextParts.join('\n\n')}`
@@ -1082,11 +1042,11 @@ export function registerVoiceRoutes(app, {
       // privileges — no read-only token gate), unwrapping its content block
       // into plain JSON.
       const runMcp = async (mcpName, mcpArgs) => {
-        // Synthesis-layer tools live in SYNTHESIS_TOOLS_BY_NAME; on-demand
+        // LYKN tools live in LYKN_TOOLS_BY_NAME; on-demand
         // exterior capabilities (web search/fetch, etc.) live in
         // EXTERIOR_TOOLS_BY_NAME. Voice tool defs can map to either, so fall
         // through to exterior.
-        const tool = SYNTHESIS_TOOLS_BY_NAME[mcpName] || EXTERIOR_TOOLS_BY_NAME[mcpName];
+        const tool = LYKN_TOOLS_BY_NAME[mcpName] || EXTERIOR_TOOLS_BY_NAME[mcpName];
         if (!tool) return { ok: false, error: 'tool_unavailable' };
         const ctx = buildToolCtx(req);
         const result = await tool.handler(mcpArgs, ctx);
@@ -1098,22 +1058,14 @@ export function registerVoiceRoutes(app, {
         return { ok: !result?.isError };
       };
 
-      // Two tools reuse the same grounded fetchers the text chat uses (semantic
-      // retrieval + formatted project section). Everything else is a thin
-      // pass-through to the matching MCP tool handler.
+      // Vault search and project context reuse the same retained handlers as Chat.
       if (name === 'search_vault') {
         const query = String(args.query || '').trim();
         if (!query) return res.json({ ok: false, error: 'query is required.' });
-        // Titled hits (so the model can name the matching items and offer to read
-        // one in full via read_document) PLUS semantic snippets for grounding.
-        const [fb, block] = await Promise.all([
-          runMcp('lykn_searchVault', { query, limit: 6 }),
-          fetchSynthesisRetrievalSection(authHeader, query, userId),
-        ]);
+        const fb = await runMcp('lykn_searchVault', { query, limit: 6 });
         const hits = Array.isArray(fb?.hits) ? fb.hits : [];
-        const hasBlock = Boolean(block && block.trim());
-        if (!hits.length && !hasBlock) {
-          return res.json({ ok: true, results: 'No matching items found in the vault or synthesis layer for that query.' });
+        if (!hits.length) {
+          return res.json({ ok: true, results: 'No matching items found in the vault for that query.' });
         }
         const documents = hits.slice(0, 6).map((h) => ({
           title: h.title || '(untitled)',
@@ -1122,9 +1074,7 @@ export function registerVoiceRoutes(app, {
         return res.json({
           ok: true,
           documents,
-          results: hasBlock
-            ? block.slice(0, 6000)
-            : documents.map((d, i) => `${i + 1}. ${d.title}: ${d.snippet}`).join('\n'),
+          results: documents.map((d, i) => `${i + 1}. ${d.title}: ${d.snippet}`).join('\n'),
           hint: documents.length
             ? 'These are snippets. To read or summarize the FULL text of one of these items, call read_document with its title as the query.'
             : undefined,
@@ -1321,7 +1271,7 @@ export function registerVoiceRoutes(app, {
         let nodeId = String(args.node_id || '').trim();
         let nodeLabel = '';
         if (nodeId) {
-          if (!/^(vault_|belief_|fact_|concept_)/.test(nodeId)) nodeId = `vault_${nodeId}`;
+          if (!nodeId.startsWith('vault_')) nodeId = `vault_${nodeId}`;
         } else {
           const { data: recent } = await supabaseAdmin
             .from('vault_items')
@@ -1627,13 +1577,13 @@ export function registerVoiceRoutes(app, {
 
       // Build the same grounded instructions the OpenAI path uses, stash them so
       // the custom-LLM endpoint can recover the client context for this call.
-      const synthesisGrounding = await buildRealtimeSynthesisGrounding(req.headers.authorization, req.user?.id);
+      const memoryGrounding = await buildRealtimeMemoryGrounding(req.headers.authorization, req.user?.id);
       const clientGrounding = String(req.body?.instructions || '').slice(0, 8000).trim();
       const parts = [];
       // Briefing block goes first so it survives the 14k truncation below.
       const briefingBlock = formatVoiceBriefingInstructionBlock(req.user, briefingData);
       if (briefingBlock) parts.push(briefingBlock);
-      if (synthesisGrounding) parts.push(synthesisGrounding);
+      if (memoryGrounding) parts.push(memoryGrounding);
       if (clientGrounding) parts.push(`[WORKSPACE_AND_CONVERSATION]\n${clientGrounding}`);
       const instructions = (parts.length
         ? `${LYKN_REALTIME_BASE_INSTRUCTIONS}\n\n${parts.join('\n\n')}`
@@ -1812,7 +1762,7 @@ export function registerVoiceRoutes(app, {
         grounding = stored?.instructions || '';
         sessionTz = stored?.tz || '';
       } else if (userId) {
-        const synth = await buildRealtimeSynthesisGrounding(null, userId);
+        const synth = await buildRealtimeMemoryGrounding(null, userId);
         grounding = (synth
           ? `${LYKN_REALTIME_BASE_INSTRUCTIONS}\n\n${synth}`
           : LYKN_REALTIME_BASE_INSTRUCTIONS
@@ -1857,31 +1807,7 @@ export function registerVoiceRoutes(app, {
       customLlmStats.lastGroundingChars = grounding.length;
       console.log(`[custom-llm] token=${!!sessionToken} entry=${sessionToken ? voiceSessionGrounding.has(sessionToken) : false} userId=${!!userId} screenChars=${screenText.length}`);
 
-      // Per-turn semantic retrieval — the static grounding above only carries
-      // beliefs/project/workspace. The text chat ALSO injects fresh vault +
-      // synthesis-layer retrieval on every message; do the same here so voice
-      // grounds each answer in what the user actually saved/knows (instead of
-      // hoping the model decides to call search_vault). Keyed off the latest
-      // user utterance.
-      let retrievalBlock = '';
-      if (userId) {
-        let lastUser = '';
-        for (let i = messages.length - 1; i >= 0; i--) {
-          if (messages[i]?.role === 'user' && typeof messages[i].content === 'string') {
-            lastUser = messages[i].content.trim();
-            break;
-          }
-        }
-        if (lastUser) {
-          try {
-            retrievalBlock = await fetchSynthesisRetrievalSection(null, lastUser.slice(0, 500), userId);
-          } catch (e) {
-            console.warn('⚠️ voice retrieval:', e?.message || e);
-            retrievalBlock = '';
-          }
-        }
-      }
-      customLlmStats.lastRetrievalChars = retrievalBlock ? retrievalBlock.length : 0;
+      customLlmStats.lastRetrievalChars = 0;
 
       // Rebuild the message list: our grounded system message first, the fresh
       // per-turn retrieval next, then the original turns with the token line
@@ -1900,12 +1826,6 @@ export function registerVoiceRoutes(app, {
         });
       }
       rebuilt.push({ role: 'system', content: localTimeContextLine(sessionTz) });
-      if (retrievalBlock && retrievalBlock.trim()) {
-        rebuilt.push({
-          role: 'system',
-          content: `[RELEVANT_FROM_VAULT_AND_SYNTHESIS — grounded snippets for the user's latest message; cite/use these, and call tools for anything deeper]\n${retrievalBlock.slice(0, 6000)}`,
-        });
-      }
       for (const m of messages) {
         if (m?.role === 'system' && typeof m.content === 'string') {
           const scrubbed = m.content.replace(LYKN_SESSION_TOKEN_RE, '').trim();

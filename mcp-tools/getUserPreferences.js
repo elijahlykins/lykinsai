@@ -11,7 +11,7 @@
 // nightly synthesis job and the on-demand learn-now path skip the
 // user. The chat agent should respect that — don't push new
 // observations as facts, don't claim "I'll remember this for next
-// time," don't suggest the user view their synthesis layer as
+// time," don't suggest the user open a retired Synthesis view as
 // growing.
 //
 // Note: visual-only prefs (theme, font size, etc.) live in browser
@@ -30,9 +30,7 @@ const PREFS_DEFAULTS = {
   memory_paused: false,
   training_opt_out: false,
   chat_retention_days: null,
-  show_provenance: true,
   email_product_updates: true,
-  email_synthesis_digest: false,
   night_shift_enabled: false,
   night_shift_tier: 'brief',
 };
@@ -46,17 +44,13 @@ export const getUserPreferencesTool = {
     'pipeline preferences honoured server-side. The fields you care',
     'about as an AI agent:',
     '',
-    '  • memory_paused — when TRUE, the nightly synthesis job skips',
-    '    this user. Do not promise to "remember" things, do not push',
-    '    new observations as facts mid-chat, and don\'t suggest the',
-    '    synthesis layer is currently growing.',
+    '  • memory_paused — when TRUE, do not promise to remember or write',
+    '    durable personal memory.',
     '  • training_opt_out — TRUE means chats are excluded from model',
     '    improvement exports. Don\'t reference training in suggestions.',
     '  • chat_retention_days — NULL = forever; integer = nightly job',
     '    purges chats older than N days. Helpful context when the user',
     '    asks "where did my old chat go?"',
-    '  • show_provenance — UI hint only; controls whether the chat',
-    '    surfaces "based on belief X / fact Y" citations by default.',
     '  • night_shift_enabled — when TRUE, the Night Shift cron writes',
     '    a morning_brief project-state push for each active project',
     '    overnight. Surface it in the project panel / overlay.',
@@ -83,7 +77,7 @@ export const getUserPreferencesTool = {
 
     const { data, error } = await ctx.supabaseAdmin
       .from('lykn_user_preferences')
-      .select('memory_paused, training_opt_out, chat_retention_days, show_provenance, email_product_updates, email_synthesis_digest, night_shift_enabled, night_shift_tier, metadata, updated_at')
+      .select('memory_paused, training_opt_out, chat_retention_days, email_product_updates, night_shift_enabled, night_shift_tier, metadata, updated_at')
       .eq('user_id', ctx.userId)
       .maybeSingle();
     if (error) return errorContent(`prefs read failed: ${error.message}`);
@@ -93,9 +87,7 @@ export const getUserPreferencesTool = {
           memory_paused: !!data.memory_paused,
           training_opt_out: !!data.training_opt_out,
           chat_retention_days: data.chat_retention_days ?? null,
-          show_provenance: !!data.show_provenance,
           email_product_updates: !!data.email_product_updates,
-          email_synthesis_digest: !!data.email_synthesis_digest,
           night_shift_enabled: !!data.night_shift_enabled,
           night_shift_tier: parseNightShiftTier(data.night_shift_tier),
           metadata: data.metadata || {},
@@ -105,7 +97,7 @@ export const getUserPreferencesTool = {
 
     const advisories = [];
     if (prefs.memory_paused) {
-      advisories.push('memory_paused=TRUE — do not promise to remember or persist anything across chats; the nightly synthesis is paused.');
+      advisories.push('memory_paused=TRUE — do not promise to remember or persist anything across chats.');
     }
     if (prefs.training_opt_out) {
       advisories.push('training_opt_out=TRUE — this user\'s chats are excluded from model improvement.');

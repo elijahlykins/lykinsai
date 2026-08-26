@@ -1,7 +1,7 @@
 // ============================================================================
-// server/memory — Markdown memory core (Memory Architecture Replacement, Phase 1)
+// server/memory — production Markdown personal-memory system
 // ============================================================================
-// Single import point for the Phase 2 integration. See docs/memory-architecture.md.
+// Single import point. See docs/memory-architecture.md.
 
 export * from './memoryConfig.js';
 export * from './memoryPaths.js';
@@ -35,4 +35,3 @@ export {
   invalidateMemoryThreadPath,
   resetMemoryThreadCache,
 } from './memoryChat.js';
-export { syncTrustedFactToMemory } from './memoryBridge.js';

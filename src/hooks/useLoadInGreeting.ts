@@ -60,12 +60,10 @@ export function useLoadInGreeting({
 
     type LoadInAction = NonNullable<PromptMessage["aiResponseActions"]>[number];
     type LoadInSection = NonNullable<PromptMessage["aiResponseSections"]>[number];
-    type LoadInStats = PromptMessage["aiResponseStats"];
     let parsed: {
       message?: string;
       actions?: LoadInAction[];
       sections?: LoadInSection[];
-      stats?: LoadInStats;
       greetingName?: string;
     } = {};
     try {
@@ -80,7 +78,6 @@ export function useLoadInGreeting({
     const sections: LoadInSection[] = Array.isArray(parsed?.sections)
       ? parsed.sections
       : [];
-    const stats: LoadInStats = parsed?.stats || undefined;
     const greetingNameForPanel = String(parsed?.greetingName || "").trim() || undefined;
     try {
       sessionStorage.removeItem(`lykn:loadInGreeting:${routeChatId}`);
@@ -139,10 +136,6 @@ export function useLoadInGreeting({
                   content: "",
                   aiResponse: "",
                   kind: "load-in-greeting",
-                  // Attach the dashboard stats immediately so the
-                  // right-side briefing panel animates in alongside the
-                  // type-out, not as a last-tick pop-in.
-                  aiResponseStats: stats,
                   ...(greetingNameForPanel
                     ? ({ greetingName: greetingNameForPanel } as any)
                     : {}),
@@ -295,7 +288,6 @@ export function useLoadInGreeting({
               payload!.actions && payload!.actions.length > 0
                 ? payload!.actions
                 : undefined,
-            aiResponseStats: payload!.stats,
             ...(greetingName ? ({ greetingName } as any) : {}),
           },
         ];
@@ -326,8 +318,7 @@ export function useLoadInGreeting({
               aiResponse: "",
               aiResponseSections: undefined,
               aiResponseActions: undefined,
-              aiResponseStats: payload!.stats,
-              ...(greetingName ? ({ greetingName } as any) : {}),
+                ...(greetingName ? ({ greetingName } as any) : {}),
             }
           : m,
       ),

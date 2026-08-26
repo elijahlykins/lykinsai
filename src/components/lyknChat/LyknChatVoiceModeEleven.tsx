@@ -66,11 +66,6 @@ const TOOL_STATUS_COPY: Record<string, string> = {
   display_document: "Pulling that up…",
   web_search: "Searching the web…",
   web_fetch: "Reading the page…",
-  find_connections: "Finding connections…",
-  get_beliefs: "Reviewing your beliefs…",
-  get_rules: "Checking your rules…",
-  get_facts: "Recalling what it knows…",
-  propose_fact: "Making a note of that…",
   list_projects: "Looking through your projects…",
   get_project_state: "Checking the project…",
   set_active_project: "Switching projects…",
@@ -96,7 +91,7 @@ const TOOL_STATUS_COPY: Record<string, string> = {
   [TUNE_VOICE_TOOL]: "Adjusting how it sounds…",
 };
 
-// Full synthesis-layer surface exposed to the voice agent. Each name must
+// Full LYKN tool surface exposed to the voice agent. Each name must
 // match a tool registered on the ElevenLabs agent and a case the server's
 // /api/ai/realtime/tool dispatch handles.
 const TOOL_NAMES = [
@@ -105,11 +100,11 @@ const TOOL_NAMES = [
   "display_document",
   "web_search",
   "web_fetch",
-  "find_connections",
-  "get_beliefs",
-  "get_rules",
-  "get_facts",
-  "propose_fact",
+  "memory_list",
+  "memory_read",
+  "memory_patch",
+  "memory_create",
+  "memory_forget",
   "list_projects",
   "get_project_state",
   "set_active_project",
@@ -215,7 +210,7 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
         try { onDisplayDocumentRef.current?.(display); } catch { /* ignore */ }
         try { delete (data as { display?: unknown }).display; } catch { /* ignore */ }
       }
-      // Voice project writes bypass the chat SSE path, so nudge Synthesis to
+      // Voice project writes bypass the chat SSE path, so nudge Projects to
       // refetch the projects list (create especially) without a manual refresh.
       if (
         (name === "create_project" || name === "set_active_project" || name === "add_to_project")

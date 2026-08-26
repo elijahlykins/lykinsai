@@ -135,7 +135,6 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
     }
   },
   openVault: (noteId) => ipcRenderer.send("lykn:open-vault", noteId || ""),
-  openSynthesis: () => ipcRenderer.send("lykn:open-synthesis"),
   onBrowserProgress: (cb) => {
     const fn = (_e, p) => cb(p || {});
     ipcRenderer.on("lykn:browser-progress", fn);

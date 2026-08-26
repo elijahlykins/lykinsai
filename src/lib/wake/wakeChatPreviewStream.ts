@@ -1,5 +1,5 @@
 import { API_BASE_URL } from "@/lib/api-config";
-import { stripModelTruncationNoteFromStream } from "@/lib/ai/learnedTag";
+import { stripModelTruncationNoteFromStream } from "@/lib/ai/responseText";
 import { AI_GUEST_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
 
 export const WAKE_CHAT_PREVIEW_MESSAGE_CAP = 5;

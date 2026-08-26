@@ -36,13 +36,13 @@ export const NEWS_POSTS: NewsPost[] = [
       {
         paragraphs: [
           "Most AI tools start every conversation from zero. You re-explain who you are, what you're working on, and what you meant last time, and the moment you close the tab all of that is gone. LYKN Studio is our answer to that: a personal AI workspace built around a single idea, that your AI should accumulate an understanding of you instead of renting you its attention one prompt at a time.",
-          "Studio is where everything you do with LYKN lives. Your projects, your vault of notes and documents, your chats across models, and your synthesis layer all sit in one place, and the same intelligence runs through all of them.",
+          "Studio is where everything you do with LYKN lives. Your projects, Vault notes and documents, chats across models, and private Markdown Memory all sit in one place.",
         ],
       },
       {
-        heading: "The synthesis layer",
+        heading: "Private Markdown Memory",
         paragraphs: [
-          "At the center of Studio is the synthesis layer: the beliefs, rules, and facts that define how your AI behaves. You author your core beliefs yourself. You set if-then rules that govern how it responds. Over time it accumulates the context of your projects and preferences, so every model you talk to through LYKN is grounded in the same understanding of you.",
+          "At the center of Studio is private Markdown Memory: small documents for your explicit preferences, goals, decisions, relationships, projects, and topics. Every model you talk to through LYKN can be grounded in the same durable context.",
           "That context is portable. Whether you're in a Studio chat, the Glass overlay on top of another app, or voice mode, the AI you're talking to is the same one, with the same memory.",
         ],
       },
@@ -89,7 +89,7 @@ export const NEWS_POSTS: NewsPost[] = [
       {
         heading: "And then it acts",
         paragraphs: [
-          "Glass is wired into the same synthesis layer as the rest of LYKN, so it doesn't just answer, it does. Update a task, schedule an event, draft the reply, generate the asset, all without leaving the page you're on. That's the whole point: the distance between noticing something and handling it drops to one keystroke.",
+          "Glass is wired into the same Markdown Memory, projects, and Vault as the rest of LYKN, so it doesn't just answer, it does. Update a task, schedule an event, draft the reply, generate the asset, all without leaving the page you're on. That's the whole point: the distance between noticing something and handling it drops to one keystroke.",
         ],
       },
     ],
@@ -139,7 +139,7 @@ export const NEWS_POSTS: NewsPost[] = [
     body: [
       {
         paragraphs: [
-          "Some thoughts are faster said than typed. Voice mode lets you talk to LYKN the way you'd talk to someone who already knows the whole story, because it does. It's the same AI with the same synthesis layer, so you never start a call by explaining yourself.",
+          "Some thoughts are faster said than typed. Voice mode uses the same Markdown Memory, projects, and Vault grounding as Chat, so you do not start every call by explaining yourself.",
         ],
       },
       {

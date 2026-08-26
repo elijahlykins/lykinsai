@@ -24,8 +24,6 @@ import { LyknGlassWords, GLASS_WORDS_DURATION } from "./LyknGlassWords";
 import { LyknCanNow, CAN_NOW_DURATION } from "./LyknCanNow";
 import { LyknCloudChat, CLOUD_CHAT_DURATION } from "./LyknCloudChat";
 import { LyknInvisibleMode, INVISIBLE_MODE_DURATION } from "./LyknInvisibleMode";
-import { LyknSynthesis } from "./LyknSynthesis";
-import { LyknSynthesisZoom, SYNTHESIS_ZOOM_DURATION } from "./LyknSynthesisZoom";
 import { LyknPlusMacos, PLUS_MACOS_DURATION } from "./LyknPlusMacos";
 import { LyknSayHello, SAY_HELLO_DURATION } from "./LyknSayHello";
 import { LyknWastingTime, WASTING_TIME_DURATION } from "./LyknWastingTime";
@@ -273,22 +271,6 @@ export const RemotionRoot: React.FC = () => {
         id="LyknProjectsZoom"
         component={LyknProjectsZoom}
         durationInFrames={PROJECTS_ZOOM_DURATION}
-        fps={30}
-        width={1920}
-        height={1080}
-      />
-      <Composition
-        id="LyknSynthesis"
-        component={LyknSynthesis}
-        durationInFrames={510}
-        fps={30}
-        width={1920}
-        height={1080}
-      />
-      <Composition
-        id="LyknSynthesisZoom"
-        component={LyknSynthesisZoom}
-        durationInFrames={SYNTHESIS_ZOOM_DURATION}
         fps={30}
         width={1920}
         height={1080}

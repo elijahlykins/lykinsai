@@ -21,7 +21,7 @@
 //     dropped every subsequent edit on the floor. Notion + Google had
 //     already moved to upsert; everyone else was still skip-on-URL.
 //
-//   • No `embedAndStoreChunks`. The synthesis layer's vector retrieval
+//   • No `embedAndStoreChunks`. Vault vector retrieval
 //     (`lykn_synthesis_chunks`) was populated only for Notion + the
 //     Google adapters. Slack saved messages, Linear issues, Readwise
 //     highlights, etc. lived in `notes` but were invisible to chat

@@ -7,11 +7,10 @@
 // keeps the schema flat (no second table, no jsonb column) while still
 // letting the renderer reconstruct rich attachments at read time.
 //
-// Both the synthesis-layer DetailPanel / NeuronPanel and the Vault page
+// Both chat Vault renderers and the Vault page
 // itself rely on this parser, so it lives next to the storage helpers
 // rather than inside any single page module — that would force a
-// circular import when NeuronPanel pulls it in (SynthesisLayer
-// → NeuronPanel → SynthesisLayer).
+// circular import between feature surfaces.
 
 import { findAttachmentsMarker } from "@/lib/vault/attachmentsMarker";
 

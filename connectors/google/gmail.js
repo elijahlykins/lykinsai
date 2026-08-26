@@ -14,7 +14,7 @@
 //      pulls genuinely-new mail.
 //
 // Both streams are deduped (same `saveGoogleNote` upsert path) and both
-// flow through `embedAndStoreChunks` so the synthesis layer's vector
+// flow through `embedAndStoreChunks` so the Vault retrieval vector
 // retrieval can find what's in your inbox.
 //
 // IMPORTANT — Restricted scope:

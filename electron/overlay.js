@@ -368,42 +368,26 @@ function renderMarkdown(md) {
         continue;
       }
       if (isVault) {
-        let kind = "vault";
         let itemId = "";
         const vaultMatch = /^lykn-vault:\/\/([^/]+)\/(.+)$/i.exec(mediaUrl);
         if (vaultMatch) {
           try {
-            kind = decodeURIComponent(vaultMatch[1]) || "vault";
             itemId = decodeURIComponent(vaultMatch[2]) || "";
           } catch {
-            kind = vaultMatch[1] || "vault";
             itemId = vaultMatch[2] || "";
           }
         }
         const vaultTitle =
           altText.replace(/^lykn[-_]vault\s*:/i, "").trim() || "Saved item";
-        const kindLabel =
-          kind === "belief"
-            ? "Belief"
-            : kind === "fact"
-              ? "Fact"
-              : kind === "concept"
-                ? "Concept"
-                : "Vault";
         const safeTitle = escapeHtml(vaultTitle);
-        const safeKindLabel = escapeHtml(kindLabel);
         const safeId = escapeAttr(itemId);
-        const safeKind = escapeAttr(kind);
         const safePreview = previewText
           ? `<div class="md-vault-preview">${escapeHtml(previewText)}</div>`
           : "";
-        const openAttrs =
-          kind === "vault"
-            ? `data-kind="vault"${itemId ? ` data-note-id="${safeId}"` : ""}`
-            : `data-kind="${safeKind}" data-synthesis="1"`;
+        const openAttrs = `data-kind="vault"${itemId ? ` data-note-id="${safeId}"` : ""}`;
         html +=
           `<div class="md-vault" ${openAttrs}>` +
-          `<div class="md-vault-head"><span class="md-vault-kind">${safeKindLabel}</span>` +
+          `<div class="md-vault-head"><span class="md-vault-kind">Vault</span>` +
           `<button class="md-vault-open" type="button" ${openAttrs}>Open</button></div>` +
           `<div class="md-vault-title">${safeTitle}</div>` +
           safePreview +
@@ -3155,17 +3139,14 @@ threadEl.addEventListener("click", (e) => {
     })();
     return;
   }
-  // Vault / neuron pull-up card: open the item in the main app (Vault note
-  // or Synthesis for beliefs/facts/concepts).
+  // Vault pull-up card: open the item in the main app.
   const vaultCard = e.target.closest(".md-vault");
   if (vaultCard) {
     e.preventDefault();
     e.stopPropagation();
     const noteId = vaultCard.getAttribute("data-note-id") || "";
-    const toSynthesis = vaultCard.getAttribute("data-synthesis") === "1";
     try {
-      if (toSynthesis) window.lyknOverlay.openSynthesis?.();
-      else window.lyknOverlay.openVault?.(noteId);
+      window.lyknOverlay.openVault?.(noteId);
     } catch (_) {}
     return;
   }
@@ -4700,7 +4681,7 @@ window.lyknOverlay.onLiveWatchUpdate((status) => {
 const voiceEl = document.getElementById("voice");
 const VOICE_TOOL_NAMES = [
   "search_vault", "read_document", "display_document", "web_search", "web_fetch",
-  "find_connections", "get_beliefs", "get_rules", "get_facts", "propose_fact",
+  "memory_list", "memory_read", "memory_patch", "memory_create", "memory_forget",
   "list_projects", "get_project_state", "set_active_project", "create_project",
   "update_project_state", "get_recent_activity", "create_reminder", "list_reminders",
   "update_reminder", "create_event", "list_events", "update_event", "delete_event",

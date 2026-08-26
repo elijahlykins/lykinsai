@@ -23,7 +23,6 @@ const RESEARCH_SIDEBAR_WIDTH = "min(340px, 30vw)";
 import { extractChatArtifacts, sortArtifactsForDisplay, extractLeakedHtmlDocument, buildLeakedHtmlArtifact, type ChatArtifact } from "@/lib/ai/chatArtifacts";
 import { isAppEditSeed } from "@/lib/apps/editApp";
 import ChatNeuronCard from "@/components/lyknChat/ChatNeuronCard";
-import FactConfirmChip from "@/components/lyknChat/FactConfirmChip";
 import SentChatAttachment, { type SentChatAttachmentData } from "@/components/lyknChat/SentChatAttachment";
 import { chatAttachmentSaveKeys } from "@/lib/chat/chatAttachmentFile";
 import { SiteFavicon } from "@/components/SiteFavicon";
@@ -33,7 +32,6 @@ import type {
   FocusedChatAttachment,
   PromptMessage,
 } from "@/lib/lyknChat/chatTurnTypes";
-import type { FactNeuron } from "@/lib/ai/learnedTag";
 import { labelForModelId } from "@/lib/ai/conversationFormat";
 import { KNOWN_MODEL_IDS } from "@/lib/modelCatalog";
 import { supabase } from "@/lib/supabase";
@@ -267,9 +265,6 @@ export interface LyknChatViewProps {
    */
   editingAppId?: string | null;
 
-  /** Patch / clear `factNeuron` after in-chat Yes / Edit / No. */
-  onFactNeuronChange?: (msgId: string, next: FactNeuron | null) => void;
-
   /**
    * Build / Create sessions: keep the thinking/building spinner under the
    * streamed description for the whole turn, not only after a tool reports
@@ -362,8 +357,6 @@ type MessageItemProps = {
   onLoadInGreetingRefresh?: () => void | Promise<void>;
   /** Open an artifact in the floating preview popup. */
   onOpenArtifact?: (art: ChatArtifact) => void;
-  /** Patch / clear `factNeuron` after in-chat ratification. */
-  onFactNeuronChange?: (msgId: string, next: FactNeuron | null) => void;
   /**
    * When set, render the thinking/building spinner under this turn's
    * streamed description — while a tool is in flight OR a build is still
@@ -1092,7 +1085,6 @@ const MessageItem = React.memo(function MessageItem({
   handleChunkClick, getSelectedText, registerChunks,
   onLoadInGreetingRefresh,
   onOpenArtifact,
-  onFactNeuronChange,
   inlineThinkingStatus,
   buildThoughtTrail,
 }: MessageItemProps) {
@@ -1455,7 +1447,7 @@ const MessageItem = React.memo(function MessageItem({
                           // down into the underlying items, each of
                           // which links out to its canonical URL
                           // (external for connector items, internal
-                          // for synthesis-layer beliefs / neurons).
+                          // for retained LYKN product items).
                           <div className="space-y-2">
                             {sec.groups.map((group) => (
                               <LoadInBubble
@@ -1923,14 +1915,6 @@ const MessageItem = React.memo(function MessageItem({
                 ))}
               </div>
             )}
-            {msg.factNeuron ? (
-              <div className="px-1 max-w-[min(100%,28rem)]">
-                <FactConfirmChip
-                  fact={msg.factNeuron}
-                  onChange={(next) => onFactNeuronChange?.(msg.id, next)}
-                />
-              </div>
-            ) : null}
           </div>
         </div>
       )}
@@ -2122,7 +2106,6 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   onSaveArtifact,
   editingAppId,
   chatKey,
-  onFactNeuronChange,
   keepThinkingWhileLoading = false,
 }) {
   // The composer's height floor is also what the auto-grow measures against,
@@ -2483,7 +2466,6 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                     registerChunks={registerChunks}
                     onLoadInGreetingRefresh={onLoadInGreetingRefresh}
                     onOpenArtifact={onOpenArtifact}
-                    onFactNeuronChange={onFactNeuronChange}
                     inlineThinkingStatus={isInFlightUserTurn ? thinkingStatus : undefined}
                     buildThoughtTrail={isInFlightUserTurn ? buildThoughtTrail : undefined}
                   />

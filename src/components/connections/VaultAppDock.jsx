@@ -14,7 +14,7 @@ import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-A-Squircle/PNGs/LYKN-Icon-A-Sq
 // LAUNCHER, not a management surface. Each icon is a connected input
 // tool (Gmail, Slack, Notion…). Clicking an icon opens that app's web
 // surface in a new tab so the user can just start working; the adapter
-// is already feeding the synthesis layer in the background.
+// is already feeding Vault retrieval in the background.
 //
 // Management (sync now / pause / disconnect / reconnect) lives on
 // the Connections page. The trailing plug button in the dock + the

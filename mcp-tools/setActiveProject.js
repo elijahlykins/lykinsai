@@ -20,7 +20,7 @@
 //          creates projects, and it must be opt-in.
 //
 // Why `create` is opt-in:
-// The synthesis layer used to silently create a project on any name miss,
+// The Projects workspace used to silently create a project on any name miss,
 // which meant AI clients across Claude/Cursor/Claude Code accidentally
 // spawned blank duplicates whenever they paraphrased the project name.
 // Strict-by-default forces the model to first discover what already
@@ -56,7 +56,7 @@ async function recentProjectsForHint(ctx) {
 
 async function stampActive(ctx, projectId) {
   const { error } = await ctx.supabaseAdmin
-    .from('lykn_user_synthesis_profile')
+    .from('lykn_user_preferences')
     .upsert(
       {
         user_id: ctx.userId,
@@ -76,7 +76,7 @@ export const setActiveProjectTool = {
   scope: 'write',
   description: [
     'CALL THIS when the user clearly shifts focus to a project the',
-    'synthesis layer should track. Marks the project as the user\'s active',
+    'Projects workspace should track. Marks the project as the user\'s active',
     'working context, so subsequent lykn_pushProjectState pushes (and',
     'lykn_getContextBlock auto-injection in other AI clients) all bind to',
     'the same project.',
@@ -90,7 +90,7 @@ export const setActiveProjectTool = {
     '',
     '  • PROJECT CREATION is USER-ONLY:',
     '    AI agents must NEVER create projects. If nothing matches, ask the user',
-    '    to create a main project or branch in the LYKN synthesis layer',
+    '    to create a main project or branch in the LYKN Projects',
     '    (+ → Create project). Then lykn_setActiveProject({ project_id }).',
     '',
     'NAME-ONLY lookup (no create, no project_id):',
@@ -173,7 +173,7 @@ export const setActiveProjectTool = {
           ok: false,
           reason: 'legacy_project_not_writable',
           message:
-            'That project was AI-inferred (legacy) and is read-only. Ask the user to create a project in the LYKN synthesis layer, then activate it by project_id.',
+            'That project was AI-inferred (legacy) and is read-only. Ask the user to create a project in the LYKN Projects, then activate it by project_id.',
           recent_projects: recent,
         });
       }
@@ -275,7 +275,7 @@ export const setActiveProjectTool = {
       return jsonContent({
         ok: false,
         reason: 'project_not_found',
-        message: `No project matches "${name}". Projects are user-created only — ask the user to create one in the LYKN synthesis layer, or call lykn_setActiveProject with a project_id from lykn_listProjects / lykn_resolveProject.`,
+        message: `No project matches "${name}". Projects are user-created only — ask the user to create one in the LYKN Projects, or call lykn_setActiveProject with a project_id from lykn_listProjects / lykn_resolveProject.`,
         searched_name: name,
         recent_projects: recent,
       });
@@ -285,7 +285,7 @@ export const setActiveProjectTool = {
     return jsonContent({
       ok: false,
       reason: 'creation_not_allowed',
-      message: 'Projects are user-created only in the LYKN synthesis layer (+ → Create project). AI agents may read and update any existing project but cannot create new ones. Ask the user to create a main project or branch, then call lykn_setActiveProject({ project_id }).',
+      message: 'Projects are user-created only in the LYKN Projects (+ → Create project). AI agents may read and update any existing project but cannot create new ones. Ask the user to create a main project or branch, then call lykn_setActiveProject({ project_id }).',
       recent_projects: recent,
     });
   },

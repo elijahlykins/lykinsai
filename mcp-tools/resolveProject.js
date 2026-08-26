@@ -7,7 +7,7 @@
 // inserts rows.
 
 import { resolveRelevantProjects } from '../lib/projectResolver.js';
-import { loadProjectContextById } from '../beliefSystem.js';
+import { loadProjectContextById } from '../lib/projectContext.js';
 
 function jsonContent(value) {
   return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
@@ -97,7 +97,7 @@ export const resolveProjectTool = {
       ...(statePreview ? { state_preview: statePreview } : {}),
       message: resolved.best
         ? `Best match: "${resolved.best.name}" (score=${resolved.best.relevance_score}). Call lykn_setActiveProject({ project_id: "${resolved.best.id}" }) to focus it.`
-        : 'No active projects found. Ask the user to create one in the LYKN synthesis layer (+ → Create project).',
+        : 'No active projects found. Ask the user to create one in the LYKN Projects (+ → Create project).',
     });
   },
 };

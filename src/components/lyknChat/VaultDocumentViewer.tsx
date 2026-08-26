@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowUpRight, ChevronDown, Info, Loader2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import VaultAttachment from "@/components/synthesis/VaultAttachment";
+import VaultAttachment from "@/components/lyknChat/VaultAttachment";
 import LyknMediaPop, { MEDIA_POP_PANEL } from "@/components/lyknChat/LyknMediaPop";
 import { parseVaultContent } from "@/lib/vaultContent";
 import { CHAT_REMARK_PLUGINS, CHAT_REHYPE_PLUGINS } from "@/lib/chat/chatMarkdown";

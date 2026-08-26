@@ -93,7 +93,7 @@ export const PLANS = [
   {
     id: "studio_max",
     name: "Teams",
-    tagline: "A shared synthesis layer for teams. Coming soon.",
+    tagline: "A shared workspace for teams. Coming soon.",
     monthlyPrice: 0,
     annualPrice: 0,
     cta: "Join Waitlist",
@@ -169,7 +169,7 @@ export const FAQ_ITEMS = [
     id: "teams",
     question: "When is Teams available?",
     answer:
-      "Teams is our shared-workspace plan, one synthesis layer your whole team can lean on. It's coming soon. Join the waitlist from the plan card and we'll reach out when it goes live.",
+      "Teams is our shared workspace plan, with shared projects and knowledge your whole team can use. It's coming soon. Join the waitlist from the plan card and we'll reach out when it goes live.",
   },
 ];
 
@@ -177,16 +177,6 @@ export const FAQ_ITEMS = [
 // Enforcement hooks live in server.js (AI requests) and useUsageGate.js
 // (vault/grid). Blocks-per-grid enforcement is applied at the canvas layer.
 //
-// `synthesisNodes` caps how many EXPLICIT user-created neurons (grids +
-// vault notes + perspectives + ratified beliefs + manual facts) can exist
-// before the Synthesis Layer page swaps in the upgrade paywall. AI-derived
-// nodes do NOT count.
-//
-// Frontend enforcement: `userCreatedNodeCount` in
-// `src/pages/SynthesisLayer.tsx` (page-level paywall takeover).
-// Server enforcement: `enforce_synthesis_neuron_cap()` triggers on
-// `lykn_chats`, `lykn_beliefs`, `lykn_user_model_facts` defined in
-// `supabase-migrations/066_synthesis_neuron_cap_trigger.sql`.
 // `glassRequests`, `imageGens`, and `artifactBuilds` are the monthly usage
 // meters shown on every pricing card — keep them in sync with the PLANS
 // feature copy above. Server enforcement: `checkAiUsageLimit` in server.js
@@ -202,7 +192,6 @@ export const PLAN_LIMITS = {
     blocksPerGrid: 50,
     grids: Infinity,
     projects: Infinity,
-    synthesisNodes: 100,
     seats: 1,
     modelTier: "basic",
     glassRequests: Infinity,
@@ -216,7 +205,6 @@ export const PLAN_LIMITS = {
     blocksPerGrid: Infinity,
     grids: Infinity,
     projects: Infinity,
-    synthesisNodes: Infinity,
     seats: 1,
     modelTier: "top+media",
     glassRequests: 1000,
@@ -229,7 +217,6 @@ export const PLAN_LIMITS = {
     blocksPerGrid: Infinity,
     grids: Infinity,
     projects: Infinity,
-    synthesisNodes: Infinity,
     seats: 1,
     modelTier: "top+media",
     glassRequests: 1000,
@@ -243,7 +230,6 @@ export const PLAN_LIMITS = {
     blocksPerGrid: Infinity,
     grids: Infinity,
     projects: Infinity,
-    synthesisNodes: Infinity,
     seats: 1,
     modelTier: "top+media",
     glassRequests: Infinity,
@@ -257,7 +243,6 @@ export const PLAN_LIMITS = {
     blocksPerGrid: Infinity,
     grids: Infinity,
     projects: Infinity,
-    synthesisNodes: Infinity,
     seats: 1,
     modelTier: "top+media",
     glassRequests: 1000,
@@ -270,7 +255,6 @@ export const PLAN_LIMITS = {
     blocksPerGrid: Infinity,
     grids: Infinity,
     projects: Infinity,
-    synthesisNodes: Infinity,
     seats: 1,
     modelTier: "top+media",
     glassRequests: 1000,

@@ -3,7 +3,6 @@
 // they're hoisted here so the full-page project dashboard can reuse the exact
 // same metadata, charts, pickers, and AI-update cards without duplicating them.
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import {
   ResponsiveContainer,
   AreaChart,
@@ -22,13 +21,8 @@ import {
   Lightbulb,
   Lock,
   Pencil,
-  Plug,
-  Plus,
-  Search,
   Sparkles,
 } from "lucide-react";
-import { fetchVaultNotesForPicker } from "@/lib/vault/fetchVaultNotesForPicker";
-import { fetchSynthesisNeuronsForPicker } from "@/lib/synthesis/fetchSynthesisNeuronsForPicker";
 import { useIsDark, chartSeries } from "@/lib/projectChartTheme";
 
 export function relativeTime(ts) {
@@ -252,180 +246,6 @@ export function ChartTooltip({ active = false, payload = null, label = "" }) {
   return (
     <div className="rounded-lg border border-black/10 dark:border-white/10 bg-white dark:bg-zinc-800 px-2 py-1 text-[0.6875rem] text-black/75 dark:text-white/80 shadow-md">
       {name}: <span className="font-semibold">{payload[0].value}</span>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Pickers — searchable click-to-add lists (vault notes / synthesis neurons).
-// ---------------------------------------------------------------------------
-function PickerShell({ placeholder, children, query, onQuery }) {
-  return (
-    <div className="mt-2 rounded-xl border border-black/[0.07] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.02] p-2">
-      <div className="flex items-center gap-2 px-1.5 py-1 mb-1">
-        <Search className="w-3.5 h-3.5 flex-shrink-0 text-black/35 dark:text-white/35" />
-        <input
-          autoFocus
-          value={query}
-          onChange={(e) => onQuery(e.target.value)}
-          placeholder={placeholder}
-          className="w-full bg-transparent outline-none text-xs placeholder:text-black/35 dark:placeholder:text-white/35 text-black/75 dark:text-white/75"
-        />
-      </div>
-      <div className="max-h-44 overflow-y-auto scrollbar-hide flex flex-col gap-0.5">{children}</div>
-    </div>
-  );
-}
-
-function PickerRow({ icon: Icon, label, meta, onClick, disabled }) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className="w-full text-left flex items-center gap-2 rounded-md px-2 py-1 hover:bg-blue-500/[0.08] disabled:opacity-50 transition-colors"
-    >
-      <Plus className="w-3 h-3 flex-shrink-0 text-blue-500" />
-      <Icon className="w-3 h-3 flex-shrink-0 text-black/40 dark:text-white/40" />
-      <span className="flex-1 min-w-0 truncate text-xs text-black/70 dark:text-white/70">{label}</span>
-      {meta ? (
-        <span className="flex-shrink-0 text-[0.625rem] text-black/30 dark:text-white/30">{meta}</span>
-      ) : null}
-    </button>
-  );
-}
-
-export function VaultPicker({ userId, existingNodeIds, onAdd, adding }) {
-  const [query, setQuery] = useState("");
-  const { data: notes = [], isLoading } = useQuery({
-    queryKey: ["vault_notes_picker", userId || "guest"],
-    queryFn: () => fetchVaultNotesForPicker(userId),
-    enabled: !!userId,
-    staleTime: 60 * 1000,
-  });
-
-  const candidates = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return notes
-      .filter((n) => !existingNodeIds.has(`vault_${n.id}`))
-      .filter((n) => !q || n.title.toLowerCase().includes(q))
-      .slice(0, 40);
-  }, [notes, existingNodeIds, query]);
-
-  return (
-    <PickerShell placeholder="Search your vault…" query={query} onQuery={setQuery}>
-      {isLoading ? (
-        <p className="text-xs text-black/40 dark:text-white/40 px-2 py-1.5">Loading vault…</p>
-      ) : candidates.length === 0 ? (
-        <p className="text-xs text-black/40 dark:text-white/40 px-2 py-1.5">
-          {query ? "No matching vault items." : "Everything in your vault is already in this project."}
-        </p>
-      ) : (
-        candidates.map((n) => (
-          <PickerRow
-            key={n.id}
-            icon={Plug}
-            label={n.title}
-            meta={n.updated_at ? relativeTime(new Date(n.updated_at).getTime()) : null}
-            disabled={adding}
-            onClick={() =>
-              onAdd({ nodeId: `vault_${n.id}`, label: n.title, kind: "vault" })
-            }
-          />
-        ))
-      )}
-    </PickerShell>
-  );
-}
-
-const NEURON_FILTERS = [
-  { value: "all", label: "All neurons" },
-  { value: "belief", label: "Beliefs" },
-  { value: "fact", label: "Facts" },
-  { value: "rule", label: "Rules" },
-  { value: "concept", label: "Concepts" },
-];
-
-export function NeuronPicker({ userId, existingNodeIds, onAdd, adding }) {
-  const [query, setQuery] = useState("");
-  const [kindFilter, setKindFilter] = useState("all");
-  const { data, isLoading } = useQuery({
-    queryKey: ["synthesis_neurons_picker", userId || "guest"],
-    queryFn: () => fetchSynthesisNeuronsForPicker(userId),
-    enabled: !!userId,
-    staleTime: 60 * 1000,
-  });
-
-  const allNeurons = useMemo(() => {
-    if (!data) return [];
-    return [
-      ...data.beliefs.map((b) => ({ ...b, kind: "belief", nodeId: `belief_${b.id}` })),
-      ...data.facts.map((f) => ({ ...f, nodeId: `fact_${f.id}` })),
-      ...data.rules.map((r) => ({ ...r, nodeId: `rule_${r.id}` })),
-      ...data.concepts.map((c) => ({ ...c, nodeId: `concept_${c.id}` })),
-    ].filter((n) => n.label && !existingNodeIds.has(n.nodeId));
-  }, [data, existingNodeIds]);
-
-  const counts = useMemo(() => {
-    const c = { all: allNeurons.length, belief: 0, fact: 0, rule: 0, concept: 0 };
-    for (const n of allNeurons) if (c[n.kind] !== undefined) c[n.kind] += 1;
-    return c;
-  }, [allNeurons]);
-
-  const candidates = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return allNeurons
-      .filter((n) => kindFilter === "all" || n.kind === kindFilter)
-      .filter((n) => !q || n.label.toLowerCase().includes(q));
-  }, [allNeurons, kindFilter, query]);
-
-  return (
-    <div className="mt-2 rounded-xl border border-black/[0.07] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.02] p-2">
-      <div className="flex items-center gap-2 mb-1.5">
-        <div className="flex-1 min-w-0 flex items-center gap-2 px-1.5 py-1">
-          <Search className="w-3.5 h-3.5 flex-shrink-0 text-black/35 dark:text-white/35" />
-          <input
-            autoFocus
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search your neurons…"
-            className="w-full bg-transparent outline-none text-xs placeholder:text-black/35 dark:placeholder:text-white/35 text-black/75 dark:text-white/75"
-          />
-        </div>
-        <select
-          value={kindFilter}
-          onChange={(e) => setKindFilter(e.target.value)}
-          className="flex-shrink-0 text-[0.6875rem] px-2 py-1 rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-zinc-800 text-black/70 dark:text-white/70 outline-none focus:border-blue-500/40 cursor-pointer"
-        >
-          {NEURON_FILTERS.map((f) => (
-            <option key={f.value} value={f.value}>
-              {f.label} ({counts[f.value] ?? 0})
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="max-h-52 overflow-y-auto scrollbar-hide flex flex-col gap-0.5">
-        {isLoading ? (
-          <p className="text-xs text-black/40 dark:text-white/40 px-2 py-1.5">Loading neurons…</p>
-        ) : candidates.length === 0 ? (
-          <p className="text-xs text-black/40 dark:text-white/40 px-2 py-1.5">
-            {query || kindFilter !== "all"
-              ? "No matching neurons."
-              : "All your neurons are already in this project."}
-          </p>
-        ) : (
-          candidates.map((n) => (
-            <PickerRow
-              key={n.nodeId}
-              icon={(KIND_META[n.kind] || KIND_META.other).icon}
-              label={n.label}
-              meta={n.kind}
-              disabled={adding}
-              onClick={() => onAdd({ nodeId: n.nodeId, label: n.label, kind: n.kind })}
-            />
-          ))
-        )}
-      </div>
     </div>
   );
 }

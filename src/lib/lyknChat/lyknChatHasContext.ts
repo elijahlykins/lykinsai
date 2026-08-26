@@ -114,7 +114,7 @@ function stateFromBoardRow(row: Record<string, unknown>): unknown {
   return null;
 }
 
-/** Boards that should appear in chat sidebars and the synthesis-layer Chats cluster. */
+/** Boards that should appear in chat and project sidebars. */
 export function filterLyknChatsWithContext<T extends LyknChatListRow>(
   rows: T[],
   stateByChatId?: Map<string, unknown>,

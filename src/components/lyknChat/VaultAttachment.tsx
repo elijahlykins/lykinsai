@@ -11,10 +11,7 @@ import { safeExternalUrl, safeHtmlPreviewUrl } from "@/lib/safeExternalUrl";
 
 // Renders a single Vault attachment in whatever shape best fits its
 // `type` field: image / video / YouTube embed / bookmark / spreadsheet
-// / generic external link / file. Originally lived inline in
-// SynthesisLayer's DetailPanel; extracted so the NeuronPanel can render
-// the same media without a circular import back through the page
-// module.
+// / generic external link / file.
 //
 // Supabase-storage-hosted URLs get re-signed on demand (the public
 // storage URLs persisted with older attachments expire after a few

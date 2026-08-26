@@ -19,7 +19,7 @@
 // Why "vault note" specifically (not "scratch buffer" or "memo"):
 //   The user already has mental models for what their vault holds. Using
 //   the same vocabulary makes the resulting note discoverable via the
-//   same /vault search + the same lykn_searchVault / lykn_findConnections
+//   same /vault search + lykn_searchVault
 //   surfaces. A separate "chat memo" store would silently fragment the
 //   memory layer.
 //
@@ -67,10 +67,8 @@ export const createVaultNoteTool = {
     'When NOT to call:',
     '  • Casual / one-off chat replies. Vault content should be re-useful.',
     '  • Anything the user asked you to KEEP PRIVATE / OFF THE RECORD.',
-    '  • Personal principles → user adds these as Core Belief neurons in',
-    '    Synthesis Layer (+ → Core Belief neuron). Do not propose beliefs.',
-    '  • Atomic identity disclosures → use lykn_proposeFact (observation,',
-    '    not memory).',
+    '  • Explicit durable personal information → use memory_patch/create,',
+    '    not a vault note.',
     '  • The user asked to SEE / pull up / show existing files. That is',
     '    [AI DRIVE] + lykn_open_app, or local_* for Mac folders — NEVER',
     '    create a note that merely says you pulled or saved something.',

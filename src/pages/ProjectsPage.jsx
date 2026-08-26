@@ -1,4 +1,4 @@
-// /projects - the index of the user's synthesis-layer projects
+// /projects - the index of the user's projects
 // (`lykn_projects` + `lykn_project_neurons`). Same rows the MCP tools
 // (lykn_listProjects / lykn_getContextBlock) serve to outside AI clients.
 //

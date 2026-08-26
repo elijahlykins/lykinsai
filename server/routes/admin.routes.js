@@ -318,9 +318,8 @@ export function registerAdminRoutes(app, { requireAuth, requireAdmin, supabaseAd
   // ============================================
   // ADMIN — MCP / context-backplane usage
   // ============================================
-  // Pulls MCP and REST-mirror traffic out of `ai_usage_logs` (we tagged it
-  // at ingest time with action_type IN ('mcp_tool', 'rest_synthesis')) and
-  // attributions out of `lykn_result_attributions` grouped by `surface`.
+  // Pulls MCP and REST-mirror traffic out of `ai_usage_logs` (tagged at
+  // ingest time with action_type IN ('mcp_tool', 'rest_synthesis')).
   // Returns one consolidated payload that powers the "MCP" section of
   // /admin/usage on the client. SECURITY DEFINER RPCs would be cleaner but
   // also a migration we don't need yet — these reads are admin-only and
@@ -440,28 +439,7 @@ export function registerAdminRoutes(app, { requireAuth, requireAdmin, supabaseAd
         };
       });
 
-      // 2. Attribution-by-surface — every <applied> tag and every MCP
-      //    recordRuleApplication call writes one row to
-      //    lykn_result_attributions with a `surface` value. Aggregate.
-      try {
-        const { data: attribs } = await supabaseAdmin
-          .from('lykn_result_attributions')
-          .select('id, surface, created_at')
-          .gte('created_at', since)
-          .limit(5000);
-        const surfaceCounts = new Map();
-        for (const a of (attribs || [])) {
-          const s = String(a.surface || '(unknown)');
-          surfaceCounts.set(s, (surfaceCounts.get(s) || 0) + 1);
-        }
-        out.attribution_by_surface = Array.from(surfaceCounts.entries())
-          .map(([surface, count]) => ({ surface, count }))
-          .sort((a, b) => b.count - a.count);
-      } catch (e) {
-        console.warn('[admin:mcp] attribution pull error:', e?.message || e);
-      }
-
-      // 3. Token KPIs — separate from the call-log window.
+      // 2. Token KPIs — separate from the call-log window.
       try {
         const { data: tokens } = await supabaseAdmin
           .from('lykn_mcp_tokens')

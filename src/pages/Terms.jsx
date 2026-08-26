@@ -22,7 +22,7 @@
 import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 
-const LAST_UPDATED = "August 13, 2026";
+const LAST_UPDATED = "August 26, 2026";
 
 export default function Terms() {
   return (
@@ -331,8 +331,8 @@ export function TermsBody() {
       <Section title="Service availability" anchor="availability">
         <p>
           We aim for high uptime but don't promise it. The service is provided
-          "as is" and "as available." Nightly synthesis runs and third-party AI
-          providers can be delayed or interrupted, and LYKN's own backend may
+          "as is" and "as available." Third-party AI providers and scheduled
+          project workflows can be delayed or interrupted, and LYKN's backend may
           be down for maintenance from time to time.
         </p>
         <p className="mt-3">

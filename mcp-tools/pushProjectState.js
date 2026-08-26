@@ -17,7 +17,7 @@
 //
 // Project resolution:
 //   1. Explicit `project_id` in args wins.
-//   2. Otherwise fall back to lykn_user_synthesis_profile.active_project_id.
+//   2. Otherwise fall back to lykn_user_preferences.active_project_id.
 //   3. If neither resolves, return an actionable error telling the
 //      model to call lykn_setActiveProject first. We deliberately do
 //      NOT auto-create an "Untitled project" because that's the kind
@@ -131,7 +131,7 @@ export const pushProjectStateTool = {
           ok: false,
           reason: 'project_not_writable',
           message:
-            'That project_id is not writable. Only user-created projects (from the LYKN synthesis layer) accept AI updates. Legacy AI-inferred projects are read-only — ask the user to create a project and pass its id.',
+            'That project_id is not writable. Only user-created projects (from the LYKN Projects) accept AI updates. Legacy AI-inferred projects are read-only — ask the user to create a project and pass its id.',
         });
       }
       return jsonContent({

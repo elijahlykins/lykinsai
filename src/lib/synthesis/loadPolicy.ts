@@ -1,16 +1,14 @@
 /**
- * Synthesis layer — Supabase load discipline (shared by client + server wiring).
+ * Retained vault/conversation retrieval load discipline.
  *
  * Phases (implement gradually; do not fan out N queries per keystroke):
  *
  * 1. Schema live — zero extra queries until code calls RPC/inserts.
  * 2. Retrieval — one embed + one RPC per chat turn. Server logs 📊 min/mean/max
  *    similarity + per source_type counts (tune SYNTHESIS_MATCH_THRESHOLD from data).
- * 3. Memory writer — `scheduleSynthesisReindex` + POST /api/synthesis/reindex
+ * 3. Retrieval index writer — `scheduleSynthesisReindex` + POST /api/synthesis/reindex
  *    (debounced, batch embeds, replace rows per source). Chunks: 900 chars with
  *    100-char overlap (server `SYNTHESIS_CHUNK_*` constants).
- * 4. User model — `scheduleUserProfileRefresh` (debounced) → POST
- *    /api/synthesis/refresh-profile; prompt gets `[USER_MODEL]` from DB (cached on server).
  */
 
 export const SYNTHESIS_LOAD_POLICY = {
@@ -27,9 +25,8 @@ export const SYNTHESIS_LOAD_POLICY = {
    * after the user pauses for this long.
    *
    * Was 60_000 — that read as a UX lag because saved-but-not-yet-embedded
-   * notes don't appear in `[SYNTHESIS_RETRIEVAL]` for in-app chat, don't
-   * contribute to the next concepts pass, and don't form vault↔grid cross-
-   * edges on the 3D graph until the chunks land. Tightened to 15s; the
+   * notes don't appear in semantic Vault retrieval until the chunks land.
+   * Tightened to 15s; the
    * server-side embed budget is bounded by the chunk cap per source (64
    * chunks, embedded in a single OpenAI batch) so the marginal cost per
    * coalesced save is small.

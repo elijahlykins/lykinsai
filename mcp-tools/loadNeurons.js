@@ -1,5 +1,5 @@
 // ============================================================================
-// mcp-tools/loadNeurons.js — bring MULTIPLE neurons into the chat at once
+// mcp-tools/loadNeurons.js — bring multiple Vault items into chat
 // ============================================================================
 // Read. Batch sibling of lykn_loadNeuron. Same per-id payload shape, but
 // takes an ARRAY of node_ids and returns an array of results in a single
@@ -8,9 +8,8 @@
 // its limited hops per item, and MAX_TOOL_CALLS_PER_HOP (5) bounds how
 // many items the user can have brought into a turn.
 //
-// Each result entry is the EXACT same shape lykn_loadNeuron returns for
-// a single node_id, so the chat surface's ChatNeuronCard renderer (which
-// already knows how to lay out vault / belief / fact / concept payloads)
+// Each result entry is the exact Vault shape lykn_loadNeuron returns for
+// a single node_id, so the chat surface's ChatNeuronCard renderer
 // and the orchestrator's tool_call → aiNeurons translation both work
 // for free — we just iterate the batch result and push each entry.
 //
@@ -32,39 +31,36 @@ const MAX_BATCH = 10;
 
 export const loadNeuronsTool = {
   name: 'lykn_loadNeurons',
-  title: 'Bring multiple neurons into the chat in one call',
+  title: 'Bring multiple Vault items into chat in one call',
   scope: 'read',
   description: [
     'Batch version of lykn_loadNeuron. Hydrate the FULL content of up to',
-    `${MAX_BATCH} neurons in a single call and bring each into the chat as a`,
+    `${MAX_BATCH} Vault items in a single call and bring each into the chat as a`,
     'separate user-visible card. The result is an array of per-id payloads —',
     'each entry has the same shape lykn_loadNeuron returns for a single id.',
     '',
     'WHEN TO CALL:',
     '  • The user asks to see EVERY note / saved item about a topic ("pull',
     '    up all my notes on robotics", "show me what I have on the Q1 deck").',
-    '  • You ran findConnections and the user wants to actually look at',
+    '  • You ran lykn_searchVault and the user wants to actually look at',
     '    several of the matches in the chat — not just hear them summarised.',
-    '  • You want to present a small set of related neurons together so',
+    '  • You want to present a small set of related Vault items together so',
     '    the user can compare them side by side.',
     '',
     'WHEN NOT TO CALL:',
     '  • Just one node_id → call lykn_loadNeuron instead (cheaper, simpler).',
-    '  • You haven\'t verified the node_ids exist → call findConnections',
-    '    or searchVault first.',
+    '  • You haven\'t verified the node_ids exist → call lykn_searchVault first.',
     '  • The user only asked for a SUMMARY — bringing in 10 cards spams',
-    '    the chat. Use findConnections + your own prose synthesis instead.',
+    '    the chat. Use lykn_searchVault and concise prose instead.',
     '',
-    'EACH CARD RENDERS AUTOMATICALLY under your reply (per kind: vault',
-    'shows body + attachments, belief shows text + rationale + serves_need,',
-    'fact shows text + reason + kind, concept shows label + recency). Do',
+    'EACH VAULT CARD RENDERS AUTOMATICALLY under your reply with its body',
+    'and attachments. Do',
     'NOT paste any of the loaded content back as text in your reply — the',
     'cards already show it. Your prose should frame WHY you brought them in.',
     '',
     'Per-id results follow the SAME shape lykn_loadNeuron returns, so a',
     'missing id lands as `{ ok: false, reason: "not_found", node_id }` in',
-    'the array rather than failing the whole call. Mixed-kind batches are',
-    'fine (a vault note next to a belief next to a concept).',
+    'the array rather than failing the whole call.',
     '',
     `Hard cap: ${MAX_BATCH} node_ids per call. Extras are dropped with a`,
     'warning in the response.',
@@ -74,8 +70,8 @@ export const loadNeuronsTool = {
     properties: {
       node_ids: {
         type: 'array',
-        description: `Array of node_ids from findConnections / searchVault / similar. Each prefixed: belief_<uuid> | fact_<uuid> | concept_<slug> | vault_<uuid>. Capped at ${MAX_BATCH}.`,
-        items: { type: 'string' },
+        description: `Array of vault_<uuid> node_ids returned by lykn_searchVault. Capped at ${MAX_BATCH}.`,
+        items: { type: 'string', pattern: '^vault_[A-Za-z0-9-]+$' },
         minItems: 1,
         maxItems: MAX_BATCH,
       },
@@ -92,13 +88,13 @@ export const loadNeuronsTool = {
     const seen = new Set();
     for (const v of raw) {
       const s = typeof v === 'string' ? v.trim() : '';
-      if (!s || seen.has(s)) continue;
+      if (!s.startsWith('vault_') || seen.has(s)) continue;
       seen.add(s);
       cleaned.push(s);
       if (cleaned.length >= MAX_BATCH) break;
     }
     if (cleaned.length === 0) {
-      return errorContent('node_ids must be a non-empty array of neuron ids.');
+      return errorContent('node_ids must contain at least one vault_<id> value.');
     }
     const dropped = Math.max(0, raw.length - cleaned.length);
 

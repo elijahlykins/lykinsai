@@ -91,7 +91,7 @@ import LoadingScreen from "@/components/LoadingScreen";
 import AddLinkDialog from "@/components/AddLinkDialog";
 import DriveListing from "@/components/macfiles/DriveListing";
 import { buildWakeVaultDemoCards } from "@/lib/wake/wakeVaultDemoCards";
-import { WAKE_WALKTHROUGH_GATE_TEXT } from "@/components/wake/wakeSynthesisAddMenu";
+import { WAKE_WALKTHROUGH_GATE_TEXT } from "@/components/wake/wakeWalkthrough";
 import {
   buildWakePreviewUserQuickNoteCards,
   readWakeVaultPreviewQuickNotes,
@@ -1586,7 +1586,7 @@ export default function Vault({
 
   // ─── Deep-link: ?note=<noteId> ─────────────────────────────────────
   //
-  // The synthesis-layer NeuronPanel's "Open in vault" button navigates
+  // Vault deep links navigate
   // to `/vault?note=<id>` so the user lands on this page focused on
   // the specific item the neuron represents. We:
   //   1. Pull `note` from the URL.

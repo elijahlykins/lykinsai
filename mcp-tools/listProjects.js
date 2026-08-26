@@ -3,7 +3,7 @@
 // ============================================================================
 // Read-only. Returns the LYKN user's projects ordered by recent activity so
 // outside AI clients (Claude Desktop, Cursor, Claude Code, ChatGPT) can
-// discover what work the synthesis layer is already tracking BEFORE they
+// discover what work the Projects workspace is already tracking BEFORE they
 // call lykn_setActiveProject.
 //
 // Why this exists:
@@ -54,14 +54,14 @@ export const listProjectsTool = {
     'last_active_at (used to sort), is_focus (true for the ONE project',
     'lykn_getContextBlock currently auto-injects), state_key_count (how',
     'much working memory has been pushed to it), and neuron_count (how',
-    'many synthesis nodes the user hand-grouped into it). NB: status',
+    'many Vault items the user attached to it). NB: status',
     '"active" just means "not archived" — it does NOT mean "currently in',
     'focus." Use `is_focus` for that. Status defaults to "active"; pass',
     '"archived" or "all" only when the user explicitly asks to resume',
     'older work.',
     '',
     'If the right project genuinely doesn\'t exist yet, ask the user to create',
-    'a main project or branch in the LYKN synthesis layer (+ → Create project).',
+    'a main project or branch in the LYKN Projects (+ → Create project).',
     'AI agents cannot create projects — only read and update them.',
   ].join('\n'),
   inputSchema: {
@@ -126,23 +126,22 @@ export const listProjectsTool = {
     // glance whether the project it cares about is already the active
     // one (no need to call setActiveProject again in that case).
     const { data: profile } = await ctx.supabaseAdmin
-      .from('lykn_user_synthesis_profile')
+      .from('lykn_user_preferences')
       .select('active_project_id')
       .eq('user_id', ctx.userId)
       .maybeSingle();
     const activeId = profile?.active_project_id || null;
 
     // ----------------------------------------------------------------
-    // User-clustered neurons (migration 063 / lykn_project_neurons).
-    // The synthesis layer's "+ Create project" flow lets the user
-    // explicitly group neurons (beliefs, facts, concepts, vault notes,
-    // perspectives, …) into a project. We piggyback that membership
+    // Attached Vault knowledge (migration 063 / lykn_project_neurons).
+    // Retained project-product flows group Vault items into a project.
+    // We piggyback that membership
     // onto every list response so outside AI clients (Claude /
     // Cursor / Claude Code / ChatGPT) can see WHAT the project
     // contains — the user-facing meaning of the project — rather
     // than only seeing the AI-pushed working state. We snapshot
     // node_label + node_kind at cluster time, so we can render the
-    // membership without resolving heterogeneous synthesis-layer
+    // membership without resolving legacy
     // node ids back to source rows.
     //
     // Best-effort: if the table is missing (063 not yet applied) we
@@ -157,6 +156,7 @@ export const listProjectsTool = {
           .select('project_id, node_id, node_label, node_kind, created_at')
           .eq('user_id', ctx.userId)
           .in('project_id', projectIds)
+          .like('node_id', 'vault_%')
           .order('created_at', { ascending: true });
         for (const m of members || []) {
           const arr = neuronsByProject.get(m.project_id) || [];
@@ -249,7 +249,7 @@ export const listProjectsTool = {
       message: projects.length
         ? null
         : status === 'active'
-          ? 'No active projects yet. Ask the user to create a main project in the LYKN synthesis layer (+ → Create project). AI agents cannot create projects.'
+          ? 'No active projects yet. Ask the user to create a main project in the LYKN Projects (+ → Create project). AI agents cannot create projects.'
           : 'No projects matched that filter.',
     });
   },

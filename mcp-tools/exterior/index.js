@@ -22,7 +22,7 @@ export const webSearchTool = {
   scope: 'read',
   description: [
     'Run a live web search when the user needs current information that is',
-    'not in their vault or synthesis layer — news, prices, recent events,',
+    'not in their Vault, projects, or Markdown Memory — news, prices, recent events,',
     '"what happened today", facts after your training cutoff.',
     '',
     'WHEN TO CALL:',

@@ -1,7 +1,7 @@
 import {
   Blocks,
-  Brain,
   CalendarDays,
+  FolderKanban,
   MessageCircle,
   Lock,
   SquarePen,
@@ -20,7 +20,7 @@ const RAIL_ITEMS = [
   { icon: MessageCircle, label: "Chat", active: true },
   { icon: Lock, label: "Vault", active: false },
   { icon: CalendarDays, label: "Calendar / To-do", active: false },
-  { icon: Brain, label: "Synthesis Layer", active: false },
+  { icon: FolderKanban, label: "Projects", active: false },
   { icon: Blocks, label: "Model builder", active: false },
 ];
 

@@ -2,19 +2,15 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Atom,
   ArrowUpRight,
-  BookOpen,
   Check,
   ChevronDown,
   Expand,
   FileText,
   FolderPlus,
-  Hash,
   Loader2,
-  Sparkles,
 } from "lucide-react";
-import VaultAttachment from "@/components/synthesis/VaultAttachment";
+import VaultAttachment from "@/components/lyknChat/VaultAttachment";
 import { parseVaultContent } from "@/lib/vaultContent";
 import { flushAndNavigate } from "@/lib/chat/flushAndNavigate";
 import { openLyknMediaPop } from "@/lib/lyknMediaPop";
@@ -24,21 +20,17 @@ import {
   listUserProjects,
   type UserProject,
 } from "@/lib/userProjects";
-import {
-  SYNTHESIS_LAYER_UI_ENABLED,
-  synthesisLayerHref,
-} from "@/lib/synthesisLayerUi";
 import type { ChatNeuronAttachment as ChatTurnNeuronAttachment } from "@/lib/lyknChat/chatTurnTypes";
 
 // ============================================================================
-// ChatNeuronCard — a neuron/vault item the AI has "brought into the chat"
+// ChatNeuronCard — a vault item the AI brought into chat
 // ============================================================================
 // Rendered under the assistant bubble whenever the in-app agent loop
 // invokes lykn_loadNeuron during a turn. Lets the AI surface a full
-// neuron to the user as a rich, clickable card — not just as paraphrased
+// Vault item to the user as a rich, clickable card — not just as paraphrased
 // text — so the user actually sees the saved item (an image, a video,
-// a bookmark, the body of a vault note, the text of a belief, …)
-// without having to navigate to /vault or /synthesis-layer.
+// a bookmark, or the body of a Vault note)
+// without having to navigate to /vault.
 //
 // One card per successful loadNeuron call. Visual family follows the
 // other in-bubble companions (ToolCallPill, NeuronPill, AppliedRulePill)
@@ -46,9 +38,7 @@ import type { ChatNeuronAttachment as ChatTurnNeuronAttachment } from "@/lib/lyk
 // the AI's prose still reads as the primary content and the card sits
 // as supporting material below it.
 //
-// Click-through:
-//   • vault items → /vault?note=<id>     (Vault page deep-links + flashes)
-//   • everything else → /synthesis-layer (the home of beliefs/facts/concepts)
+// Vault items click through to /vault?note=<id>.
 //
 // We deliberately don't wire a remove button. If the user wants the card
 // gone they can collapse the AI response (the chat already has that
@@ -76,61 +66,7 @@ export type ChatNeuronVaultPayload = {
   };
 };
 
-export type ChatNeuronBeliefPayload = {
-  ok: boolean;
-  kind: "belief";
-  node_id: string;
-  display?: string;
-  belief?: {
-    id: string;
-    text: string;
-    serves_need?: string | null;
-    status?: string;
-    confidence?: number | null;
-    rationale?: string | null;
-    source?: string | null;
-    created_at?: string;
-  };
-};
-
-export type ChatNeuronFactPayload = {
-  ok: boolean;
-  kind: "fact";
-  node_id: string;
-  display?: string;
-  fact?: {
-    id: string;
-    text: string;
-    kind?: string | null;
-    status?: string;
-    reason?: string | null;
-    confidence?: number | null;
-    created_at?: string;
-  };
-};
-
-export type ChatNeuronConceptPayload = {
-  ok: boolean;
-  kind: "concept";
-  node_id: string;
-  display?: string;
-  concept?: {
-    id: string;
-    label: string;
-    slug?: string;
-    kind?: string | null;
-    status?: string;
-    first_seen_at?: string;
-    last_touched_at?: string | null;
-    related_concepts?: Array<{ id: string; label: string; weight?: number | null }>;
-  };
-};
-
-export type ChatNeuronPayload =
-  | ChatNeuronVaultPayload
-  | ChatNeuronBeliefPayload
-  | ChatNeuronFactPayload
-  | ChatNeuronConceptPayload;
+export type ChatNeuronPayload = ChatNeuronVaultPayload;
 
 // One entry as it lives on PromptMessage.aiNeurons — the canonical shape
 // (chatTurnTypes) with `payload` narrowed from `any` to the payload union
@@ -141,20 +77,8 @@ export type ChatNeuronAttachment = Omit<ChatTurnNeuronAttachment, "payload"> & {
   payload: ChatNeuronPayload;
 };
 
-const KIND_ICON = {
-  vault: FileText,
-  belief: Atom,
-  fact: Hash,
-  concept: Sparkles,
-  perspective: BookOpen,
-} as const;
-
-const KIND_LABEL: Record<string, string> = {
-  vault: "Vault",
-  belief: "Core Belief",
-  fact: "Fact",
-  concept: "Concept",
-};
+const KIND_ICON = { vault: FileText } as const;
+const KIND_LABEL: Record<string, string> = { vault: "Vault" };
 
 function relativeAge(iso?: string | null): string {
   if (!iso) return "";
@@ -264,167 +188,28 @@ function VaultBody({ payload }: { payload: ChatNeuronVaultPayload }) {
   );
 }
 
-function BeliefBody({ payload }: { payload: ChatNeuronBeliefPayload }) {
-  const belief = payload.belief;
-  if (!belief) return null;
-  return (
-    <div className="space-y-1.5">
-      <p className="text-[0.85rem] leading-snug text-black/85 dark:text-white/90 font-medium break-words">
-        “{belief.text}”
-      </p>
-      {belief.rationale ? (
-        <p className="text-[0.72rem] leading-relaxed text-black/65 dark:text-white/65 break-words line-clamp-[6]">
-          {belief.rationale}
-        </p>
-      ) : null}
-      {belief.serves_need ? (
-        <span className="inline-block text-[0.575rem] uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-400/20">
-          serves: {belief.serves_need}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-function FactBody({ payload }: { payload: ChatNeuronFactPayload }) {
-  const fact = payload.fact;
-  if (!fact) return null;
-  return (
-    <div className="space-y-1.5">
-      <p className="text-[0.82rem] leading-snug text-black/85 dark:text-white/90 break-words">
-        {fact.text}
-      </p>
-      {fact.reason ? (
-        <p className="text-[0.7rem] leading-relaxed text-black/60 dark:text-white/60 italic break-words line-clamp-[4]">
-          {fact.reason}
-        </p>
-      ) : null}
-      {fact.kind ? (
-        <span className="inline-block text-[0.575rem] uppercase tracking-[0.14em] text-blue-700 dark:text-blue-300 px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-400/20">
-          {fact.kind}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-function ConceptBody({ payload }: { payload: ChatNeuronConceptPayload }) {
-  const concept = payload.concept;
-  if (!concept) return null;
-  const age = relativeAge(concept.last_touched_at);
-  return (
-    <div className="space-y-1.5">
-      <p className="text-[0.85rem] leading-snug text-black/85 dark:text-white/90 font-medium break-words">
-        {concept.label}
-      </p>
-      <p className="text-[0.7rem] leading-relaxed text-black/55 dark:text-white/55">
-        {concept.kind ? `${concept.kind}` : "concept"}
-        {age ? ` · last touched ${age}` : ""}
-      </p>
-      {Array.isArray(concept.related_concepts) && concept.related_concepts.length > 0 ? (
-        <div className="flex flex-wrap gap-1 pt-0.5">
-          {concept.related_concepts.slice(0, 5).map((r) => (
-            <span
-              key={r.id}
-              className="text-[0.6rem] text-black/55 dark:text-white/55 px-1.5 py-0.5 rounded bg-black/[0.04] dark:bg-white/[0.05]"
-            >
-              {r.label}
-            </span>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function bodyFor(payload: ChatNeuronPayload): React.ReactNode {
-  switch (payload.kind) {
-    case "vault":
-      return <VaultBody payload={payload} />;
-    case "belief":
-      return <BeliefBody payload={payload} />;
-    case "fact":
-      return <FactBody payload={payload} />;
-    case "concept":
-      return <ConceptBody payload={payload} />;
-    default:
-      return null;
-  }
+  return <VaultBody payload={payload} />;
 }
 
 function titleFor(payload: ChatNeuronPayload): string {
-  if (payload.kind === "vault") return String(payload.note?.title || "Untitled note");
-  if (payload.kind === "belief") return "From your beliefs";
-  if (payload.kind === "fact") return "From your facts";
-  if (payload.kind === "concept") return String(payload.concept?.label || "Concept");
-  return "Neuron";
+  return String(payload.note?.title || "Untitled note");
 }
 
 function hrefFor(payload: ChatNeuronPayload): { href: string; label: string } | null {
-  if (payload.kind === "vault" && payload.note?.id) {
-    return {
-      href: `/vault?note=${encodeURIComponent(payload.note.id)}`,
-      label: "Open in vault",
-    };
-  }
-  // Soft-unplug: hide graph deep-links until the Memory surface ships.
-  if (!SYNTHESIS_LAYER_UI_ENABLED) return null;
-  const focus =
-    payload.kind === "belief" && payload.belief?.id
-      ? `belief_${payload.belief.id}`
-      : payload.kind === "fact" && payload.fact?.id
-        ? `fact_${payload.fact.id}`
-        : payload.node_id
-          ? payload.node_id
-          : null;
-  if (!focus) return null;
+  if (!payload.note?.id) return null;
   return {
-    href: synthesisLayerHref(`focus=${encodeURIComponent(focus)}`),
-    label: "Open in Synthesis Layer",
+    href: `/vault?note=${encodeURIComponent(payload.note.id)}`,
+    label: "Open in vault",
   };
 }
 
-/**
- * Derive the (node_id, label, kind) triple the userProjects writers expect
- * from the loadNeuron payload. node_id is the same prefixed id the
- * synthesis layer + AI clients use everywhere (vault_<uuid>, belief_<uuid>,
- * fact_<uuid>, concept_<slug>). The label is a short human caption used
- * for the project member chip.
- */
-function memberFromPayload(payload: ChatNeuronPayload): {
-  nodeId: string;
-  label: string | null;
-  kind: string | null;
-} {
-  if (payload.kind === "vault") {
-    return {
-      nodeId: payload.node_id,
-      label: payload.note?.title || "Vault note",
-      kind: "vault",
-    };
-  }
-  if (payload.kind === "belief") {
-    return {
-      nodeId: payload.node_id,
-      label: payload.belief?.text || "Belief",
-      kind: "belief",
-    };
-  }
-  if (payload.kind === "fact") {
-    return {
-      nodeId: payload.node_id,
-      label: payload.fact?.text || "Fact",
-      kind: "neuron",
-    };
-  }
-  if (payload.kind === "concept") {
-    return {
-      nodeId: payload.node_id,
-      label: payload.concept?.label || "Concept",
-      kind: "concept",
-    };
-  }
-  return { nodeId: (payload as any).node_id, label: null, kind: null };
+function memberFromPayload(payload: ChatNeuronPayload) {
+  return {
+    nodeId: payload.node_id,
+    label: payload.note?.title || "Vault note",
+    kind: "vault",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -432,8 +217,8 @@ function memberFromPayload(payload: ChatNeuronPayload): {
 // ---------------------------------------------------------------------------
 // The AI brought this neuron into the chat. If the user wants to keep it
 // tied to whichever project they're actively working on (so it shows up
-// in the synthesis layer cluster, in lykn_getProjectNeurons, etc.), the
-// path used to be: go to the synthesis layer, find the neuron, open the
+// in the Projects workspace cluster, in lykn_getProjectNeurons, etc.), the
+// path used to be: go to the Projects workspace, find the neuron, open the
 // NeuronPanel, pick the project. That's three surfaces away from the
 // chat.
 //
@@ -442,11 +227,9 @@ function memberFromPayload(payload: ChatNeuronPayload): {
 // is sorted by last_active_at desc) and exposes a tiny chevron to switch
 // targets if the user has more than one.
 //
-// Re-uses the exact same `addNeuronsToProject` helper that NeuronPanel
-// uses, so writes land in the SAME table (`lykn_project_neurons`), with
-// the SAME guest-localStorage fallback, and the SAME query-key
-// invalidation (`["lykn_projects", userId|"guest"]`) so the synthesis
-// layer + ProjectPanel pick up the new membership without a hard reload.
+// Uses `addNeuronsToProject`, so writes land in the retained
+// `lykn_project_neurons` project-membership table with the same guest
+// fallback and project query invalidation.
 
 type SaveBackProps = {
   member: { nodeId: string; label: string | null; kind: string | null };
@@ -502,7 +285,7 @@ function SaveBackRow({ member }: SaveBackProps) {
 
   // The "saved" state collapses back to the primary button after a few
   // seconds so the chip doesn't permanently claim space — the underlying
-  // membership is committed and the synthesis layer cluster reflects it.
+  // membership is committed and the Projects workspace cluster reflects it.
   useEffect(() => {
     if (!savedAt) return;
     const t = window.setTimeout(() => setSavedAt(null), 2500);
@@ -510,10 +293,8 @@ function SaveBackRow({ member }: SaveBackProps) {
   }, [savedAt]);
 
   // Nothing to render until we know whether the user has any projects.
-  // Hide entirely for users with zero projects — the AI brought in a
-  // neuron, but there's nowhere to file it; surfacing a disabled button
-  // there would be noise. They can create a project from the synthesis
-  // layer and the card stays usable for navigation either way.
+  // Hide entirely for users with zero projects because there is nowhere
+  // to attach the Vault item.
   if (userId === undefined) return null;
   if (projectsList.length === 0) return null;
 
@@ -524,9 +305,7 @@ function SaveBackRow({ member }: SaveBackProps) {
       await addNeuronsToProject(userId ?? null, projectId, [
         { nodeId: member.nodeId, label: member.label, kind: member.kind },
       ]);
-      // Bust the same query the synthesis layer / NeuronPanel /
-      // ProjectPanel all read through, so the new membership shows up
-      // there without a reload.
+      // Bust the Projects query so membership appears without a reload.
       queryClient.invalidateQueries({
         queryKey: ["lykn_projects", userId || "guest"],
       });

@@ -3,9 +3,8 @@
 // Two design constraints from the project surface:
 //   • Light mode  → neutral, paper-like tones (black / stone / beige) so the
 //                   charts read as calm and editorial against the white cards.
-//   • Dark mode   → the same hues the synthesis layer paints its neurons with
-//                   (vault green, concept orange, fact pink, belief white, …)
-//                   so a project's charts feel of-a-piece with the brain.
+//   • Dark mode   → stable green, orange, pink, white, and blue accents
+//                   shared by project charts.
 import { useEffect, useState } from "react";
 
 // Reflects the `.dark` class that lib/theme.js toggles on <html>. A
@@ -33,7 +32,7 @@ const SERIES = {
 
 // Donut slices, keyed by the project member / file-type kind. Light values are
 // a neutral black→beige ramp (distinguished by lightness); dark values are
-// pulled straight from the synthesis neuron palette (SynthesisLayer.tsx).
+// shared by retained project charts.
 const SLICE = {
   light: {
     pdf: "#1c1917",

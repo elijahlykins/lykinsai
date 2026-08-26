@@ -292,7 +292,7 @@ async function saveRepoAsNote({ supabaseAdmin, userId, repo, starredAt }) {
   if (repo.language) tags.push(String(repo.language).toLowerCase());
 
   // Repo description is what the algorithm should "know" — short
-  // README equivalent, used by the synthesis layer for semantic
+  // README equivalent, used by Vault retrieval for semantic
   // retrieval against the user's starred-repos shelf.
   const body = description
     ? `${owner ? `Owner: ${owner}\n` : ''}${repo.language ? `Language: ${repo.language}\n` : ''}\n${description}`

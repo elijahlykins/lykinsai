@@ -142,9 +142,6 @@ const CREDIT_COSTS = {
   guest_chat:           0,
   embedding_retrieval:  0,
   embedding_reindex:    0,
-  intake_profile:       0,
-  profile_refresh:      0,
-  fact_extraction:      0,
   youtube_transcribe:   0,
   vault_search:         1,
   vault_enrich:         2,
@@ -153,7 +150,6 @@ const CREDIT_COSTS = {
   summarize_conversation: 1,
   name_grid:            0,
   name_chat:            0,
-  discover_takeaway:    0,
 };
 
 // ─── Cost Calculation ────────────────────────────────────────────────────────

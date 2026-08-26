@@ -9,7 +9,7 @@
 // fine "try it out" surface.
 //
 // Board ids MUST match the ones exported from `demoSynthesis.js` so nodes
-// on the Synthesis Layer can link back here.
+// in project and Vault surfaces can link back here.
 //
 // Each of the three grids intentionally uses a different layout style so
 // the preview surface shows the canvas's range:
@@ -1473,7 +1473,7 @@ function buildSnapshot(title, blocks, wires = []) {
 }
 
 // Keyed by the demo board id. Ids MUST match DEMO_BOARDS in demoSynthesis.js
-// so the synthesis layer's grid nodes can link back here cleanly.
+// so retained product links can resolve it cleanly.
 export const DEMO_GRID_SNAPSHOTS = {
   "demo-board-harbor": buildSnapshot("Harbor: business idea", harborBlocks, harborWires),
   "demo-board-greenroom": buildSnapshot("Greenroom: content creation", greenroomBlocks, greenroomWires),

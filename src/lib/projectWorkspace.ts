@@ -1,5 +1,5 @@
 // Project workspace data layer — the tasks (lykn_todos, 099) and calendar
-// events (lykn_events, 094/095) that belong to a single synthesis-layer
+// events (lykn_events, 094/095) that belong to a single LYKN
 // project. Both tables already carry an optional `project_id` foreign key
 // (ON DELETE SET NULL), and the MCP tools (lykn_createTodo / lykn_createEvent)
 // stamp it when an outside AI client files work under a project. This module

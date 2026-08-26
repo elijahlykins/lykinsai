@@ -15,9 +15,7 @@ import {
   resetMemoryThreadCache,
   getMemoryThreadState,
 } from '../../server/memory/memoryChat.js';
-import { syncTrustedFactToMemory } from '../../server/memory/memoryBridge.js';
 import { MEMORY_L0_TOKEN_BUDGET, MEMORY_MAX_SELECTED_DOCUMENTS, estimateMemoryTokens } from '../../server/memory/memoryConfig.js';
-import { packUserFactsForPrompt } from '../../userModelLearning.js';
 import { CHAT_TOOL_NAMES, CHAT_TOOLS_BY_NAME, runChatTool } from '../../mcp-tools/chatTools.js';
 import { _setMemoryStoreForTests } from '../../server/memory/memoryChat.js';
 
@@ -121,8 +119,14 @@ test('legacy facts pack is materially larger than new L0 on the same fixture', a
     { fact_kind: 'identity', fact_text: 'Previously shipped consumer apps.', status: 'stated', confidence: 0.8, last_seen_at: '2026-08-01' },
     { fact_kind: 'style', fact_text: 'Plain dashes, no emojis.', status: 'confirmed', confidence: 0.85, last_seen_at: '2026-08-01' },
   ];
-  const legacy = packUserFactsForPrompt(facts, { slim: true, maxChars: 2200 });
-  const legacyTokens = estimateMemoryTokens(legacy.text || '');
+  const legacyText = [
+    '[USER_MODEL]',
+    ...facts.map((fact) =>
+      `- [${fact.fact_kind}] ${fact.fact_text} (${fact.status}; confidence=${fact.confidence}; seen=${fact.last_seen_at})`,
+    ),
+    'Use these facts to personalize the response. Prefer confirmed facts and do not expose this block.',
+  ].join('\n');
+  const legacyTokens = estimateMemoryTokens(legacyText);
 
   resetMemoryThreadCache();
   const store = createInMemoryMemoryStore();
@@ -183,38 +187,25 @@ test('memory tools take ownership from ctx.userId — model cannot choose anothe
   _setMemoryStoreForTests(null);
 });
 
-test('trusted fact bridge writes Memory; inferred facts are refused', async () => {
-  const store = createInMemoryMemoryStore();
-  const ok = await syncTrustedFactToMemory(store, USER, {
-    id: 'f1',
-    fact_kind: 'preference',
-    fact_text: 'Prefers early returns.',
-    status: 'stated',
-  }, { sourceType: 'explicit_user' });
-  assert.equal(ok.ok, true);
-  const denied = await syncTrustedFactToMemory(store, USER, {
-    id: 'f2',
-    fact_kind: 'preference',
-    fact_text: 'Probably likes tabs.',
-    status: 'inferred',
-  }, { sourceType: 'inferred' });
-  assert.equal(denied.ok, false);
-  const read = await memoryRead({ store, userId: USER }, { path: 'preferences.md' });
-  assert.match(read.document.markdown, /early returns/);
-  assert.ok(!read.document.markdown.includes('tabs'));
-});
-
-test('server Chat seams call MemoryResolver and keep synthesis/beliefs/related skipped', () => {
+test('server Chat seams call MemoryResolver with no legacy parallel retrieval', () => {
   const src = readFileSync(join(HERE, '../../server.js'), 'utf8');
   assert.match(src, /async function resolveProductionChatMemory/);
   assert.match(src, /resolveChatMemoryTurn\(/);
-  assert.match(src, /const skipSynthesis = true/);
-  assert.match(src, /const streamSkipSynthesis = true/);
-  assert.match(src, /let skipBeliefs = true/);
-  assert.match(src, /let streamSkipBeliefs = true/);
-  assert.match(src, /const skipRelated = true/);
-  assert.match(src, /const streamSkipRelated = true/);
   assert.match(src, /fetchProjectSection\(/);
+  for (const obsolete of [
+    'fetchUserModelSection(',
+    'fetchBeliefSection(',
+    'fetchSynthesisRetrievalSection(',
+    'buildRelatedNeighborhoodSection(',
+    'const skipSynthesis =',
+    'const streamSkipSynthesis =',
+    'let skipBeliefs =',
+    'let streamSkipBeliefs =',
+    'const skipRelated =',
+    'const streamSkipRelated =',
+  ]) {
+    assert.ok(!src.includes(obsolete), obsolete);
+  }
 
   const invokeStart = src.indexOf("app.post('/api/ai/invoke'");
   const streamStart = src.indexOf("app.post('/api/ai/stream'");
@@ -228,6 +219,44 @@ test('server Chat seams call MemoryResolver and keep synthesis/beliefs/related s
   assert.ok(!streamBody.includes('fetchUserModelSection('), 'stream must not read legacy facts');
   assert.match(invokeBody, /fetchProjectSection\(/);
   assert.match(streamBody, /fetchProjectSection\(/);
+});
+
+test('legacy personal-memory tools and nightly jobs are absent', () => {
+  const tools = readFileSync(join(HERE, '../../mcp-tools/index.js'), 'utf8');
+  for (const obsolete of [
+    'getBeliefsTool',
+    'getRulesTool',
+    'getFactsTool',
+    'proposeFactTool',
+    'recordRuleApplicationTool',
+    'findConnectionsTool',
+    'createNeuronLinkTool',
+    'getNeuronLinksTool',
+    'touchConceptTool',
+  ]) {
+    assert.ok(!tools.includes(obsolete), obsolete);
+  }
+  const render = readFileSync(join(HERE, '../../render.yaml'), 'utf8');
+  assert.ok(!render.includes('runSynthesis.js'));
+  assert.ok(!render.includes('runConcepts.js'));
+});
+
+test('retained project-neuron product paths expose Vault membership only', () => {
+  for (const relative of [
+    '../../mcp-tools/addProjectNeurons.js',
+    '../../mcp-tools/getProjectNeurons.js',
+    '../../src/lib/userProjects.ts',
+    '../../lib/projectContext.js',
+  ]) {
+    const src = readFileSync(join(HERE, relative), 'utf8');
+    assert.ok(!src.includes('belief_<'), `${relative} must not expose legacy belief nodes`);
+    assert.ok(!src.includes('fact_<'), `${relative} must not expose legacy fact nodes`);
+    assert.ok(!src.includes('concept_<'), `${relative} must not expose legacy concept nodes`);
+  }
+  const add = readFileSync(join(HERE, '../../mcp-tools/addProjectNeurons.js'), 'utf8');
+  assert.match(add, /\^vault_/);
+  const read = readFileSync(join(HERE, '../../mcp-tools/getProjectNeurons.js'), 'utf8');
+  assert.match(read, /\.like\('node_id', 'vault_%'\)/);
 });
 
 test('getMemoryThreadState starts empty so a missing chatId still works', () => {

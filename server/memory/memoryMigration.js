@@ -1,5 +1,5 @@
 // ============================================================================
-// server/memory/memoryMigration.js — conservative Phase 2 legacy import
+// server/memory/memoryMigration.js — read-only legacy retirement compatibility
 // ============================================================================
 // Imports TRUSTWORTHY personal memory from lykn_user_model_facts (+ optional
 // display name) into Markdown documents. This is NOT a dump of the Synthesis
@@ -114,6 +114,24 @@ export function resetMemoryMigrationCache() {
 }
 
 /**
+ * The only remaining application read of the retired personal-memory tables.
+ * This deliberately bypasses the removed user-model service and selects only
+ * fields needed by the conservative importer.
+ */
+export async function loadTrustedLegacyFacts(client, userId) {
+  if (!client || !userId) return [];
+  const { data, error } = await client
+    .from('lykn_user_model_facts')
+    .select('id, fact_kind, fact_text, status, pending_confirm')
+    .eq('user_id', userId)
+    .in('status', TRUSTED_FACT_STATUSES)
+    .eq('pending_confirm', false)
+    .limit(500);
+  if (error) throw new Error(`legacy_memory_read_failed: ${error.message}`);
+  return Array.isArray(data) ? data : [];
+}
+
+/**
  * Apply a conservative migration into the Memory store.
  * Safe to call more than once; never overwrites existing document text.
  *
@@ -222,14 +240,16 @@ export async function migrateUserMemory(store, userId, { facts = [], displayName
  *
  * @param {import('./memoryStore.js').MemoryStore} store
  * @param {string} userId
- * @param {{ listFacts: () => Promise<object[]>, displayName?: string }} load
+ * @param {{ client?: object, listFacts?: () => Promise<object[]>, displayName?: string }} load
  */
 export async function ensureLegacyMemoryMigrated(store, userId, load) {
   if (!store || !userId) return { ok: true, skipped: true, reason: 'no_user' };
   if (migratedUsers.has(userId)) return { ok: true, skipped: true, reason: 'already_migrated' };
   let facts = [];
   try {
-    facts = await load.listFacts();
+    facts = typeof load?.listFacts === 'function'
+      ? await load.listFacts()
+      : await loadTrustedLegacyFacts(load?.client, userId);
   } catch (e) {
     return { ok: false, error: e?.message || 'list_facts_failed' };
   }
@@ -237,6 +257,13 @@ export async function ensureLegacyMemoryMigrated(store, userId, load) {
     facts,
     displayName: load.displayName,
   });
-  if (result.ok) migratedUsers.add(userId);
+  if (result.ok) {
+    migratedUsers.add(userId);
+    console.log(
+      `[memory:migration] user=${String(userId).slice(0, 8)} ` +
+        `facts=${result.factCount} created=${result.created} patched=${result.patched} ` +
+        `skipped=${result.skippedFacts}`,
+    );
+  }
   return result;
 }

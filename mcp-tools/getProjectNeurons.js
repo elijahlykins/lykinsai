@@ -1,13 +1,12 @@
 // ============================================================================
-// mcp-tools/getProjectNeurons.js — read a project's clustered neurons
+// mcp-tools/getProjectNeurons.js — read a project's Vault membership
 // ============================================================================
-// Read-only. The synthesis layer's "project" is a named bag of neurons
-// (beliefs, facts, concepts, vault notes, perspectives, …) that the user
-// or an AI has explicitly grouped together via lykn_addProjectNeurons.
-// This tool returns that membership list — the user-grouped cluster, as
+// Read-only. A project can contain Vault items that the user or AI explicitly
+// grouped through lykn_addProjectNeurons.
+// This tool returns that membership list as
 // snapshots taken at cluster time (label + kind frozen) — so the model
 // can answer "what's IN my project?" without having to re-derive it from
-// findConnections or guess from project state.
+// reconstruct membership from project state.
 //
 // Why a separate read tool (instead of inlining in getProjectState):
 //   • getProjectState returns the AI working-memory key-value store
@@ -34,12 +33,9 @@
 //   • project header (id, name, description, status, last_active_at)
 //   • neurons array, ordered by cluster time (oldest first — preserves
 //     the order the user clustered them, which often encodes intent)
-//   • counts grouped by kind, so the model can summarise without
-//     iterating ("this project is mostly beliefs + a few vault notes")
+//   • counts grouped by retained kind
 //
-// node_ids in the response are the SAME format lykn_loadNeuron accepts
-// (belief_<uuid>, fact_<uuid>, concept_<slug>, vault_<uuid>, …), so a
-// hydrate-everything-in-this-project pipeline is straightforward.
+// Returned node_ids use the vault_<uuid> format accepted by lykn_loadNeuron.
 
 import { jsonContent, errorContent } from './index.js';
 import { resolveWriteProjectTarget } from '../lib/projectWriteTarget.js';
@@ -49,12 +45,11 @@ const MAX_LIMIT = 200;
 
 export const getProjectNeuronsTool = {
   name: 'lykn_getProjectNeurons',
-  title: 'List the neurons clustered into a LYKN project',
+  title: 'List Vault items attached to a LYKN project',
   scope: 'read',
   description: [
-    'Return the LYKN user\'s clustered neuron membership for a project —',
-    'every belief, fact, concept, vault note, perspective, or other',
-    'synthesis-layer node they\'ve explicitly grouped here. Defaults to',
+    'Return the LYKN user\'s Vault-item membership for a project.',
+    'Defaults to',
     'the user\'s ACTIVE project so most callers can omit project_id.',
     '',
     'CALL THIS as part of the "auto-connect" flow whenever a project',
@@ -65,8 +60,7 @@ export const getProjectNeuronsTool = {
     'After step 3 you have the FULL picture of what the user has',
     'grouped under this project and can reason about it accurately.',
     '',
-    'When you need the FULL body of any returned neuron (vault note',
-    'content, full belief rationale, concept relations), call',
+    'When you need the FULL body of a returned Vault item, call',
     'lykn_loadNeuron({ node_id }) — the node_ids returned here are',
     'in exactly the right format.',
     '',
@@ -91,10 +85,6 @@ export const getProjectNeuronsTool = {
         maximum: MAX_LIMIT,
         description: `Max neurons to return (1-${MAX_LIMIT}). Defaults to ${DEFAULT_LIMIT}.`,
       },
-      kind: {
-        type: 'string',
-        description: 'Optional kind filter (e.g. "belief", "fact", "concept", "vault"). Omit to return every kind.',
-      },
     },
     additionalProperties: false,
   },
@@ -106,10 +96,6 @@ export const getProjectNeuronsTool = {
     const limit = Number.isFinite(args?.limit)
       ? Math.max(1, Math.min(MAX_LIMIT, args.limit))
       : DEFAULT_LIMIT;
-    const kindFilter = typeof args?.kind === 'string'
-      ? args.kind.trim().toLowerCase()
-      : null;
-
     const explicitId = args?.project_id ? String(args.project_id).trim() : null;
     const { project } = await resolveWriteProjectTarget(ctx, explicitId);
 
@@ -130,9 +116,9 @@ export const getProjectNeuronsTool = {
       .select('node_id, node_label, node_kind, created_at')
       .eq('user_id', ctx.userId)
       .eq('project_id', projectId)
+      .like('node_id', 'vault_%')
       .order('created_at', { ascending: true })
       .limit(limit);
-    if (kindFilter) q = q.eq('node_kind', kindFilter);
 
     const { data: rows, error: rowsErr } = await q;
     if (rowsErr) {
@@ -165,10 +151,9 @@ export const getProjectNeuronsTool = {
       count: neurons.length,
       counts,
       neurons,
-      ...(kindFilter ? { kind_filter: kindFilter } : {}),
       message: neurons.length === 0
-        ? `"${project.name}" doesn't have any clustered neurons yet.`
-        : `"${project.name}" has ${neurons.length} clustered neuron${neurons.length === 1 ? '' : 's'}.`,
+        ? `"${project.name}" doesn't have any attached Vault items yet.`
+        : `"${project.name}" has ${neurons.length} attached Vault item${neurons.length === 1 ? '' : 's'}.`,
     });
   },
 };

@@ -132,7 +132,7 @@ export function useVaultCardMutations({
         }
         purgeVaultNoteEmbeddings(card.noteId);
         setNotes((prev) => prev.filter((n) => String(n?.id) !== String(card.noteId)));
-        // Bust the synthesis-layer's cached vault graph query so
+        // Bust the cached Vault query so
         // the deleted vault note disappears from the brain on the
         // user's next visit without waiting for the realtime
         // postgres_changes event (which usually arrives ~100-300ms

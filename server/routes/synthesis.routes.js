@@ -1,5 +1,5 @@
 // ============================================================================
-// server/routes/synthesis.routes.js — synthesis profile + maintenance routes
+// server/routes/synthesis.routes.js — retained vault retrieval maintenance
 // ============================================================================
 // Extracted verbatim from server.js (Wave 2 of the server decomposition).
 // Handler bodies are unchanged; only the registration moved. Paths, methods,
@@ -7,7 +7,7 @@
 // tests/server/serverRouteManifest.test.mjs enforces this.
 //
 // Two registrars:
-//   • registerSynthesisRoutes — the 8-route profile/index band.
+//   • registerSynthesisRoutes — legacy-named vault retrieval reindex/purge.
 //   • registerSynthesisMaintenanceRoutes — /api/vault/enrich-note,
 //     /api/vault/reconcile, and /api/synthesis/backfill. In server.js these
 //     three had helper *definitions* (not registrations) between them, so one
@@ -17,28 +17,18 @@
 //     helpers shared with enrichVaultNoteSummary/notes-ingest stayed in
 //     server.js and are passed in.
 //
-// GET /api/synthesis/profile/revisions intentionally did NOT move: it
-// registers inside the learning/user-model band and extracting it would
-// change registration order.
-
 import crypto from 'crypto';
 import { chunkTextForSynthesis } from '../../synthesis-service.js';
-import {
-  runUserModelLearningPass,
-  applyFactFeedback,
-  listActiveFactsForUser,
-} from '../../userModelLearning.js';
-import { logAiUsage } from '../../usageTracking.js';
 import { runVaultReconciler } from '../../jobs/vaultReconcilerJob.js';
 
 // Moved with the reindex/purge routes — they are its only consumers.
 const SYNTHESIS_ALLOWED_SOURCES = new Set(['vault_note', 'grid_board', 'conversation_exchange']);
 
 /**
- * Synthesis profile/index band — 8 routes.
+ * Vault retrieval index routes retained under their existing API paths.
  * @param {import('express').Express} app
  * @param {object} deps bootstrap-owned singletons from server.js: auth/access
- *   middleware, the synthesis + profile-refresh rate limiters, the Supabase
+ *   middleware, the synthesis rate limiter, the Supabase
  *   admin client, and the shared server-local synthesis service functions
  *   (passed, not moved, because other server.js call sites still use them).
  */
@@ -46,14 +36,10 @@ export function registerSynthesisRoutes(app, {
   requireAuth,
   requireAppAccess,
   synthesisLimiter,
-  profileRefreshLimiter,
   supabaseAdmin,
   createSynthesisUserClient,
   deleteSynthesisChunksForSource,
   replaceSynthesisChunks,
-  runUserProfileLlmAndUpsert,
-  runIntakeProfileSynthesisAndUpsert,
-  invalidateUserModelCache,
 }) {
   app.post('/api/synthesis/reindex', requireAuth, requireAppAccess, synthesisLimiter, async (req, res) => {
     try {
@@ -139,166 +125,6 @@ export function registerSynthesisRoutes(app, {
     }
   });
 
-  app.post('/api/synthesis/refresh-profile', requireAuth, requireAppAccess, profileRefreshLimiter, async (req, res) => {
-    try {
-      const userId = req.user?.id;
-      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-      const out = await runUserProfileLlmAndUpsert(userId, req.headers.authorization);
-      return res.json(out);
-    } catch (e) {
-      console.error('❌ Synthesis refresh-profile:', e?.message || e);
-      return res.status(500).json({ error: 'refresh_failed' });
-    }
-  });
-
-  app.get('/api/synthesis/profile/status', requireAuth, async (req, res) => {
-    try {
-      const userId = req.user?.id;
-      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-      const client = createSynthesisUserClient(req.headers.authorization) || supabaseAdmin;
-      if (!client) return res.status(503).json({ error: 'Database not configured' });
-      const { data, error } = await client
-        .from('lykn_user_synthesis_profile')
-        .select('intake_completed_at, narrative')
-        .eq('user_id', userId)
-        .maybeSingle();
-      if (error) { console.error('[supabase]', req.method, req.path, error); return res.status(500).json({ error: 'database_error' }); }
-      const intake_completed_at = data?.intake_completed_at
-        ? new Date(data.intake_completed_at).toISOString()
-        : null;
-      const has_narrative = Boolean(String(data?.narrative || '').trim());
-      return res.json({ intake_completed_at, has_narrative });
-    } catch (e) {
-      console.error('❌ Synthesis profile status:', e?.message || e);
-      return res.status(500).json({ error: 'status_failed' });
-    }
-  });
-
-  /**
-   * POST body: { answers: { role?, focus?, tools?, constraints?, thinkingStyle? }, force?: boolean }
-   * Idempotent while intake_completed_at is set unless force is true.
-   */
-  app.post('/api/synthesis/intake', requireAuth, requireAppAccess, profileRefreshLimiter, async (req, res) => {
-    try {
-      const userId = req.user?.id;
-      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-      const body = req.body && typeof req.body === 'object' ? req.body : {};
-      const force = Boolean(body.force);
-      const answers = body.answers && typeof body.answers === 'object' && !Array.isArray(body.answers) ? body.answers : null;
-      if (!answers) {
-        return res.status(400).json({ error: 'Invalid body: answers object required' });
-      }
-      const out = await runIntakeProfileSynthesisAndUpsert(userId, answers, req.headers.authorization, { force });
-      if (!out.ok) {
-        if (out.reason === 'no_openai') return res.status(503).json({ error: 'LLM not configured' });
-        if (out.reason === 'no_db') return res.status(503).json({ error: 'Database not configured' });
-        if (out.reason === 'empty_answers') return res.status(400).json({ error: 'At least one answer field is required' });
-        if (out.reason === 'empty_model') return res.status(502).json({ error: 'Model returned empty profile' });
-        return res.status(500).json({ error: out.reason || 'intake_failed' });
-      }
-      if (!out.updated) {
-        return res.json({ ok: true, updated: false, reason: out.reason || 'skipped' });
-      }
-      return res.json({ ok: true, updated: true });
-    } catch (e) {
-      console.error('❌ Synthesis intake:', e?.message || e);
-      return res.status(500).json({ error: 'intake_failed' });
-    }
-  });
-
-  // ============================================
-  // USER MODEL — structured learned facts (Phase 1 of "AI learns the user")
-  // ============================================
-  // Returns the active (non-dismissed) facts the AI has accumulated about the
-  // user, ranked confirmed > stated > high-confidence inferred. Used by the
-  // Synthesis Layer's "What the AI has learned about you" panel.
-  app.get('/api/synthesis/profile/facts', requireAuth, async (req, res) => {
-    try {
-      const userId = req.user?.id;
-      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-      const client = createSynthesisUserClient(req.headers.authorization) || supabaseAdmin;
-      if (!client) return res.status(503).json({ error: 'Database not configured' });
-
-      const minConfidenceRaw = Number(req.query?.minConfidence);
-      const minConfidence = Number.isFinite(minConfidenceRaw) ? Math.max(0, Math.min(1, minConfidenceRaw)) : 0;
-      const limitRaw = Number(req.query?.limit);
-      const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, limitRaw)) : 200;
-
-      const facts = await listActiveFactsForUser(client, userId, { minConfidence, limit });
-
-      // Latest revision summary so the UI can show "What's new this week"
-      let latestRevision = null;
-      try {
-        const { data: rev } = await client
-          .from('lykn_user_model_revisions')
-          .select('id, trigger, fact_count, facts_added, facts_updated, facts_dismissed, diff, summary, created_at')
-          .eq('user_id', userId)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        latestRevision = rev || null;
-      } catch { /* non-critical */ }
-
-      return res.json({ ok: true, facts, latestRevision });
-    } catch (e) {
-      console.error('❌ /api/synthesis/profile/facts:', e?.message || e);
-      return res.status(500).json({ error: 'facts_fetch_failed' });
-    }
-  });
-
-  // Apply user feedback (thumbs-up confirms, thumbs-down dismisses, optional
-  // correction text replaces the fact with a new stated one). The next learning
-  // pass treats dismissed/corrected facts as "do not re-emit."
-  app.post('/api/synthesis/profile/facts/:id/feedback', requireAuth, async (req, res) => {
-    try {
-      const userId = req.user?.id;
-      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-      const factId = String(req.params?.id || '').trim();
-      if (!factId) return res.status(400).json({ error: 'fact id required' });
-      const action = String(req.body?.action || '').trim().toLowerCase();
-      const correctionText = req.body?.correctionText ? String(req.body.correctionText) : null;
-
-      const client = createSynthesisUserClient(req.headers.authorization) || supabaseAdmin;
-      if (!client) return res.status(503).json({ error: 'Database not configured' });
-
-      const out = await applyFactFeedback(client, userId, factId, action, correctionText);
-      if (!out.ok) {
-        if (out.reason === 'not_found') return res.status(404).json({ error: 'fact_not_found' });
-        if (out.reason === 'bad_action') return res.status(400).json({ error: 'invalid_action' });
-        if (out.reason === 'no_correction_text') return res.status(400).json({ error: 'correctionText_required' });
-        return res.status(500).json({ error: out.reason || 'feedback_failed' });
-      }
-      invalidateUserModelCache(userId);
-      return res.json({ ok: true });
-    } catch (e) {
-      console.error('❌ /api/synthesis/profile/facts/:id/feedback:', e?.message || e);
-      return res.status(500).json({ error: 'feedback_failed' });
-    }
-  });
-
-  // Lightweight on-demand learning pass — useful for "Refresh now" button in
-  // the UI and for manual debugging. Throttled by profileRefreshLimiter (8/15min).
-  app.post('/api/synthesis/profile/learn-now', requireAuth, requireAppAccess, profileRefreshLimiter, async (req, res) => {
-    try {
-      const userId = req.user?.id;
-      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-      const client = createSynthesisUserClient(req.headers.authorization) || supabaseAdmin;
-      if (!client) return res.status(503).json({ error: 'Database not configured' });
-      const out = await runUserModelLearningPass(client, userId, {
-        trigger: 'manual',
-        usageLogger: (info) => logAiUsage({
-          userId,
-          actionType: 'fact_extraction',
-          ...info,
-        }).catch(() => {}),
-      });
-      if (out?.ok) invalidateUserModelCache(userId);
-      return res.json(out || { ok: false });
-    } catch (e) {
-      console.error('❌ /api/synthesis/profile/learn-now:', e?.message || e);
-      return res.status(500).json({ error: 'learn_failed' });
-    }
-  });
 }
 
 /**
@@ -318,7 +144,6 @@ export function registerSynthesisMaintenanceRoutes(app, {
   enrichVaultNoteSummary,
   backfillVaultText,
   replaceSynthesisChunks,
-  runUserProfileLlmAndUpsert,
 }) {
   function verifyBackfillSecret(req) {
     const expected = process.env.BACKFILL_SECRET;
@@ -556,7 +381,6 @@ export function registerSynthesisMaintenanceRoutes(app, {
 
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const userIdFilter = body.userId ? String(body.userId).trim() : '';
-    const refreshProfile = Boolean(body.refreshProfile);
     const allSources = ['vault_note', 'grid_board', 'conversation_exchange'];
     let sources = Array.isArray(body.sources) && body.sources.length ? body.sources.map((s) => String(s)) : allSources;
     sources = sources.filter((s) => allSources.includes(s));
@@ -565,7 +389,6 @@ export function registerSynthesisMaintenanceRoutes(app, {
     const errors = [];
     let usersProcessed = 0;
     let chunksWritten = 0;
-    let profileRuns = 0;
 
     try {
       const userIds = await collectBackfillUserIds(userIdFilter);
@@ -693,16 +516,6 @@ export function registerSynthesisMaintenanceRoutes(app, {
           }
         }
 
-        if (refreshProfile) {
-          try {
-            const out = await runUserProfileLlmAndUpsert(uid, null, { force: true });
-            if (out.updated) profileRuns += 1;
-          } catch (e) {
-            errors.push({ userId: uid, source: 'refresh_profile', sourceId: '-', error: e?.message || String(e) });
-          }
-          await backfillSleep(100);
-        }
-
         console.log(`📊 Backfill: done user ${String(uid).slice(0, 8)}… cumulative_chunks=${chunksWritten}`);
       }
 
@@ -710,8 +523,6 @@ export function registerSynthesisMaintenanceRoutes(app, {
         ok: true,
         usersProcessed,
         chunksWritten,
-        profileRefreshesAttempted: refreshProfile ? usersProcessed : 0,
-        profileRefreshesUpdated: profileRuns,
         errors,
       });
     } catch (e) {

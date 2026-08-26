@@ -48,8 +48,6 @@ export async function saveExchange(
         text,
         metadata: { surface, surface_id: surfaceId, surface_title: surfaceTitle },
       });
-      const { scheduleUserProfileRefresh } = await import("@/lib/synthesis/profileRefresh");
-      scheduleUserProfileRefresh(userId);
     }
   } catch {
     // Table may not exist yet — silently ignore

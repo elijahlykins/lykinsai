@@ -5,8 +5,7 @@
 // teardown: Stripe cancel, storage purge, Apple token revoke, auth delete).
 //
 // Dependency notes:
-// - requireAuth / supabaseAdmin / stripe / invalidateUserModelCache are
-//   bootstrap-owned singletons passed via deps.
+// - requireAuth / supabaseAdmin / stripe are bootstrap-owned singletons.
 // - revokeAppleToken is a stateless helper from lib/appleAuth.js; ESM
 //   module-cache identity makes a direct import equivalent.
 import { revokeAppleToken } from '../../lib/appleAuth.js';
@@ -16,7 +15,6 @@ export function registerAccountRoutes(app, deps) {
     requireAuth,
     supabaseAdmin,
     stripe,
-    invalidateUserModelCache,
   } = deps;
 
   // =====================================================================
@@ -38,9 +36,7 @@ export function registerAccountRoutes(app, deps) {
     memory_paused: false,
     training_opt_out: false,
     chat_retention_days: null,
-    show_provenance: true,
     email_product_updates: true,
-    email_synthesis_digest: false,
     night_shift_enabled: false,
     night_shift_tier: 'brief',
     metadata: {},
@@ -58,17 +54,9 @@ export function registerAccountRoutes(app, deps) {
       if (typeof body.training_opt_out !== 'boolean') return { ok: false, reason: 'training_opt_out_must_be_boolean' };
       out.training_opt_out = body.training_opt_out;
     }
-    if ('show_provenance' in body) {
-      if (typeof body.show_provenance !== 'boolean') return { ok: false, reason: 'show_provenance_must_be_boolean' };
-      out.show_provenance = body.show_provenance;
-    }
     if ('email_product_updates' in body) {
       if (typeof body.email_product_updates !== 'boolean') return { ok: false, reason: 'email_product_updates_must_be_boolean' };
       out.email_product_updates = body.email_product_updates;
-    }
-    if ('email_synthesis_digest' in body) {
-      if (typeof body.email_synthesis_digest !== 'boolean') return { ok: false, reason: 'email_synthesis_digest_must_be_boolean' };
-      out.email_synthesis_digest = body.email_synthesis_digest;
     }
     if ('night_shift_enabled' in body) {
       if (typeof body.night_shift_enabled !== 'boolean') return { ok: false, reason: 'night_shift_enabled_must_be_boolean' };
@@ -437,7 +425,6 @@ export function registerAccountRoutes(app, deps) {
         return res.status(500).json({ error: 'delete_failed', detail: delErr.message });
       }
 
-      invalidateUserModelCache(userId);
       return res.json({ ok: true });
     } catch (e) {
       console.error('❌ DELETE /api/account:', e?.message || e);

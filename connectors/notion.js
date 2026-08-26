@@ -27,7 +27,7 @@
 //      code, callouts, sub-page/database references, etc.
 //   3. The body lands in `notes.content`, which makes the page searchable
 //      by both substring (MCP `lykn_searchVault`) and vector embeddings
-//      (synthesis layer — see embedAndStoreChunks call in savePageAsNote).
+//      (Vault retrieval — see embedAndStoreChunks in savePageAsNote).
 //
 // Existing pages get UPDATED on subsequent syncs whenever their
 // `last_edited_time` advances past our cursor (the previous behavior was

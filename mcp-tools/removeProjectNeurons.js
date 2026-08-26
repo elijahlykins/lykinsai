@@ -1,14 +1,10 @@
 // ============================================================================
-// mcp-tools/removeProjectNeurons.js — drop neurons from a project's cluster
+// mcp-tools/removeProjectNeurons.js — detach Vault items from a project
 // ============================================================================
 // Write. Inverse of lykn_addProjectNeurons. Removes one or more
 // (project_id, node_id) membership rows from `lykn_project_neurons`.
 //
-// Does NOT delete the underlying synthesis-layer node — only the
-// project membership. The neuron itself stays around (it's a belief
-// row in `lykn_beliefs`, a fact in `lykn_user_model_facts`, a vault
-// note in `notes`, etc.) and can be re-clustered into another
-// project later.
+// This does not delete the underlying Vault item.
 //
 // Project resolution mirrors addProjectNeurons / pushProjectState:
 // explicit `project_id` wins, otherwise we fall back to the user's
@@ -22,12 +18,11 @@ const MAX_NEURONS_PER_CALL = 50;
 
 export const removeProjectNeuronsTool = {
   name: 'lykn_removeProjectNeurons',
-  title: 'Remove neurons from a project\'s cluster',
+  title: 'Remove Vault items from a project',
   scope: 'write',
   description: [
-    'CALL THIS to drop one or more neurons from a project\'s membership',
-    '(the user-grouped cluster of synthesis-layer nodes). The neurons',
-    'themselves are NOT deleted — only the project association.',
+    'CALL THIS to detach one or more Vault items from a project.',
+    'The Vault items are NOT deleted — only the project association.',
     '',
     'Discover existing node_ids via lykn_listProjects (each project',
     'response includes a `neurons` preview array with their ids), or',
@@ -57,8 +52,8 @@ export const removeProjectNeuronsTool = {
         type: 'array',
         minItems: 1,
         maxItems: MAX_NEURONS_PER_CALL,
-        description: `Up to ${MAX_NEURONS_PER_CALL} synthesis-layer node ids to drop from the project's cluster.`,
-        items: { type: 'string' },
+        description: `Up to ${MAX_NEURONS_PER_CALL} vault_<id> values to detach from the project.`,
+        items: { type: 'string', pattern: '^vault_[A-Za-z0-9-]+$' },
       },
     },
     required: ['node_ids'],
@@ -74,10 +69,10 @@ export const removeProjectNeuronsTool = {
       new Set(
         incoming
           .map((v) => (typeof v === 'string' ? v.trim().slice(0, NODE_ID_MAX) : ''))
-          .filter(Boolean),
+          .filter((v) => /^vault_[A-Za-z0-9-]+$/.test(v)),
       ),
     );
-    if (!cleanIds.length) return errorContent('node_ids must be a non-empty array of strings.');
+    if (!cleanIds.length) return errorContent('node_ids must contain at least one vault_<id> value.');
     if (cleanIds.length > MAX_NEURONS_PER_CALL) {
       return errorContent(`Cap is ${MAX_NEURONS_PER_CALL} node_ids per call.`);
     }

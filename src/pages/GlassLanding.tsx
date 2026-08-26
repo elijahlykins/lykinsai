@@ -1960,7 +1960,7 @@ const START_OPTIONS: {
       "Research - deep digs into sources, structured as a report",
       "Browser - an agent that browses and acts on the web for you",
       "Drive - every file, note, and artifact in one place",
-      "Projects, calendar, and your synthesis layer",
+      "Projects, calendar, and your private Markdown Memory",
     ],
     cta: "Download for Mac",
     to: "/download",

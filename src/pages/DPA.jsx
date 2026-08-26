@@ -34,7 +34,7 @@
 import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 
-const LAST_UPDATED = "August 13, 2026";
+const LAST_UPDATED = "August 26, 2026";
 
 export default function DPA() {
   return (
@@ -170,7 +170,7 @@ export function DPABody() {
           <tbody className="text-black/65 dark:text-white/70">
             <DetailRow
               label="Subject matter"
-              value="Provision of the LYKN synthesis service and the LYKN Glass desktop app: storing, retrieving, embedding, clustering, and serving Customer's vault content, beliefs, facts, project state, and conversations; processing feature-triggered screen stills, snips, page text, and voice audio; processing the results of local file, application, and command tools Customer authorises on their own device; performing web search and agent browsing tasks Customer requests; and serving data to AI tools Customer has explicitly connected."
+              value="Provision of LYKN and the LYKN Glass desktop app: storing, retrieving, embedding, and serving Customer's Markdown Memory documents, Vault content, project state, and conversations; processing feature-triggered screen stills, snips, page text, and voice audio; processing the results of local file, application, and command tools Customer authorises on their own device; performing web search and agent browsing tasks Customer requests; and serving data to AI tools Customer has explicitly connected."
             />
             <DetailRow
               label="Duration"
@@ -178,7 +178,7 @@ export function DPABody() {
             />
             <DetailRow
               label="Nature and purpose"
-              value="Hosting, search, semantic embedding, LLM-assisted synthesis, and Glass features (chat, build, imagine, voice, screen-grounded assist, local file and command assistance, agent browsing), OAuth token issuance and connector sync, billing and trial processing, transactional email, and desktop auto-update distribution."
+              value="Hosting, search, semantic embedding, Markdown Memory, and Glass features (chat, build, imagine, voice, screen-grounded assist, local file and command assistance, agent browsing), OAuth token issuance and connector sync, billing and trial processing, transactional email, and desktop auto-update distribution."
             />
             <DetailRow
               label="Categories of Data Subject"
@@ -186,7 +186,7 @@ export function DPABody() {
             />
             <DetailRow
               label="Categories of Personal Data"
-              value="Account identifiers (email, user id); vault content (notes, files, links, transcripts, artifacts, generated images); AI-derived beliefs, facts, rules, and project state; Glass overlay chats; feature-triggered screen stills, snips, page text, and microphone or system audio; the contents of local files, directory listings, command output, and application text returned by tools Customer approves; pages retrieved during search and agent browsing; data synced from accounts Customer connects; OAuth client metadata; billing customer identifiers via Stripe; and minimal usage telemetry."
+              value="Account identifiers (email, user id); Markdown Memory documents; Vault content (notes, files, links, transcripts, artifacts, generated images); project state; Glass overlay chats; feature-triggered screen stills, snips, page text, and microphone or system audio; the contents of local files, directory listings, command output, and application text returned by tools Customer approves; pages retrieved during search and agent browsing; data synced from accounts Customer connects; OAuth client metadata; billing customer identifiers via Stripe; and minimal usage telemetry."
             />
             <DetailRow
               label="Local execution"

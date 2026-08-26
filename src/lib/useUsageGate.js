@@ -5,7 +5,6 @@ import { PLAN_LIMITS, UPLOAD_RATE_LIMITS, planLabel } from "@/lib/pricing-config
 import { API_BASE_URL } from "@/lib/api-config";
 import { useUserPlan } from "@/lib/useUserPlan";
 import { VAULT_CAP_EVENT } from "@/lib/vault/vaultCapError";
-import { SYNTHESIS_CAP_EVENT } from "@/lib/vault/synthesisCapError";
 import { UPLOAD_RATE_LIMIT_EVENT } from "@/lib/vault/uploadRateLimitError";
 
 // Legacy `blocks-per-grid` cap event. The canvas store is gone; this still
@@ -107,30 +106,6 @@ export function useUsageGate() {
     };
     window.addEventListener(VAULT_CAP_EVENT, handler);
     return () => window.removeEventListener(VAULT_CAP_EVENT, handler);
-  }, []);
-
-  // Synthesis-layer explicit-neuron cap (066_synthesis_neuron_cap_trigger.sql).
-  // Mirrors the vault-cap handler above: the page-level paywall in
-  // SynthesisLayer.tsx already swaps in PlanGate when the rendered graph
-  // crosses the cap, but the DB trigger is the safety net that fires when
-  // someone tries to mint a new explicit neuron (chat, vault note, ratified
-  // belief, manual fact) past the limit through any other write path — MCP,
-  // /api/learned, /api/beliefs/manual, direct supabase-js. Surface the
-  // same upgrade modal so the user understands why the save failed.
-  useEffect(() => {
-    const handler = () => {
-      const limit = limitsRef.current.synthesisNodes;
-      const planName = planLabel(planRef.current);
-      setUpgradeModal({
-        type: "synthesis",
-        title: "Synthesis layer is full",
-        description: isFinite(limit)
-          ? `Your ${planName} plan includes the Synthesis Layer up to ${limit} neurons you create yourself (chats, vault notes, perspectives, ratified beliefs, manual facts). Upgrade to Pro for unlimited synthesis-layer neurons.`
-          : `Your ${planName} plan hit the synthesis-layer neuron limit. Upgrade to keep building your brain.`,
-      });
-    };
-    window.addEventListener(SYNTHESIS_CAP_EVENT, handler);
-    return () => window.removeEventListener(SYNTHESIS_CAP_EVENT, handler);
   }, []);
 
   // Upload rate limiting (033_upload_rate_trigger.sql). The client already

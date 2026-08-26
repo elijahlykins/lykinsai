@@ -13,7 +13,6 @@
 
 /** Secret-gated cron/ops endpoints (Bearer shared-secret, no requireAuth). */
 const SECRET_GATED_PATHS = new Set([
-  '/api/discover/ingest',
   '/api/vault/reconcile',
   '/api/synthesis/backfill',
   '/api/feeds/poll-due',
@@ -55,11 +54,10 @@ const DOMAIN_RULES = [
   // The poll-due cron trio belongs to the feeds/cron cluster.
   [/poll-due$|^\/api\/feeds\b/, 'feeds'],
   [/^\/api\/connections\b|^\/oauth\//, 'connectors'],
-  [/^\/api\/custom-connections\b|^\/api\/v1\/concepts\b/, 'connections'],
+  [/^\/api\/custom-connections\b/, 'connections'],
   [/^\/api\/v1\/custom-models\b/, 'customModels'],
-  [/^\/api\/discover\//, 'discover'],
   [/^\/api\/synthesis\b|^\/api\/vault\/enrich-note$|^\/api\/vault\/reconcile$/, 'synthesis'],
-  [/^\/api\/learned\b|^\/api\/user-facts\b|^\/api\/beliefs\b|^\/api\/rules\b|^\/api\/applied\b|^\/api\/ai\/feedback$|^\/api\/v1\/synthesis\/activity$/, 'learning'],
+  [/^\/api\/ai\/feedback$/, 'learning'],
   [/^\/api\/account\b|^\/api\/night-shift\b|^\/api\/steward\b|^\/api\/metrics\/ingest$/, 'account'],
   [/^\/api\/desktop\/|^\/api\/ai\/name-chat$/, 'desktop'],
   [/^\/api\/ai\/(tts|realtime|tune-instructions|elevenlabs)\b/, 'voice'],

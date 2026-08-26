@@ -260,7 +260,7 @@ function emitNormalized(onTextChunk, text) {
 // the user. Some models (especially smaller ones) will emit literal
 // tool-call syntax as text instead of (or in addition to) actually
 // invoking the function via the native tool-calling channel, e.g.:
-//   "Let me check. [lykn_findConnections({ "query": "robotics" })]"
+//   "Let me check. [memory_list({})]"
 // or "<tool>lykn_listProjects()</tool>".
 //
 // Those should never reach the user. We can't fully prevent it on the
@@ -280,7 +280,7 @@ function emitNormalized(onTextChunk, text) {
 //   • Flush whatever's left when the hop ends.
 //
 // We deliberately don't strip bare tool-name MENTIONS without a call
-// (e.g. the user asking "what is lykn_findConnections?" and the model
+// (e.g. the user asking "what is memory_list?" and the model
 // repeating the name in its answer). The stripper only kills text
 // that looks like an actual function-call invocation.
 // ---------------------------------------------------------------------------

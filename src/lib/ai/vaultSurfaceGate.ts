@@ -12,10 +12,7 @@
 // have nothing to do with the conversation. This client-side gate is the
 // deterministic backstop: even if the model loads a vault neuron, we only
 // render the card when the user's words this turn requested it (or they
-// confirmed a surfacing offer the assistant just made). Belief / fact /
-// concept neurons are NOT gated — those are synthesis-layer text the user
-// pulls up by asking "what do I believe about X", and they aren't the
-// "random media popping into chat" complaint.
+// confirmed a surfacing offer the assistant just made).
 
 // Verbs/phrases that signal the user wants a saved item rendered in chat.
 // Broad on purpose: the model-side prompt guardrail does the precise work

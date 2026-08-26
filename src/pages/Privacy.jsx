@@ -25,7 +25,7 @@
 import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 
-const LAST_UPDATED = "August 13, 2026";
+const LAST_UPDATED = "August 26, 2026";
 
 export default function Privacy() {
   return (
@@ -62,8 +62,8 @@ export function PrivacyBody() {
           Privacy Policy
         </h1>
         <p className="mt-4 text-[14px] leading-relaxed text-black/65 dark:text-white/70">
-          LYKN is a personal synthesis layer (your beliefs, rules, facts,
-          project state, and vault) plus <strong>LYKN Glass</strong>, the Mac
+          LYKN stores your private Markdown Memory, project state, Vault
+          content, and conversations, plus <strong>LYKN Glass</strong>, the Mac
           app that puts LYKN on top of everything else you use. Glass can
           answer about your screen, listen when you ask it to, read and write
           files you have shared with it, run commands you approve, browse the
@@ -105,8 +105,8 @@ export function PrivacyBody() {
       <Section title="The short version" anchor="tldr">
         <ul className="space-y-2">
           <Bullet>
-            Your account email, your synthesis content (beliefs, facts, rules,
-            project state, vault items), and minimal usage telemetry are stored
+            Your account email, Markdown Memory documents, project state,
+            Vault items, conversations, and minimal usage telemetry are stored
             in our database (Supabase, hosted in the US).
           </Bullet>
           <Bullet>
@@ -153,14 +153,14 @@ export function PrivacyBody() {
         </p>
 
         <h3 className="text-[15px] font-semibold tracking-tight mt-5 mb-1">
-          Your synthesis content
+          Your LYKN content
         </h3>
         <p>
-          Everything you save, propose, or ratify in LYKN: vault items (notes,
-          links, files, images, artifacts you generate), beliefs, rules, facts,
-          project definitions and project state, todos and calendar items you
-          create in LYKN, conversation transcripts inside the app and in Glass
-          overlay chats, and any AI-generated summaries derived from those.
+          Everything you save in LYKN: Markdown Memory documents, Vault items
+          (notes, links, files, images, and generated artifacts), project
+          definitions and project state, todos and calendar items,
+          conversation transcripts inside the app and Glass overlay chats, and
+          summaries derived from those.
         </p>
 
         <h3 className="text-[15px] font-semibold tracking-tight mt-5 mb-1">
@@ -290,8 +290,7 @@ export function PrivacyBody() {
           Sparse server-side logs of API calls (which endpoint, response time,
           status code, your user ID), AI usage records used to meter credits
           and plan limits, MCP tool invocation counts and tool names (so the
-          Connections page can show you that Claude Desktop called{" "}
-          <code>getBeliefs</code> 14 times today), and OAuth client metadata
+          Connections page can show tool usage), and OAuth client metadata
           for connected AI tools (client name, scopes, last-used timestamp).
           The iOS app additionally forwards Apple MetricKit diagnostics (crash
           reports, hang and performance summaries, never message or vault
@@ -349,8 +348,8 @@ export function PrivacyBody() {
             app.
           </Bullet>
           <Bullet>
-            Power the synthesis pipeline, extracting beliefs, facts, and rules
-            from your vault and conversations.
+            Resolve and update private Markdown Memory when you explicitly ask
+            LYKN to remember, change, or forget durable personal context.
           </Bullet>
           <Bullet>
             Power Glass: answering about your screen, snips, live watch, voice
@@ -358,7 +357,7 @@ export function PrivacyBody() {
             builds, and the chats around them.
           </Bullet>
           <Bullet>
-            Surface your synthesis content to AI tools you have explicitly
+            Surface your authorized LYKN content to AI tools you have explicitly
             connected via OAuth or personal access tokens.
           </Bullet>
           <Bullet>
@@ -403,10 +402,10 @@ export function PrivacyBody() {
           >
             /apps/chatgpt
           </Link>
-          : your active beliefs, rules, facts, vault search results, project
-          state, and any context blocks you request. Read-only by default.
-          Write tools (propose belief, propose fact, push project state) create
-          draft entries you ratify before they go live.
+          : authorized Markdown Memory documents, Vault search results, project
+          state, and other content returned by the selected tool. Memory writes
+          remain subject to authentication, ownership, path, provenance, and
+          explicit-user policy checks.
         </p>
         <p className="mt-3">
           <strong>What the connected tool does not see:</strong> your email,
@@ -480,12 +479,12 @@ export function PrivacyBody() {
             />
             <Row
               p="OpenAI"
-              purpose="Model inference for chat, synthesis, Glass, agent browsing, and artifact builds; embeddings; image generation; speech to text; text to speech; realtime voice"
+              purpose="Model inference for chat, Glass, agent browsing, and artifact builds; embeddings; image generation; speech to text; text to speech; realtime voice"
               region="US"
             />
             <Row
               p="Anthropic"
-              purpose="Model inference (Claude tiers) for chat, synthesis, and overnight jobs"
+              purpose="Model inference (Claude tiers) for chat and approved project workflows"
               region="US"
             />
             <Row
@@ -549,7 +548,7 @@ export function PrivacyBody() {
 
       <Section title="Retention and deletion" anchor="retention">
         <p>
-          Account data and synthesis content live in our database for as long
+          Account data and LYKN content live in our database for as long
           as your account is active. When you delete your account from{" "}
           <Link
             to="/settings"
@@ -561,14 +560,14 @@ export function PrivacyBody() {
         </p>
         <ul className="space-y-2 mt-3">
           <Bullet>Your row in the users table.</Bullet>
-          <Bullet>All vault items, beliefs, rules, facts, and project state.</Bullet>
+          <Bullet>All Markdown Memory documents, Vault items, conversations, and project state.</Bullet>
           <Bullet>
             All issued personal access tokens and OAuth bearer and refresh
             tokens (their hashes, plus the OAuth client and consent rows that
             mint them), and the encrypted tokens for every account you
             connected.
           </Bullet>
-          <Bullet>All synthesis run records and any cached embeddings.</Bullet>
+          <Bullet>All user-scoped retrieval indexes and cached embeddings.</Bullet>
           <Bullet>Usage records and any iOS diagnostics tied to your account.</Bullet>
         </ul>
         <p className="mt-3">
@@ -597,15 +596,15 @@ export function PrivacyBody() {
         <ul className="space-y-2 mt-3">
           <Bullet>
             <strong>Access:</strong> see everything we hold about you, via the
-            in-app vault and synthesis views and the export endpoint.
+            in-app product surfaces and the export endpoint.
           </Bullet>
           <Bullet>
-            <strong>Portability:</strong> export your synthesis content as JSON
+            <strong>Portability:</strong> export your LYKN content as JSON
             from Settings.
           </Bullet>
           <Bullet>
-            <strong>Correction:</strong> edit any belief, fact, rule, or vault
-            item directly in the app.
+            <strong>Correction:</strong> edit Markdown Memory and Vault items
+            through the available product controls.
           </Bullet>
           <Bullet>
             <strong>Deletion:</strong> delete your account from Settings. We'll

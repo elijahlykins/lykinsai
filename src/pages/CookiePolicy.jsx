@@ -23,7 +23,7 @@ import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { openCookiePreferences } from "@/lib/analytics";
 
-const LAST_UPDATED = "August 13, 2026";
+const LAST_UPDATED = "August 26, 2026";
 
 export default function CookiePolicy() {
   return (
@@ -253,8 +253,8 @@ export function CookiePolicyBody() {
               life="Until cleared"
             />
             <StorageRow
-              k="lykn_user_projects:<user>, lykn_user_links:<user>, project:<id>, lykn_active_custom_model_id, lykn.synthesis.viewMode"
-              purpose="Project and link caches, the custom model you have selected, and your synthesis view mode"
+              k="lykn_user_projects:<user>, project:<id>, lykn_active_custom_model_id"
+              purpose="Project caches and the custom model you have selected"
               life="Until cleared"
             />
             <StorageRow
@@ -441,7 +441,7 @@ export function CookiePolicyBody() {
         </p>
         <p className="mt-3">
           If you want the server-side counterparts gone too, meaning your
-          account, vault, and synthesis content, delete your account from{" "}
+          account, Markdown Memory, Vault, projects, and conversations, delete your account from{" "}
           <Link
             to="/settings"
             className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"

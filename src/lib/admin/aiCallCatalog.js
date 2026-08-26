@@ -185,41 +185,6 @@ export const AI_SURFACES = [
       "Most clips are < 30s. Reject anything > 2 minutes server-side (it's almost certainly a misuse). Consider a cheaper hosted Whisper endpoint for dictation specifically.",
   },
   {
-    id: "profile_refresh",
-    name: "User synthesis profile refresh",
-    description:
-      "Periodic LLM pass that rebuilds the per-user 'synthesis profile' from recent conversation rows. Always followed by a fact-extraction pass.",
-    endpoint: "POST /api/synthesis/refresh-profile",
-    file: "server.js",
-    lineRange: "~1297-1438",
-    providers: ["openai"],
-    models: ["gpt-4o-mini"],
-    actionTypes: ["profile_refresh"],
-    tier: "medium",
-    guestAccessible: false,
-    metered: true,
-    optimization:
-      "Gate on evidence delta: skip if the conversation hash hasn't changed since last refresh. Cap user message at 28k chars (already done). Run at most once/24h per user unless explicit refresh.",
-    risks: ["Always also fires fact_extraction — two LLM calls per refresh."],
-  },
-  {
-    id: "fact_extraction",
-    name: "User fact extraction",
-    description:
-      "Extracts structured 'facts' (preferences, names, projects) from conversation evidence so future prompts are personalized.",
-    endpoint: "internal (runUserModelLearningPass)",
-    file: "userModelLearning.js",
-    lineRange: "~383-446, ~622+",
-    providers: ["openai"],
-    models: ["gpt-4o-mini"],
-    actionTypes: ["fact_extraction"],
-    tier: "medium",
-    guestAccessible: false,
-    metered: true,
-    optimization:
-      "Triggered after every profile refresh — debounce at the orchestration layer. Could downgrade to gpt-4.1-nano now that the JSON schema is stable.",
-  },
-  {
     id: "vault_enrich",
     name: "Vault note enrichment",
     description:
@@ -237,24 +202,6 @@ export const AI_SURFACES = [
       "Already skips when content hash unchanged. Debounce client-side so rapid saves don't queue redundant enrichment. Embed only when summary actually changed.",
     risks: ["Always two metered actions per real change (LLM + embed batch)."],
   },
-  {
-    id: "discover_takeaway",
-    name: "Discover 'why this matters' blurbs",
-    description:
-      "Server-side ingest job: generates a 1-sentence editorial blurb per Discover item in batches of 10.",
-    endpoint: "internal (generateDiscoverTakeaways)",
-    file: "server.js",
-    lineRange: "~4204-4268",
-    providers: ["openai"],
-    models: ["gpt-4o-mini"],
-    actionTypes: ["discover_takeaway"],
-    tier: "medium",
-    guestAccessible: false,
-    metered: true,
-    optimization:
-      "Could move to gpt-4.1-nano (~10x cheaper). Already batched. Skip items whose snippet hasn't changed since last ingest.",
-  },
-
   // ─── LOW cost ───────────────────────────────────────────────────────────
   {
     id: "guest_chat",
@@ -326,22 +273,6 @@ export const AI_SURFACES = [
     metered: true,
     optimization:
       "max_tokens is 4096 but real responses are < 500 tokens — cap it. Cache by sha256(prompt) per user.",
-  },
-  {
-    id: "intake_profile",
-    name: "Onboarding intake → profile",
-    description:
-      "One-time LLM pass during onboarding that turns the intake answers into the structured user profile.",
-    endpoint: "POST /api/synthesis/intake",
-    file: "server.js",
-    lineRange: "~1050-1152",
-    providers: ["openai"],
-    models: ["gpt-4o-mini"],
-    actionTypes: ["intake_profile"],
-    tier: "low",
-    guestAccessible: false,
-    metered: true,
-    optimization: "Fired at most once per user — already low total cost.",
   },
   {
     id: "summarize_conversation",

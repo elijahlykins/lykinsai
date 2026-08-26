@@ -11629,13 +11629,6 @@ function registerOverlayIpc() {
     mainWindow.show();
     mainWindow.focus();
   });
-  ipcMain.on("lykn:open-synthesis", () => {
-    const url = `${APP_ORIGIN}/synthesis-layer`;
-    if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(url);
-    mainWindow.show();
-    mainWindow.focus();
-  });
   ipcMain.on("lykn:open-app-chat", (_e, chatId) => {
     // Studio replaced the AppSidebar chat shell as the product home.
     void chatId;

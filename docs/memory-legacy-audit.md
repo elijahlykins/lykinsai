@@ -1,9 +1,11 @@
 # Legacy Memory System Audit — Phase 1 of the Memory Architecture Replacement
 
+Status: historical pre-demolition audit.
+Do not use the classifications below as current runtime documentation.
+Phase 3 outcomes are documented in `docs/memory-architecture.md`.
+
 Audited at current HEAD (Aug 2026), before building `server/memory/`.
 Scope: the Synthesis / User Model / Beliefs / Concepts / Neurons stack that the new Markdown memory core will replace.
-Phase 2 cutover is done: Chat personal memory now reads Markdown Memory.
-This document remains the map of leftover legacy producers/consumers for Phase 3 demolition.
 
 ## Capability matrix
 

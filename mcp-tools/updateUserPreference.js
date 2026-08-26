@@ -26,9 +26,7 @@ import { jsonContent, errorContent } from './index.js';
 const BOOL_FIELDS = new Set([
   'memory_paused',
   'training_opt_out',
-  'show_provenance',
   'email_product_updates',
-  'email_synthesis_digest',
   'night_shift_enabled',
 ]);
 
@@ -58,15 +56,11 @@ export const updateUserPreferenceTool = {
     'opted into.',
     '',
     'ALLOWED FIELDS:',
-    '  • memory_paused (bool) — pause nightly + on-demand synthesis',
+    '  • memory_paused (bool) — pause personal-memory writes',
     '  • training_opt_out (bool) — exclude from model improvement',
     '  • chat_retention_days (int 1-3650 or null) — auto-purge older',
     '    chats. null = keep forever.',
-    '  • show_provenance (bool) — UI hint, defaults provenance pills',
-    '    visible',
     '  • email_product_updates (bool) — product update emails',
-    '  • email_synthesis_digest (bool) — nightly digest emails when a',
-    '    run finds substantial new facts/concepts',
     '  • night_shift_enabled (bool) — overnight project morning briefs',
     '    (Night Shift cron). Ask before enabling.',
     '  • night_shift_tier (string) — "brief" (morning handoff only),',

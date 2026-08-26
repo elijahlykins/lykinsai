@@ -184,7 +184,7 @@ export function useVaultQuickCapture({
       if (insertedNote) {
         setNotes((prev) => [insertedNote, ...prev]);
         incrementVaultCount();
-        // Index into the synthesis layer the same way quick notes and
+        // Index into Vault retrieval the same way quick notes and
         // dropped links do — without this, dialog-saved links never
         // appear in the brain map until some other reindex pass runs.
         const linkText = [

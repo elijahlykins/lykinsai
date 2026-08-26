@@ -2,7 +2,6 @@ import { API_BASE_URL } from "@/lib/api-config";
 import { supabase } from "@/lib/supabase";
 import { useAiStore } from "@/store/aiStore";
 import { invalidateWorkspaceSummaryCache } from "@/lib/workspaceContext";
-import { scheduleUserProfileRefresh } from "@/lib/synthesis/profileRefresh";
 import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
 import { vaultNoteTextForSynthesis } from "@/lib/synthesis/sourceText";
 import { clearAiDriveCache } from "@/lib/vault/aiDriveContents";
@@ -38,7 +37,6 @@ export function afterVaultNoteSaved(
     invalidateWorkspaceSummaryCache(userId);
     const ex = workspaceOpts?.excludeChatId ?? undefined;
     void useAiStore.getState().refreshWorkspaceSummary(userId, ex, { force: true });
-    scheduleUserProfileRefresh(userId);
   }
 
   let text = vaultNoteTextForSynthesis(opts.title, opts.content);

@@ -1,6 +1,6 @@
 // User-authored "synthesis cluster" projects — the data layer for the
 // "+ → Create project" flow on the synthesis page. A project here is
-// a named bag of synthesis-layer neurons the user explicitly grouped
+// a project with attached Vault knowledge the user explicitly grouped
 // together, persisted into the existing `lykn_projects` table (045)
 // plus a new `lykn_project_neurons` join table (063).
 //
@@ -8,7 +8,7 @@
 //   The same row in `lykn_projects` is the one LYKN's own chat and
 //   voice agent read through `lykn_listProjects` /
 //   `lykn_getContextBlock`. By writing into the same table, a project
-//   the user clusters in the synthesis layer is immediately visible to
+//   the user clusters in the Projects workspace is immediately visible to
 //   the model for free — that's the whole point of the feature ("the
 //   user can see the project, the AI can see that project").
 //
@@ -188,6 +188,7 @@ export async function listUserProjects(userId: string | null | undefined): Promi
         .select("project_id, node_id, node_label, node_kind, created_at")
         .eq("user_id", userId)
         .in("project_id", ids)
+        .like("node_id", "vault_%")
         .order("created_at", { ascending: true });
       if (!memErr) {
         for (const m of members || []) {
@@ -290,12 +291,12 @@ export async function createUserProject(
   const seen = new Set<string>();
   const cleanMembers: UserProjectMember[] = [];
   for (const m of args.members) {
-    if (!m?.nodeId || seen.has(m.nodeId)) continue;
+    if (!m?.nodeId?.startsWith("vault_") || seen.has(m.nodeId)) continue;
     seen.add(m.nodeId);
     cleanMembers.push({
       nodeId: m.nodeId,
       label: m.label ?? null,
-      kind: m.kind ?? null,
+      kind: "vault",
     });
   }
 
@@ -385,10 +386,10 @@ export async function createUserProject(
 
     if (!projectRow) throw new Error("project upsert returned no row");
 
-    // User-created projects become the synthesis focus so agents pick up
+    // User-created projects become the project focus so agents pick up
     // context immediately (like checking out the repo you just made).
     await supabase
-      .from("lykn_user_synthesis_profile")
+      .from("lykn_user_preferences")
       .upsert(
         {
           user_id: userId,
@@ -425,6 +426,7 @@ export async function createUserProject(
       .select("node_id, node_label, node_kind, created_at")
       .eq("user_id", userId)
       .eq("project_id", projectRow.id)
+      .like("node_id", "vault_%")
       .order("created_at", { ascending: true });
 
     // Push count — accurate on the merge path (existing project may
@@ -514,12 +516,12 @@ export async function addNeuronsToProject(
   const seen = new Set<string>();
   const cleanMembers: UserProjectMember[] = [];
   for (const m of members) {
-    if (!m?.nodeId || seen.has(m.nodeId)) continue;
+    if (!m?.nodeId?.startsWith("vault_") || seen.has(m.nodeId)) continue;
     seen.add(m.nodeId);
     cleanMembers.push({
       nodeId: m.nodeId,
       label: m.label ?? null,
-      kind: m.kind ?? null,
+      kind: "vault",
     });
   }
 
@@ -572,6 +574,7 @@ export async function addNeuronsToProject(
       .select("node_id, node_label, node_kind, created_at")
       .eq("user_id", userId)
       .eq("project_id", projectId)
+      .like("node_id", "vault_%")
       .order("created_at", { ascending: true });
 
     return (rows || []).map((r) => ({
@@ -597,11 +600,11 @@ export async function addNeuronsToProject(
 }
 
 // ---------------------------------------------------------------------------
-// Remove — drop a single neuron from a project's membership.
+// Remove — detach one Vault item from a project's membership.
 // ---------------------------------------------------------------------------
 //
-// The synthesis-layer NeuronPanel renders one "Remove from <project>"
-// chip per project the focused neuron belongs to. Tapping it calls
+// Product surfaces can render one "Remove from <project>" action per
+// project the focused Vault item belongs to. It calls
 // this function which deletes the one (project_id, node_id) row from
 // `lykn_project_neurons` and bumps the project's `last_active_at` so
 // it stays sorted correctly in the "By Project" dropdown.
@@ -616,7 +619,7 @@ export async function removeNeuronFromProject(
   projectId: string,
   nodeId: string,
 ): Promise<boolean> {
-  if (!projectId || !nodeId) return false;
+  if (!projectId || !nodeId.startsWith("vault_")) return false;
 
   // Guest path → strip the entry from the localStorage row.
   if (!userId) {
@@ -796,7 +799,7 @@ export async function editProjectStateUpdate(
 //
 // "Active vs archived" is the `lykn_projects.status` column: archived
 // projects stop shipping in getContextBlock but keep their history.
-// Separately, `lykn_user_synthesis_profile.active_project_id` is the ONE
+// Separately, `lykn_user_preferences.active_project_id` is the ONE
 // project the agent treats as the current focus. The Projects page
 // exposes both.
 
@@ -839,7 +842,7 @@ export async function getActiveProjectId(
   if (!userId) return null;
   try {
     const { data, error } = await supabase
-      .from("lykn_user_synthesis_profile")
+      .from("lykn_user_preferences")
       .select("active_project_id")
       .eq("user_id", userId)
       .maybeSingle();
@@ -858,7 +861,7 @@ export async function setActiveProjectId(
   if (!userId) return false;
   try {
     const { error } = await supabase
-      .from("lykn_user_synthesis_profile")
+      .from("lykn_user_preferences")
       .upsert(
         {
           user_id: userId,

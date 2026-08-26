@@ -14,7 +14,6 @@ import LyknMediaPopHost from '@/components/lyknChat/LyknMediaPopHost';
 import FileWindowHost from '@/components/files/FileWindowHost';
 import { SupabaseAuthProvider, useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
-import { IntakeProvider } from '@/context/IntakeContext';
 import LoadingScreen from "@/components/LoadingScreen";
 import RouteErrorBoundary from '@/lib/RouteErrorBoundary';
 import CookieConsentBanner from '@/components/CookieConsentBanner';
@@ -27,14 +26,6 @@ import StartTrial from "./pages/StartTrial";
 import GlassLanding from "./pages/GlassLanding";
 import LyknChat from "./pages/LyknChat";
 import Settings from "./pages/Settings";
-// SynthesisLayer pulls in three.js + react-three-fiber + drei + the
-// Bloom postprocessing pipeline (via its own internal lazy import of
-// the 3D scene). Lazy-loading the route module itself shaves the
-// remaining ~4.7k-line page component (DetailPanel, NeuronCreationModal,
-// belief / fact / concept sections, the layout-engine wrapper) out of
-// the initial bundle too, so first-paint on every other route gets
-// faster — not just first-paint on /synthesis-layer.
-const SynthesisLayer = React.lazy(() => import("./pages/SynthesisLayer"));
 // LYKN Studio: the liquid-glass workspace (widget dashboard + embedded
 // product surfaces). Primary post-login shell; lazy so it doesn't weigh
 // down marketing / auth routes.
@@ -50,10 +41,6 @@ import {
   readEmbeddedPreviewParams,
 } from "@/lib/embeddedPreview";
 import { applyTheme, readSavedTheme } from "@/lib/theme";
-import {
-  SYNTHESIS_LAYER_UI_ENABLED,
-  SYNTHESIS_LAYER_FALLBACK_PATH,
-} from "@/lib/synthesisLayerUi";
 import ShareReceiver from "./pages/ShareReceiver";
 import Pricing from "./pages/Pricing";
 import DownloadLykn from "./pages/DownloadLykn";
@@ -510,20 +497,7 @@ function AppShell() {
             {/* The post-signup "connect your AI tools" flow existed only to
                 install LYKN into other AI clients. Old links bounce home. */}
             <Route path="/onboarding/connect" element={<Navigate to="/studio" replace />} />
-            <Route
-              path="/synthesis-layer"
-              element={
-                SYNTHESIS_LAYER_UI_ENABLED ? (
-                  <ProtectedRoute>
-                    <Suspense fallback={loadingFallback}>
-                      <SynthesisLayer />
-                    </Suspense>
-                  </ProtectedRoute>
-                ) : (
-                  <Navigate to={SYNTHESIS_LAYER_FALLBACK_PATH} replace />
-                )
-              }
-            />
+            <Route path="/synthesis-layer" element={<Navigate to="/studio" replace />} />
             <Route
               path="/projects"
               element={
@@ -636,12 +610,10 @@ function App() {
   return (
     <QueryClientProvider client={queryClientInstance}>
       <SupabaseAuthProvider>
-        <IntakeProvider>
-          <TooltipProvider delayDuration={420} skipDelayDuration={200}>
-            <AppRoutes />
-            <Toaster />
-          </TooltipProvider>
-        </IntakeProvider>
+        <TooltipProvider delayDuration={420} skipDelayDuration={200}>
+          <AppRoutes />
+          <Toaster />
+        </TooltipProvider>
       </SupabaseAuthProvider>
     </QueryClientProvider>
   );

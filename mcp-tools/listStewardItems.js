@@ -37,7 +37,7 @@ export const listStewardItemsTool = {
     let projectId = args.project_id ? String(args.project_id).trim() : null;
     if (!projectId) {
       const { data: prof } = await ctx.supabaseAdmin
-        .from('lykn_user_synthesis_profile')
+        .from('lykn_user_preferences')
         .select('active_project_id')
         .eq('user_id', ctx.userId)
         .maybeSingle();

@@ -81,7 +81,7 @@ export const getProjectStateTool = {
         project: null,
         state: {},
         message:
-          'No writable project in scope. User-created projects live in the LYKN synthesis layer (+ → Create project). Custom-model chats bind to linked_project_id automatically.',
+          'No writable project in scope. User-created projects live in the LYKN Projects (+ → Create project). Custom-model chats bind to linked_project_id automatically.',
       });
     }
     const projectId = project.id;

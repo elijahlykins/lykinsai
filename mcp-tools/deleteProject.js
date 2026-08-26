@@ -6,7 +6,7 @@
 //   • lykn_project_state           — ON DELETE CASCADE
 //   • lykn_project_neurons (063)   — ON DELETE CASCADE
 //
-// `lykn_user_synthesis_profile.active_project_id` references this row
+// `lykn_user_preferences.active_project_id` references this row
 // with ON DELETE SET NULL (per migration 045), so deleting the
 // currently-active project leaves the user with no active project —
 // the next conversation gets a `project=null` from
@@ -18,7 +18,7 @@
 //   project's current display name (case-insensitive). This is a
 //   destructive operation that wipes user-grouped cluster membership
 //   and AI-pushed working memory in one shot — every other surface in
-//   the synthesis layer (rename, archive, remove neurons, supersede
+//   the Projects workspace (rename, archive, remove neurons, supersede
 //   state) is reversible, but this is not. The double-gate forces the
 //   model to demonstrate it actually knows which project it's about
 //   to remove rather than blindly forwarding a UUID it parsed out of

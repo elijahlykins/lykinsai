@@ -96,7 +96,7 @@ export const saveFileToVaultTool = {
     '',
     'When NOT to call: casual one-off replies, anything marked private /',
     'off-the-record, personal principles (those are user-authored Core Belief',
-    'neurons), or atomic identity facts (use lykn_proposeFact).',
+    'personal memory (use memory_patch or memory_create).',
   ].join('\n'),
   inputSchema: {
     type: 'object',

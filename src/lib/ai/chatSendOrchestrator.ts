@@ -7,21 +7,11 @@ import {
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { persistInstructionPrompt } from "@/lib/voice/tuneInstructions";
 import {
-  parseLearnedTag,
-  stripLearnedTagFromStream,
-  stripLearnedTagsFromFinal,
   finalizeVisibleReply,
-  postLearnedFact,
-  postAutoLearnedFact,
   stripModelTruncationNote,
   stripModelTruncationNoteFromStream,
-} from "@/lib/ai/learnedTag";
-import {
-  parseAppliedTag,
-  stripAppliedTagFromStream,
-  stripAppliedTagFromFinal,
-  postAppliedAttribution,
-} from "@/lib/ai/appliedTag";
+} from "@/lib/ai/responseText";
+
 import type {
   ToolCallEvent,
   ChatNeuronAttachment,
@@ -918,18 +908,13 @@ async function handleStreamingResponse(
                 streamRefs.streamPromptIdRef.current = promptId;
               }
               accumulated += parsed.t;
-              // Hide the hidden <learned>/<reason>/<applied> tags from the
-              // live streaming view so the user never sees them flicker
-              // into the bubble before postProcessResponse strips + parses.
-              // ALSO hide any "_…response truncated. Ask 'continue' for the
+              // Hide any "_…response truncated. Ask 'continue' for the
               // rest._" style note the model may emit at the tail — the
               // system prompt forbids it, but some models still do it, and
               // we'd rather strip it than ever flash it on screen.
               const accumulatedForView = stripToolSyntaxFromStream(
                 stripModelTruncationNoteFromStream(
-                  stripAppliedTagFromStream(
-                    stripLearnedTagFromStream(accumulated),
-                  ),
+                  accumulated,
                 ),
               );
               const visibleText = stripStreamingActionJson(
@@ -1031,9 +1016,7 @@ async function handleStreamingResponse(
       try {
         const finalAccumulatedForView = stripToolSyntaxFromStream(
           stripModelTruncationNoteFromStream(
-            stripAppliedTagFromStream(
-              stripLearnedTagFromStream(accumulated),
-            ),
+            accumulated,
           ),
         );
         const finalVisibleText = finalizeResearchReport(
@@ -1092,42 +1075,22 @@ async function postProcessResponse(
 ): Promise<void> {
   const { analysis, postProcessing, state, canvas, typing, identity } = p;
 
-  // === LEARN-A-FACT — parse the hidden <learned>/<reason> tag pair the
-  // model may have emitted at the very end of its reply. The tag is the
-  // signal that the user just shared something personal (positive OR
-  // negative) and we need to mint a brand-new neuron in their synthesis
-  // layer. We strip the tag from the visible text BEFORE the rest of the
-  // post-processing pipeline runs so no downstream extractor (sources,
-  // YouTube, media pull, AI connections, conversation memory, etc.) sees
-  // it. The POST to /api/learned runs async — it must not block the chat
-  // bubble from rendering. When it resolves we patch `factNeuron` onto the
-  // message so the "Neuron created" pill appears below the AI response.
-  const learned = parseLearnedTag(aiTextRaw);
-  // === BELIEF-WINDOW APPLIED — parse + strip the optional <applied> tag
-  // BEFORE the visible reply is sanitized. The model may emit BOTH a
-  // <learned>/<updated> tag AND an <applied> tag in the same reply; the
-  // applied tag is independent of the learned-fact tag and does not
-  // need any post-processing pipeline awareness beyond strip-and-post.
-  const applied = parseAppliedTag(aiTextRaw);
-  // Strip the hidden tags AND repair any dangling clause they may have
-  // amputated when the model started a tag mid-sentence (e.g.
-  // "...right now. We <learned>..." → "...right now. We"). finalizeVisibleReply
-  // pops the broken tail back to the previous sentence boundary.
-  // We also strip any self-emitted "_…response truncated. Ask 'continue'
+  // Repair weak dangling tails and strip any self-emitted "_…response
+  // truncated. Ask 'continue'
   // for the rest._" / "[response truncated]" style note BEFORE
   // finalizeVisibleReply runs so the dangling-tail repair acts on the
   // model's last real sentence rather than on the truncation marker.
-  const aiTextWithoutLearnedTag = finalizeVisibleReply(
+  const visibleReply = finalizeVisibleReply(
     finalizeResearchReport(
       stripModelTruncationNote(
         stripToolSyntaxFromFinal(
-          stripAppliedTagFromFinal(stripLearnedTagsFromFinal(aiTextRaw)),
+          aiTextRaw,
         ),
       ),
     ),
   );
 
-  let aiText = analysis.sanitizeAssistantResponse(aiTextWithoutLearnedTag.trim());
+  let aiText = analysis.sanitizeAssistantResponse(visibleReply.trim());
 
   // Rescue any block-creation markup the AI may have leaked into the chat text
   // (legacy `[CREATE_BLOCK:...]`, ```json fences, or bare action JSON). The
@@ -1281,124 +1244,6 @@ async function postProcessResponse(
     if (sources.length > 0) postProcessing.attachSourcesToBlock(responseBlockId, sources);
   }
   state.setChatStatusText(mediaResult.pulled > 0 ? "Media added to board" : ytResult.urls.length ? "Video embedded" : aiConnections.length > 0 ? "Connection found" : "Answered");
-
-  // Fire the live-learn upsert AFTER the chat has rendered the visible
-  // reply, so the "Neuron created" pill shows up as a delightful surprise
-  // a beat later rather than blocking the bubble. Guests (no userId) skip
-  // this entirely — the landing-prototype path owns its own client-side
-  // neuron creation.
-  //
-  // Two paths, mutually exclusive per turn:
-  //
-  //   • PRIMARY (learned !== null) — model emitted <fact_confirm> /
-  //     <learned> / <updated>; POST propose or /api/learned.
-  //
-  //   • FALLBACK (learned === null) — the chat model forgot to tag.
-  //     POST /api/learned/auto classifier as a soft learn (no confirm chip).
-  //
-  // Confirm-chip budget: at most one *new* Yes/Edit/No prompt every
-  // CONFIRM_CHIP_COOLDOWN_TURNS user turns. Replacements (contradictions)
-  // always bypass the budget — stale ✓ facts are worse than a second chip.
-  const CONFIRM_CHIP_COOLDOWN_TURNS = 4;
-  const confirmChipOnCooldown = (() => {
-    const msgs = p.chatMessages || [];
-    let userTurnsSeen = 0;
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i];
-      if (m?.id === promptId) continue;
-      if (m?.role !== "user") continue;
-      userTurnsSeen += 1;
-      if (m.factNeuron?.needsConfirm) return true;
-      if (userTurnsSeen >= CONFIRM_CHIP_COOLDOWN_TURNS) break;
-    }
-    return false;
-  })();
-
-  if (learned && identity.userId) {
-    void (async () => {
-      try {
-        const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
-        // Contradictions / refinements of WHO_I_AM always go through the
-        // confirm chip (propose + supersedes) so Yes retires the old claim.
-        const replaceText =
-          learned.mode === "update"
-            ? learned.previousText
-            : learned.mode === "confirm"
-              ? learned.previousText || undefined
-              : undefined;
-        const isReplace = Boolean(replaceText);
-        const wantsConfirm = learned.mode === "confirm" || isReplace;
-        // Soft-learn instead of chip when budget is spent (non-replace only).
-        const needsConfirm = wantsConfirm && (isReplace || !confirmChipOnCooldown);
-        const result = await postLearnedFact(apiBase, {
-          text: learned.text,
-          kind: learned.kind,
-          reason: learned.reason,
-          sourceId: identity.routeChatId || identity.chatId || "live_chat",
-          sourceMessageId: promptId,
-          needsConfirm,
-          replacesText: replaceText,
-        });
-        if (!result) return;
-        // Confirm chip always surfaces. Soft learn pills only for new/update.
-        if (!result.needsConfirm && !result.isNew && !result.isUpdate) return;
-        state.setChatMessages((prev) => prev.map((m) => (m.id === promptId
-          ? { ...m, factNeuron: result }
-          : m)));
-      } catch {
-        // Never let a learn miss break the chat surface.
-      }
-    })();
-  } else if (!learned && identity.userId) {
-    void (async () => {
-      try {
-        const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
-        const result = await postAutoLearnedFact(apiBase, {
-          // cappedText is the post-truncation user message the chat send
-          // pipeline actually used; finalDisplayText is the cleaned
-          // assistant reply (no source tags, no internal markers). The
-          // classifier needs both to judge personal disclosure in
-          // context.
-          userMessage: cappedText,
-          assistantReply: finalDisplayText,
-          sourceId: identity.routeChatId || identity.chatId || "auto",
-        });
-        if (!result || (!result.isNew && !result.isUpdate)) return;
-        state.setChatMessages((prev) => prev.map((m) => (m.id === promptId
-          ? { ...m, factNeuron: result }
-          : m)));
-      } catch {
-        // Classifier failures are silent — the next turn will try again.
-      }
-    })();
-  }
-
-  // === BELIEF-WINDOW APPLIED — independent of the learned-fact path.
-  // If the model emitted an <applied rule_id="..."> tag, post it to the
-  // server which validates ownership + active status before recording an
-  // attribution. Failures here MUST NOT break the chat — a missed
-  // attribution just means the audit trail for this turn is missing,
-  // not that the user gets a broken bubble.
-  if (applied && identity.userId) {
-    void (async () => {
-      try {
-        const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
-        const attribution = await postAppliedAttribution(apiBase, {
-          ruleId: applied.ruleId,
-          messageId: promptId,
-          reason: applied.reason,
-          surface: "chat",
-          surfaceId: identity.routeChatId || identity.chatId || undefined,
-        });
-        if (!attribution) return;
-        state.setChatMessages((prev) => prev.map((m) => (m.id === promptId
-          ? { ...m, appliedAttribution: attribution }
-          : m)));
-      } catch {
-        // Honest by default: a missed attribution just means no Why pill.
-      }
-    })();
-  }
 
   // Persist the finished turn promptly so switching devices (phone → laptop)
   // doesn't depend on the 30s autosave interval or a tab-background event.
@@ -1759,7 +1604,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     ...(p.activeArtifact ? { activeArtifact: p.activeArtifact } : {}),
     // Opt this turn into the agent loop (chat-agent-loop.js). Authenticated
     // chat path only — the model can call the in-app tool whitelist
-    // (mcp-tools/chatTools.js) to read/write synthesis-layer state via
+    // (mcp-tools/chatTools.js) to use Markdown Memory and product tools via
     // OpenAI function-calling, and the SSE stream interleaves tool_call
     // events with text deltas. Server forces an OpenAI tool-capable model
     // when this is on; X-Tool-Route header announces the swap.

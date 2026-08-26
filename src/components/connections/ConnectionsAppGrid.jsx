@@ -16,7 +16,6 @@ import OAuthConnectDialog from "@/components/connections/OAuthConnectDialog";
 import TokenConnectDialog from "@/components/connections/TokenConnectDialog";
 import CustomApiDialog from "@/components/connections/CustomApiDialog";
 import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
-import { SYNTHESIS_LAYER_UI_ENABLED } from "@/lib/synthesisLayerUi";
 
 // Unified "app store" view for the Connections page. Everything LYKN
 // can plug into renders as the same tile shape so the answer to "what
@@ -130,13 +129,7 @@ export default function ConnectionsAppGrid({
     }
     setActiveInputConnector(authConnector);
   }, []);
-  // Per-`notes.source` aggregate of (notes, facts, beliefs) so each
-  // input tile can show how much of the user's synthesis layer traces
-  // back to that one app. Loaded once on mount via the
-  // `get_connector_synthesis_counts` RPC; refreshed alongside the
-  // connections list so newly-synced items light up the footer.
-  // Map<sourceSlug, { notes, facts, beliefs }>
-  const [synthesisCounts, setSynthesisCounts] = useState(new Map());
+  const [vaultCounts, setVaultCounts] = useState(new Map());
 
   const refresh = useCallback(async () => {
     if (!user) {
@@ -152,7 +145,7 @@ export default function ConnectionsAppGrid({
         // Network failure or RLS denial falls through to a zero-counts
         // map so tiles silently omit the footer rather than blocking
         // the page.
-        supabase.rpc("get_connector_synthesis_counts"),
+        supabase.rpc("vault_connector_source_counts"),
       ]);
       if (connRes.ok) {
         const data = await connRes.json();
@@ -162,14 +155,10 @@ export default function ConnectionsAppGrid({
       if (countsRes && !countsRes.error && Array.isArray(countsRes.data)) {
         const m = new Map();
         for (const row of countsRes.data) {
-          if (!row?.connector_source) continue;
-          m.set(row.connector_source, {
-            notes: Number(row.note_count) || 0,
-            facts: Number(row.fact_count) || 0,
-            beliefs: Number(row.belief_count) || 0,
-          });
+          if (!row?.source) continue;
+          m.set(row.source, Number(row.count) || 0);
         }
-        setSynthesisCounts(m);
+        setVaultCounts(m);
       }
     } catch {
       // Silent - the dialogs each have their own load/retry path.
@@ -192,35 +181,15 @@ export default function ConnectionsAppGrid({
     return m;
   }, [connections]);
 
-  // For each catalog connector id, sum the (notes, facts, beliefs)
-  // across every `notes.source` slug that adapter writes. Most
-  // connectors map 1:1 (notion → notion_page) but several emit
-  // multiple slugs (Gmail → gmail_starred + gmail_inbox, Mastodon →
-  // bookmark + favourite, Drive → starred + slides). Aliased tiles
-  // (Google Docs / Sheets) get their *own* slug here so the per-tile
-  // footer reflects that app's items only - not the whole Drive pile.
-  // Map<connectorId, { notes, facts, beliefs }>
-  const synthesisCountsByConnector = useMemo(() => {
-    const m = new Map();
-    for (const c of CONNECTORS) {
-      const slugs = CONNECTOR_NOTES_SOURCES[c.id] || [];
-      if (slugs.length === 0) continue;
-      let notes = 0;
-      let facts = 0;
-      let beliefs = 0;
-      for (const slug of slugs) {
-        const row = synthesisCounts.get(slug);
-        if (!row) continue;
-        notes += row.notes;
-        facts += row.facts;
-        beliefs += row.beliefs;
-      }
-      if (notes > 0 || facts > 0 || beliefs > 0) {
-        m.set(c.id, { notes, facts, beliefs });
-      }
+  const vaultCountsByConnector = useMemo(() => {
+    const totals = new Map();
+    for (const connector of CONNECTORS) {
+      const count = (CONNECTOR_NOTES_SOURCES[connector.id] || [])
+        .reduce((sum, source) => sum + (vaultCounts.get(source) || 0), 0);
+      if (count > 0) totals.set(connector.id, count);
     }
-    return m;
-  }, [synthesisCounts]);
+    return totals;
+  }, [vaultCounts]);
 
   // Apps reachable via their REST API / OAuth. Native connectors first
   // (category order), then BYO-key presets with no native equivalent, then
@@ -391,45 +360,27 @@ export default function ConnectionsAppGrid({
                       : paidWarning && !wakePreview
                         ? { tone: "amber", label: connector.statusLabel || `Requires ${connector.name} plan` }
                         : null;
-            // Synthesis-counts footer surfaces the chain of impact for
-            // a connected input tool: how many vault notes the adapter
-            // has produced, how many user-model facts cite those notes,
-            // and how many beliefs were promoted from those facts.
+            // Vault-count footer shows how many notes a connected input
+            // adapter has produced.
             // Only rendered when the tile is actually connected AND
             // we have at least one non-zero count - unconnected /
             // capture-only tiles stay quiet to avoid clutter.
-            const counts =
+            const noteCount =
               isConnected && !isCaptureOnly && !isComingSoon
-                ? synthesisCountsByConnector.get(connector.id) || null
-                : null;
+                ? vaultCountsByConnector.get(connector.id) || 0
+                : 0;
             // Deep-link targets for each chip. We pass the first slug
             // for the connector (most are 1:1) so the receiving page
             // can filter to that one source. Pages that don't yet read
             // ?source= ignore it harmlessly - the click still lands on
             // the right surface.
             const primarySlug = getConnectorSourceSlugs(connector.id)[0] || "";
-            const chips = counts
-              ? [
-                  {
-                    key: "notes",
-                    label: `${counts.notes} note${counts.notes === 1 ? "" : "s"}`,
-                    onClick: () => navigate(`/vault${primarySlug ? `?source=${encodeURIComponent(primarySlug)}` : ""}`),
-                  },
-                  ...(SYNTHESIS_LAYER_UI_ENABLED && counts.facts > 0
-                    ? [{
-                        key: "facts",
-                        label: `${counts.facts} fact${counts.facts === 1 ? "" : "s"}`,
-                        onClick: () => navigate(`/synthesis-layer${primarySlug ? `?source=${encodeURIComponent(primarySlug)}&focus=facts` : "?focus=facts"}`),
-                      }]
-                    : []),
-                  ...(SYNTHESIS_LAYER_UI_ENABLED && counts.beliefs > 0
-                    ? [{
-                        key: "beliefs",
-                        label: `${counts.beliefs} belief${counts.beliefs === 1 ? "" : "s"}`,
-                        onClick: () => navigate(`/synthesis-layer${primarySlug ? `?source=${encodeURIComponent(primarySlug)}&focus=beliefs` : "?focus=beliefs"}`),
-                      }]
-                    : []),
-                ]
+            const chips = noteCount > 0
+              ? [{
+                  key: "notes",
+                  label: `${noteCount} note${noteCount === 1 ? "" : "s"}`,
+                  onClick: () => navigate(`/vault${primarySlug ? `?source=${encodeURIComponent(primarySlug)}` : ""}`),
+                }]
               : null;
             return (
               <AppTile
@@ -831,7 +782,7 @@ function AppTile({
               {description}
             </p>
             {chips && chips.length > 0 && (
-              <div className="mt-1.5 flex items-center gap-3 flex-wrap" aria-label={`${name} synthesis impact`}>
+              <div className="mt-1.5 flex items-center gap-3 flex-wrap" aria-label={`${name} Vault impact`}>
                 {chips.map((chip) => (
                   <button
                     key={chip.key}
@@ -922,7 +873,7 @@ function AppTile({
       {chips && chips.length > 0 && (
         <div
           className="flex items-center gap-1 flex-wrap pl-9"
-          aria-label={`${name} synthesis impact`}
+          aria-label={`${name} Vault impact`}
         >
           {chips.map((chip) => (
             <button

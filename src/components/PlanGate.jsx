@@ -25,8 +25,8 @@ function planRank(planId) {
  * Gate a route (or any subtree) behind a minimum plan tier.
  *
  * Usage:
- *   <PlanGate minPlan="studio" feature="Mind Map">
- *     <SynthesisLayer />
+ *   <PlanGate minPlan="studio" feature="Advanced models">
+ *     <ModelPicker />
  *   </PlanGate>
  *
  * Props:

@@ -1,15 +1,7 @@
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { CONNECTORS } from "@/lib/connectors/catalog";
-import {
-  SYNTHESIS_LAYER_UI_ENABLED,
-  synthesisLayerHref,
-} from "@/lib/synthesisLayerUi";
 // Same LYKN squircle the app dock renders — used as the brand mark
-// on synthesis-layer notification bubbles (proposed beliefs, new
-// neurons, etc.) so those groups read as "from LYKN" instead of
-// borrowing a generic favicon.
-import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-A-Squircle/PNGs/LYKN-Icon-A-Squircle-BLUE-master.png";
 
 /**
  * loadInUpdates — builds the "what's been happening" chat greeting LYKN
@@ -17,86 +9,16 @@ import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-A-Squircle/PNGs/LYKN-Icon-A-Sq
  *
  * Replaces the retired right-side SynthesisUpdatesPanel — the
  * canonical "here's what changed" surface is now the chat itself,
- * and individual updates deep-link from the chat into their own
- * dedicated detail panels (per-belief, per-project, per-vault-note).
- * The synthesis layer no longer hosts a generic "what's new" pullout.
- *
- * Pulls from two sources and stitches them together:
- *   1. `/api/v1/synthesis/activity` — beliefs, facts, projects, rule
- *      attributions (your synthesis layer's heartbeat)
- *   2. `notes` table via Supabase — items synced in by your connector
+ * and individual updates deep-link from the chat into their own surfaces.
+ * Pulls recent items from the `notes` table via Supabase — connector
  *      adapters (calendar events, social bookmarks, productivity tools,
  *      reading lists, etc.) keyed by their connector `source` slug
  *
  * The connector sources are bucketed into user-facing categories
  * (Calendar, Social, Productivity, Reading, Media) so the chat shows
  * a balanced cross-section of *everywhere* their day is currently
- * coming from — not just the synthesis layer.
+ * coming from.
  */
-
-const ACTIVITY_LIMIT = 100;
-
-type EventType =
-  | "project_state"
-  | "project_created"
-  | "belief_active"
-  | "belief_proposed"
-  | "belief_other"
-  | "fact_added"
-  | "rule_applied";
-
-interface ActivityEvent {
-  id: string;
-  type: EventType;
-  when: string;
-  by_client: string | null;
-  summary: string;
-  detail?: string | null;
-  target_id?: string | null;
-  target_label?: string | null;
-  proposed_by_clients?: string[];
-  ratified_by?: string | null;
-  state_key?: string;
-  serves_need?: string;
-  status?: string;
-}
-
-interface ActivityResponse {
-  ok: boolean;
-  events: ActivityEvent[];
-  count: number;
-  total_seen: number;
-}
-
-const CLIENT_LABEL: Record<string, string> = {
-  claude: "Claude",
-  "claude-desktop": "Claude Desktop",
-  "claude-web": "Claude (web)",
-  "claude-code": "Claude Code",
-  cursor: "Cursor",
-  gemini: "Gemini CLI",
-  replit: "Replit",
-  lovable: "Lovable",
-  "notion-ai": "Notion AI",
-  "codex-cli": "Codex CLI",
-  windsurf: "Windsurf",
-  jetbrains: "JetBrains AI",
-  "github-copilot": "GitHub Copilot",
-  perplexity: "Perplexity",
-  grok: "Grok",
-  zapier: "Zapier",
-  elevenlabs: "ElevenLabs",
-  "lykn-chat": "LYKN",
-  "lykn-promotion": "LYKN synthesis",
-  manual: "you",
-  chatgpt: "ChatGPT",
-  other: "an external AI",
-};
-
-function clientDisplay(slug: string | null | undefined): string {
-  if (!slug) return "an AI";
-  return CLIENT_LABEL[slug] || slug;
-}
 
 // --------------------------------------------------------------------------
 // Connector source → user-facing category map
@@ -303,13 +225,6 @@ function extractItemUrl(content: string | null | undefined): string | null {
   return m ? m[0] : null;
 }
 
-function joinClients(slugs: string[]): string {
-  const labels = slugs.map(clientDisplay);
-  if (labels.length <= 1) return labels[0] || "an AI";
-  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
-  return `${labels.slice(0, -1).join(", ")}, and ${labels[labels.length - 1]}`;
-}
-
 function relativeTime(when: string): string {
   const t = Date.parse(when);
   if (!Number.isFinite(t)) return "";
@@ -321,108 +236,6 @@ function relativeTime(when: string): string {
   if (hr < 24) return `${hr}h ago`;
   const day = Math.round(hr / 24);
   return `${day}d ago`;
-}
-
-async function fetchActivity(): Promise<ActivityResponse | null> {
-  try {
-    const { data } = await supabase.auth.getSession();
-    const token = data?.session?.access_token || "";
-    if (!token) return null;
-    const res = await fetch(
-      `${API_BASE_URL}/api/v1/synthesis/activity?limit=${ACTIVITY_LIMIT}`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    );
-    if (!res.ok) return null;
-    const body = (await res.json()) as ActivityResponse;
-    if (!body?.ok) return null;
-    return body;
-  } catch {
-    return null;
-  }
-}
-
-// One provenance entry per (belief, fact, source) triple as returned
-// by the `get_belief_provenance` Postgres RPC. Used to render the
-// "Grounded in <X>, <Y>" chip row under each proposed-belief item in
-// the daily briefing. Only the fields the briefing actually consumes
-// are typed here; the RPC returns a few more (fact_text, observed_at)
-// that the synthesis-layer 3D graph uses but the briefing ignores.
-export interface BeliefProvenanceRow {
-  belief_id: string;
-  fact_id: string;
-  source_type: string;
-  source_id: string;
-  source_label: string | null;
-  source_connector: string | null;
-}
-
-// One row from the concepts_moved_since RPC (058). Drives the
-// "Your '<concept>' moved this week" section in the briefing. The
-// RPC returns concepts that gained at least one link in the window,
-// with a jsonb deltas payload counting how much landed where.
-export interface ConceptsMovedRow {
-  concept_id: string;
-  label: string;
-  kind: string;
-  status: string;
-  source: string;
-  deltas: {
-    notes?: number;
-    facts?: number;
-    beliefs?: number;
-    chats?: number;
-    latest_at?: string | null;
-  } | null;
-  latest_at: string | null;
-}
-
-/**
- * Pull the concepts that gained links in the last `windowHours`
- * hours via the `concepts_moved_since` RPC. Returns [] on any
- * failure path (RPC missing, RLS denial, offline) so the briefing
- * just omits the section rather than blowing up.
- */
-async function fetchConceptsMovedRecently(
-  windowHours = 168, // 7d default
-): Promise<ConceptsMovedRow[]> {
-  try {
-    const since = new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString();
-    const { data, error } = await supabase.rpc("concepts_moved_since", { since });
-    if (error || !Array.isArray(data)) return [];
-    return data as ConceptsMovedRow[];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Resolve belief_id -> short list of "grounded in" entries for the
- * briefing chips. Returns an empty map when no belief ids are passed
- * or when the RPC fails for any reason (offline, RLS denial, the
- * migration hasn't been applied yet) — callers should treat the
- * provenance row as optional.
- */
-async function fetchBeliefProvenance(
-  beliefIds: string[],
-): Promise<Map<string, BeliefProvenanceRow[]>> {
-  const empty = new Map<string, BeliefProvenanceRow[]>();
-  if (!Array.isArray(beliefIds) || beliefIds.length === 0) return empty;
-  try {
-    const { data, error } = await supabase.rpc("get_belief_provenance", {
-      belief_ids: beliefIds,
-    });
-    if (error || !Array.isArray(data)) return empty;
-    const m = new Map<string, BeliefProvenanceRow[]>();
-    for (const raw of data as BeliefProvenanceRow[]) {
-      if (!raw?.belief_id) continue;
-      const arr = m.get(raw.belief_id) || [];
-      arr.push(raw);
-      m.set(raw.belief_id, arr);
-    }
-    return m;
-  } catch {
-    return empty;
-  }
 }
 
 // --------------------------------------------------------------------------
@@ -442,7 +255,7 @@ async function fetchBeliefProvenance(
 //
 // We deliberately do NOT call the server here — RLS protects per-user
 // scoping and this keeps the load-in greeting parallelisable with the
-// synthesis-activity fetch (both run via Promise.all).
+// connector and schedule fetches.
 
 interface ConnectorNote {
   id: string;
@@ -850,145 +663,13 @@ function buildConnectorSection(items: ConnectorNote[]): string[] {
   return bullets;
 }
 
-// --------------------------------------------------------------------------
-// Formatter — turn activity events into a markdown chat greeting
-// --------------------------------------------------------------------------
-//
-// Three sections, mirroring the user's request:
-//   1. "Here's what's been happening"  → recent neuron / fact activity
-//   2. "Awaiting your approval"        → beliefs still pending review
-//   3. "Project updates"               → project_state events grouped by project
-//
-// Each list is capped so the bubble stays readable. If a section is
-// empty we omit it; if everything is empty we return a soft fallback so
-// the chat doesn't open silently with a wall of nothing.
-
-const MAX_RECENT = 6;
-const MAX_PROPOSED = 6;
-const MAX_PROJECT_BULLETS = 6;
-const RECENT_WINDOW_HOURS = 72;
-
-function buildRecentSection(events: ActivityEvent[]): string[] {
-  const lines: string[] = [];
-  const cutoff = Date.now() - RECENT_WINDOW_HOURS * 60 * 60 * 1000;
-  const recent = events.filter((e) => {
-    const t = Date.parse(e.when);
-    return Number.isFinite(t) && t >= cutoff;
-  });
-  const factEvents = recent.filter((e) => e.type === "fact_added").slice(0, 3);
-  const beliefActive = recent
-    .filter((e) => e.type === "belief_active")
-    .slice(0, 3);
-  const newProjects = recent
-    .filter((e) => e.type === "project_created")
-    .slice(0, 2);
-
-  for (const e of newProjects) {
-    const who = clientDisplay(e.by_client);
-    lines.push(
-      `- **New project** “${e.target_label || "Untitled"}”, created by ${who} · ${relativeTime(e.when)}`,
-    );
-  }
-  for (const e of beliefActive) {
-    const who = clientDisplay(e.by_client);
-    lines.push(
-      `- **New belief active**: “${e.target_label || "a new belief"}” (from ${who}) · ${relativeTime(e.when)}`,
-    );
-  }
-  for (const e of factEvents) {
-    const who = clientDisplay(e.by_client);
-    lines.push(
-      `- ${who === "you" ? "You added" : `${who} learned`} a new fact: “${e.target_label || "about you"}” · ${relativeTime(e.when)}`,
-    );
-  }
-  return lines.slice(0, MAX_RECENT);
-}
-
-function buildApprovalsSection(events: ActivityEvent[]): string[] {
-  const proposed = events.filter((e) => e.type === "belief_proposed");
-  // Group by target so multiple clients converging on the same belief
-  // get a single bullet calling out the convergence — that's the bit
-  // the user most wants to know about for an approval decision.
-  const seen = new Set<string>();
-  const bullets: string[] = [];
-  for (const e of proposed) {
-    if (!e.target_id || seen.has(e.target_id)) continue;
-    seen.add(e.target_id);
-    const clients = Array.isArray(e.proposed_by_clients) ? e.proposed_by_clients : [];
-    const text = e.target_label || "a new belief";
-    if (clients.length >= 2) {
-      bullets.push(
-        `- **“${text}”**: ${joinClients(clients)} independently surfaced this · ${relativeTime(e.when)}`,
-      );
-    } else {
-      const who = clientDisplay(e.by_client);
-      bullets.push(
-        `- **“${text}”**, proposed by ${who} · ${relativeTime(e.when)}`,
-      );
-    }
-    if (bullets.length >= MAX_PROPOSED) break;
-  }
-  return bullets;
-}
-
-function buildProjectsSection(events: ActivityEvent[]): string[] {
-  const byProject = new Map<
-    string,
-    { name: string; updates: ActivityEvent[]; created?: ActivityEvent }
-  >();
-
-  for (const e of events) {
-    if (!e.target_id) continue;
-    if (e.type !== "project_state" && e.type !== "project_created") continue;
-    const entry = byProject.get(e.target_id) || {
-      name: e.target_label || "a project",
-      updates: [],
-    };
-    if (e.target_label) entry.name = e.target_label;
-    if (e.type === "project_created") {
-      entry.created = e;
-    } else {
-      entry.updates.push(e);
-    }
-    byProject.set(e.target_id, entry);
-  }
-
-  const projects = Array.from(byProject.values())
-    .filter((p) => p.updates.length > 0 || p.created)
-    .sort((a, b) => {
-      const aNewest = a.updates[0]?.when || a.created?.when || "";
-      const bNewest = b.updates[0]?.when || b.created?.when || "";
-      return Date.parse(bNewest) - Date.parse(aNewest);
-    })
-    .slice(0, MAX_PROJECT_BULLETS);
-
-  const lines: string[] = [];
-  for (const p of projects) {
-    if (p.created && p.updates.length === 0) {
-      const who = clientDisplay(p.created.by_client);
-      lines.push(
-        `- **${p.name}**, newly created by ${who} · ${relativeTime(p.created.when)}`,
-      );
-      continue;
-    }
-    const newest = p.updates[0];
-    const who = clientDisplay(newest?.by_client);
-    const count = p.updates.length;
-    const verb = count === 1 ? "update" : "updates";
-    lines.push(
-      `- **${p.name}**: ${count} ${verb} (latest from ${who}) · ${relativeTime(newest.when)}`,
-    );
-  }
-  return lines;
-}
-
 interface BuildOptions {
   /** Optional display name for the greeting line ("Welcome back, Eli."). */
   greetingName?: string | null;
 }
 
 export interface LoadInUpdatesAction {
-  /** Short button label, e.g. "Open Synthesis Layer". */
+  /** Short button label, e.g. "Open project". */
   label: string;
   /** Internal route (starts with `/`) or absolute URL. */
   href: string;
@@ -1043,10 +724,8 @@ export interface LoadInUpdatesItem {
  * `provenance` is a small ordered list of "grounded in <X>" chips the
  * renderer shows under the title so the user can see, at a glance, the
  * source notes/boards/chats this row traces back to — and click straight
- * into them. Today it's populated only for proposed-belief rows
- * (powered by the `get_belief_provenance` RPC), but the field is shape-
- * compatible with any future row that wants to surface receipts
- * (newly-learned facts, activated rules, etc.).
+ * into them. The field is optional and remains compatible with future
+ * connector rows that want to surface source receipts.
  *
  * Older cached briefings won't carry `provenance`; the renderer must
  * handle the field being absent without breaking.
@@ -1165,45 +844,6 @@ export interface LoadInUpdatesChip {
  * fetch path so the renderer never has to walk the (potentially
  * large) sections tree just to draw a sparkline.
  */
-export interface LoadInUpdatesStats {
-  /** Calendar events scheduled for today. */
-  calendarToday: number;
-  /** Calendar events scheduled for the rest of this week. */
-  calendarWeek: number;
-  /** Per-lane item counts driving the distribution bar / donut. */
-  byCategory: {
-    social: number;
-    productivity: number;
-    reading: number;
-    media: number;
-    health: number;
-  };
-  /** Synthesis approvals broken down so the panel can colour them. */
-  approvals: {
-    proposedBeliefs: number;
-    activeBeliefs: number;
-    newFacts: number;
-  };
-  /** Number of distinct projects with new activity in the recap. */
-  projects: number;
-  /** Total synthesis-layer changes in the recap window. */
-  synthesisChanges: number;
-  /**
-   * Daily activity series for the past 7 days — one bucket per day,
-   * oldest first, with the count of *anything* that landed (notes,
-   * synthesis events, calendar events authored today). Drives the
-   * sparkline in the side panel.
-   */
-  series: Array<{
-    /** ISO date (YYYY-MM-DD) for the bucket — used as React key. */
-    date: string;
-    /** Total event count in that day's bucket. */
-    count: number;
-  }>;
-  /** Convenience total — sum of every lane plus approvals + synthesis. */
-  totalUpdates: number;
-}
-
 export interface LoadInUpdatesPayload {
   /** Short welcome line for the top of the assistant bubble. */
   message: string;
@@ -1223,95 +863,13 @@ export interface LoadInUpdatesPayload {
   actions: LoadInUpdatesAction[];
   /** Counts so the caller can decide whether to skip seeding if empty. */
   hasContent: boolean;
-  /**
-   * Roll-up counts and a 7-day activity series, rendered as a small
-   * dashboard panel ("Today's briefing") to the right of the welcome
-   * bubble. Always present so the panel can render even when the
-   * briefing itself is mostly empty (it doubles as a "you're caught
-   * up" affirmation when everything is at zero).
-   */
-  stats: LoadInUpdatesStats;
-}
-
-// Collect the IDs and labels we need to wire up action buttons, so the
-// formatter and the action builder don't have to recompute the same
-// groupings twice.
-interface SectionData {
-  recent: string[];
-  approvals: string[];
-  projects: string[];
-  topApprovalIds: Array<{ id: string; label: string }>;
-  topProjects: Array<{ id: string; name: string }>;
-}
-
-function collectSections(events: ActivityEvent[]): SectionData {
-  const recent = buildRecentSection(events);
-  const approvals = buildApprovalsSection(events);
-  const projects = buildProjectsSection(events);
-
-  const proposedSeen = new Set<string>();
-  const topApprovalIds: Array<{ id: string; label: string }> = [];
-  for (const e of events) {
-    if (e.type !== "belief_proposed") continue;
-    if (!e.target_id || proposedSeen.has(e.target_id)) continue;
-    proposedSeen.add(e.target_id);
-    topApprovalIds.push({ id: e.target_id, label: e.target_label || "a new belief" });
-    if (topApprovalIds.length >= 3) break;
-  }
-
-  const projectSeen = new Set<string>();
-  const topProjects: Array<{ id: string; name: string }> = [];
-  // Order: most-recently-touched project_state / project_created.
-  const projectEvents = events.filter(
-    (e) => e.type === "project_state" || e.type === "project_created",
-  );
-  for (const e of projectEvents) {
-    if (!e.target_id || projectSeen.has(e.target_id)) continue;
-    projectSeen.add(e.target_id);
-    topProjects.push({ id: e.target_id, name: e.target_label || "a project" });
-    if (topProjects.length >= 3) break;
-  }
-
-  return { recent, approvals, projects, topApprovalIds, topProjects };
 }
 
 function buildActions(
-  sections: SectionData,
   connector: ConnectorActivity | null,
   unconfigured: ConnectorCategory[] = [],
 ): LoadInUpdatesAction[] {
   const actions: LoadInUpdatesAction[] = [];
-
-  // Approvals — one button per pending belief (capped at 2 here so we
-  // don't crowd out the category buttons below). Routes to the
-  // synthesis layer with `?focus=belief_<id>`, which selects the
-  // node and opens its dedicated DetailPanel — the panel specific to
-  // that one belief, not the generic "what's new" pullout.
-  if (SYNTHESIS_LAYER_UI_ENABLED) {
-    for (const a of sections.topApprovalIds.slice(0, 2)) {
-      actions.push({
-        label: `Review “${truncate(a.label, 40)}”`,
-        href: synthesisLayerHref(
-          `focus=belief_${encodeURIComponent(a.id)}`,
-        ),
-        description: "Approve or dismiss this belief",
-        tone: "amber",
-      });
-    }
-  }
-
-  // Projects — one button per recently-touched project (capped at 2).
-  // When the graph UI is unplugged, land on /projects instead of a focus URL.
-  for (const p of sections.topProjects.slice(0, 2)) {
-    actions.push({
-      label: `Open ${truncate(p.name, 32)}`,
-      href: SYNTHESIS_LAYER_UI_ENABLED
-        ? synthesisLayerHref(`focus=project_${encodeURIComponent(p.id)}`)
-        : "/projects",
-      description: "Jump to this project",
-      tone: "fuchsia",
-    });
-  }
 
   // Category buttons — one per connector category that has either
   // upcoming-calendar content or recently-synced content. These deep-
@@ -1384,23 +942,13 @@ function buildActions(
     });
   }
 
-  // Catch-all fallback when nothing else above anchored a destination.
   if (actions.length === 0) {
-    actions.push(
-      SYNTHESIS_LAYER_UI_ENABLED
-        ? {
-            label: "Open Synthesis Layer",
-            href: synthesisLayerHref(),
-            description: "See every recent update and neuron",
-            tone: "primary",
-          }
-        : {
-            label: "Open Projects",
-            href: "/projects",
-            description: "Jump into your active work",
-            tone: "primary",
-          },
-    );
+    actions.push({
+      label: "Open Projects",
+      href: "/projects",
+      description: "Jump into your active work",
+      tone: "primary",
+    });
   }
 
   return actions;
@@ -1427,7 +975,7 @@ function truncate(s: string, max: number): string {
 // your day:
 //   1. On your calendar today
 //   2. This week ahead
-//   3. What we've been working on (projects + synthesis activity)
+//   3. Connector and schedule updates
 //   4. From social / productivity / reading / media (one section
 //      each, only when populated)
 //   5. Awaiting your approval
@@ -1788,186 +1336,6 @@ function buildTodaySection(
   };
 }
 
-// Per-client jump-back URL, for the same historical rows CLIENT_DOMAIN
-// covers: activity written by an outside AI client back when LYKN
-// exposed an MCP server. Each gets that app's main web entry point so
-// the user lands in a fresh conversation there rather than on a
-// connectors page. Slugs unknown here fall back to a LYKN-internal link
-// (the project page is the closest "where the work lives").
-const CLIENT_OPEN_URL: Record<string, string> = {
-  claude: "https://claude.ai/new",
-  "claude-desktop": "https://claude.ai/new",
-  "claude-web": "https://claude.ai/new",
-  "claude-code": "https://docs.anthropic.com/en/docs/claude-code",
-  chatgpt: "https://chatgpt.com/",
-  cursor: "https://cursor.com/",
-  gemini: "https://gemini.google.com/app",
-  perplexity: "https://www.perplexity.ai/",
-  grok: "https://grok.com/",
-  "notion-ai": "https://www.notion.so/",
-  "codex-cli": "https://openai.com/index/introducing-codex/",
-  windsurf: "https://codeium.com/windsurf",
-  jetbrains: "https://www.jetbrains.com/ai/",
-  "github-copilot": "https://github.com/copilot",
-  replit: "https://replit.com/",
-  lovable: "https://lovable.dev/",
-  zapier: "https://zapier.com/",
-  elevenlabs: "https://elevenlabs.io/",
-};
-
-// Branded glyph for the per-project "jump back in" CTA. Historical
-// project-activity rows can carry any client slug, including the AI
-// clients that used to write into LYKN over MCP, so we keep a domain map
-// to render their favicon on old events.
-const CLIENT_DOMAIN: Record<string, string> = {
-  chatgpt: "chatgpt.com",
-  claude: "claude.ai",
-  "claude-code": "claude.ai",
-  "claude-desktop": "claude.ai",
-  "claude-web": "claude.ai",
-  cursor: "cursor.com",
-  gemini: "gemini.google.com",
-  perplexity: "perplexity.ai",
-  grok: "grok.com",
-  "notion-ai": "notion.so",
-  "codex-cli": "openai.com",
-  windsurf: "codeium.com",
-  jetbrains: "jetbrains.com",
-  "github-copilot": "github.com",
-  replit: "replit.com",
-  lovable: "lovable.dev",
-  zapier: "zapier.com",
-  elevenlabs: "elevenlabs.io",
-};
-
-function clientIconUrl(slug: string | null | undefined): string | undefined {
-  if (!slug) return undefined;
-  // LYKN-authored updates are surfaced under the LYKN icon — keeps the
-  // brand consistent for the user's own keyboard activity.
-  if (slug === "manual" || slug === "lykn-chat" || slug === "lykn-promotion") {
-    return lyknIconUrl;
-  }
-  const domain = CLIENT_DOMAIN[slug];
-  if (!domain) return undefined;
-  return `https://www.google.com/s2/favicons?sz=128&domain=${encodeURIComponent(domain)}`;
-}
-
-// Tiny helper to pick the verb that best describes the most recent
-// activity on a project. Activity rows don't carry a structured
-// "what kind of work" type, so we read it out of the event's
-// `summary` / `detail` payload and fall back to a generic "Working on"
-// — never silent.
-function inferProjectVerb(e: ActivityEvent | undefined): string {
-  if (!e) return "Working on";
-  const text = `${e.summary || ""} ${e.detail || ""}`.toLowerCase();
-  if (/brainstorm/.test(text)) return "Brainstorming";
-  if (/draft|writing|wrote/.test(text)) return "Drafting";
-  if (/research|gather/.test(text)) return "Researching";
-  if (/refactor|implement|debug|build|code|engineer/.test(text)) return "Building";
-  if (/plan|outline|spec/.test(text)) return "Planning";
-  if (/review|edit|polish/.test(text)) return "Reviewing";
-  return "Working on";
-}
-
-function buildProjectUpdatesSection(
-  events: ActivityEvent[],
-): LoadInUpdatesSection | null {
-  // Each project becomes one notification-style bubble (just like the
-  // productivity lane's Gmail / Notion / Slack bubbles). Collapsed it
-  // shows the authoring app's logo on the left, the project name + a
-  // "Last touch with <AI> · 2h ago" preview, and an updates count on
-  // the right. Expanded it reveals every recent update event as a
-  // clickable row; for the historical rows written by an outside AI
-  // client, the row jumps back into that app to continue the thread.
-  const byProject = new Map<
-    string,
-    { name: string; updates: ActivityEvent[]; created?: ActivityEvent }
-  >();
-  for (const e of events) {
-    if (!e.target_id) continue;
-    if (e.type !== "project_state" && e.type !== "project_created") continue;
-    const entry = byProject.get(e.target_id) || {
-      name: e.target_label || "a project",
-      updates: [],
-    };
-    if (e.target_label) entry.name = e.target_label;
-    if (e.type === "project_created") entry.created = e;
-    else entry.updates.push(e);
-    byProject.set(e.target_id, entry);
-  }
-  const projects = Array.from(byProject.entries())
-    .map(([id, p]) => ({ id, ...p }))
-    .filter((p) => p.updates.length > 0 || p.created)
-    .sort((a, b) => {
-      const aNewest = a.updates[0]?.when || a.created?.when || "";
-      const bNewest = b.updates[0]?.when || b.created?.when || "";
-      return Date.parse(bNewest) - Date.parse(aNewest);
-    });
-  if (projects.length === 0) return null;
-
-  const groups: LoadInUpdatesGroup[] = projects.slice(0, 8).map((p) => {
-    // Build a flat, time-sorted list of every event on this project
-    // — both `project_state` updates and the originating
-    // `project_created` event. The latest entry drives the bubble's
-    // collapsed preview (icon + verb + AI) and the rest fill the
-    // expanded drop-down.
-    const allEvents: ActivityEvent[] = [...p.updates];
-    if (p.created) allEvents.push(p.created);
-    allEvents.sort(
-      (a, b) => Date.parse(b.when || "") - Date.parse(a.when || ""),
-    );
-    const latest = allEvents[0];
-    const latestSlug = latest?.by_client || null;
-    const latestWho = clientDisplay(latestSlug);
-    const latestVerb = inferProjectVerb(latest);
-    const iconUrl = clientIconUrl(latestSlug);
-
-    // Each row in the drop-down is one update event. We label it
-    // with the originating AI's name + a short description, and
-    // route the click to that AI's main entry point (Claude, Cursor,
-    // …) so the user can continue the conversation there. Events
-    // authored manually or by LYKN itself route to the in-app
-    // project page instead.
-    const groupItems = allEvents.slice(0, 8).map((ev, ix) => {
-      const evSlug = ev.by_client || null;
-      const evWho = clientDisplay(evSlug);
-      const evVerb = inferProjectVerb(ev);
-      const evHref =
-        (evSlug && CLIENT_OPEN_URL[evSlug]) ||
-        `/project/${p.id}`;
-      const descRaw = String(ev.summary || ev.detail || "").trim();
-      const desc = descRaw.length > 120 ? `${descRaw.slice(0, 117)}…` : descRaw;
-      return {
-        id: `${p.id}-evt-${ix}`,
-        title: desc
-          ? `${evVerb} with ${evWho}: ${desc}`
-          : `${evVerb} with ${evWho}`,
-        subtitle: relativeTime(ev.when || ""),
-        href: evHref,
-      };
-    });
-
-    return {
-      id: `project-${p.id}`,
-      label: p.name,
-      iconUrl,
-      count: allEvents.length,
-      latestTitle: latest
-        ? `${latestVerb} with ${latestWho}`
-        : undefined,
-      latestRelative: latest?.when ? relativeTime(latest.when) : undefined,
-      items: groupItems,
-    };
-  });
-
-  return {
-    id: "project-updates",
-    heading: "Project updates",
-    items: [],
-    groups,
-  };
-}
-
 const CATEGORY_HEADING: Record<ConnectorCategory, string> = {
   calendar: "Calendar",
   social: "From social",
@@ -2168,280 +1536,6 @@ function buildHealthSection(
   };
 }
 
-// --------------------------------------------------------------------------
-// Concepts-moved section — "your <X> concept moved this week"
-// --------------------------------------------------------------------------
-// Renders one bubble per concept that gained links in the briefing
-// window, with a single item per bubble summarising what landed
-// (notes / facts / beliefs / chats) and a deep link to the concept
-// node on the 3D synthesis layer page. Capped at 5 concepts so the
-// briefing doesn't blow up for power users with a wide topic
-// surface — the rest still live in /synthesis-layer.
-function buildConceptsMovedSection(
-  rows: ConceptsMovedRow[],
-): LoadInUpdatesSection | null {
-  if (!Array.isArray(rows) || rows.length === 0) return null;
-
-  // Drop dismissed-status rows defensively (the RPC already filters
-  // them, but a stale cached briefing could carry one through).
-  const live = rows.filter((r) => r.status !== "dismissed");
-  if (live.length === 0) return null;
-
-  // Sort by total movement desc; the RPC already orders this way but
-  // we re-sort here so the section is order-stable across cached
-  // payloads that may have been written before the ordering was
-  // tightened.
-  const sumDeltas = (r: ConceptsMovedRow) => {
-    const d = r.deltas || {};
-    return (d.notes || 0) + (d.facts || 0) + (d.beliefs || 0) + (d.chats || 0);
-  };
-  live.sort((a, b) => sumDeltas(b) - sumDeltas(a));
-
-  // Filter: a concept only earns a bubble if it moved by at least 1
-  // link in any category. Zero-movement rows shouldn't reach us, but
-  // the guard keeps the section honest.
-  const filtered = live.filter((r) => sumDeltas(r) > 0).slice(0, 5);
-  if (filtered.length === 0) return null;
-
-  const partLabel = (n: number, sing: string): string =>
-    `${n} ${n === 1 ? sing : `${sing}s`}`;
-
-  const groups: LoadInUpdatesGroup[] = filtered.map((r) => {
-    const d = r.deltas || {};
-    const parts: string[] = [];
-    if (d.notes) parts.push(partLabel(d.notes, "note"));
-    if (d.facts) parts.push(partLabel(d.facts, "neuron"));
-    if (d.beliefs) parts.push(partLabel(d.beliefs, "belief"));
-    if (d.chats) parts.push(partLabel(d.chats, "chat"));
-    const subtitle = parts.join(" · ");
-    const total = sumDeltas(r);
-    return {
-      id: `concept-${r.concept_id}`,
-      label: r.label,
-      count: total,
-      latestTitle: subtitle,
-      latestRelative: r.latest_at ? relativeTime(r.latest_at) : undefined,
-      items: [
-        {
-          id: `concept-item-${r.concept_id}`,
-          title: `Your "${r.label}" concept moved`,
-          subtitle,
-          href: synthesisLayerHref(`focus=concept_${r.concept_id}`),
-        },
-      ],
-    };
-  });
-
-  return {
-    id: "concepts-moved",
-    heading: "Concepts that moved this week",
-    intro: filtered.length === 1
-      ? "One topic across your notes, chats, and learning pulled in new signals."
-      : `${filtered.length} topics across your notes, chats, and learning pulled in new signals.`,
-    items: [],
-    groups,
-  };
-}
-
-function buildApprovalsSectionStructured(
-  events: ActivityEvent[],
-  provenanceByBelief: Map<string, BeliefProvenanceRow[]> = new Map(),
-): LoadInUpdatesSection | null {
-  // Roll everything the synthesis layer has surfaced recently into
-  // notification bubbles — proposed beliefs, freshly-activated
-  // beliefs, and newly-learned facts. Each bubble opens to a list of
-  // items; clicking an item routes to the synthesis layer focused on
-  // that node where the user can read the description and approve /
-  // dismiss inline.
-  const cutoff = Date.now() - RECENT_WINDOW_HOURS * 60 * 60 * 1000;
-  const recent = events.filter((e) => {
-    const t = Date.parse(e.when);
-    return Number.isFinite(t) && t >= cutoff;
-  });
-
-  // Proposed beliefs (the canonical "awaiting approval" bucket).
-  // Dedupe on target_id so multi-client converging proposals collapse
-  // into a single bubble row.
-  const proposedSeen = new Set<string>();
-  const proposedItems: LoadInUpdatesGroup["items"] = [];
-  for (const e of recent.filter((e) => e.type === "belief_proposed")) {
-    if (!e.target_id || proposedSeen.has(e.target_id)) continue;
-    proposedSeen.add(e.target_id);
-    const clients = Array.isArray(e.proposed_by_clients)
-      ? e.proposed_by_clients
-      : [];
-    const subtitle =
-      clients.length >= 2
-        ? `${joinClients(clients)} surfaced this · ${relativeTime(e.when)}`
-        : `Proposed by ${clientDisplay(e.by_client)} · ${relativeTime(e.when)}`;
-    // "Grounded in" chips. Walk the per-belief provenance rows the
-    // RPC returned, dedupe by source_id (the same vault note can show
-    // up under multiple facts), and cap at 3 entries so the row stays
-    // scannable. Each chip deep-links to the underlying vault note
-    // so the user can verify the receipts in one click.
-    const provenance: NonNullable<LoadInUpdatesGroupItem["provenance"]> = [];
-    const seenSources = new Set<string>();
-    const rows = provenanceByBelief.get(e.target_id) || [];
-    for (const row of rows) {
-      const sid = row.source_id || "";
-      if (!sid || seenSources.has(sid)) continue;
-      seenSources.add(sid);
-      // Brand-aware chip label. When we know the connector (Notion,
-      // Gmail, ...) prefix the note title with its display name —
-      // "Notion: Sprint plan" reads instantly while a bare note
-      // title in a chip can feel orphaned.
-      const connector = row.source_connector || "";
-      const connectorLabel = connector ? SOURCE_LABEL[connector] : "";
-      const rawLabel = row.source_label || "Source";
-      const label = connectorLabel
-        ? `${connectorLabel}: ${rawLabel}`
-        : rawLabel;
-      const connectorId = connector ? SOURCE_TO_CONNECTOR_ID[connector] : undefined;
-      // Internal deep link for vault notes; non-vault sources (board,
-      // conversation, intake) route to the synthesis layer focused on
-      // the underlying fact so the user can still trace the chain.
-      const href =
-        row.source_type === "vault_note"
-          ? `/vault?note=${encodeURIComponent(sid)}`
-          : synthesisLayerHref(
-              `focus=fact_${encodeURIComponent(row.fact_id)}`,
-            );
-      provenance.push({
-        id: sid,
-        label: label.length > 60 ? `${label.slice(0, 58)}…` : label,
-        href,
-        connectorId: connectorId || undefined,
-      });
-      if (provenance.length >= 3) break;
-    }
-    proposedItems.push({
-      id: e.target_id,
-      title: e.target_label || "a new belief",
-      subtitle,
-      href: synthesisLayerHref(
-        `focus=belief_${encodeURIComponent(e.target_id)}`,
-      ),
-      ...(provenance.length > 0 ? { provenance } : {}),
-    });
-    if (proposedItems.length >= 8) break;
-  }
-
-  // Recently-activated beliefs — these were promoted to "active"
-  // automatically (rule-driven). The user can still revisit and
-  // approve / refine them in the synthesis layer; we surface them so
-  // the user has visibility into what their system decided on its
-  // own.
-  const activeSeen = new Set<string>();
-  const activeItems: LoadInUpdatesGroup["items"] = [];
-  for (const e of recent.filter((e) => e.type === "belief_active")) {
-    if (!e.target_id || activeSeen.has(e.target_id)) continue;
-    activeSeen.add(e.target_id);
-    activeItems.push({
-      id: e.target_id,
-      title: e.target_label || "a new belief",
-      subtitle: `Activated · from ${clientDisplay(e.by_client)} · ${relativeTime(e.when)}`,
-      href: synthesisLayerHref(
-        `focus=belief_${encodeURIComponent(e.target_id)}`,
-      ),
-    });
-    if (activeItems.length >= 8) break;
-  }
-
-  // User Facts memory digest — recent claims LYKN locked in or proposed.
-  // Jump to synthesis to edit / dismiss; chat confirm chips handle pending.
-  const factSeen = new Set<string>();
-  const factItems: LoadInUpdatesGroup["items"] = [];
-  for (const e of recent.filter((e) => e.type === "fact_added")) {
-    if (!e.target_id || factSeen.has(e.target_id)) continue;
-    factSeen.add(e.target_id);
-    const who = clientDisplay(e.by_client);
-    factItems.push({
-      id: e.target_id,
-      title: e.target_label || "about you",
-      subtitle: `${who === "you" ? "You saved" : `${who} proposed`} a User Fact · ${relativeTime(e.when)}`,
-      href: synthesisLayerHref(
-        `focus=fact_${encodeURIComponent(e.target_id)}`,
-      ),
-    });
-    if (factItems.length >= 8) break;
-  }
-
-  if (
-    proposedItems.length === 0 &&
-    activeItems.length === 0 &&
-    factItems.length === 0
-  ) {
-    return null;
-  }
-
-  const groups: LoadInUpdatesGroup[] = [];
-  if (proposedItems.length > 0) {
-    const newest = proposedItems[0];
-    groups.push({
-      id: "beliefs-proposed",
-      label: "New beliefs",
-      iconUrl: lyknIconUrl,
-      count: proposedItems.length,
-      latestTitle: newest.title,
-      latestRelative: newest.subtitle?.split(" · ").pop() || undefined,
-      items: proposedItems,
-    });
-  }
-  if (activeItems.length > 0) {
-    const newest = activeItems[0];
-    groups.push({
-      id: "beliefs-active",
-      label: "Beliefs activated",
-      iconUrl: lyknIconUrl,
-      count: activeItems.length,
-      latestTitle: newest.title,
-      latestRelative: newest.subtitle?.split(" · ").pop() || undefined,
-      items: activeItems,
-    });
-  }
-  if (factItems.length > 0) {
-    const newest = factItems[0];
-    groups.push({
-      id: "user-facts-digest",
-      label: "User Facts",
-      iconUrl: lyknIconUrl,
-      count: factItems.length,
-      latestTitle: newest.title,
-      latestRelative: newest.subtitle?.split(" · ").pop() || undefined,
-      items: factItems,
-    });
-  }
-
-  // Prose summary at the top of the section — the brief written
-  // recap the user reads before deciding which bubble to expand.
-  const bits: string[] = [];
-  if (factItems.length > 0) {
-    bits.push(`${factItems.length} User Fact${factItems.length === 1 ? "" : "s"} this week`);
-  }
-  if (activeItems.length > 0) {
-    bits.push(
-      `${activeItems.length} legacy belief${activeItems.length === 1 ? "" : "s"} activated`,
-    );
-  }
-  if (proposedItems.length > 0) {
-    bits.push(
-      `${proposedItems.length} legacy belief${proposedItems.length === 1 ? "" : "s"} still proposed`,
-    );
-  }
-  const summary =
-    bits.length > 0
-      ? `Memory digest: ${bits.length === 1 ? bits[0] : bits.length === 2 ? `${bits[0]} and ${bits[1]}` : `${bits.slice(0, -1).join(", ")}, and ${bits[bits.length - 1]}`}. Open synthesis to review or edit a User Fact.`
-      : "";
-
-  return {
-    id: "approvals",
-    heading: "Memory digest",
-    summary,
-    items: [],
-    groups,
-  };
-}
-
 // Per-category brand grid for the "Connect the rest" section. Each
 // lane recommends a handful of concrete connectors — the headline
 // platform plus its closest alternates — so the user can browse the
@@ -2585,18 +1679,12 @@ async function fetchUserAuthoredSections(): Promise<LoadInUpdatesSection[]> {
 // by the chat renderer.
 // ----------------------------------------------------------------------
 function formatMessage(
-  events: ActivityEvent[],
   connector: ConnectorActivity | null,
   status: ConnectorStatusMap,
   opts: BuildOptions,
   userSections: LoadInUpdatesSection[] = [],
-  provenanceByBelief: Map<string, BeliefProvenanceRow[]> = new Map(),
-  conceptsMoved: ConceptsMovedRow[] = [],
   docket: TodayDocket | null = null,
 ): LoadInUpdatesPayload {
-  const sections = collectSections(events);
-  const { recent, approvals, projects } = sections;
-
   // The user's own events + tasks for today (from lykn_events / lykn_todos).
   // Built up front so it can drive both the recap bullets and be pinned to
   // the top of the structured sections.
@@ -2642,9 +1730,6 @@ function formatMessage(
 
   const hasContent =
     docketSection != null ||
-    recent.length > 0 ||
-    approvals.length > 0 ||
-    projects.length > 0 ||
     todayLines.length > 0 ||
     weekLines.length > 0 ||
     socialLines.length > 0 ||
@@ -2671,9 +1756,6 @@ function formatMessage(
   const mediaCount = mediaLines.length;
   const healthCount = healthLines.length;
   const healthConfiguredForBullets = status.configured.has("health");
-  const approvalsCount = approvals.length;
-  const projectCount = projects.length;
-  const recentSynthesisCount = recent.length;
 
   const pluralize = (n: number, sing: string, plural?: string): string =>
     `${n} ${n === 1 ? sing : (plural || `${sing}s`)}`;
@@ -2703,12 +1785,6 @@ function formatMessage(
   if (weekCount > 0) {
     bullets.push(`${pluralize(weekCount, "event")} later this week`);
   }
-  if (projectCount > 0 || recentSynthesisCount > 0) {
-    const parts: string[] = [];
-    if (projectCount > 0) parts.push(`${pluralize(projectCount, "project update")}`);
-    if (recentSynthesisCount > 0) parts.push(`${pluralize(recentSynthesisCount, "synthesis change")}`);
-    bullets.push(parts.join(" · "));
-  }
   // Social, reading, and media bullet lines retired alongside their
   // briefing sections — those lanes now live only in the dashboard
   // panel's distribution bars, which is enough surface area without
@@ -2716,11 +1792,6 @@ function formatMessage(
   if (productivityCount > 0) {
     bullets.push(
       `${pluralize(productivityCount, "new item")} from your productivity tools`,
-    );
-  }
-  if (approvalsCount > 0) {
-    bullets.push(
-      `${pluralize(approvalsCount, "thing awaiting your approval", "things awaiting your approval")}`,
     );
   }
   const remainingUnconfigured = unconfigured.filter((c) => c !== "calendar");
@@ -2785,18 +1856,6 @@ function formatMessage(
       status.configured.has("productivity"),
     ),
   );
-  pushIfSome(buildApprovalsSectionStructured(events, provenanceByBelief));
-  // Concepts that moved this week — first-class topic layer (stage 2).
-  // Inserted just under the approvals section because conceptually
-  // it's the same "what's happening in your synthesis layer" beat:
-  // approvals say what the AI wants to add, concepts-moved says
-  // what's already growing across everything you've touched.
-  pushIfSome(buildConceptsMovedSection(conceptsMoved));
-  // Project updates are intentionally near the bottom — the user
-  // skims the bulleted opener for "what changed today" then drills
-  // into the conversational lanes (calendar, connectors, approvals)
-  // before deciding which long-running project to step back into.
-  pushIfSome(buildProjectUpdatesSection(events));
   // User-authored sections land last, just above the inline "+ Add a
   // section" composer at the bottom of the bubble. We push them
   // through pushIfSome so empty rows (no heading + no body) still get
@@ -2819,191 +1878,22 @@ function formatMessage(
   // section has its own heading + inline action button.
   const welcomeMessage = hasContent
     ? opener
-    : `${opener} Nothing new on the wire: calendar's clear, no pending approvals, your synthesis layer is quiet.`;
-
-  // Roll-up stats for the right-side dashboard panel. Computed here
-  // because every input (events, connector buckets, approvals
-  // breakdown) is already in-scope and pre-filtered.
-  const stats = buildStats({
-    events,
-    connector,
-    approvalsBreakdown: collectApprovalsBreakdown(events),
-    projectCount,
-    socialCount,
-    productivityCount,
-    readingCount,
-    mediaCount,
-    healthCount,
-    todayCount,
-    weekCount,
-    recentSynthesisCount,
-  });
+    : `${opener} Nothing new on the wire: your calendar and connected sources are quiet.`;
 
   return {
     message: welcomeMessage,
     sections: structuredSections,
-    actions: hasContent ? buildActions(sections, connector, unconfigured) : [],
+    actions: hasContent ? buildActions(connector, unconfigured) : [],
     hasContent,
-    stats,
-  };
-}
-
-// Tally proposed beliefs, freshly-activated beliefs, and new facts
-// separately so the side panel can colour each bucket distinctly. We
-// dedupe on target_id to mirror the same collapse logic the structured
-// approvals section uses, so the dashboard count matches the bubble
-// count the user sees in the bubble list (no off-by-one weirdness).
-function collectApprovalsBreakdown(events: ActivityEvent[]): {
-  proposedBeliefs: number;
-  activeBeliefs: number;
-  newFacts: number;
-} {
-  const cutoff = Date.now() - RECENT_WINDOW_HOURS * 60 * 60 * 1000;
-  const recent = events.filter((e) => {
-    const t = Date.parse(e.when);
-    return Number.isFinite(t) && t >= cutoff;
-  });
-  const proposed = new Set<string>();
-  const active = new Set<string>();
-  const facts = new Set<string>();
-  for (const e of recent) {
-    if (!e.target_id) continue;
-    if (e.type === "belief_proposed") proposed.add(e.target_id);
-    else if (e.type === "belief_active") active.add(e.target_id);
-    else if (e.type === "fact_added") facts.add(e.target_id);
-  }
-  return {
-    proposedBeliefs: proposed.size,
-    activeBeliefs: active.size,
-    newFacts: facts.size,
-  };
-}
-
-// Build the 7-day activity sparkline + roll-up counts consumed by the
-// right-side dashboard panel. We intentionally keep this pure — every
-// input is already in scope when `formatMessage` runs, so the side
-// panel never has to refetch anything.
-function buildStats(args: {
-  events: ActivityEvent[];
-  connector: ConnectorActivity | null;
-  approvalsBreakdown: {
-    proposedBeliefs: number;
-    activeBeliefs: number;
-    newFacts: number;
-  };
-  projectCount: number;
-  socialCount: number;
-  productivityCount: number;
-  readingCount: number;
-  mediaCount: number;
-  healthCount: number;
-  todayCount: number;
-  weekCount: number;
-  recentSynthesisCount: number;
-}): LoadInUpdatesStats {
-  const {
-    events,
-    connector,
-    approvalsBreakdown,
-    projectCount,
-    socialCount,
-    productivityCount,
-    readingCount,
-    mediaCount,
-    healthCount,
-    todayCount,
-    weekCount,
-    recentSynthesisCount,
-  } = args;
-
-  // Build a YYYY-MM-DD bucket for each of the last 7 days, oldest
-  // first. Using local-time `toDateString` rather than UTC so a user
-  // who lands at 11pm sees "today" lined up with their wall clock.
-  const now = new Date();
-  const buckets: Array<{ date: string; key: string; count: number }> = [];
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(now);
-    d.setHours(0, 0, 0, 0);
-    d.setDate(d.getDate() - i);
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    buckets.push({
-      date: `${yyyy}-${mm}-${dd}`,
-      key: d.toDateString(),
-      count: 0,
-    });
-  }
-  const bucketByKey = new Map(buckets.map((b) => [b.key, b]));
-
-  const bump = (iso: string | null | undefined) => {
-    if (!iso) return;
-    const t = Date.parse(iso);
-    if (!Number.isFinite(t)) return;
-    const k = new Date(t).toDateString();
-    const b = bucketByKey.get(k);
-    if (b) b.count += 1;
-  };
-
-  // Synthesis activity events
-  for (const e of events) bump(e.when);
-  // Connector-driven notes — past lookback. Calendar events are skipped
-  // because their `created_at` is the *event start*, which is future
-  // for upcoming events and would muddle the past-activity signal.
-  if (connector) {
-    for (const lane of [
-      connector.byCategory.social,
-      connector.byCategory.productivity,
-      connector.byCategory.reading,
-      connector.byCategory.media,
-      connector.byCategory.health,
-    ]) {
-      for (const n of lane) bump(n.updated_at);
-    }
-  }
-
-  const totalUpdates =
-    socialCount +
-    productivityCount +
-    readingCount +
-    mediaCount +
-    healthCount +
-    todayCount +
-    weekCount +
-    approvalsBreakdown.proposedBeliefs +
-    approvalsBreakdown.activeBeliefs +
-    approvalsBreakdown.newFacts +
-    recentSynthesisCount;
-
-  return {
-    calendarToday: todayCount,
-    calendarWeek: weekCount,
-    byCategory: {
-      social: socialCount,
-      productivity: productivityCount,
-      reading: readingCount,
-      media: mediaCount,
-      health: healthCount,
-    },
-    approvals: approvalsBreakdown,
-    projects: projectCount,
-    synthesisChanges: recentSynthesisCount,
-    series: buckets.map((b) => ({ date: b.date, count: b.count })),
-    totalUpdates,
   };
 }
 
 /**
- * Fetch the user's most recent activity across the synthesis layer AND
- * their connected sources (calendar, social, productivity, reading,
+ * Fetch the user's most recent connected-source activity (calendar, social, productivity, reading,
  * media), and shape it into the markdown greeting LYKN posts at the
  * top of every fresh chat opened on `/app` load-in. Returns `null`
  * when the user isn't authenticated.
  *
- * Both fetches run in parallel and tolerate partial failure: if the
- * synthesis endpoint times out but the connector query succeeds we
- * still render the connector sections (and vice versa). Only when
- * BOTH fail do we return null and let the caller skip the seed.
  */
 // On-demand connector resync. The background poller runs once per
 // minute, so a user who just added a calendar event (or any other
@@ -3077,50 +1967,18 @@ export async function fetchLoadInUpdatesMessage(
     ],
     6000,
   );
-  const [synthesisResp, connectorResp, statusResp, userSections, docket] =
+  const [connectorResp, statusResp, userSections, docket] =
     await Promise.all([
-      fetchActivity(),
       fetchConnectorActivity(),
       fetchConnectorStatus(),
       fetchUserAuthoredSections(),
       fetchTodayDocket(),
     ]);
-  // Pull provenance for the small list of beliefs that will actually
-  // get rendered as approval items (deduped, capped at 8 inside
-  // buildApprovalsSectionStructured). We mirror that dedup here so
-  // the RPC payload stays tiny — there's no point fetching provenance
-  // for a 9th proposed belief we'll never show.
-  const events = synthesisResp?.events || [];
-  const proposedIds: string[] = [];
-  const seenProposedIds = new Set<string>();
-  for (const ev of events) {
-    if (ev.type !== "belief_proposed") continue;
-    if (!ev.target_id || seenProposedIds.has(ev.target_id)) continue;
-    seenProposedIds.add(ev.target_id);
-    proposedIds.push(ev.target_id);
-    if (proposedIds.length >= 8) break;
-  }
-  // Best-effort: an RPC failure leaves provenanceByBelief empty so
-  // the briefing still renders with the prior shape (no chip row).
-  // Same shape for the concepts_moved fetch — RPC may not be deployed
-  // yet on older environments, so we tolerate an empty array.
-  const [provenanceByBelief, conceptsMoved] = await Promise.all([
-    fetchBeliefProvenance(proposedIds),
-    fetchConceptsMovedRecently(),
-  ]);
-  // We deliberately fall through to formatMessage even when both
-  // activity fetches fail — `statusResp` (always returns at minimum
-  // an empty configured-set) is enough to drive the "Connect X"
-  // prompts, which is the most important onboarding affordance for
-  // a freshly-signed-up user who literally has nothing else to show.
   return formatMessage(
-    events,
     connectorResp,
     statusResp,
     opts,
     userSections,
-    provenanceByBelief,
-    conceptsMoved,
     docket,
   );
 }

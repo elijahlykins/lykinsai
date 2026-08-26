@@ -11,9 +11,6 @@
 // legacy import paths but must not define its own copies (Wave 2 of the
 // chat architecture refactor, see docs/REFACTOR_LOG.md).
 
-import type { AppliedAttribution } from "@/lib/ai/appliedTag";
-import type { FactNeuron } from "@/lib/ai/learnedTag";
-import type { LoadInUpdatesStats } from "@/lib/synthesis/loadInUpdates";
 
 /** Runtime-shaped attachment riding a Bot send (see botAttachments.js). */
 export type BotSendAttachment = {
@@ -129,10 +126,10 @@ export type PromptMessage = {
    */
   toolCalls?: ToolCallEvent[];
   /**
-   * Neurons (vault items, beliefs, facts, concepts) the AI brought into
+   * Vault items the AI brought into
    * the chat during this turn via lykn_loadNeuron. Each entry renders as
    * a rich ChatNeuronCard under the assistant bubble so the user can see
-   * the actual saved item (image, link card, note body, belief text, …)
+   * the actual saved item (image, link card, or note body)
    * directly in the conversation rather than relying on the model to
    * paraphrase it in text.
    *
@@ -142,30 +139,6 @@ export type PromptMessage = {
    * insert the card.
    */
   aiNeurons?: ChatNeuronAttachment[];
-  /**
-   * Set on this message when the AI's reply ended with a hidden
-   * <learned kind="...">phrase</learned><reason>why</reason> tag pair —
-   * meaning a brand-new (or freshly reinforced) "neuron" was minted in the
-   * user's synthesis layer in real time. The chat surfaces a glowing
-   * "Neuron created" pill underneath the AI response when this is set.
-   *
-   * Produced by postLearnedFact / postAutoLearnedFact (see learnedTag.ts,
-   * which owns the FactNeuron shape) and updated in place by
-   * FactConfirmChip's Yes / Edit / No ratification flow.
-   */
-  factNeuron?: FactNeuron;
-  /**
-   * Set on this message when the AI's reply ended with a hidden
-   * <applied rule_id="..."> tag — meaning a user-ratified belief-window
-   * rule shaped this specific reply. The chat surfaces a small "Why" /
-   * "Applied a rule" pill underneath the AI response when this is set.
-   *
-   * The server validated the rule exists, is owned by the user, and is
-   * currently active before inserting an attribution row; anything else
-   * is dropped server-side, so by the time this lands on a message we
-   * know the citation is honest.
-   */
-  appliedAttribution?: AppliedAttribution;
   /** ISO timestamp when the user sent this message. */
   createdAt?: string;
   /** Model id that produced aiResponse (for multi-model chat attribution). */
@@ -235,10 +208,9 @@ export type PromptMessage = {
         href?: string;
         /**
          * Optional "grounded in" chips rendered under the title. Used
-         * today for proposed-belief rows so the user can see (and
-         * click into) the source notes / events the belief was
-         * promoted from, instead of trusting the synthesis layer
-         * blind. Absent on older cached briefings; renderer must
+         * for source-backed activity rows so the user can see and
+         * click into the originating notes or events.
+         * Absent on older cached briefings; renderer must
          * handle the array being missing without breaking.
          */
         provenance?: Array<{
@@ -269,7 +241,6 @@ export type PromptMessage = {
    * verbatim from `LoadInUpdatesPayload.stats`. Optional so the
    * field is harmless for non-greeting turns.
    */
-  aiResponseStats?: LoadInUpdatesStats;
 };
 
 export type FocusedChatAttachment = {

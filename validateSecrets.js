@@ -48,7 +48,6 @@ export const SECRET_RULES = [
 
   // === Operator-cron secrets (Agent 02 handoff: ≥32 chars in prod) ===
   ['BACKFILL_SECRET',           32, true,  'Synthesis-backfill cron bearer'],
-  ['DISCOVER_INGEST_SECRET',    32, true,  'Discovery-ingest cron bearer'],
   ['ADMIN_INGEST_SECRET',       32, true,  'Feed/connector-poll cron bearer'],
   // Dedicated second gate for the vault reconciler's destructive delete mode
   // (X-Reconciler-Delete-Token). Optional — only needed when running the

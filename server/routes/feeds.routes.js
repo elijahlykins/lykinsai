@@ -250,15 +250,12 @@ export function registerFeedsRoutes(app, {
   });
 
   // Admin / cron endpoint shared-secret verification. Mirrors the shape of
-  // verifyBackfillSecret / verifyDiscoverIngestSecret — same Bearer header
+  // verifyBackfillSecret — same Bearer header
   // extraction, same `crypto.timingSafeEqual` constant-time compare. Plain
   // `===` / `!==` on a long-lived cron secret leaks one byte at a time on a
   // network with measurable jitter; timingSafeEqual closes that side channel.
-  // Falls back from ADMIN_INGEST_SECRET → DISCOVER_INGEST_SECRET so the same
-  // cron config keeps working across deploys that haven't been migrated to
-  // the dedicated env var yet.
   function verifyAdminIngestSecret(req) {
-    const expected = process.env.ADMIN_INGEST_SECRET || process.env.DISCOVER_INGEST_SECRET;
+    const expected = process.env.ADMIN_INGEST_SECRET;
     if (!expected || String(expected).length < 32) return false;
     const auth = req.headers.authorization || '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';

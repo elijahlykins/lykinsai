@@ -269,9 +269,9 @@ test('poll-due rejects a wrong secret of the correct length (timing-safe compare
   assert.equal(res.status, 401);
 });
 
-test('discover/ingest 401s or 403s without the shared secret', async () => {
+test('retired Discover ingest route is absent', async () => {
   const res = await postJson('/api/discover/ingest', {});
-  assert.ok([401, 403].includes(res.status), `got ${res.status}`);
+  assert.equal(res.status, 404);
 });
 
 // ── Chat / AI ───────────────────────────────────────────────────────────────
