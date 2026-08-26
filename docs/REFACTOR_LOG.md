@@ -389,3 +389,50 @@ None intended.
 
 ### Result
 `LyknChat.tsx`: 6,127 → 3,594 lines (−2,533). 8 new modules, 2,817 lines.
+
+---
+
+## Phase VII — Studio megafile decomposition
+
+Single architectural phase (one commit): decompose `src/pages/Studio.jsx`
+from 4,454 lines toward the ~4,000-line target while preserving behavior.
+Method identical to Phases V–VI: verbatim extraction, page retains
+orchestration only.
+
+### What moved where
+
+Registry / layout:
+- `src/components/studio/studioAppRegistry.js` (210) — WINDOW_APPS,
+  SECTIONS, SETTINGS_VIEWS, NAV_ITEMS / DOCK_ITEMS, Split View app list,
+  dock hide-set persistence, frost/drag tokens, query-param helper.
+- `src/components/studio/studioSplitLayout.js` (47) — Split View cell
+  geometry helpers (`splitCells`, span/sibling/hidden index).
+- `src/components/studio/studioLinks.jsx` (92) — `openStudioLink`,
+  favicon helper, `PageFavicon` (consumed by the agent rail).
+
+Surfaces:
+- `src/components/studio/StudioSurface.jsx` (79) — MemoryRouter-hosted
+  product surfaces + `StudioChatPane`.
+- `src/components/studio/StudioBrowserBody.jsx` (169) — Browser window
+  body (native-view dock surface, skeleton/screenshot stand-ins) and
+  `BROWSER_VIEW_RADIUS` / `BROWSER_CHROME_HEIGHT`.
+- `src/components/studio/StudioDock.jsx` (480) — bottom dock and chats
+  popover.
+
+Agent rail:
+- `src/components/studio/agentRail/StudioAgentRail.jsx` (1,262) — Browser
+  agent rail UI and thread controls.
+- `src/components/studio/agentRail/AgentRailMarkdown.jsx` (386) — rail
+  markdown body + live-step/transcript helpers.
+- `src/components/studio/agentRail/agentRailData.js` (230) — labels,
+  grouping, follow-up chips, source-link extraction.
+
+### Deliberately left in Studio.jsx (orchestration concerns)
+Tabs, the Home chat layer, desktop drops/widgets, floating windows,
+Split View state, and browser docking.
+
+### Behavior changes
+None intended.
+
+### Result
+`Studio.jsx`: 4,454 → 1,661 lines (−2,793). 9 new modules, 2,955 lines.

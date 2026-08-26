@@ -38,13 +38,13 @@ LYKN STUDIO
 │
 ├── Routing
 │   ├── src/App.jsx                   (BrowserRouter; Studio-first, legacy paths redirect)
-│   └── src/pages/Studio.jsx          (nested MemoryRouter hosting product surfaces)
+│   └── src/pages/Studio.jsx          (shell orchestration; modules in src/components/studio/)
 │
 ├── Features (frontend)
 │   ├── Chat        src/components/lyknChat/ + src/hooks/useChatEngine.ts
 │   │               + src/lib/ai/ (chatSendOrchestrator) + src/lib/chat/ + src/lib/lyknChat/
 │   ├── Vault       src/pages/Vault.jsx + src/lib/vault/ + src/components/vault/
-│   ├── Studio home src/components/macdesktop/ + macdock/ + macfiles/
+│   ├── Studio home src/pages/Studio.jsx + src/components/studio/ + macdesktop/ + macdock/ + macfiles/
 │   ├── Synthesis   src/pages/SynthesisLayer.tsx (soft-disabled) + src/pages/synthesis/
 │   │               + src/components/synthesis/ + src/lib/synthesis/
 │   ├── Bots        src/components/bots/ + src/lib/bots/
@@ -177,3 +177,12 @@ older `LyknChatBarToolbar.tsx`, which is a simpler variant kept for the Wake
 tour), and behavior in `src/hooks/useChatVaultSaves.ts`, `useChatVoiceMode.ts`,
 `useBotChatBridge.ts`, and `useLoadInGreeting.ts`. The page keeps
 orchestration: engine integration, send pipeline wiring, hydration, layout.
+
+`src/pages/Studio.jsx` was decomposed in Phase VII (4.5k → ~1.7k lines):
+app/section registry and Split View geometry live in
+`src/components/studio/studioAppRegistry.js` + `studioSplitLayout.js`,
+in-document product surfaces in `StudioSurface.jsx`, the Browser window
+body and agent rail in `StudioBrowserBody.jsx` + `agentRail/`, and the
+dock in `StudioDock.jsx`. The page keeps orchestration: tabs, the Home
+chat layer, desktop drops/widgets, floating windows, Split View, and
+browser docking.
