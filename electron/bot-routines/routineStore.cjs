@@ -98,6 +98,18 @@ function cleanCapabilities(value) {
   );
 }
 
+function cleanWorkflowId(value) {
+  const id = String(value || "").trim();
+  if (!id) return "";
+  if (id.length > 120 || /token|secret|bearer|password/i.test(id)) return "";
+  return /^[a-zA-Z0-9_-]+$/.test(id) ? id : "";
+}
+
+function cleanWorkflowVersion(value) {
+  const version = Number(value);
+  return Number.isInteger(version) && version > 0 ? version : 0;
+}
+
 function oneOf(value, allowed, fallback) {
   const v = String(value || "").trim();
   return allowed.includes(v) ? v : fallback;
@@ -251,6 +263,10 @@ function createRoutineStore({ userDataPath, now = () => Date.now(), onChange = (
       bot: sanitizeBotSnapshot(input.bot) || { id: botId, name: "", role: "", persona: "" },
       name: name || instructions.slice(0, 60),
       instructions,
+      ...(cleanWorkflowId(input.workflowId) ? { workflowId: cleanWorkflowId(input.workflowId) } : {}),
+      ...(cleanWorkflowId(input.workflowId) && cleanWorkflowVersion(input.workflowVersion)
+        ? { workflowVersion: cleanWorkflowVersion(input.workflowVersion) }
+        : {}),
       trigger,
       capabilities: cleanCapabilities(input.capabilities),
       connectionIds: cleanConnectionIds(input.connectionIds),
@@ -277,6 +293,19 @@ function createRoutineStore({ userDataPath, now = () => Date.now(), onChange = (
     if (patch.instructions !== undefined) {
       const instructions = String(patch.instructions || "").trim().slice(0, 4000);
       if (instructions) routine.instructions = instructions;
+    }
+    if (patch.workflowId !== undefined) {
+      const workflowId = cleanWorkflowId(patch.workflowId);
+      if (workflowId) routine.workflowId = workflowId;
+      else {
+        delete routine.workflowId;
+        delete routine.workflowVersion;
+      }
+    }
+    if (patch.workflowVersion !== undefined && routine.workflowId) {
+      const workflowVersion = cleanWorkflowVersion(patch.workflowVersion);
+      if (workflowVersion) routine.workflowVersion = workflowVersion;
+      else delete routine.workflowVersion;
     }
     if (patch.trigger !== undefined) {
       routine.trigger = normalizeTrigger(patch.trigger);

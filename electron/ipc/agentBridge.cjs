@@ -441,6 +441,20 @@ function registerAgentBridgeIpc(d) {
       raiseAgentBrowserHost({ focus: true });
       layoutAgentStageViews();
       pushAgentStageState();
+      try {
+        const selectedWc = agentBrowserViews.get(id)?.webContents;
+        d.recordTeachEventIfActive?.({
+          kind: "browser",
+          action: "switch_tab",
+          target: {
+            url: String(selectedWc?.getURL?.() || "").slice(0, 1000),
+            name: String(selectedWc?.getTitle?.() || "").slice(0, 160),
+          },
+          metadata: { actor: "user" },
+        });
+      } catch {
+        /* passive teaching observation must not affect tab switching */
+      }
       return { ...switched, tabId: id, linkedOnly: false };
     });
     ipcMain.handle("lykn:agent-stage-close-tab", async (_e, { agentId } = {}) => {
@@ -1048,6 +1062,14 @@ function registerAgentBridgeIpc(d) {
         });
         if (res.canceled || !Array.isArray(res.filePaths) || !res.filePaths.length) {
           return [];
+        }
+        for (const filePath of res.filePaths.slice(0, 100)) {
+          d.recordTeachEventIfActive?.({
+            kind: "local",
+            action: "upload",
+            target: { path: filePath },
+            metadata: { actor: "user" },
+          });
         }
         return attachmentsFromPickedPaths(res.filePaths);
       } catch {

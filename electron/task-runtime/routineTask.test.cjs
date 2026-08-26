@@ -45,6 +45,40 @@ test("routine connectionIds copy onto the Task and never include secrets", () =>
   assert.deepEqual(task.association.connectionIds, ["conn_work"]);
 });
 
+test("a Routine references a learned workflow without granting new authority", () => {
+  const task = compileRoutineTask({
+    routine: {
+      ...ROUTINE,
+      workflowId: "workflow_weekly_report",
+      approvalPolicy: "preserve_executor_security_gates",
+    },
+    runId: "rrun-workflow",
+  });
+  assert.equal(task.association.workflowId, "workflow_weekly_report");
+  assert.equal(task.origin.routine.workflowId, "workflow_weekly_report");
+  assert.equal(task.approval.policy, "preserve_executor_security_gates");
+  assert.ok(task.doNot.some((rule) => /learned workflow definition/i.test(rule)));
+});
+
+test("a manual learned workflow is a fresh canonical Task, not a fake Routine", () => {
+  const definition = {
+    ...ROUTINE,
+    id: "workflow_weekly_report",
+    kind: "learned_workflow",
+    workflowId: "workflow_weekly_report",
+    workflowVersion: 3,
+    approvalPolicy: "preserve_executor_security_gates",
+  };
+  const first = compileRoutineTask({ routine: definition, runId: "wrun-1" });
+  const second = compileRoutineTask({ routine: definition, runId: "wrun-2" });
+  assert.notEqual(first.id, second.id);
+  assert.equal(first.association.workflowId, "workflow_weekly_report");
+  assert.equal(first.association.routineId, undefined);
+  assert.equal(first.origin.workflow.version, 3);
+  assert.equal(first.origin.routine, undefined);
+  assert.equal(first.approval.policy, "preserve_executor_security_gates");
+});
+
 test("the objective comes from the durable definition, identically every run", () => {
   const first = compileRoutineTask({ routine: ROUTINE, runId: "r1" });
   const second = compileRoutineTask({ routine: ROUTINE, runId: "r2" });

@@ -1,8 +1,8 @@
 {
   "generatedBy": "tests/electron/ipcSurface.cjs",
-  "channelCount": 233,
-  "uniqueChannelCount": 233,
-  "handleCount": 172,
+  "channelCount": 245,
+  "uniqueChannelCount": 245,
+  "handleCount": 184,
   "onCount": 61,
   "duplicateCount": 0,
   "entries": [
@@ -1058,6 +1058,31 @@
     },
     {
       "mode": "handle",
+      "channel": "lykn:teach-cancel",
+      "file": "ipc/workflows.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:teach-finish",
+      "file": "ipc/workflows.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:teach-record-event",
+      "file": "ipc/workflows.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:teach-start",
+      "file": "ipc/workflows.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:teach-status",
+      "file": "ipc/workflows.cjs"
+    },
+    {
+      "mode": "handle",
       "channel": "lykn:transcribe",
       "file": "ipc/overlayAi.cjs"
     },
@@ -1170,6 +1195,41 @@
       "mode": "handle",
       "channel": "lykn:welcome-widgets",
       "file": "ipc/welcome.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:workflow-apply-recovered-update",
+      "file": "ipc/workflows.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:workflow-create",
+      "file": "ipc/workflows.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:workflow-create-routine",
+      "file": "ipc/workflows.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:workflow-delete",
+      "file": "ipc/workflows.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:workflow-run",
+      "file": "ipc/workflows.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:workflow-update",
+      "file": "ipc/workflows.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:workflows-list",
+      "file": "ipc/workflows.cjs"
     }
   ]
 }

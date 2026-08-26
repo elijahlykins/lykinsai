@@ -54,6 +54,7 @@ const {
 } = overlayConstants;
 const { initializeElectronServices } = require("./services/initializeElectronServices.cjs");
 const { createRoutineRuntime } = require("./bot-routines/routineRuntime.cjs");
+const { createTeachService } = require("./teach/service.cjs");
 const { registerAllIpc } = require("./ipc/index.cjs");
 const { attachDesktopAuth } = require("./auth/desktopAuth.cjs");
 const { attachAutoUpdate } = require("./updater/autoUpdate.cjs");
@@ -1062,6 +1063,7 @@ let agentSidebarHeight = 360;
 let agentSidebarOpen = false;
 let agentRuntime = null;
 let routineRuntime = null;
+let teachService = null;
 // Inline browser-new-tab conversations receive the same live agent events as
 // the regular LYKN chat, scoped to their paired browser agent.
 const browserWelcomeChatStreams = new Map();
@@ -4665,6 +4667,7 @@ function initAgentRuntime() {
     getBrowsingContext,
     getActiveBrowseAgentId: () => resolveAgentBrowseTargetId() || agentStageActiveId || null,
     agentTabs: agentTabsCapability,
+    onStructuredEvent: (event) => teachService?.recordTaskEvent(event),
     // Bot mini-viewport support: which hidden tabs must keep painting for
     // capturePage, and a nudge to rebuild a surface when a capture comes
     // back empty (fresh tab, or a dock/undock re-parented the view).
@@ -4704,8 +4707,50 @@ function initRoutineRuntime() {
       }
       emitAgentToUi("lykn:activity-open", deepLink || {});
     },
-    executeTask: async ({ routine, runId, triggerContext, onTaskCreated }) =>
-      runtime.runRoutineOccurrence({
+    executeTask: async ({ routine, runId, triggerContext, onTaskCreated }) => {
+      if (routine?.workflowId) {
+        const workflow = initTeachService().getWorkflow(
+          routine.workflowId,
+          routine.workflowVersion ? { version: routine.workflowVersion } : undefined,
+        );
+        if (!workflow) return { status: "failed", error: "workflow_not_found" };
+        return runtime.runLearnedWorkflow({
+          workflow,
+          bot: routine.bot,
+          onTaskCreated,
+          runId,
+          origin: {
+            type: "bot",
+            routine: {
+              id: String(routine.id),
+              name: String(routine.name || "").slice(0, 80),
+              triggerType: String(routine.trigger?.type || ""),
+              workflowId: workflow.id,
+              workflowVersion: workflow.version,
+            },
+          },
+          association: {
+            botId: String(routine.botId || ""),
+            routineId: String(routine.id),
+            routineRunId: String(runId || ""),
+            workflowId: workflow.id,
+            workflowVersion: workflow.version,
+          },
+          onApprovalRequired: (request) => {
+            routineRuntime?.notifications?.notify({
+              botId: routine.botId,
+              routineId: routine.id,
+              runId,
+              title: `${routine.bot?.name || "Bot"} needs approval: ${routine.name}`,
+              body: String(
+                request?.question || "A consequential action needs your approval.",
+              ).slice(0, 240),
+              urgency: "high",
+            });
+          },
+        });
+      }
+      return runtime.runRoutineOccurrence({
         routine,
         runId,
         triggerContext,
@@ -4722,7 +4767,8 @@ function initRoutineRuntime() {
             urgency: "high",
           });
         },
-      }),
+      });
+    },
     monitorDeps: {
       observeBrowser: (trigger) => runtime.observeRoutineBrowser(trigger),
       subscribePageEvents: (trigger, onEvent) => runtime.subscribeRoutineBrowser(trigger, onEvent),
@@ -4776,6 +4822,21 @@ function initRoutineRuntime() {
   });
   routineRuntime.start();
   return routineRuntime;
+}
+
+// TEACH-BY-DEMONSTRATION: explicit temporary observation + durable normalized
+// workflows. This service owns neither Task execution nor scheduling.
+function initTeachService() {
+  if (teachService) return teachService;
+  const runtime = initAgentRuntime();
+  teachService = createTeachService({
+    userDataPath: app.getPath("userData"),
+    emit: emitAgentToUi,
+    getBrowserWebContents: (input) => runtime.ensureTeachingBrowser(input) || null,
+    runWorkflow: (input) => runtime.runLearnedWorkflow(input),
+    createRoutine: (input) => initRoutineRuntime().createRoutine(input),
+  });
+  return teachService;
 }
 
 // ⌘+L: toggle the floating glass bar. Screen capture happens silently at ask
@@ -5862,6 +5923,11 @@ function bindShellContext() {
   d.whenAgentRuntimeLoaded = whenAgentRuntimeLoaded;
   d.initAgentRuntime = initAgentRuntime;
   d.getRoutineRuntime = initRoutineRuntime;
+  d.getTeachService = initTeachService;
+  d.recordTeachEventIfActive = (event) =>
+    teachService?.session?.active
+      ? teachService.record(event)
+      : { accepted: false, reason: "no_active_teach_session" };
   if (typeof d.showOverlay !== "function") d.showOverlay = showOverlay;
   if (typeof d.toggleOverlay !== "function") d.toggleOverlay = toggleOverlay;
   if (typeof d.registerGlobalHotkey !== "function") d.registerGlobalHotkey = registerGlobalHotkey;
@@ -6221,6 +6287,7 @@ app.on("will-quit", () => {
     void routineRuntime.shutdown();
     routineRuntime.store.persistNowSync();
   }
+  teachService?.shutdown?.();
   // Checkpoints the WAL so the database file on disk is complete on its own —
   // matters for snapshots and for anything the user copies out.
   localStore.shutdown();
