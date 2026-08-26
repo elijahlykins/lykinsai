@@ -4,13 +4,13 @@
     "Ordered registration surface of server.js (Express app). Entry order IS the contract:",
     "Express matches in registration order, so any reordering here is a behavior change."
   ],
-  "routeCount": 134,
+  "routeCount": 139,
   "middlewareCount": 6,
   "byMethod": {
     "DELETE": 5,
-    "GET": 40,
-    "PATCH": 5,
-    "POST": 84
+    "GET": 42,
+    "PATCH": 6,
+    "POST": 86
   },
   "byDomain": {
     "account": 8,
@@ -20,13 +20,13 @@
     "billing": 10,
     "chatCore": 5,
     "connections": 5,
-    "connectors": 8,
+    "connectors": 10,
     "customModels": 1,
     "desktop": 9,
     "feeds": 9,
     "files": 6,
     "learning": 1,
-    "other": 7,
+    "other": 10,
     "platform": 4,
     "synthesis": 5,
     "usage": 3,
@@ -441,6 +441,30 @@
       "methods": [
         "GET"
       ],
+      "path": "/oauth/mcp/client-metadata",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/oauth/mcp/callback",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
       "path": "/api/mcp/connections",
       "chain": [
         "requireAuth",
@@ -457,6 +481,36 @@
         "POST"
       ],
       "path": "/api/mcp/connections",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/mcp/connections/:id/authorize",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "path": "/api/mcp/connections/:id",
       "chain": [
         "requireAuth",
         "<anonymous>"
@@ -502,6 +556,21 @@
         "GET"
       ],
       "path": "/api/mcp/connections/:id/health",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/mcp/connections/:id/disconnect",
       "chain": [
         "requireAuth",
         "<anonymous>"

@@ -14,6 +14,9 @@ import {
   MCP_STATUSES,
 } from '../../lib/mcp/index.js';
 import { assertMcpUrlSafe } from '../../lib/mcp/urlPolicy.js';
+import { createSupabaseOAuthSessionStore, createMemoryOAuthSessionStore } from '../../lib/mcp/oauth/oauthSession.js';
+import { mcpOAuthRedirectUri, publicClientMetadataDocument } from '../../lib/mcp/oauth/clientIdentity.js';
+import { mcpOAuthCallbackHtml, callbackCopy } from '../../lib/mcp/oauth/callbackPage.js';
 
 function mcpErr(e) {
   const code = e?.code || e?.error || 'internal';
@@ -30,7 +33,7 @@ function mcpErr(e) {
 
 let singleton;
 
-export function getMcpManager(supabaseAdmin) {
+export function getMcpManager(supabaseAdmin, { port } = {}) {
   if (singleton) return singleton;
   const store = supabaseAdmin
     ? createSupabaseMcpStore(supabaseAdmin, { encrypt: encryptToken, decrypt: decryptToken })
@@ -39,12 +42,57 @@ export function getMcpManager(supabaseAdmin) {
     store.encrypt = encryptToken;
     store.decrypt = decryptToken;
   }
-  singleton = createMcpConnectionManager({ store });
+  singleton = createMcpConnectionManager({
+    store,
+    sessionStore: supabaseAdmin
+      ? createSupabaseOAuthSessionStore(supabaseAdmin)
+      : createMemoryOAuthSessionStore(),
+    redirectUri: mcpOAuthRedirectUri(port),
+  });
   return singleton;
 }
 
-export function registerMcpRoutes(app, { requireAuth, supabaseAdmin }) {
-  const manager = getMcpManager(supabaseAdmin);
+export function registerMcpRoutes(app, { requireAuth, supabaseAdmin, PORT }) {
+  const manager = getMcpManager(supabaseAdmin, { port: PORT });
+  const frontendBase =
+    process.env.FRONTEND_BASE_URL || process.env.FRONTEND_URL || 'http://localhost:5173';
+  let trustedOrigin = null;
+  try {
+    trustedOrigin = new URL(frontendBase).origin;
+  } catch {
+    trustedOrigin = null;
+  }
+
+  app.get('/oauth/mcp/client-metadata', (_req, res) => {
+    res.json(publicClientMetadataDocument({ redirectUri: mcpOAuthRedirectUri(PORT) }));
+  });
+
+  app.get('/oauth/mcp/callback', async (req, res) => {
+    const state = typeof req.query?.state === 'string' ? req.query.state : '';
+    const code = typeof req.query?.code === 'string' ? req.query.code : '';
+    const oauthError = typeof req.query?.error === 'string' ? req.query.error : '';
+    const errorDescription =
+      typeof req.query?.error_description === 'string' ? req.query.error_description.slice(0, 180) : '';
+    try {
+      const result = await manager.finishAuthorization(undefined, {
+        state,
+        code,
+        error: oauthError,
+        errorDescription,
+      });
+      const kind = result.ok
+        ? 'connected'
+        : result.error || 'invalid_callback';
+      const copy = callbackCopy(kind);
+      return res
+        .status(result.ok ? 200 : 400)
+        .type('html')
+        .send(mcpOAuthCallbackHtml({ ...copy, ok: !!result.ok, trustedOrigin }));
+    } catch (e) {
+      const copy = callbackCopy(e?.code || 'invalid_callback');
+      return res.status(400).type('html').send(mcpOAuthCallbackHtml({ ...copy, ok: false, trustedOrigin }));
+    }
+  });
 
   app.get('/api/mcp/connections', requireAuth, async (req, res) => {
     try {
@@ -66,7 +114,9 @@ export function registerMcpRoutes(app, { requireAuth, supabaseAdmin }) {
       const trustLevel =
         req.body?.trustLevel === MCP_TRUST_LEVELS.LOCAL_TRUSTED
           ? MCP_TRUST_LEVELS.LOCAL_TRUSTED
-          : MCP_TRUST_LEVELS.REMOTE;
+          : req.body?.trustLevel === MCP_TRUST_LEVELS.ENTERPRISE
+            ? MCP_TRUST_LEVELS.ENTERPRISE
+            : MCP_TRUST_LEVELS.CUSTOM;
       const urlCheck = await assertMcpUrlSafe(serverUrl, { trustLevel });
       if (!urlCheck.ok) {
         return res.status(400).json({ error: urlCheck.error, message: urlCheck.error });
@@ -76,13 +126,42 @@ export function registerMcpRoutes(app, { requireAuth, supabaseAdmin }) {
         serverUrl,
         secret: req.body?.secret || req.body?.token || null,
         trustLevel,
+        accountLabel: req.body?.accountLabel || req.body?.name,
+        accountIdentity: req.body?.accountIdentity,
       });
       const httpStatus = result.ok
         ? 200
-        : result.error === 'authentication_required'
+        : result.error === 'authentication_required' || result.error === 'authorizing'
           ? 401
           : 400;
       return res.status(httpStatus).json(result);
+    } catch (e) {
+      const { status, body } = mcpErr(e);
+      return res.status(status).json(body);
+    }
+  });
+
+  app.post('/api/mcp/connections/:id/authorize', requireAuth, async (req, res) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+      const result = await manager.startAuthorization(userId, String(req.params.id || ''));
+      return res.status(result.authorizationUrl ? 200 : 400).json(result);
+    } catch (e) {
+      const { status, body } = mcpErr(e);
+      return res.status(status).json(body);
+    }
+  });
+
+  app.patch('/api/mcp/connections/:id', requireAuth, async (req, res) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+      const result = await manager.rename(userId, String(req.params.id || ''), {
+        name: req.body?.name,
+        accountLabel: req.body?.accountLabel,
+      });
+      return res.status(result.ok ? 200 : 404).json(result);
     } catch (e) {
       const { status, body } = mcpErr(e);
       return res.status(status).json(body);
@@ -125,13 +204,25 @@ export function registerMcpRoutes(app, { requireAuth, supabaseAdmin }) {
     }
   });
 
+  app.post('/api/mcp/connections/:id/disconnect', requireAuth, async (req, res) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+      const result = await manager.disconnect(userId, String(req.params.id || ''));
+      return res.json(result);
+    } catch (e) {
+      const { status, body } = mcpErr(e);
+      return res.status(status).json(body);
+    }
+  });
+
   app.delete('/api/mcp/connections/:id', requireAuth, async (req, res) => {
     try {
       const userId = req.user?.id;
       if (!userId) return res.status(401).json({ error: 'Unauthorized' });
       const result = await manager.disconnect(userId, String(req.params.id || ''));
       await manager.store.remove(userId, String(req.params.id || ''));
-      return res.json({ ok: true, connection: result.connection });
+      return res.json({ ok: true, connection: result.connection, revocation: result.revocation });
     } catch (e) {
       const { status, body } = mcpErr(e);
       return res.status(status).json(body);
@@ -170,6 +261,8 @@ export function registerMcpRoutes(app, { requireAuth, supabaseAdmin }) {
           connectionId,
           toolName,
           args: req.body?.arguments || req.body?.args || {},
+          connection: owned,
+          currentTool: (owned.classifiedTools || []).find((t) => t.toolName === toolName),
           callTool: (opts) =>
             manager.callTool({
               userId,

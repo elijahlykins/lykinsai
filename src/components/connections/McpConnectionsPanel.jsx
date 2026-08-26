@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Plug, RefreshCw, Unplug } from "lucide-react";
+import { Loader2, Plug, RefreshCw, Unplug, Pencil } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 
@@ -19,10 +19,21 @@ async function authedFetch(path, init = {}) {
 function statusLabel(status) {
   if (status === "connected") return "Connected";
   if (status === "authentication_required") return "Authentication required";
+  if (status === "authorizing") return "Authorizing";
   if (status === "refreshing") return "Refreshing";
   if (status === "offline") return "Offline";
+  if (status === "revoked") return "Revoked";
   if (status === "error") return "Error";
   return "Disconnected";
+}
+
+function trustLabel(trust) {
+  if (trust === "local_trusted") return "Local trusted";
+  if (trust === "official") return "Official";
+  if (trust === "verified") return "Verified";
+  if (trust === "enterprise") return "Enterprise";
+  if (trust === "community") return "Community";
+  return "Custom";
 }
 
 export default function McpConnectionsPanel({ user, embedded = false }) {
@@ -31,8 +42,11 @@ export default function McpConnectionsPanel({ user, embedded = false }) {
   const [url, setUrl] = useState("");
   const [name, setName] = useState("");
   const [token, setToken] = useState("");
+  const [localTrusted, setLocalTrusted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [renaming, setRenaming] = useState(null);
+  const [renameValue, setRenameValue] = useState("");
 
   const refresh = useCallback(async () => {
     if (!user) {
@@ -55,6 +69,15 @@ export default function McpConnectionsPanel({ user, embedded = false }) {
     refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    const onMessage = (event) => {
+      if (!event?.data || event.data.type !== "lykn:mcp-oauth") return;
+      refresh();
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [refresh]);
+
   const add = async (event) => {
     event.preventDefault();
     if (!url.trim()) return;
@@ -67,12 +90,19 @@ export default function McpConnectionsPanel({ user, embedded = false }) {
           name: name.trim() || undefined,
           serverUrl: url.trim(),
           secret: token.trim() || undefined,
+          trustLevel: localTrusted ? "local_trusted" : "custom",
+          accountLabel: name.trim() || undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || data.ok === false) {
+      if (data.authorizationUrl) {
+        window.open(data.authorizationUrl, "lykn-mcp-oauth", "width=480,height=720");
+        setUrl("");
+        setName("");
+        setToken("");
+      } else if (!res.ok || data.ok === false) {
         if (data.error === "authentication_required" || data.connection?.status === "authentication_required") {
-          setError("Authentication required. Phase 2 will handle MCP OAuth. A bearer token can be pasted if the server accepts one.");
+          setError("Authentication required. Use Connect on the connection row, or paste a bearer token if the server accepts one.");
         } else {
           setError(data.message || data.error || "Could not connect");
         }
@@ -89,14 +119,29 @@ export default function McpConnectionsPanel({ user, embedded = false }) {
     }
   };
 
-  const act = async (id, path, method = "POST") => {
+  const act = async (id, path, method = "POST", body) => {
     setBusy(true);
+    setError("");
     try {
-      await authedFetch(`/api/mcp/connections/${id}${path}`, { method });
+      const res = await authedFetch(`/api/mcp/connections/${id}${path}`, {
+        method,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.authorizationUrl) {
+        window.open(data.authorizationUrl, "lykn-mcp-oauth", "width=480,height=720");
+      } else if (!res.ok && data.message) {
+        setError(data.message);
+      }
       await refresh();
     } finally {
       setBusy(false);
     }
+  };
+
+  const saveRename = async (id) => {
+    await act(id, "", "PATCH", { name: renameValue, accountLabel: renameValue });
+    setRenaming(null);
   };
 
   return (
@@ -109,7 +154,7 @@ export default function McpConnectionsPanel({ user, embedded = false }) {
               MCP
             </h2>
             <p className="mt-0.5 text-[11.5px] leading-snug text-black/55 dark:text-white/55">
-              Point LYKN at a remote MCP server. Tools stay in their source app. Vault is not used unless you save something.
+              Point LYKN at a remote MCP server. Custom URLs stay Custom even with TLS. Tools stay in their source app.
             </p>
           </div>
         </div>
@@ -118,7 +163,7 @@ export default function McpConnectionsPanel({ user, embedded = false }) {
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Name (optional)"
+            placeholder="Label (e.g. Work Google)"
             className="h-8 rounded-md border border-black/10 dark:border-white/10 bg-transparent px-2.5 text-[12.5px] outline-none focus:border-black/25 dark:focus:border-white/25"
           />
           <input
@@ -136,6 +181,10 @@ export default function McpConnectionsPanel({ user, embedded = false }) {
             autoComplete="off"
             className="h-8 rounded-md border border-black/10 dark:border-white/10 bg-transparent px-2.5 text-[12.5px] outline-none focus:border-black/25 dark:focus:border-white/25"
           />
+          <label className="flex items-center gap-2 text-[11.5px] text-black/55 dark:text-white/55">
+            <input type="checkbox" checked={localTrusted} onChange={(e) => setLocalTrusted(e.target.checked)} />
+            Local trusted server (loopback only)
+          </label>
           <button
             type="submit"
             disabled={busy || !user}
@@ -158,15 +207,67 @@ export default function McpConnectionsPanel({ user, embedded = false }) {
           {connections.map((conn) => (
             <div key={conn.id} className="py-2.5 flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-[12.5px] font-medium text-black/85 dark:text-white/90 truncate">{conn.name}</div>
-                <div className="text-[11px] text-black/45 dark:text-white/45 truncate">{conn.serverUrl}</div>
+                {renaming === conn.id ? (
+                  <form
+                    className="flex items-center gap-1"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      saveRename(conn.id);
+                    }}
+                  >
+                    <input
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      className="h-7 w-40 rounded-md border border-black/10 dark:border-white/10 bg-transparent px-2 text-[12px] outline-none"
+                    />
+                    <button type="submit" className="text-[11px] font-medium">Save</button>
+                  </form>
+                ) : (
+                  <div className="text-[12.5px] font-medium text-black/85 dark:text-white/90 truncate">
+                    {conn.accountLabel || conn.name}
+                  </div>
+                )}
+                <div className="text-[11px] text-black/45 dark:text-white/45 truncate">
+                  {conn.accountIdentity ? `${conn.accountIdentity} · ` : ""}
+                  {conn.serverUrl}
+                </div>
                 <div className="mt-0.5 text-[11px] text-black/55 dark:text-white/55">
                   {statusLabel(conn.status)}
+                  {` · ${trustLabel(conn.trustLevel)}`}
                   {conn.toolCount ? ` · ${conn.toolCount} tools` : ""}
                   {conn.lastError ? ` · ${conn.lastError}` : ""}
                 </div>
               </div>
               <div className="flex items-center gap-1 flex-shrink-0">
+                {(conn.status === "authentication_required" || conn.status === "authorizing" || conn.status === "revoked") && (
+                  <button
+                    type="button"
+                    className="px-2 h-7 rounded-md text-[11px] font-medium bg-black text-white dark:bg-white dark:text-black"
+                    onClick={() => act(conn.id, "/authorize")}
+                  >
+                    Connect
+                  </button>
+                )}
+                {conn.status === "disconnected" && (
+                  <button
+                    type="button"
+                    className="px-2 h-7 rounded-md text-[11px] font-medium border border-black/10 dark:border-white/15"
+                    onClick={() => act(conn.id, "/reconnect")}
+                  >
+                    Reconnect
+                  </button>
+                )}
+                <button
+                  type="button"
+                  title="Rename"
+                  onClick={() => {
+                    setRenaming(conn.id);
+                    setRenameValue(conn.accountLabel || conn.name);
+                  }}
+                  className="p-1.5 rounded-md text-black/50 hover:bg-black/[0.04] dark:text-white/50 dark:hover:bg-white/[0.06]"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
                 <button
                   type="button"
                   title="Refresh"
@@ -178,7 +279,7 @@ export default function McpConnectionsPanel({ user, embedded = false }) {
                 <button
                   type="button"
                   title="Disconnect"
-                  onClick={() => act(conn.id, "", "DELETE")}
+                  onClick={() => act(conn.id, "/disconnect")}
                   className="p-1.5 rounded-md text-black/50 hover:bg-black/[0.04] dark:text-white/50 dark:hover:bg-white/[0.06]"
                 >
                   <Unplug className="w-3.5 h-3.5" />

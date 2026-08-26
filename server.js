@@ -6905,7 +6905,7 @@ const PROJECT_WRITE_TOOLS = new Set([
 // ── Custom connections — extracted to server/routes/connections.routes.js (Wave 2)
 // 5 routes register here, in their original order.
 registerCustomConnectionsRoutes(app, { requireAuth, supabaseAdmin, invalidateConnectedToolsCache });
-registerMcpRoutes(app, { requireAuth, supabaseAdmin });
+registerMcpRoutes(app, { requireAuth, supabaseAdmin, PORT });
 
 registerCustomModelRoutes(app, { requireAuth, supabaseAdmin });
 
