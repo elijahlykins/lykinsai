@@ -5,7 +5,8 @@ The harness exists so that every extraction can mechanically prove the external 
 Wave 1 extracted the first four domains into `server/routes/` (youtube, webtools, usage, feeds — 23 routes) using this harness; the manifest showed zero drift.
 Wave 2 extracted three moderate domains (admin, connections, synthesis — 31 routes) the same way, again with zero drift. The static security guards in `lib/securityRegressions.test.mjs` now scan `server.js` + `server/routes/*.js` so they keep covering extracted handlers.
 Wave 3 extracted three long-term live domains (voice, desktop, files — 26 routes), again with zero drift; the concatenated security scan covers the new routers automatically.
-Note: Synthesis is planned legacy infrastructure pending Memory Architecture Replacement; `synthesis.routes.js` is retained as an isolation boundary, not as a commitment to the architecture.
+Wave 4 extracted three more moderate live domains (account, storage, assist — 21 routes), again with zero drift; 101 of the 161 routes now live in `server/routes/`.
+Note: Synthesis is planned legacy infrastructure pending Memory Architecture Replacement; `synthesis.routes.js` is retained as an isolation boundary, not as a commitment to the architecture, and the learning/user-model route band stays inline as a MEMORY-REPLACEMENT CANDIDATE.
 
 Companion planning document: `docs/refactor/server-decomposition-plan.md`.
 
