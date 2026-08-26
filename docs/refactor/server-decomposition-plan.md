@@ -1,11 +1,15 @@
 # server.js Decomposition Plan
 
-**Status:** Waves 0–1 complete.
+**Status:** Waves 0–2 complete.
 Wave 0 (2026-08-26) added the safety harness: `tests/server/` + `serverRouteManifest.json` + `npm run test:server` (see `tests/server/README.md`).
 Wave 1 (2026-08-26) extracted the first four route domains into `server/routes/` with zero manifest drift: `youtube.routes.js` (8 routes), `webtools.routes.js` (3), `usage.routes.js` (3), `feeds.routes.js` (9, incl. the poll-due cron trio + `verifyAdminIngestSecret`, whose only callers are those three routes).
 `server.js`: 27,839 → 26,654 lines.
+Wave 2 (2026-08-26) extracted three moderate domains, 31 routes, zero manifest drift: `admin.routes.js` (9 routes, `requireAuth → requireAdmin` chains untouched; the MRR cache moved into the once-run register closure so it stays a single instance), `connections.routes.js` (custom-connections ×5 + concepts ×6 as two registrars because `registerCustomModelRoutes` registers between them), `synthesis.routes.js` (profile band ×8 + maintenance band ×3 as two registrars; the helpers that sat between the maintenance routes were definitions, not registrations, so stack order is unchanged).
+`GET /api/synthesis/profile/revisions` stayed in server.js — it registers inside the learning/user-model band and moving it would change registration order.
+Shared server-local functions (`createSynthesisUserClient`, `invalidateConnectedToolsCache`, `invalidateUserModelCache`, `replaceSynthesisChunks`, `deleteSynthesisChunksForSource`, `runUserProfileLlmAndUpsert`, `runIntakeProfileSynthesisAndUpsert`, `enrichVaultNoteSummary` (also a server.js export), `backfillVaultText`, `safeErr`) were passed as deps, not moved. `lib/securityRegressions.test.mjs` now scans server.js + `server/routes/*.js` so the static guards follow moved code.
+`server.js`: 26,654 → 25,136 lines.
 Pattern used: `registerXRoutes(app, deps)` with full literal paths (§7), registered at the exact original position in server.js; bootstrap-owned singletons (limiters, `supabaseAdmin`, `upload`, `requireAuth`/`requireAppAccess`, `isUrlSafe`, `sha256`) are passed as focused deps; stateless external services are imported directly by the router modules.
-Wave 1 deliberately left in place: `authLimiter`-gated authFlows and admin (plan-listed as Wave-1-safe but excluded from this wave's scope), all services, all pollers, all global middleware.
+Waves 1–2 deliberately left in place: `authLimiter`-gated authFlows, all services, all pollers, all global middleware, AI/chat streaming, billing/Stripe, OAuth infrastructure.
 **Audited:** 2026-08-25, against `server.js` at 27,839 lines (working tree, unstaged frontend work by other agents present but no server changes).
 Line numbers in §2–§6 refer to that pre-Wave-1 snapshot; re-verify against HEAD before each extraction.
 **Absolute goal:** take `server.js` from ~27,800 lines to a small bootstrap/orchestration file with **zero runtime behavior change**.

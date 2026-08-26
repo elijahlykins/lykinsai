@@ -3,6 +3,7 @@
 This directory is the safety net for decomposing `server.js` (27,839 lines and 161 routes at harness creation) into `server/routes|services|middleware/*`.
 The harness exists so that every extraction can mechanically prove the external route contract did not change.
 Wave 1 extracted the first four domains into `server/routes/` (youtube, webtools, usage, feeds — 23 routes) using this harness; the manifest showed zero drift.
+Wave 2 extracted three moderate domains (admin, connections, synthesis — 31 routes) the same way, again with zero drift. The static security guards in `lib/securityRegressions.test.mjs` now scan `server.js` + `server/routes/*.js` so they keep covering extracted handlers.
 
 Companion planning document: `docs/refactor/server-decomposition-plan.md`.
 
