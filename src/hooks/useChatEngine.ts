@@ -1,6 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import ReactMarkdown from "react-markdown";
 import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import { supabase } from "@/lib/supabase";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
@@ -14,10 +13,7 @@ import {
 } from "@/lib/chat/chatResponseExtractors";
 import { ingestChatFiles } from "@/lib/chat/ingestChatFiles";
 import { resizeChatInputEl } from "@/lib/chat/resizeChatInput";
-import { flattenNodeText } from "@/lib/chatChunks";
 import { isDeviceLocalUrl } from "@/lib/chat/deviceLocalImages";
-import { ChatCodeBlock } from "@/components/lyknChat/ChatCodeBlock";
-import { ChatPopImage } from "@/components/lyknChat/LyknMediaPop";
 import { detectSocialPlatform, isSocialEmbedType } from "@/lib/media/socialEmbed";
 import {
   orchestrateChatSend,
@@ -31,11 +27,10 @@ import type {
   OrchestratorResult,
 } from "@/lib/lyknChat/chatTurnTypes";
 import { type ChatArtifact, toArtifactEditContext } from "@/lib/ai/chatArtifacts";
-import { handleLyknBrowserClick } from "@/lib/lyknChat/openInStudioBrowser";
 import { resolveArtifactSendPlan } from "@/lib/ai/artifactSendPlan";
 import { detectImageAsk, imagineSwitchNotice } from "@/lib/ai/studioModeIntent";
-import { toast } from "@/components/ui/use-toast";
-import { micErrorMessage, requestMicStream } from "@/lib/voice/micAccess";
+import { useChatDictation } from "@/hooks/useChatDictation";
+import { useChatMarkdownComponents } from "@/components/lyknChat/chatMarkdownComponents";
 import { AI_TEMPORARY_FAILURE_TEXT, AI_GUEST_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
 import { forgetAppEdit } from "@/lib/apps/editApp";
 import {
@@ -234,8 +229,6 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const [chatReactions, setChatReactions] = useState<Record<string, "like" | "dislike" | null>>({});
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [assistantTaskChecks, setAssistantTaskChecks] = useState<Record<string, Record<string, boolean>>>({});
-  const [isDictating, setIsDictating] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
   const [voiceModeOn, setVoiceModeOn] = useState(false);
   // Active "+" menu capability mode for the NEXT send. Steers the model to
   // use a specific tool (image gen / web search / deep research) for this
@@ -315,10 +308,6 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const chatTypingPendingsRef = useRef<Map<string, { promptId: string; fullText: string; resolve: () => void; chatId: string | null }>>(new Map());
   const aiTypingRunRef = useRef(0);
   const lastAiResponseBlockRef = useRef<string | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const dictationTimerRef = useRef<number | null>(null);
   const pendingAiBrickActionRef = useRef(false);
   const pendingBrickActionDataRef = useRef<{ imageUrl?: string; videoId?: string } | null>(null);
   const youtubeTranscriptCacheRef = useRef<Record<string, { fetchedAt: number; title: string; url: string; transcript: string; segments: Array<{ startSec: number; endSec: number; text: string }>; source?: string }>>({});
@@ -346,6 +335,12 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       resizeChatInputEl(centerChatInputRef.current);
     }
   }, []);
+
+  /* ---------- Dictation (mic button → Whisper → composer) ---------- */
+  const { isDictating, isTranscribing, handleDictateToggle } = useChatDictation({
+    chatInputRef,
+    setChatInput,
+  });
 
   const handleChatInputChange = useCallback((value: string) => {
     chatInputRef.current = value;
@@ -520,12 +515,10 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     return () => window.removeEventListener("lyknchat_ai_brick_action", handler);
   }, [chatMode, chatRailVisible, setChatInput, setChatRailOpen, setRailVisible]);
 
-  // Dictation cleanup on unmount
+  // Typing/speech cleanup on unmount (dictation cleans itself up inside
+  // useChatDictation)
   useEffect(() => () => {
     aiTypingRunRef.current += 1;
-    if (dictationTimerRef.current) { window.clearInterval(dictationTimerRef.current); dictationTimerRef.current = null; }
-    try { if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") mediaRecorderRef.current.stop(); } catch {}
-    try { mediaStreamRef.current?.getTracks?.().forEach((t) => t.stop()); } catch {}
     void import("@/lib/ai/speakText").then(({ stopSpeaking }) => stopSpeaking()).catch(() => {});
   }, []);
 
@@ -633,128 +626,11 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     setAssistantTaskChecks((prev) => ({ ...prev, [msgId]: { ...(prev[msgId] || {}), [taskKey]: checked } }));
   }, []);
 
-  // Static, identity-stable markdown components shared across every message.
-  // Previously this object was recreated on every `buildChatMarkdownComponents`
-  // call (which fires per-message inside the chat render loop, which itself
-  // re-runs on every streaming token). A new components object causes
-  // ReactMarkdown to drop its memoization and re-walk the AST from scratch
-  // — for a 50-message chat that was thousands of wasted markdown re-parses
-  // per second during streaming.
-  const STATIC_MD_COMPONENTS = useMemo(() => ({
-    h1: ({ children }: any) => React.createElement("h1", { className: "text-xl font-semibold mt-6 mb-2.5 tracking-tight" }, children),
-    h2: ({ children }: any) => React.createElement("h2", { className: "text-lg font-semibold mt-5 mb-2 tracking-tight" }, children),
-    h3: ({ children }: any) => React.createElement("h3", { className: "text-base font-semibold mt-4 mb-1.5 tracking-tight" }, children),
-    p: ({ children }: any) => React.createElement("p", { className: "mb-4 last:mb-0 leading-[1.65] whitespace-pre-wrap" }, children),
-    ul: ({ children }: any) => React.createElement("ul", { className: "my-3 list-disc pl-5 space-y-1.5" }, children),
-    ol: ({ children }: any) => React.createElement("ol", { className: "my-3 list-decimal pl-5 space-y-1.5" }, children),
-    strong: ({ children }: any) => React.createElement("strong", { className: "font-semibold" }, children),
-    blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 dark:border-white/20 pl-3 my-2 text-black/70 dark:text-white/70 italic" }, children),
-    code: (props: any) => React.createElement(ChatCodeBlock, props),
-    pre: ({ children }: any) => React.createElement(React.Fragment, null, children),
-    // Inline markdown images — e.g. files the AI pulled in from the user's
-    // Mac in Local Mode, or any other ![alt](url) in a reply.
-    img: ({ src, alt }: any) =>
-      React.createElement(ChatPopImage, {
-        src,
-        alt: alt || "",
-        className:
-          "my-3 max-h-[24rem] max-w-full rounded-xl border border-black/[0.08] dark:border-white/[0.08] shadow-none object-contain",
-      }),
-    a: ({ href, children, ...rest }: any) => {
-      const url = String(href || "").trim();
-      const isHttp = /^https?:\/\//i.test(url);
-      return React.createElement(
-        "a",
-        {
-          ...rest,
-          href: url || undefined,
-          target: isHttp ? "_blank" : undefined,
-          rel: isHttp ? "noopener noreferrer" : undefined,
-          className: "underline underline-offset-2 decoration-black/25 dark:decoration-white/25 hover:decoration-black/60 dark:hover:decoration-white/60",
-          onClick: (e: React.MouseEvent) => {
-            if (!isHttp) return;
-            handleLyknBrowserClick(e, url);
-          },
-        },
-        children,
-      );
-    },    table: ({ children }: any) =>
-      React.createElement(
-        "div",
-        {
-          className:
-            "my-4 overflow-hidden rounded-2xl border border-black/[0.1] " +
-            "bg-gradient-to-br from-white via-[#f7f6f4] to-[#ececea] " +
-            "shadow-none " +
-            "dark:border-white/[0.1] dark:from-[#141413] dark:via-[#111110] dark:to-[#0c0c0b]",
-        },
-        React.createElement(
-          "div",
-          { className: "overflow-x-auto" },
-          React.createElement("table", { className: "w-full min-w-full border-collapse text-[12px]" }, children),
-        ),
-      ),
-    thead: ({ children }: any) =>
-      React.createElement(
-        "thead",
-        { className: "bg-black/[0.04] dark:bg-white/[0.05]" },
-        children,
-      ),
-    tbody: ({ children }: any) => React.createElement("tbody", null, children),
-    tr: ({ children }: any) =>
-      React.createElement("tr", {
-        className:
-          "border-b border-black/[0.05] odd:bg-white/60 even:bg-[#f3eee6]/55 " +
-          "dark:border-white/[0.06] dark:odd:bg-white/[0.015] dark:even:bg-white/[0.035]",
-      }, children),
-    th: ({ children }: any) =>
-      React.createElement(
-        "th",
-        {
-          className:
-            "whitespace-nowrap border-b border-black/[0.08] px-3 py-2 text-left " +
-            "text-[10px] font-semibold uppercase tracking-[0.08em] text-black/50 " +
-            "dark:border-white/[0.1] dark:text-white/50",
-        },
-        children,
-      ),
-    td: ({ children }: any) =>
-      React.createElement(
-        "td",
-        { className: "px-3 py-1.5 text-black/75 dark:text-white/75" },
-        children,
-      ),
-  }), []);
-
-  // Per-msgId components cache. The only msg-dependent component is `li`
-  // (because it reads `assistantTaskChecks[msgId]` for checkbox state).
-  // We cache the assembled object per msgId and only invalidate the entry
-  // whose `assistantTaskChecks[msgId]` reference changed — every other
-  // message keeps a referentially-stable components object across renders.
-  const componentsCacheRef = useRef<Map<string, { checks: any; comps: Record<string, React.ComponentType<any>> }>>(new Map());
-  const buildChatMarkdownComponents = useCallback((msgId: string): Record<string, React.ComponentType<any>> => {
-    const checks = assistantTaskChecks[msgId];
-    const cached = componentsCacheRef.current.get(msgId);
-    if (cached && cached.checks === checks) return cached.comps;
-    const comps: Record<string, React.ComponentType<any>> = {
-      ...STATIC_MD_COMPONENTS,
-      li: ({ children }: any) => {
-        const raw = flattenNodeText(children).trim();
-        const match = raw.match(/^\[( |x|X)\]\s+(.+)$/);
-        if (!match) return React.createElement("li", { className: "leading-relaxed" }, children);
-        const defaultChecked = String(match[1]).toLowerCase() === "x";
-        const taskText = match[2];
-        const taskKey = raw;
-        const isChecked = checks?.[taskKey] ?? defaultChecked;
-        return React.createElement("li", { className: `list-none ml-[-1.25rem] flex items-start gap-2 leading-relaxed ${isChecked ? "opacity-60" : ""}` },
-          React.createElement("input", { type: "checkbox", className: "mt-[0.28rem] shrink-0 accent-blue-500", checked: isChecked, onChange: (e: any) => updateTaskCheck(msgId, taskKey, e.target.checked) }),
-          React.createElement("span", { className: isChecked ? "line-through" : "" }, taskText),
-        );
-      },
-    };
-    componentsCacheRef.current.set(msgId, { checks, comps });
-    return comps;
-  }, [STATIC_MD_COMPONENTS, assistantTaskChecks, updateTaskCheck]);
+  // Markdown component config + per-msgId cache live in
+  // chatMarkdownComponents.ts — identity/caching semantics are preserved
+  // there (a fresh components object per render would break ReactMarkdown's
+  // memoization).
+  const buildChatMarkdownComponents = useChatMarkdownComponents(assistantTaskChecks, updateTaskCheck);
 
   const buildLyknChatContext = useCallback(() => "", []);
   const buildActionLyknChatContext = useCallback(() => "", []);
@@ -1233,53 +1109,6 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     setChatFlowMode("idle");
     setChatStatusText("Stopped");
   }, [chatId, routeChatId, patchThreadMessages]);
-
-  const handleDictateToggle = useCallback(() => {
-    if (isDictating) {
-      try { if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") mediaRecorderRef.current.stop(); } catch {}
-      return;
-    }
-    if (typeof MediaRecorder === "undefined") {
-      toast({ title: "Dictation unavailable", description: "This device can't record audio.", variant: "destructive", duration: 6000 });
-      return;
-    }
-    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
-    // Prompts for OS/browser mic permission first — inside the desktop shell
-    // getUserMedia alone never surfaces the macOS dialog.
-    requestMicStream({ audio: true }).then((stream) => {
-      mediaStreamRef.current = stream;
-      audioChunksRef.current = [];
-      const recorder = new MediaRecorder(stream, { mimeType });
-      mediaRecorderRef.current = recorder;
-      recorder.ondataavailable = (event) => { if (event.data?.size > 0) audioChunksRef.current.push(event.data); };
-      recorder.onstop = async () => {
-        try { mediaStreamRef.current?.getTracks?.().forEach((t) => t.stop()); } catch {}
-        mediaStreamRef.current = null; mediaRecorderRef.current = null; setIsDictating(false);
-        const blob = new Blob(audioChunksRef.current, { type: mimeType });
-        audioChunksRef.current = [];
-        if (blob.size < 2000) return;
-        setIsTranscribing(true);
-        try {
-          const { API_BASE_URL } = await import("@/lib/api-config");
-          const formData = new FormData();
-          formData.append("audio", blob, "dictation.webm");
-          formData.append("model", "whisper-1"); formData.append("language", "en");
-          const cur = String(chatInputRef.current || "").trim();
-          if (cur) formData.append("prompt", cur.split(/\s+/).slice(-12).join(" "));
-          const res = await fetch(`${API_BASE_URL}/api/ai/transcribe`, { method: "POST", body: formData });
-          const data = await res.json().catch(() => ({}));
-          const transcript = String(data?.text || "").trim();
-          if (res.ok && transcript) setChatInput((prev) => { const c = String(prev || "").trim(); return c ? `${c} ${transcript}` : transcript; });
-        } catch {}
-        setIsTranscribing(false);
-      };
-      recorder.onerror = () => { setIsDictating(false); setIsTranscribing(false); };
-      recorder.start(); setIsDictating(true);
-    }).catch((err: unknown) => {
-      setIsDictating(false);
-      toast({ title: "Microphone needed", description: micErrorMessage(err), variant: "destructive", duration: 8000 });
-    });
-  }, [isDictating, setChatInput]);
 
   /* ---------- Voice Mode ---------- */
 
