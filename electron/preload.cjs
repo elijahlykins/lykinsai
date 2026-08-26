@@ -156,6 +156,9 @@ contextBridge.exposeInMainWorld("lykn", {
       // the harness system prompt holds it every turn — never parsed back
       // out of the message text.
       bot: opts?.bot || null,
+      // Canonical Task input. The renderer supplies provenance and the raw
+      // objective; Electron's TaskCompiler creates the authoritative Task.
+      task: opts?.task || null,
     }),
   agentList: () => ipcRenderer.invoke("lykn:agent-list"),
   agentSwitch: (agentId) => ipcRenderer.invoke("lykn:agent-switch", agentId),
@@ -253,6 +256,11 @@ contextBridge.exposeInMainWorld("lykn", {
     const fn = (_e, p) => cb(p || {});
     ipcRenderer.on("lykn:agent-done", fn);
     return () => ipcRenderer.removeListener("lykn:agent-done", fn);
+  },
+  onTaskEvent: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:task-event", fn);
+    return () => ipcRenderer.removeListener("lykn:task-event", fn);
   },
   // Local Mode — Vault switch that grants LYKN file/terminal access on this
   // device. Tools execute in main (never in the renderer or on the server).

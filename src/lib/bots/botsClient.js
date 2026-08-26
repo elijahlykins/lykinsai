@@ -9,9 +9,11 @@
 import { useEffect, useState } from "react";
 import {
   BOTS_STORAGE_KEY,
+  bindRuntimeTask,
   botForAgent,
   createBot,
   enqueueTask,
+  finishTask,
   finishRunningTask,
   nextQueuedTask,
   parseAskTeammate,
@@ -21,7 +23,6 @@ import {
   serializeBots,
   startTask,
   stripAskTeammate,
-  taskBrief,
 } from "@/lib/bots/botStore";
 import { bindBrowserTabChat } from "@/lib/lyknChat/browserChatAttach";
 
@@ -75,6 +76,33 @@ function patchBot(botId, fn) {
 function setLiveFor(agentId, patch) {
   live = { ...live, [agentId]: { ...(live[agentId] || {}), ...patch } };
   emit();
+}
+
+function botRuntimeIdentity(bot) {
+  return {
+    id: bot.id,
+    name: bot.name,
+    role: bot.role,
+    persona: bot.persona,
+    face: bot.face,
+    eyes: bot.eyes,
+    color: bot.color,
+    chatId: bot.chatId,
+  };
+}
+
+function canonicalTaskInput(bot, task, teammates = []) {
+  return {
+    objective: task.text,
+    botTaskId: task.id,
+    botId: bot.id,
+    chatId: bot.chatId,
+    teammates: teammates.map((teammate) => ({
+      id: teammate.id,
+      name: teammate.name,
+      role: teammate.role,
+    })),
+  };
 }
 
 /* ── Reads ───────────────────────────────────────────────────────────────── */
@@ -228,7 +256,7 @@ async function ensureAgent(bot) {
     headless: true,
     // Structured identity for the harness system prompt — the persona holds
     // every turn instead of decaying after the first dispatch brief.
-    bot: { name: bot.name, role: bot.role, persona: bot.persona },
+    bot: botRuntimeIdentity(bot),
   });
   if (!res?.ok || !res.agentId) throw new Error(res?.error || "agent_create_failed");
   return { agentId: res.agentId, fresh: true };
@@ -241,9 +269,8 @@ export async function dispatchNext(botId) {
   const task = nextQueuedTask(bot);
   if (!task) return;
   let agentId;
-  let fresh;
   try {
-    ({ agentId, fresh } = await ensureAgent(bot));
+    ({ agentId } = await ensureAgent(bot));
   } catch {
     patchBot(botId, (b) =>
       finishRunningTask(startTask(b, task.id), {
@@ -256,14 +283,14 @@ export async function dispatchNext(botId) {
   // Relayed teammate questions must be answered directly — no chained
   // hand-offs — so their brief omits the roster entirely.
   const teammates = relays.has(task.id) ? [] : load().filter((b) => b.id !== botId);
-  const brief = taskBrief({ ...bot, agentId }, task.text, { introduce: fresh, teammates });
   const atts = attachmentsByTask.get(task.id) || [];
   attachmentsByTask.delete(task.id);
   patchBot(botId, (b) => startTask({ ...b, agentId }, task.id));
   setLiveFor(agentId, { text: "", waiting: null, choice: null });
   try {
-    await lykn().studioAgentSend(brief, atts, agentId, {
-      bot: { name: bot.name, role: bot.role, persona: bot.persona },
+    await lykn().studioAgentSend(task.text, atts, agentId, {
+      bot: botRuntimeIdentity(bot),
+      task: canonicalTaskInput(bot, task, teammates),
     });
   } catch {
     patchBot(botId, (b) =>
@@ -297,7 +324,8 @@ export function assign(botId, text, attachments = []) {
     setLiveFor(bot.agentId, { waiting: null, choice: null, text: "" });
     lykn()
       .studioAgentSend(ask, atts, bot.agentId, {
-        bot: { name: bot.name, role: bot.role, persona: bot.persona },
+        bot: botRuntimeIdentity(bot),
+        task: canonicalTaskInput(bot, running),
       })
       .catch(() => {});
     return { taskId: running.id, answered: true };
@@ -367,13 +395,20 @@ function completeRelay(taskId, mate, answer) {
 
 function resumeAfterRelay(relay, note) {
   const from = getBot(relay.fromBotId);
-  if (!from?.agentId || runningTask(from)?.id !== relay.fromTaskId) return;
+  const sourceTask = runningTask(from);
+  if (!from?.agentId || sourceTask?.id !== relay.fromTaskId) return;
   setLiveFor(from.agentId, { text: "", waiting: null, choice: null });
   lykn()
     ?.studioAgentSend?.(
       `${note}\n\nFinish my original ask yourself now — answer me directly.`,
       [],
       from.agentId,
+      {
+        bot: botRuntimeIdentity(from),
+        task: sourceTask.runtimeTaskId
+          ? { id: sourceTask.runtimeTaskId }
+          : canonicalTaskInput(from, sourceTask),
+      },
     )
     ?.catch?.(() => {
       patchBot(from.id, (b) =>
@@ -464,11 +499,49 @@ function ensureWired() {
   api.onAgentChoice?.((p) => {
     if (p?.agentId) setLiveFor(p.agentId, { choice: p });
   });
+  api.onTaskEvent?.((event = {}) => {
+    const botTaskId = String(event?.association?.botTaskId || "");
+    const botId = String(event?.association?.botId || "");
+    if (!botTaskId || !botId) return;
+    const bot = getBot(botId);
+    if (!bot) return;
+
+    if (event.type === "task_created") {
+      patchBot(botId, (current) =>
+        bindRuntimeTask(current, botTaskId, {
+          taskId: String(event.taskId || ""),
+          runId: String(event.runId || ""),
+        }),
+      );
+      return;
+    }
+
+    const task = bot.tasks.find((candidate) => candidate.id === botTaskId);
+    if (!task) return;
+    if (task.runtimeTaskId && task.runtimeTaskId !== String(event.taskId || "")) return;
+
+    if (event.type === "waiting_for_user") {
+      const question = String(event?.detail?.question || "");
+      if (question && tryRelayHandoff(bot, task, question)) return;
+      return;
+    }
+
+    if (!["task_completed", "task_failed", "task_cancelled"].includes(event.type)) return;
+    const ok = event.type === "task_completed";
+    const result = String(event?.detail?.output || event?.detail?.reason || "");
+    hopsByTask.delete(botTaskId);
+    patchBot(botId, (current) => finishTask(current, botTaskId, { ok, result }));
+    attachmentsByTask.delete(botTaskId);
+    if (relays.has(botTaskId)) completeRelay(botTaskId, bot, result);
+    if (bot.agentId) setLiveFor(bot.agentId, { text: "", waiting: null, choice: null });
+    setTimeout(() => dispatchNext(botId), 400);
+  });
   api.onAgentDone?.((p) => {
     if (!p?.agentId) return;
     const bot = load().find((b) => b.agentId === p.agentId);
     const task = bot ? runningTask(bot) : null;
     if (!bot || !task) return;
+    if (p.taskId || p.botTaskId) return;
     // A parked run (question / approval / sign-in wall) also ends its turn —
     // the task isn't finished, the Bot is waiting on you.
     const parked = live[p.agentId]?.waiting?.waiting || agentStates[p.agentId]?.waiting;

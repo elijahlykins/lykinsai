@@ -4,7 +4,14 @@
  * round in the user message so the system prompt stays byte-stable.
  */
 
-function createTaskState({ goal, primaryTool = "" } = {}) {
+function createTaskState({
+  goal,
+  primaryTool = "",
+  successCondition = "",
+  doNot = [],
+  collaborators = [],
+  authoritativeBrief = false,
+} = {}) {
   return {
     goal: String(goal || "").trim(),
     round: 0,
@@ -20,16 +27,22 @@ function createTaskState({ goal, primaryTool = "" } = {}) {
     guidance: "",
     /** Set once the loop pushed back on an empty-handed delivery. */
     deliverPushbackUsed: false,
-    /** The task brief beyond the goal, defined by the model on its first
-     * decision: what done looks like, and the adjacent actions the literal
-     * request does not license. Pinned into every later round. */
-    successCondition: "",
-    doNot: [],
+    /** Canonical Task constraints outrank any planning suggestion the model
+     * returns. Legacy direct callers can still let the first decision fill
+     * these fields until they migrate behind TaskRuntime. */
+    successCondition: String(successCondition || "").trim().slice(0, 600),
+    doNot: (Array.isArray(doNot) ? doNot : [])
+      .map((d) => String(d || "").trim())
+      .filter(Boolean)
+      .slice(0, 12),
+    authoritativeBrief: authoritativeBrief === true,
+    collaborators: Array.isArray(collaborators) ? collaborators : [],
   };
 }
 
 /** First non-empty definition wins — the brief never changes mid-task. */
 function setTaskBrief(state, { successCondition, doNot } = {}) {
+  if (state.authoritativeBrief) return;
   if (!state.successCondition && String(successCondition || "").trim()) {
     state.successCondition = String(successCondition).trim().slice(0, 300);
   }

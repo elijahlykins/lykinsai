@@ -113,7 +113,7 @@ function summariseResult(result) {
   }
 }
 
-async function callModel({ apiBase, getAuthToken, fetchImpl }, { system, user }) {
+async function callModel({ apiBase, getAuthToken, fetchImpl }, { system, user, signal }) {
   const doFetch = fetchImpl || fetch;
   const token = await getAuthToken?.().catch(() => null);
   if (!token) throw new Error("not signed in");
@@ -121,6 +121,7 @@ async function callModel({ apiBase, getAuthToken, fetchImpl }, { system, user })
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify({ stage: "decide", system, user, schema: DECISION_SCHEMA, maxTokens: 900 }),
+    signal,
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -193,7 +194,10 @@ async function runLocalAgentTask({
 
     let decision;
     try {
-      decision = await callModel({ apiBase, getAuthToken, fetchImpl }, { system: SYSTEM_PROMPT, user });
+      decision = await callModel(
+        { apiBase, getAuthToken, fetchImpl },
+        { system: SYSTEM_PROMPT, user, signal },
+      );
     } catch (e) {
       return {
         ok: false,

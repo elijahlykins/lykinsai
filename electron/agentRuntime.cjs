@@ -19,6 +19,13 @@ const browserAgent = require("./browser-agent/index.cjs");
 // progressively, verification per tool, one terminal delivery. Falls back to
 // the legacy single-shot streamChat path when the model endpoint is down.
 const botHarness = require("./bot-harness/index.cjs");
+const { TaskRuntime } = require("./task-runtime/taskRuntime.cjs");
+const { isTerminalTaskStatus } = require("./task-runtime/task.cjs");
+const { BotExecutor } = require("./task-runtime/executors/botExecutor.cjs");
+const {
+  BrowserExecutorAdapter,
+} = require("./task-runtime/executors/browserExecutorAdapter.cjs");
+const { LocalExecutorAdapter } = require("./task-runtime/executors/localExecutorAdapter.cjs");
 // Local Mode task runner (files + terminal on the user's machine). Only used
 // when the user enabled Local Mode from the Vault switch.
 const localSystem = require("./localSystem.cjs");
@@ -953,6 +960,10 @@ function createAgentRuntime(deps) {
   let activeAgentId = null;
   let agentModeOn = false;
   let persistTimer = null;
+  const taskRuntime = new TaskRuntime({
+    onEvent: (event) => emit("lykn:task-event", event),
+  });
+  const botExecutor = new BotExecutor({ runBotTask: botHarness.runBotTask });
 
   // Document extraction's server fallback needs the api base + token this
   // runtime already holds; local_read_file works without it, it just loses
@@ -1159,6 +1170,7 @@ function createAgentRuntime(deps) {
       // A Bot running a user-approved browser task. The chat bar uses this to
       // show the tiny live viewport above the composer.
       botBrowser: !!(a.headless && a.botBrowserRun),
+      taskId: String(a.activeTaskId || ""),
       role,
       pinned: role === "main" || !!a.pinned,
       // Parked-on-you state travels with the agent, not only on the transient
@@ -1793,6 +1805,7 @@ function createAgentRuntime(deps) {
       const done = (approved) => {
         if (settled) return;
         settled = true;
+        taskRuntime.resolveApproval(agent.activeTaskId, approved);
         if (agent.pendingChoice?.id === choiceId) agent.pendingChoice = null;
         agent.status = "running";
         agent.busy = true;
@@ -1807,6 +1820,13 @@ function createAgentRuntime(deps) {
       };
       agent.status = "waiting";
       agent.busy = true;
+      if (taskRuntime.get(agent.activeTaskId)?.status !== "waiting_for_approval") {
+        taskRuntime.requireApproval(agent.activeTaskId, {
+          choiceId,
+          type: "browse-approval",
+          question: msg,
+        });
+      }
       agent.step = "Waiting for your go-ahead…";
       agent.partialText = msg;
       sendToAgentChannels(agent.id, "lykn:agent-delta", { text: msg, final: false });
@@ -2584,8 +2604,7 @@ function createAgentRuntime(deps) {
     if (patch.url != null) a.url = patch.url;
     if (patch.skill) a.skill = patch.skill;
     a.updatedAt = new Date().toISOString();
-    emit("lykn:agent-progress", {
-      agentId,
+    sendToAgentChannels(agentId, "lykn:agent-progress", {
       ...publicAgent(a),
       ...(patch.message ? { message: patch.message } : {}),
     });
@@ -2812,11 +2831,21 @@ function createAgentRuntime(deps) {
    */
   function sanitizeBotProfile(raw) {
     if (!raw || typeof raw !== "object") return null;
+    const id = String(raw.id || "").trim().slice(0, 120);
     const name = String(raw.name || "").trim().slice(0, 60);
     const role = String(raw.role || "").trim().slice(0, 80);
     const persona = String(raw.persona || "").trim().slice(0, 1200);
-    if (!name && !persona) return null;
-    return { name, role, persona };
+    if (!id && !name && !persona) return null;
+    return {
+      id,
+      name,
+      role,
+      persona,
+      face: String(raw.face || "").trim().slice(0, 60),
+      eyes: String(raw.eyes || "").trim().slice(0, 60),
+      color: String(raw.color || "").trim().slice(0, 60),
+      chatId: String(raw.chatId || "").trim().slice(0, 160),
+    };
   }
 
   function createAgent({ title, goal, silent, role, activate, history, headless, bot } = {}) {
@@ -3281,12 +3310,13 @@ function createAgentRuntime(deps) {
   function stopAgent(agentId) {
     const a = agents.get(agentId || activeAgentId);
     if (!a) return { ok: false, error: "not_found" };
+    if (a.activeTaskId) taskRuntime.cancel(a.activeTaskId, "user_stop");
     abortAgent(a, "stopped");
     a.step = "Stopped";
     a.updatedAt = new Date().toISOString();
     schedulePersist();
     emitProgress(a.id, { status: "idle", step: "Stopped" });
-    emit("lykn:agent-done", { agentId: a.id, text: "", stopped: true });
+    sendToAgentChannels(a.id, "lykn:agent-done", { text: "", stopped: true });
     return { ok: true, agent: publicAgent(a) };
   }
 
@@ -3297,6 +3327,7 @@ function createAgentRuntime(deps) {
     if (isMainAgent(a)) {
       return { ok: false, error: "main_pinned" };
     }
+    if (a.activeTaskId) taskRuntime.cancel(a.activeTaskId, "agent_closed");
     abortAgent(a, "closed");
     try {
       destroyBrowserWindow?.(id);
@@ -3335,6 +3366,7 @@ function createAgentRuntime(deps) {
     for (const id of ids) {
       const a = agents.get(id);
       if (!a) continue;
+      if (a.activeTaskId) taskRuntime.cancel(a.activeTaskId, "agent_closed");
       abortAgent(a, "closed");
       try {
         destroyBrowserWindow?.(id);
@@ -3398,7 +3430,18 @@ function createAgentRuntime(deps) {
   }
 
   function sendToAgentChannels(agentId, channel, payload) {
-    emit(channel, { agentId, ...payload });
+    const task = taskRuntime.get(agents.get(agentId)?.activeTaskId);
+    emit(channel, {
+      agentId,
+      ...(task
+        ? {
+            taskId: task.id,
+            runId: task.runId,
+            botTaskId: task.association.botTaskId || "",
+          }
+        : {}),
+      ...payload,
+    });
   }
 
   /** Recent route decisions, so repeating an ask costs nothing. */
@@ -3730,16 +3773,13 @@ function createAgentRuntime(deps) {
       const botSkill =
         HEADLESS_SKILLS.has(skill) || skill === "browser" ? skill : "general";
       const fullAsk = String(stepMeta?.fullAsk || rawStep).trim() || rawStep;
-      // Task-shaped turns run the Bot harness: the decide → act → verify loop
-      // with the persona in the system prompt and progressive tool docs.
-      // Casual chat ("general") keeps the fast streaming path — a harness
-      // round-trip on "hey, how's it going" is pure latency. Any failure to
-      // even run the loop degrades to the legacy single-shot dispatch, so a
-      // down model endpoint costs quality, never the whole turn.
-      if (botSkill !== "general" && botHarnessEnabled()) {
+      // Every Bot turn enters TaskRuntime -> BotExecutor. Casual chat selects
+      // the deterministic reply-only branch (one stream, no decide/verify
+      // rounds); task-shaped work keeps the existing Bot Harness core.
+      if (botHarnessEnabled()) {
         try {
           return await runBotHarnessTask(agent, fullAsk, attachments, gen, {
-            primaryTool: BOT_SKILL_TO_TOOL[botSkill] || "",
+            primaryTool: BOT_SKILL_TO_TOOL[botSkill] || "reply",
           });
         } catch (e) {
           diagnostics.recordRouteDecision?.({
@@ -3922,6 +3962,7 @@ function createAgentRuntime(deps) {
   }
 
   async function streamChat(agent, text, attachments, skill, gen, opts = {}) {
+    if (opts.signal?.aborted) throw new Error("Task aborted.");
     const token = await getAuthToken().catch(() => null);
     if (!token) {
       throw new Error("Sign in to LYKN first. Open the main LYKN window and log in, then try again.");
@@ -4130,6 +4171,23 @@ function createAgentRuntime(deps) {
         /* roster is best-effort */
       }
     }
+    const botSoftChatPrompt =
+      softChat && agent.headless && agent.botProfile
+        ? [
+            `You are ${agent.botProfile.name || "the user's Bot"}${
+              agent.botProfile.role ? `, their ${agent.botProfile.role}` : ""
+            } - a standing teammate inside LYKN.`,
+            agent.botProfile.persona
+              ? `Working style the user gave you:\n${agent.botProfile.persona}`
+              : "",
+            "Stay in this Bot identity. Have a normal, concise conversation.",
+            "Do not call tools, invent a plan, or announce work for this reply-only turn.",
+            "Never silently broaden the user's request or offer unrelated follow-up work.",
+            `User: ${clipped}`,
+          ]
+            .filter(Boolean)
+            .join("\n\n")
+        : "";
     const body = {
       model: "lykn",
       intent: "ask",
@@ -4174,7 +4232,8 @@ function createAgentRuntime(deps) {
               `You are ALREADY in Agent Mode — never tell them to switch modes.\n\n` +
               `User: ${clipped}`
             : softChat
-              ? `You are LYKN — a sharp, friendly teammate chatting in the browser sidebar. ` +
+              ? botSoftChatPrompt ||
+                (`You are LYKN — a sharp, friendly teammate chatting in the browser sidebar. ` +
                 `You are also a real browser agent: when the user asks, you can open sites, click, type, fill forms, ` +
                 `and complete multi-step tasks in their tabs — but only when they ask for work, never during chat.\n` +
                 `Have a normal conversation. When [PAGE CONTENT] / FULL PAGE TEXT is in the prompt, that IS what is on their screen — ` +
@@ -4188,7 +4247,7 @@ function createAgentRuntime(deps) {
                 `Small talk and general questions are fine — just reply.\n` +
                 `Do NOT include “Want me to…” / follow-up questions — those appear in the UI above the chat bar.\n\n` +
                 (softChatTabsNote ? `${softChatTabsNote}\n` : "") +
-                `User: ${clipped}`
+                `User: ${clipped}`)
             : `You are LYKN Agent Mode — a desktop cowork agent that researches, builds, browses, and edits deliverables.\n` +
               `Skill: ${skill}.\n` +
               `${AGENT_MODE_STEP_DOCTRINE}\n` +
@@ -4377,7 +4436,7 @@ function createAgentRuntime(deps) {
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(body),
-      signal: agent.abort?.signal,
+      signal: opts.signal || agent.abort?.signal,
     });
 
     const suppressDone = !!opts.suppressDone;
@@ -6586,6 +6645,7 @@ function createAgentRuntime(deps) {
       const done = (approved) => {
         if (settled) return;
         settled = true;
+        taskRuntime.resolveApproval(agent.activeTaskId, approved);
         agent.status = "running";
         resolve(approved);
       };
@@ -6597,6 +6657,12 @@ function createAgentRuntime(deps) {
         at: new Date().toISOString(),
       };
       agent.status = "waiting";
+      taskRuntime.requireApproval(agent.activeTaskId, {
+        choiceId,
+        type: "local-approval",
+        question: msg,
+        tool,
+      });
       agent.step = "Waiting for your approval…";
       agent.partialText = msg;
       sendToAgentChannels(agent.id, "lykn:agent-choice", {
@@ -6627,7 +6693,12 @@ function createAgentRuntime(deps) {
    * modular local task runner; risky steps pause for approval via the agent
    * choice mechanism. Returns the final user-facing summary.
    */
-  async function runLocalTask(agent, ask, gen) {
+  async function runLocalTask(
+    agent,
+    ask,
+    gen,
+    { signal = agent.abort?.signal, structured = false } = {},
+  ) {
     agent.skill = "local";
     agent.status = "running";
     agent.step = "Working on your Mac…";
@@ -6641,7 +6712,7 @@ function createAgentRuntime(deps) {
         apiBase,
         getAuthToken,
         conversationHistory: historyForPlanner(agent),
-        signal: agent.abort?.signal,
+        signal,
         onProgress: (p) => {
           if (gen !== agent.generation) return;
           if (p.phase === "acting") {
@@ -6657,10 +6728,13 @@ function createAgentRuntime(deps) {
       result = { ok: false, status: "failed", answer: `Local task failed: ${e?.message || e}` };
     }
 
-    if (gen !== agent.generation) return "";
+    if (gen !== agent.generation || signal?.aborted) {
+      const cancelled = { ok: false, status: "cancelled", answer: "Task cancelled." };
+      return structured ? cancelled : "";
+    }
     agent.status = "running";
     agent.lastDeliverableKind = "local";
-    return String(result?.answer || "Done.").trim() || "Done.";
+    return structured ? result : String(result?.answer || "Done.").trim() || "Done.";
   }
 
   // ── Bot harness ───────────────────────────────────────────────────────────
@@ -6734,7 +6808,39 @@ function createAgentRuntime(deps) {
   }
 
   async function runBotHarnessTask(agent, ask, attachments, gen, { primaryTool = "" } = {}) {
-    const model = browserAgent.createAgentModel({ apiBase, getAuthToken });
+    const canonicalTask = taskRuntime.get(agent.activeTaskId);
+    if (!canonicalTask) throw new Error("canonical_bot_task_missing");
+    const modelUsage = {
+      taskId: canonicalTask.id,
+      calls: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      upstreamMs: 0,
+      byStage: {},
+    };
+    const model = browserAgent.createAgentModel({
+      apiBase,
+      getAuthToken,
+      onUsage: (usage) => {
+        modelUsage.calls += 1;
+        modelUsage.inputTokens += usage.inputTokens || 0;
+        modelUsage.outputTokens += usage.outputTokens || 0;
+        modelUsage.upstreamMs += usage.upstreamMs || 0;
+        const stage = String(usage.stage || "other");
+        const bucket =
+          modelUsage.byStage[stage] ||
+          (modelUsage.byStage[stage] = {
+            calls: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            upstreamMs: 0,
+          });
+        bucket.calls += 1;
+        bucket.inputTokens += usage.inputTokens || 0;
+        bucket.outputTokens += usage.outputTokens || 0;
+        bucket.upstreamMs += usage.upstreamMs || 0;
+      },
+    });
     const atts = Array.isArray(attachments) ? attachments : [];
     const attachmentsNote = atts
       .map((a) =>
@@ -6748,68 +6854,52 @@ function createAgentRuntime(deps) {
     // the harness owns the loop and the prompts, not the capability. Streamed
     // output reaches the user live (suppressDone: the harness delivers the
     // closing message itself).
-    const streamTool = (skill) => async ({ instruction }) => {
+    const streamTool = (skill) => async ({ instruction, signal }) => {
+      if (signal?.aborted) return { ok: false, output: "", summary: "cancelled" };
       const out = await streamChat(agent, instruction, atts, skill, gen, {
         suppressDone: true,
+        signal,
       });
+      if (signal?.aborted) return { ok: false, output: "", summary: "cancelled" };
       const text = String(out || "").trim();
       return { ok: !!text, output: text, summary: text.slice(0, 500) };
     };
+    const localAdapter = new LocalExecutorAdapter({
+      runLocalTask: ({ instruction, signal }) =>
+        runLocalTask(agent, instruction, gen, { signal, structured: true }),
+    });
+    const browserAdapter = new BrowserExecutorAdapter({
+      isDeclined: () =>
+        !!(
+          agent.botBrowseDeclinedAt &&
+          Date.now() - agent.botBrowseDeclinedAt < PENDING_QUESTION_MS
+        ),
+      park: ({ taskId, instruction }) => {
+        agent.pendingBotBrowse = {
+          taskId,
+          ask: instruction,
+          at: Date.now(),
+        };
+      },
+    });
     const executors = {
       reply: streamTool("general"),
       research_report: streamTool("research"),
       edit_report: streamTool("report-edit"),
       build_artifact: streamTool("build"),
       generate_image: streamTool("image"),
-      local_computer: async ({ instruction }) => {
-        const out = await runLocalTask(agent, instruction, gen);
-        const text = String(out || "").trim();
-        return { ok: !!text, output: text, summary: text.slice(0, 500) };
-      },
-      browser: async ({ instruction }) => {
-        // The user already said no to the browser for this errand — never
-        // re-ask one round later. A failed tool run puts the loop on its
-        // recovery path: answer another way or deliver honestly.
-        if (
-          agent.botBrowseDeclinedAt &&
-          Date.now() - agent.botBrowseDeclinedAt < PENDING_QUESTION_MS
-        ) {
-          return {
-            ok: false,
-            output: "",
-            summary:
-              "the user already chose to stay out of the browser for this task — " +
-              "answer in chat with what you know, use another tool, or deliver honestly",
-          };
-        }
-        // The browser never opens uninvited: park the standing opt-in
-        // question and hand the turn back. A yes re-runs the errand armed
-        // (botBrowserRun) through the real browse pipeline. The harness's
-        // instruction carries the errand with conversation context folded
-        // in, which is a better browse goal than the raw ask.
-        agent.pendingBotBrowse = {
-          ask: String(instruction || ask).trim() || ask,
-          at: Date.now(),
-        };
-        return {
-          terminal: "waiting_for_user",
-          question:
-            "This looks like something I'd need the browser for — want me to open it up and take care of it?",
-          questionOptions: ["Yes, use the browser", "No, just answer here"],
-        };
-      },
+      local_computer: (args) => localAdapter.execute(args),
+      browser: (args) => browserAdapter.execute({ ...args, task: canonicalTask }),
     };
 
-    const res = await botHarness.runBotTask({
-      goal: botAskCore(ask),
-      bot: agent.botProfile || null,
+    const execution = await taskRuntime.execute(canonicalTask.id, botExecutor, {
+      executorName: "bot",
       model,
       executors,
       conversationHistory: historyForPlanner(agent),
       attachmentsNote,
       localMode: localModeEnabled(),
       primaryTool,
-      signal: agent.abort?.signal,
       onApproval: ({ question }) => awaitBrowseApproval(agent, { question }),
       onProgress: (p) => {
         if (gen !== agent.generation) return;
@@ -6826,9 +6916,17 @@ function createAgentRuntime(deps) {
         emitProgress(agent.id, { status: "running", step: agent.step, skill: agent.skill });
       },
     });
+    agent.lastBotModelUsage = modelUsage;
+    const res = execution.result || {
+      status: execution.task?.status || "failed",
+      answer: execution.task?.completion?.output || "",
+    };
 
     if (gen !== agent.generation) return "";
-    if (res.status === "waiting_for_user") {
+    if (
+      execution.task?.status === "waiting_for_user" ||
+      execution.task?.status === "waiting_for_approval"
+    ) {
       return offerAgentQuestion(agent, res.question || res.answer, res.questionOptions || [], {
         // The parked browser question resumes through pendingBotBrowse, not
         // through a re-sent ask — an empty resume ask keeps the two paths
@@ -6836,7 +6934,7 @@ function createAgentRuntime(deps) {
         ask: res.parked ? "" : ask,
       });
     }
-    return res.answer || "Done.";
+    return res.answer || res.output || "Done.";
   }
 
   /**
@@ -10161,7 +10259,16 @@ function createAgentRuntime(deps) {
 
   async function send(
     agentId,
-    { text, attachments, forceBuild, skipComplexGate, presetSteps, fromSuggestion, bot } = {},
+    {
+      text,
+      attachments,
+      forceBuild,
+      skipComplexGate,
+      presetSteps,
+      fromSuggestion,
+      bot,
+      task: taskRequest,
+    } = {},
   ) {
     let agent = resolveAgent(agentId);
     // Bot dispatches refresh the structured identity every turn — the agent
@@ -10180,10 +10287,65 @@ function createAgentRuntime(deps) {
     }
     if (!agent) return { ok: false, error: "not_found" };
     if (agents.size > MAX_AGENTS) return { ok: false, error: `max_agents_${MAX_AGENTS}` };
+    if (agent.headless && !agent.botProfile) {
+      // Compatibility for Bot agents created before structured Bot identity
+      // was persisted. Keep them inside TaskRuntime using their durable title
+      // rather than silently dropping to generic LYKN identity.
+      agent.botProfile = sanitizeBotProfile({
+        id: `legacy:${agent.id}`,
+        name: agent.title || "Teammate",
+        role: "Teammate",
+        persona: "",
+      });
+    }
 
     let q = String(text || "").trim();
     if (!q && !(attachments && attachments.length)) {
       return { ok: false, error: "empty" };
+    }
+
+    // A Custom Bot turn enters one canonical Task before routing or execution.
+    // Renderer BotTask is only the queue projection identified by botTaskId.
+    let canonicalTask = null;
+    if (agent.headless && agent.botProfile) {
+      const request = taskRequest && typeof taskRequest === "object" ? taskRequest : {};
+      const botTaskId = String(request.botTaskId || "").trim();
+      const indexed = botTaskId ? taskRuntime.getByBotTaskId(botTaskId) : null;
+      const active = taskRuntime.get(agent.activeTaskId);
+      const resumableActive =
+        active &&
+        !isTerminalTaskStatus(active.status) &&
+        (!botTaskId || active.association.botTaskId === botTaskId);
+      canonicalTask = indexed && !isTerminalTaskStatus(indexed.status)
+        ? indexed
+        : resumableActive
+          ? active
+          : null;
+      if (!canonicalTask) {
+        if (active && !isTerminalTaskStatus(active.status)) {
+          taskRuntime.cancel(active.id, "superseded_by_new_task");
+        }
+        canonicalTask = taskRuntime.createBotTask({
+          objective: String(request.objective || botAskCore(q) || q).trim(),
+          capabilities: [
+            "reply",
+            "research_report",
+            "edit_report",
+            "build_artifact",
+            "generate_image",
+            ...(localModeEnabled() ? ["local_computer"] : []),
+            "browser",
+          ],
+          bot: { ...agent.botProfile, ...(bot || {}) },
+          botId: request.botId || bot?.id || agent.botProfile.id,
+          botTaskId,
+          chatId: request.chatId || bot?.chatId || agent.botProfile.chatId,
+          agentId: agent.id,
+          parentTaskId: request.parentTaskId,
+          teammates: request.teammates,
+        });
+      }
+      agent.activeTaskId = canonicalTask.id;
     }
 
     // Headless agents (Bots) work off to the side: they never become the
@@ -10307,9 +10469,17 @@ function createAgentRuntime(deps) {
       if (pendingBrowse) {
         if (BOT_BROWSER_BARE_YES_RE.test(q)) {
           agent.botBrowserRun = true;
+          taskRuntime.beginCompatibilityExecution(
+            pendingBrowse.taskId || agent.activeTaskId,
+            "browser_compatibility_adapter",
+          );
           q = pendingBrowse.ask;
         } else if (BOT_BROWSER_YES_START_RE.test(q) && !BOT_BROWSER_NO_START_RE.test(q)) {
           agent.botBrowserRun = true;
+          taskRuntime.beginCompatibilityExecution(
+            pendingBrowse.taskId || agent.activeTaskId,
+            "browser_compatibility_adapter",
+          );
           q = `${pendingBrowse.ask}\nAdditional guidance from the user: ${q}`;
         } else if (BOT_BROWSER_BARE_NO_RE.test(q)) {
           agent.skipBotBrowseAskOnce = true;
@@ -11656,6 +11826,28 @@ function createAgentRuntime(deps) {
           : [];
       agent.lastSuggestions = finishSuggestions;
 
+      // BotExecutor normally settles the Task before this host formatting
+      // layer. The browser compatibility bridge still finishes here after
+      // leaving the harness, so record that result against the same Task id.
+      const runtimeTask = taskRuntime.get(agent.activeTaskId);
+      if (agent.headless && runtimeTask && !isTerminalTaskStatus(runtimeTask.status)) {
+        if (waitingUser || waitingChoice) {
+          if (runtimeTask.status !== "waiting_for_approval") {
+            taskRuntime.waitForUser(runtimeTask.id, {
+              question: String(agent.waitingUserAction || doneText || ""),
+            });
+          }
+        } else {
+          taskRuntime.complete(runtimeTask.id, {
+            executor:
+              lastSkill === "browse" || lastSkill === "browse-summary"
+                ? "browser_compatibility_adapter"
+                : "bot",
+            output: String(doneText || answer || ""),
+          });
+        }
+      }
+
       if (answer) {
         agent.history.push({
           role: "assistant",
@@ -11740,6 +11932,11 @@ function createAgentRuntime(deps) {
     } catch (e) {
       if (gen !== agent.generation) return { ok: false, error: "superseded" };
       const message = e?.name === "AbortError" ? "Stopped." : e?.message || String(e);
+      const runtimeTask = taskRuntime.get(agent.activeTaskId);
+      if (agent.headless && runtimeTask && !isTerminalTaskStatus(runtimeTask.status)) {
+        if (e?.name === "AbortError") taskRuntime.cancel(runtimeTask.id, "aborted");
+        else taskRuntime.fail(runtimeTask.id, message);
+      }
       agent.busy = false;
       agent._fromSuggestion = false;
       agent.partialText = "";
@@ -11857,6 +12054,7 @@ function createAgentRuntime(deps) {
     classifyAgentSkill,
     disposeAll,
     publicAgent,
+    getTask: (taskId) => taskRuntime.get(taskId),
     // Test-only: hand back the internal mutable agent so security tests can
     // seed a pending choice and exercise the REAL resolveChoice attestation.
     // This is never forwarded to a renderer — the runtime object lives only in

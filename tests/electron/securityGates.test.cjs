@@ -56,7 +56,8 @@ test("SSRF helpers remain the canonical network safety boundary", () => {
   assert.match(src, /assertPublicHttpUrl\(/);
 });
 
-test("runtime agent prompt files were not moved", () => {
+test("browser runtime prompt remains and Bot runtime identity is not an AGENTS.md", () => {
   assert.equal(fs.existsSync(path.join(ELECTRON_ROOT, "browser-agent/AGENTS.md")), true);
-  assert.equal(fs.existsSync(path.join(ELECTRON_ROOT, "bot-harness/AGENTS.md")), true);
+  assert.equal(fs.existsSync(path.join(ELECTRON_ROOT, "bot-harness/prompts/identity.md")), true);
+  assert.equal(fs.existsSync(path.join(ELECTRON_ROOT, "bot-harness/AGENTS.md")), false);
 });

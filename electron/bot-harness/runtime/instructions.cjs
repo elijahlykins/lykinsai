@@ -2,9 +2,9 @@
  * Loads the Bot harness markdown corpus. Files live under
  * electron/bot-harness/ and are cached after the first read.
  *
- * The operating rules are deliberately few — AGENTS.md (identity + LYKN
- * context), core.md (reasoning and the loop), safety.md — and all of them are
- * always loaded. Tool documentation is NOT: the system prompt carries only a
+ * The operating rules are deliberately few: prompts/identity.md (identity +
+ * LYKN context), core.md (reasoning and the loop), and safety.md. Tool
+ * documentation is NOT always loaded: the system prompt carries only a
  * one-line index per tool, and a tool's full doc is loaded into the task the
  * first time the model selects it (see toolRegistry.cjs). That keeps the
  * system prompt small and byte-stable, and it means the model reads a tool's
@@ -32,9 +32,9 @@ function readCached(filePath) {
   return text;
 }
 
-/** Identity + LYKN company context. */
-function loadAgentsMd() {
-  return readCached(path.join(ROOT_DIR, "AGENTS.md"));
+/** Runtime identity + LYKN company context. Not a development AGENTS.md. */
+function loadIdentityPrompt() {
+  return readCached(path.join(ROOT_DIR, "prompts", "identity.md"));
 }
 
 /** Reasoning, tool choice, asking vs acting, delivery. */
@@ -56,7 +56,7 @@ function loadToolDoc(name) {
 
 module.exports = {
   AGENT_DIR,
-  loadAgentsMd,
+  loadIdentityPrompt,
   loadCoreRules,
   loadSafetyRules,
   loadToolDoc,

@@ -14,6 +14,9 @@ export type BotTaskStatus = "queued" | "running" | "done" | "failed";
 
 export type BotTask = {
   id: string;
+  /** Canonical main-process Task identity once dispatch is accepted. */
+  runtimeTaskId?: string;
+  runId?: string;
   text: string;
   status: BotTaskStatus;
   createdAt: string;
@@ -295,9 +298,59 @@ export function startTask(bot: Bot, taskId: string): Bot {
   };
 }
 
+export function bindRuntimeTask(
+  bot: Bot,
+  botTaskId: string,
+  { taskId, runId }: { taskId?: string; runId?: string },
+): Bot {
+  return {
+    ...bot,
+    tasks: bot.tasks.map((task) =>
+      task.id === botTaskId
+        ? {
+            ...task,
+            runtimeTaskId: String(taskId || task.runtimeTaskId || ""),
+            runId: String(runId || task.runId || taskId || ""),
+          }
+        : task,
+    ),
+  };
+}
+
+export function finishTask(
+  bot: Bot,
+  taskId: string,
+  { ok = true, result = "" }: { ok?: boolean; result?: string } = {},
+): Bot {
+  const target = bot.tasks.find((task) => task.id === taskId);
+  if (!target || target.status === "done" || target.status === "failed") return bot;
+  const now = new Date().toISOString();
+  const tasks = bot.tasks.map((task) =>
+    task.id === taskId
+      ? {
+          ...task,
+          status: (ok ? "done" : "failed") as BotTaskStatus,
+          finishedAt: now,
+          result: String(result ?? "").slice(0, 20000),
+        }
+      : task,
+  );
+  const settled = tasks.filter((task) => task.status === "done" || task.status === "failed");
+  const overflow = settled.length - DONE_HISTORY_LIMIT;
+  const trimmed =
+    overflow > 0
+      ? tasks.filter(
+          (task) =>
+            !(task.status === "done" || task.status === "failed") ||
+            settled.indexOf(task) >= overflow,
+        )
+      : tasks;
+  return { ...bot, tasks: trimmed };
+}
+
 /**
- * Close out whichever task is running (the runtime reports per agent, not per
- * task, so the running task is by construction the one that finished).
+ * Legacy convenience for callers that have not yet supplied a canonical
+ * task identity. Runtime events use finishTask with the exact BotTask id.
  * Finished history is trimmed so a long-lived bot doesn't grow unbounded.
  */
 export function finishRunningTask(
@@ -306,28 +359,7 @@ export function finishRunningTask(
 ): Bot {
   const running = runningTask(bot);
   if (!running) return bot;
-  const now = new Date().toISOString();
-  const tasks = bot.tasks.map((t) =>
-    t.id === running.id
-      ? {
-          ...t,
-          status: (ok ? "done" : "failed") as BotTaskStatus,
-          finishedAt: now,
-          result: String(result ?? "").slice(0, 20000),
-        }
-      : t,
-  );
-  const settled = tasks.filter((t) => t.status === "done" || t.status === "failed");
-  const overflow = settled.length - DONE_HISTORY_LIMIT;
-  const trimmed =
-    overflow > 0
-      ? tasks.filter(
-          (t) =>
-            !(t.status === "done" || t.status === "failed") ||
-            settled.indexOf(t) >= overflow,
-        )
-      : tasks;
-  return { ...bot, tasks: trimmed };
+  return finishTask(bot, running.id, { ok, result });
 }
 
 export function removeQueuedTask(bot: Bot, taskId: string): Bot {

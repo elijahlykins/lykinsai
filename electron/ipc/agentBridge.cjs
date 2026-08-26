@@ -928,7 +928,7 @@ function registerAgentBridgeIpc(d) {
   
     // Studio agent rail chat bar → Main orchestrator. Enables Agent Mode
     // quietly (no floating sidebar window — the rail is already showing).
-    ipcMain.handle("lykn:studio-bar-send", async (_e, { text, attachments, agentId, fromSuggestion, bot } = {}) => {
+    ipcMain.handle("lykn:studio-bar-send", async (_e, { text, attachments, agentId, fromSuggestion, bot, task } = {}) => {
       const rt = runtime();
       try {
         if (!rt.isAgentModeOn?.()) rt.setAgentMode?.(true);
@@ -937,7 +937,13 @@ function registerAgentBridgeIpc(d) {
       // runtime's active agent. With no target at all, the runtime creates a
       // fresh agent (and its paired tab) for the prompt.
       const target = String(agentId || "").trim() || rt.getActiveId?.() || "";
-      return rt.send(target, { text, attachments, fromSuggestion: !!fromSuggestion, bot: bot || null });
+      return rt.send(target, {
+        text,
+        attachments,
+        fromSuggestion: !!fromSuggestion,
+        bot: bot || null,
+        task: task || null,
+      });
     });
   
     // Empty browser-tab composer → the browser agent. The preload exists on all

@@ -55,6 +55,7 @@ function normalizeDecision(raw) {
  * Run one Bot task to completion, a question, or the round budget.
  *
  * @param {object} opts
+ * @param {object} [opts.task] - canonical Task supplied by TaskRuntime
  * @param {string} opts.goal - the user's ask, unwrapped of any dispatch brief
  * @param {{name?:string, role?:string, persona?:string}|null} opts.bot
  * @param {object} opts.model - `{ structured(stage, {system,user,schema,maxTokens,signal}), verify({system,user,signal}) }`
@@ -70,6 +71,7 @@ function normalizeDecision(raw) {
  * @returns {Promise<{ok:boolean, status:string, answer:string, question?:string, questionOptions?:string[], events:Array}>}
  */
 async function runBotTask({
+  task = null,
   goal,
   bot = null,
   model,
@@ -83,10 +85,18 @@ async function runBotTask({
   signal = null,
   maxRounds = DEFAULT_MAX_ROUNDS,
 } = {}) {
+  const canonicalGoal = String(task?.objective || goal || "").trim();
+  const canonicalSuccess = Array.isArray(task?.successCriteria)
+    ? task.successCriteria.join(" ")
+    : "";
   const state = taskState.createTaskState({
-    goal,
+    goal: canonicalGoal,
     // Pre-load only docs for tools that exist in this configuration.
     primaryTool: registry.getTool(primaryTool, { localMode }) ? primaryTool : "",
+    successCondition: canonicalSuccess,
+    doNot: Array.isArray(task?.doNot) ? task.doNot : [],
+    collaborators: Array.isArray(task?.collaborators) ? task.collaborators : [],
+    authoritativeBrief: !!task,
   });
   const system = contextRouter.buildDecisionSystem({ bot, localMode });
   const aborted = () => signal?.aborted === true;
@@ -125,7 +135,8 @@ async function runBotTask({
       }),
     );
     if (aborted()) return finish("aborted", "Task aborted.");
-    // First non-empty definition wins; later rounds see it pinned in the brief.
+    // Legacy direct callers may still accept a first-round planning brief.
+    // Behind BotExecutor, canonical Task constraints make this a no-op.
     taskState.setTaskBrief(state, decision);
     if (decision.narration) onProgress({ phase: "thinking", narration: decision.narration });
 

@@ -13,8 +13,10 @@ import {
   botForAgent,
   botHasBoardActivity,
   botSeed,
+  bindRuntimeTask,
   createBot,
   enqueueTask,
+  finishTask,
   finishRunningTask,
   latestSettledTask,
   nextQueuedTask,
@@ -128,6 +130,33 @@ test("assignments queue in order and dispatch oldest-first", () => {
   assert.equal(runningTask(bot)?.text, "Book the dentist");
   assert.equal(queuedTasks(bot).length, 1);
   assert.equal(nextQueuedTask(bot)?.text, "Renew the domain");
+});
+
+test("BotTask projects canonical identity and exact-task settlement", () => {
+  const first = enqueueTask(createBot({ name: "Queue" }), "First");
+  const second = enqueueTask(first.bot, "Second");
+  let bot = startTask(second.bot, first.task.id);
+  bot = bindRuntimeTask(bot, first.task.id, { taskId: "task-a", runId: "run-a" });
+
+  bot = finishTask(bot, second.task.id, { result: "late second event" });
+  assert.equal(bot.tasks.find((task) => task.id === first.task.id)?.status, "running");
+  assert.equal(bot.tasks.find((task) => task.id === second.task.id)?.status, "done");
+
+  bot = finishTask(bot, first.task.id, { result: "first done" });
+  assert.deepEqual(
+    {
+      runtimeTaskId: bot.tasks.find((task) => task.id === first.task.id)?.runtimeTaskId,
+      runId: bot.tasks.find((task) => task.id === first.task.id)?.runId,
+      status: bot.tasks.find((task) => task.id === first.task.id)?.status,
+      result: bot.tasks.find((task) => task.id === first.task.id)?.result,
+    },
+    {
+      runtimeTaskId: "task-a",
+      runId: "run-a",
+      status: "done",
+      result: "first done",
+    },
+  );
 });
 
 test("finishing the running task records the result and frees the bot", () => {

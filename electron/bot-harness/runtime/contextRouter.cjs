@@ -2,7 +2,7 @@
  * Prompt assembly for the Bot harness.
  *
  * The system prompt is byte-stable for the life of a task (and across tasks
- * for the same bot): AGENTS.md + core + safety + the tool index + the bot's
+ * for the same bot): runtime identity + core + safety + the tool index + the bot's
  * own identity block + the output contract. Providers cache prompt prefixes,
  * and every decide call this task starts with the same rules — so nothing
  * volatile (task state, tool docs, history) is spliced in here. All of that
@@ -89,7 +89,7 @@ function decisionOutputContract() {
     '- kind "deliver": the task is done (or genuinely cannot proceed) and `answer` is the final message — what you did, what the user now has, anything you decided for them or could not finish. Deliver only when the work has actually run; the record below is what happened, and an empty record delivers nothing.',
     '- kind "ask_user": the task cannot continue without something only the user has. One question per task, everything bundled; put 2-4 complete tappable answers in `questionOptions` when you can genuinely propose them. Never ask permission to do the work itself — consequential actions get their own approval pause automatically.',
     'Set `risk`: "consequential" when the round\'s action spends money, destroys data, or delivers anything to another person (send, post, publish, share, submit). Working inside drafts and unshared deliverables is "low"; reading is "read".',
-    "On your FIRST decision of a task, also define the brief: `successCondition` — one sentence naming the observable outcome that means the task is done — and `doNot` — 2-5 adjacent actions the user's literal request does not license (for \"check my email\": drafting replies, organizing the inbox). They are pinned into every later round: the moment the success condition is satisfied, deliver and stop.",
+    "The TASK / SUCCESS CONDITION / DO NOT brief in the user message is authoritative. Never broaden or replace it. `successCondition` and `doNot` are optional planning suggestions for legacy callers only; TaskRuntime ignores them when a canonical Task is present.",
     "Always write `narration` — the user reads it live while you work.",
   ].join("\n");
 }
@@ -101,7 +101,7 @@ function decisionOutputContract() {
  */
 function buildDecisionSystem({ bot = null, localMode = false } = {}) {
   return [
-    instructions.loadAgentsMd(),
+    instructions.loadIdentityPrompt(),
     instructions.loadCoreRules(),
     registry.toolIndexBlock({ localMode }),
     instructions.loadSafetyRules(),
@@ -135,10 +135,9 @@ function buildTaskUser({
 
   // The full brief, not a bare goal line: what done looks like, the scope
   // wall, the licensed-work boundary, and the order to stop the moment the
-  // success condition holds. successCondition/doNot are defined by the model
-  // itself on its first decision (see the output contract) and pinned here
-  // every round after.
-  const doNot = [...state.doNot, "Continue looking for additional useful work."];
+  // success condition holds. Canonical Task constraints are supplied before
+  // the executor starts; model-authored planning fields cannot replace them.
+  const doNot = [...new Set([...state.doNot, "Continue looking for additional useful work."])];
   const brief = [
     "TASK:",
     state.goal,
@@ -156,11 +155,21 @@ function buildTaskUser({
     "STOP RULE:",
     "As soon as the success condition is satisfied, deliver and stop. Do not perform optional follow-up work.",
   ].join("\n");
+  const collaborators = (Array.isArray(state.collaborators) ? state.collaborators : [])
+    .map((bot) => `${bot.name}${bot.role ? ` (${bot.role})` : ""}`)
+    .filter(Boolean);
+  const collaborationBlock = collaborators.length
+    ? [
+        `AVAILABLE TEAMMATES:\n${collaborators.join(", ")}`,
+        `If a necessary part clearly belongs to one of them, deliver only [[ask ${state.collaborators[0].name}: the question]] so the runtime can relay it. Do not hand off optional work.`,
+      ].join("\n")
+    : "";
 
   return [
     convo ? `RECENT CONVERSATION:\n${convo}` : "",
     brief,
     attachmentsNote ? `ATTACHED BY THE USER:\n${attachmentsNote}` : "",
+    collaborationBlock,
     docs ? `TOOL INSTRUCTIONS YOU HAVE READ:\n\n${docs}` : "",
     `WHAT HAS HAPPENED THIS TASK:\n${formatEventsForModel(state)}`,
     state.guidance ? `GUIDANCE FROM THE LAST FAILURE:\n${state.guidance}` : "",
