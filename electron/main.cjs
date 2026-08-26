@@ -47,6 +47,18 @@ const {
 const overlayConstants = require("./windows/overlayConstants.cjs");
 const { initializeElectronServices } = require("./services/initializeElectronServices.cjs");
 const { registerAllIpc } = require("./ipc/index.cjs");
+const { attachDesktopAuth } = require("./auth/desktopAuth.cjs");
+const { attachAutoUpdate } = require("./updater/autoUpdate.cjs");
+const { attachGlassChrome } = require("./windows/glassChrome.cjs");
+const { attachOverlayFamily } = require("./windows/overlayFamily.cjs");
+const { attachScreenCapture } = require("./windows/screenCapture.cjs");
+const { attachOverlaySatellites } = require("./windows/overlaySatellites.cjs");
+const { attachMainStudio } = require("./windows/mainStudio.cjs");
+const { attachTray } = require("./tray/tray.cjs");
+const { attachOverlaySettings } = require("./overlay/settings.cjs");
+const { attachLiveWatch } = require("./overlay/liveWatch.cjs");
+const { attachOverlaySessions } = require("./overlay/sessions.cjs");
+const { attachWelcomeOnboarding } = require("./windows/welcomeOnboarding.cjs");
 
 // Intel-Mac glass fallback: see GLASS_FALLBACK in shell/appEnv.cjs.
 
@@ -355,28 +367,7 @@ const SUPABASE_AUTH_HOST = (() => {
 // triggering a clean external download.
 const GITHUB_AUTH_PATH_RE = /^\/(login|sessions?)(\/|$)/;
 
-function isAuthNavigation(url) {
-  try {
-    const parsed = new URL(url);
-    const host = parsed.hostname.toLowerCase();
-    if (AUTH_HOST_SUFFIXES.some((s) => host === s || host.endsWith("." + s))) {
-      return true;
-    }
-    if (SUPABASE_AUTH_HOST) {
-      if (host === SUPABASE_AUTH_HOST) return true;
-    } else if (host.endsWith(".supabase.co") || host.endsWith(".supabase.in")) {
-      // Dev fallback when project URL isn't in the Electron env — still
-      // prefer pinning via VITE_SUPABASE_URL in production builds.
-      return true;
-    }
-    if (host === "github.com" || host === "www.github.com") {
-      return GITHUB_AUTH_PATH_RE.test(parsed.pathname);
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
+function isAuthNavigation(...a) { return d.isAuthNavigation(...a); }
 
 // ── Deep-link sign-in (lykn://auth) ─────────────────────────────────────────
 // Google refuses OAuth inside embedded browsers ("This browser or app may not
@@ -400,48 +391,13 @@ let pendingDesktopAuthState = null;
 let lastAcceptedAuthHandoff = null;
 const DESKTOP_AUTH_STATE_TTL_MS = 15 * 60 * 1000;
 
-function desktopAuthStatePath() {
-  return path.join(app.getPath("userData"), "pending-desktop-auth-state.json");
-}
+function desktopAuthStatePath(...a) { return d.desktopAuthStatePath(...a); }
 
-function persistDesktopAuthState(record) {
-  pendingDesktopAuthState = record;
-  try {
-    fsSync.writeFileSync(desktopAuthStatePath(), JSON.stringify(record), {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-  } catch {
-    /* best-effort */
-  }
-}
+function persistDesktopAuthState(...a) { return d.persistDesktopAuthState(...a); }
 
-function loadDesktopAuthState() {
-  if (pendingDesktopAuthState && pendingDesktopAuthState.expiresAt > Date.now()) {
-    return pendingDesktopAuthState;
-  }
-  try {
-    const raw = fsSync.readFileSync(desktopAuthStatePath(), "utf8");
-    const parsed = JSON.parse(raw);
-    if (parsed?.state && parsed.expiresAt > Date.now()) {
-      pendingDesktopAuthState = parsed;
-      return parsed;
-    }
-  } catch {
-    /* none */
-  }
-  pendingDesktopAuthState = null;
-  return null;
-}
+function loadDesktopAuthState(...a) { return d.loadDesktopAuthState(...a); }
 
-function clearDesktopAuthState() {
-  pendingDesktopAuthState = null;
-  try {
-    fsSync.unlinkSync(desktopAuthStatePath());
-  } catch {
-    /* ignore */
-  }
-}
+function clearDesktopAuthState(...a) { return d.clearDesktopAuthState(...a); }
 
 // Loopback auth handoff: after Google finishes in the system browser,
 // /desktop-auth POSTs tokens to 127.0.0.1 so the Mac app can sign in without
@@ -464,313 +420,32 @@ let authHandoffServer = null;
 // 0 until listen() succeeds — mintDesktopAuthUrl only advertises a port we own.
 let authHandoffPort = 0;
 
-function authHandoffAllowedOrigin(origin) {
-  const o = String(origin || "");
-  if (!o) return "";
-  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(o)) return o;
-  if (/^https:\/\/(www\.)?lykn\.io$/i.test(o)) return o;
-  try {
-    const appOrigin = new URL(APP_URL).origin;
-    if (o === appOrigin) return o;
-  } catch {
-    /* ignore */
-  }
-  return "";
-}
+function authHandoffAllowedOrigin(...a) { return d.authHandoffAllowedOrigin(...a); }
 
-function isReplayOfLastAuthHandoff(access_token, refresh_token) {
-  return Boolean(
-    lastAcceptedAuthHandoff &&
-      lastAcceptedAuthHandoff.expiresAt > Date.now() &&
-      lastAcceptedAuthHandoff.access_token === access_token &&
-      lastAcceptedAuthHandoff.refresh_token === refresh_token,
-  );
-}
+function isReplayOfLastAuthHandoff(...a) { return d.isReplayOfLastAuthHandoff(...a); }
 
-function deliverAuthTokensToRenderer(access_token, refresh_token) {
-  pendingAuthTokens = { access_token, refresh_token };
-  if (!app.isReady()) return;
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    createMainWindow();
-  } else if (welcomeGateActive) {
-    // First-launch walkthrough owns the screen: hand the session to the
-    // hidden window but let the walkthrough decide when to reveal it.
-    flushPendingAuthTokens();
-    // Google round-trips through the system browser — tell the walkthrough
-    // the session landed so it can advance, and take the screen back.
-    if (welcomeWindow && !welcomeWindow.isDestroyed()) {
-      welcomeWindow.webContents.send("lykn:welcome-google-signed-in");
-      welcomeWindow.show();
-      welcomeWindow.focus();
-    }
-  } else {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-    flushPendingAuthTokens();
-  }
-  try {
-    app.focus({ steal: true });
-  } catch (_) {
-    /* best-effort */
-  }
-}
+function deliverAuthTokensToRenderer(...a) { return d.deliverAuthTokensToRenderer(...a); }
 
-function acceptAuthHandoffPayload(body) {
-  const access_token = String(body?.access_token || "");
-  const refresh_token = String(body?.refresh_token || "");
-  const state = String(body?.state || "");
-  if (!access_token || !refresh_token) {
-    return { ok: false, error: "missing_tokens" };
-  }
-  if (!isReplayOfLastAuthHandoff(access_token, refresh_token)) {
-    const expected = loadDesktopAuthState();
-    if (!expected?.state || !state || expected.state !== state) {
-      console.warn("[auth] localhost handoff rejected — missing or mismatched desktop_state");
-      return { ok: false, error: "bad_state" };
-    }
-    // Consume one-time state before any window work so a concurrent POST
-    // with the same mint can't both pass the state check.
-    clearDesktopAuthState();
-    lastAcceptedAuthHandoff = {
-      access_token,
-      refresh_token,
-      expiresAt: Date.now() + DESKTOP_AUTH_STATE_TTL_MS,
-    };
-  }
-  deliverAuthTokensToRenderer(access_token, refresh_token);
-  return { ok: true };
-}
+function acceptAuthHandoffPayload(...a) { return d.acceptAuthHandoffPayload(...a); }
 
-function startAuthHandoffServer(attempt = 0) {
-  if (authHandoffServer) return;
-  const port = AUTH_HANDOFF_PORT_CANDIDATES[attempt];
-  if (!port) {
-    console.warn(
-      "[auth] every localhost handoff port is in use — Google sign-in falls back to lykn://auth",
-    );
-    return;
-  }
-  let bound = false;
-  try {
-    const server = http.createServer((req, res) => {
-      const origin = String(req.headers.origin || "");
-      const allowOrigin = authHandoffAllowedOrigin(origin);
-      if (allowOrigin) {
-        res.setHeader("Access-Control-Allow-Origin", allowOrigin);
-        res.setHeader("Vary", "Origin");
-      }
-      // Chrome Private Network Access: https://lykn.io → http://127.0.0.1
-      res.setHeader("Access-Control-Allow-Private-Network", "true");
-      res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-      if (req.method === "OPTIONS") {
-        res.writeHead(allowOrigin ? 204 : 403);
-        res.end();
-        return;
-      }
+function startAuthHandoffServer(...a) { return d.startAuthHandoffServer(...a); }
 
-      let pathname = "/";
-      try {
-        pathname = new URL(req.url || "/", "http://127.0.0.1").pathname;
-      } catch {
-        /* keep / */
-      }
-      if (req.method !== "POST" || pathname !== "/auth-handoff") {
-        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end("not found");
-        return;
-      }
-      if (!allowOrigin) {
-        res.writeHead(403, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: false, error: "bad_origin" }));
-        return;
-      }
+function mintDesktopAuthUrl(...a) { return d.mintDesktopAuthUrl(...a); }
 
-      const chunks = [];
-      req.on("data", (c) => {
-        chunks.push(c);
-        if (Buffer.concat(chunks).length > 64 * 1024) req.destroy();
-      });
-      req.on("end", () => {
-        let body = {};
-        try {
-          body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-        } catch {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: false, error: "bad_json" }));
-          return;
-        }
-        const result = acceptAuthHandoffPayload(body);
-        res.writeHead(result.ok ? 200 : 403, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(result));
-      });
-    });
-    server.on("error", (err) => {
-      authHandoffServer = null;
-      authHandoffPort = 0;
-      if (!bound && err?.code === "EADDRINUSE") {
-        startAuthHandoffServer(attempt + 1);
-        return;
-      }
-      console.warn("[auth] localhost handoff server error:", err?.message || err);
-    });
-    server.listen(port, "127.0.0.1", () => {
-      bound = true;
-      authHandoffPort = port;
-      console.log(`[auth] localhost handoff listening on http://127.0.0.1:${port}/auth-handoff`);
-    });
-    authHandoffServer = server;
-  } catch (err) {
-    console.warn("[auth] failed to start localhost handoff server:", err?.message || err);
-    authHandoffServer = null;
-    authHandoffPort = 0;
-  }
-}
+function flushPendingAuthTokens(...a) { return d.flushPendingAuthTokens(...a); }
 
-function mintDesktopAuthUrl(baseUrl) {
-  // The instance that blocked us at launch may have quit since — try again so
-  // this round-trip can use loopback instead of the lykn:// fallback.
-  if (!authHandoffPort) startAuthHandoffServer();
-  const state = crypto.randomBytes(24).toString("base64url");
-  // New Google round-trip — don't accept replays from a prior attempt.
-  lastAcceptedAuthHandoff = null;
-  persistDesktopAuthState({ state, expiresAt: Date.now() + DESKTOP_AUTH_STATE_TTL_MS });
-  try {
-    const u = new URL(baseUrl);
-    u.searchParams.set("desktop_state", state);
-    // Prefer loopback POST so /desktop-auth can auto-handoff without a click.
-    // lykn://auth stays available as the Open LYKN button fallback.
-    if (authHandoffPort) u.searchParams.set("handoff_port", String(authHandoffPort));
-    return u.toString();
-  } catch {
-    return baseUrl;
-  }
-}
-
-function flushPendingAuthTokens() {
-  if (!pendingAuthTokens) return;
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  const wc = mainWindow.webContents;
-  if (wc.isLoading()) return; // did-finish-load will re-flush
-  wc.send("lykn:auth-tokens", pendingAuthTokens);
-  pendingAuthTokens = null;
-  // State is consumed at accept-time; this is a safety clear for older paths.
-  clearDesktopAuthState();
-}
-
-function handleAuthDeepLink(rawUrl) {
-  let parsed;
-  try {
-    parsed = new URL(String(rawUrl || ""));
-  } catch {
-    return;
-  }
-  if (parsed.protocol !== "lykn:") return;
-  // Accept lykn://auth… — hostname parsing of custom schemes varies, so
-  // check both the host and the path form.
-  const target = parsed.hostname || parsed.pathname.replace(/^\/+/, "");
-  if (target !== "auth") return;
-  const frag = new URLSearchParams(String(parsed.hash || "").replace(/^#/, ""));
-  const access_token = frag.get("access_token") || "";
-  const refresh_token = frag.get("refresh_token") || "";
-  const state = frag.get("state") || "";
-  if (!access_token || !refresh_token) return;
-
-  if (!isReplayOfLastAuthHandoff(access_token, refresh_token)) {
-    const expected = loadDesktopAuthState();
-    if (!expected?.state || !state || expected.state !== state) {
-      console.warn("[auth] lykn://auth rejected — missing or mismatched desktop_state");
-      // Still raise the app so the user isn't left staring at a dead browser tab
-      // when Launch Services delivered the link to us but state was already used.
-      if (app.isReady() && mainWindow && !mainWindow.isDestroyed()) {
-        if (mainWindow.isMinimized()) mainWindow.restore();
-        mainWindow.show();
-        mainWindow.focus();
-      }
-      return;
-    }
-    // Consume immediately; same-token retries use lastAcceptedAuthHandoff.
-    clearDesktopAuthState();
-    lastAcceptedAuthHandoff = {
-      access_token,
-      refresh_token,
-      expiresAt: Date.now() + DESKTOP_AUTH_STATE_TTL_MS,
-    };
-  }
-  // Cold start via the deep link: open-url can fire before whenReady, and
-  // BrowserWindow can't be created yet. whenReady's createMainWindow (deep-link
-  // launches are not login launches) will flush the tokens on did-finish-load.
-  deliverAuthTokensToRenderer(access_token, refresh_token);
-}
-
-// macOS delivers custom-scheme URLs here (both cold start and while running).
-// Register synchronously at startup (not inside whenReady) so cold-start
-// lykn://auth opens aren't missed.
-app.on("open-url", (event, url) => {
-  event.preventDefault();
-  handleAuthDeepLink(url);
-});
+function handleAuthDeepLink(...a) { return d.handleAuthDeepLink(...a); }
 
 // Windows (and Linux) deliver lykn:// URLs via process argv — cold start and
 // second-instance. Scan an argv-like list for the first lykn: URL.
-function findLyknUrlInArgv(argv) {
-  for (const arg of argv || []) {
-    if (typeof arg === "string" && arg.startsWith("lykn:")) return arg;
-  }
-  return null;
-}
-{
-  const cold = findLyknUrlInArgv(process.argv);
-  if (cold) handleAuthDeepLink(cold);
-}
-
+function findLyknUrlInArgv(...a) { return d.findLyknUrlInArgv(...a); }
 const LYKN_PROTOCOL = "lykn";
 const LYKN_BUNDLE_ID = "ai.lykn.desktop";
 
-function findPackagedLyknApp() {
-  const candidates = [
-    "/Applications/LYKN.app",
-    path.join(__dirname, "../release/mac-universal/LYKN.app"),
-    path.join(__dirname, "../release/mac/LYKN.app"),
-    path.join(__dirname, "../release/mac-arm64/LYKN.app"),
-    path.join(__dirname, "../release/mac-x64/LYKN.app"),
-  ];
-  for (const p of candidates) {
-    try {
-      if (fsSync.existsSync(p)) return p;
-    } catch {
-      /* try next */
-    }
-  }
-  return null;
-}
+function findPackagedLyknApp(...a) { return d.findPackagedLyknApp(...a); }
 
 /** Best-effort: make Launch Services prefer LYKN.app for lykn:// (macOS). */
-function preferPackagedLyknUrlHandler() {
-  if (!IS_MAC) return;
-  const packaged = findPackagedLyknApp();
-  if (!packaged) return;
-  const lsregister =
-    "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
-  try {
-    execFile(lsregister, ["-f", packaged], { timeout: 10000 }, () => {});
-  } catch {
-    /* best-effort */
-  }
-  // setAsDefaultProtocolClient only binds the *current* process bundle, so from
-  // unpackaged Electron we must set ai.lykn.desktop explicitly.
-  const swift = [
-    "import CoreServices",
-    `let s = LSSetDefaultHandlerForURLScheme("${LYKN_PROTOCOL}" as CFString, "${LYKN_BUNDLE_ID}" as CFString)`,
-    "exit(s == noErr ? 0 : 1)",
-  ].join("\n");
-  try {
-    execFile("swift", ["-e", swift], { timeout: 20000 }, () => {});
-  } catch {
-    /* best-effort — lsregister alone may still be enough */
-  }
-}
+function preferPackagedLyknUrlHandler(...a) { return d.preferPackagedLyknUrlHandler(...a); }
 
 // Claim lykn:// for desktop OAuth return. Packaged builds also declare the
 // scheme via electron-builder "protocols".
@@ -780,37 +455,7 @@ function preferPackagedLyknUrlHandler() {
 // relaunches that binary with no main script, and the user sees Electron's
 // default "path-to-app" page instead of LYKN. Same reason we refuse to register
 // login items while unpackaged.
-function claimLyknProtocol() {
-  try {
-    if (app.isPackaged) {
-      app.setAsDefaultProtocolClient(LYKN_PROTOCOL);
-      return;
-    }
-
-    if (IS_MAC) {
-      try {
-        if (app.isDefaultProtocolClient(LYKN_PROTOCOL)) {
-          app.removeAsDefaultProtocolClient(LYKN_PROTOCOL);
-        }
-      } catch {
-        /* ignore */
-      }
-      preferPackagedLyknUrlHandler();
-      return;
-    }
-
-    // Windows/Linux honor execPath + argv, so deep links relaunch this project.
-    if (process.defaultApp && process.argv.length >= 2) {
-      app.setAsDefaultProtocolClient(LYKN_PROTOCOL, process.execPath, [
-        path.resolve(process.argv[1]),
-      ]);
-      return;
-    }
-    app.setAsDefaultProtocolClient(LYKN_PROTOCOL);
-  } catch {
-    /* registration is best-effort */
-  }
-}
+function claimLyknProtocol(...a) { return d.claimLyknProtocol(...a); }
 
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
@@ -852,58 +497,12 @@ let lastUpdatePromptAt = 0;
 let updateNotifiedForVersion = "";
 const UPDATE_REPROMPT_MS = 30 * 60 * 1000;
 
-function quitForReal() {
-  allowQuit = true;
-  // Real quit: tear down the auth keeper and let the main window's close
-  // handler actually destroy (allowQuit short-circuits the hide-on-close).
-  destroyAuthKeeper();
-  app.quit();
-}
+function quitForReal(...a) { return d.quitForReal(...a); }
 
 /** Bring Dock + main window forward so a modal update dialog can actually appear. */
-function ensureAppSurfacedForUpdate() {
-  if (IS_MAC && app.dock) {
-    try { app.dock.show(); } catch (_) { /* cosmetic */ }
-  }
-  try {
-    app.focus();
-  } catch (_) { /* best-effort */ }
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    createMainWindow();
-  }
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    try {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-      mainWindow.moveTop();
-    } catch (_) { /* best-effort */ }
-    return mainWindow;
-  }
-  return null;
-}
+function ensureAppSurfacedForUpdate(...a) { return d.ensureAppSurfacedForUpdate(...a); }
 
-function notifyUpdateReady(version) {
-  const key = version || "pending";
-  if (updateNotifiedForVersion === key) return;
-  updateNotifiedForVersion = key;
-  const ver = version ? ` ${version}` : "";
-  try {
-    if (Notification.isSupported()) {
-      const n = new Notification({
-        title: "LYKN update ready",
-        body: `Version${ver} downloaded. Restart LYKN to install — or use Restart to Update in the menu bar.`,
-        silent: false,
-      });
-      n.on("click", () => {
-        void maybePromptPendingUpdate({ force: true });
-      });
-      n.show();
-    }
-  } catch (e) {
-    console.log("[update] notification failed:", e && e.message ? e.message : e);
-  }
-}
+function notifyUpdateReady(...a) { return d.notifyUpdateReady(...a); }
 
 const AGENT_DONE_SKILL_LABEL = {
   research: "Research ready",
@@ -1097,71 +696,13 @@ function notifyAgentFinished(_payload) {}
  * update-downloaded, tray, activate, resume, or second-instance.
  * @param {{ force?: boolean }} [opts]
  */
-async function maybePromptPendingUpdate(opts = {}) {
-  const force = Boolean(opts.force);
-  if (!pendingUpdate || !installPendingUpdate) return;
-  if (updatePromptOpen) return;
-  if (!force && lastUpdatePromptAt && Date.now() - lastUpdatePromptAt < UPDATE_REPROMPT_MS) {
-    return;
-  }
-
-  updatePromptOpen = true;
-  lastUpdatePromptAt = Date.now();
-  refreshTrayUpdateAffordance();
-  notifyUpdateReady(pendingUpdate.version);
-
-  const parent = ensureAppSurfacedForUpdate();
-  // Give macOS a beat to show Dock + window before an app-modal dialog;
-  // otherwise always-on / login-launch sessions often never surface it.
-  await new Promise((r) => setTimeout(r, 350));
-
-  const ver = pendingUpdate.version ? ` (${pendingUpdate.version})` : "";
-  const closeHint = IS_MAC
-    ? "⌘Q keeps LYKN in the menu bar"
-    : "Closing the window keeps LYKN in the tray";
-  const boxOpts = {
-    type: "info",
-    buttons: ["Restart", "Later"],
-    defaultId: 0,
-    cancelId: 1,
-    title: "Update ready",
-    message: "Restart to update LYKN.",
-    detail:
-      `A new version${ver} is ready. Restart the app to install it.\n\n` +
-      `Tip: ${closeHint} — choose Restart here, or ` +
-      `"Restart to Update" / "Quit LYKN Completely" from the menu bar icon.`,
-  };
-
-  try {
-    // Re-surface in case focus was stolen during the short delay.
-    const liveParent =
-      parent && !parent.isDestroyed() ? parent : ensureAppSurfacedForUpdate();
-    const { response } = liveParent
-      ? await dialog.showMessageBox(liveParent, boxOpts)
-      : await dialog.showMessageBox(boxOpts);
-    if (response === 0) {
-      installPendingUpdate();
-    }
-  } catch (e) {
-    console.log("[update] prompt failed:", e && e.message ? e.message : e);
-  } finally {
-    updatePromptOpen = false;
-  }
-}
+async function maybePromptPendingUpdate(...a) { return d.maybePromptPendingUpdate(...a); }
 
 // Menu-bar-app dock behaviour: the Dock icon appears only while the main
 // window is VISIBLE; with just the tray + hotkey running (main window hidden
 // but still alive as the auth keeper) we stay out of the Dock and the
 // ⌘-Tab switcher like any other background companion.
-function updateDockVisibility() {
-  if (!IS_MAC || !app.dock) return;
-  try {
-    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) app.dock.show();
-    else app.dock.hide();
-  } catch (_) {
-    /* cosmetic */
-  }
-}
+function updateDockVisibility(...a) { return d.updateDockVisibility(...a); }
 /** @type {BrowserWindow | null} */
 let browserExecuteInFlight = false;
 /** @type {BrowserWindow | null} */
@@ -1189,394 +730,34 @@ let overlayProgrammaticMove = false;
 
 let mainWindowDeferred = false;
 
-function createMainWindow() {
-  // `second-instance` and `open-url` can both arrive while this instance is
-  // still starting, and `screen` below throws if it is touched before ready.
-  // Deferring is the correct behaviour rather than a guard: the user asked for
-  // a window, so we still owe them one once there is a display to size it against.
-  if (!app.isReady()) {
-    if (mainWindowDeferred) return;
-    mainWindowDeferred = true;
-    app.whenReady().then(() => {
-      mainWindowDeferred = false;
-      if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
-    });
-    return;
-  }
-
-  // Coming back from background (menu-bar-only) mode: restore the Dock icon
-  // before the window appears so it can take focus like a normal app window.
-  if (IS_MAC && app.dock) {
-    try { app.dock.show(); } catch (_) { /* cosmetic */ }
-  }
-  // Main window takes over as the auth provider — tear down the keeper so
-  // two Supabase clients don't race the rotating refresh token.
-  destroyAuthKeeper();
-
-  // If a legacy second Studio window is still around, drop it — Studio is
-  // the main window now, not a handoff target.
-  if (studioWindow && !studioWindow.isDestroyed() && studioWindow !== mainWindow) {
-    try {
-      studioWindow.destroy();
-    } catch (_) {
-      /* ignore */
-    }
-    studioWindow = null;
-  }
-
-  const { workArea } = screen.getPrimaryDisplay();
-  const width = Math.min(1320, workArea.width - 64);
-  const height = Math.min(880, workArea.height - 64);
-  mainWindow = new BrowserWindow({
-    width,
-    height,
-    x: Math.round(workArea.x + (workArea.width - width) / 2),
-    y: Math.round(workArea.y + (workArea.height - height) / 2),
-    minWidth: 960,
-    minHeight: 640,
-    // Studio is the product shell: liquid-glass over native vibrancy.
-    backgroundColor: "#00000000",
-    hasShadow: false,
-    ...(IS_MAC
-      ? {
-          titleBarStyle: "hiddenInset",
-          trafficLightPosition: { x: 16, y: 22 },
-          transparent: false,
-          vibrancy: "hud",
-          visualEffectState: "active",
-          roundedCorners: true,
-        }
-      : {
-          frame: false,
-          transparent: false,
-          backgroundMaterial: "acrylic",
-          roundedCorners: false,
-          thickFrame: false,
-        }),
-    autoHideMenuBar: IS_WIN,
-    resizable: true,
-    movable: true,
-    minimizable: true,
-    maximizable: true,
-    fullscreenable: true,
-    // Studio opens already fullscreen so there's no expand transition at all.
-    // On macOS that's SIMPLE fullscreen (applied at ready-to-show below):
-    // fills the screen like native fullscreen but stays on the regular
-    // desktop instead of a separate Space. Native fullscreen also ignored
-    // show:false during the walkthrough, leaking the booting web app
-    // behind the welcome glass.
-    fullscreen: !welcomeGateActive && !IS_MAC,
-    acceptFirstMouse: true,
-    show: false,
-    webPreferences: {
-      preload: path.join(__dirname, "preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      // Installed apps open as windows on the desktop, and a <webview> is what
-      // lets them do that without giving up what makes them apps: a subframe
-      // gets no preload, so an <iframe> would cost them the bridge and their
-      // own storage. Guests are held to that shape by `will-attach-webview`.
-      webviewTag: true,
-      // Auth provider for the overlay — keep token refresh alive while hidden.
-      backgroundThrottling: false,
-      disableHtmlFullscreenWindowResize: true,
-    },
-  });
-
-  // Nothing but an installed app may attach, and only as itself: the guest is
-  // pinned to the app preload and the app's own partition here, so markup in
-  // the renderer can't ask for Node, a different preload, or another origin.
-  mainWindow.webContents.on("will-attach-webview", (event, webPreferences, params) => {
-    const appProtocol = require("./appProtocol.cjs");
-    const appHost = require("./appHost.cjs");
-    const appId = appProtocol.appIdFromOrigin(params.src || "");
-    if (!appId) {
-      event.preventDefault();
-      return;
-    }
-    delete webPreferences.preloadURL;
-    webPreferences.preload = appHost.PRELOAD;
-    webPreferences.nodeIntegration = false;
-    webPreferences.contextIsolation = true;
-    webPreferences.webSecurity = true;
-    // Also binds the app scheme on that partition, which has to happen before
-    // the guest navigates or it opens to a failed load.
-    params.partition = appHost.partitionFor(appId);
-  });
-  // Studio features (browser dock, fullscreen IPC) attach to this same window.
-  studioWindow = mainWindow;
-
-  mainWindow.once("ready-to-show", () => {
-    // First launch: stay hidden behind the welcome splash / walkthrough —
-    // the onboarding flow (or its close fallback) reveals the window.
-    if (welcomeGateActive) return;
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      // Simple fullscreen before show — full screen with no separate Space.
-      if (IS_MAC) {
-        try {
-          mainWindow.setSimpleFullScreen(true);
-        } catch (_) {}
-      }
-      mainWindow.show();
-      mainWindow.focus();
-      broadcastStudioFullscreen();
-    }
-  });
-
-  // Native fullscreen emits real enter/leave events — just relay them.
-  mainWindow.on("enter-full-screen", broadcastStudioFullscreen);
-  mainWindow.on("leave-full-screen", broadcastStudioFullscreen);
-
-  if (IS_MAC) {
-    const ensureTrafficLights = () => {
-      try {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.setWindowButtonVisibility(true);
-        }
-      } catch (_) {
-        /* ignore */
-      }
-    };
-    mainWindow.on("enter-full-screen", ensureTrafficLights);
-    mainWindow.on("leave-full-screen", ensureTrafficLights);
-    mainWindow.on("enter-html-full-screen", ensureTrafficLights);
-    mainWindow.on("leave-html-full-screen", ensureTrafficLights);
-    mainWindow.once("ready-to-show", ensureTrafficLights);
-  }
-
-  // Boot straight into Studio. During the first-launch walkthrough the
-  // walkthrough=1 flag bypasses ProtectedRoute's /login redirect — the old
-  // login page must never render behind the welcome glass; the walkthrough
-  // itself signs the user in.
-  const studioHome = welcomeGateActive
-    ? `${APP_ORIGIN}/studio?glass=1&walkthrough=1`
-    : `${APP_ORIGIN}/studio?glass=1`;
-  const loadAppUrl = (attempt = 0) => {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    void mainWindow.loadURL(studioHome).catch((err) => {
-      const msg = String(err?.message || err || "");
-      const isLocal =
-        /localhost|127\.0\.0\.1/i.test(APP_URL) ||
-        msg.includes("ERR_CONNECTION_REFUSED");
-      if (isLocal && attempt < 40) {
-        setTimeout(() => loadAppUrl(attempt + 1), 250);
-        return;
-      }
-      console.error("[main-window] failed to load", studioHome, msg);
-    });
-  };
-  loadAppUrl();
-
-  mainWindow.webContents.on("did-finish-load", flushPendingAuthTokens);
-
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    try {
-      const origin = new URL(url).origin;
-      if (origin === APP_ORIGIN || isAuthNavigation(url)) {
-        return { action: "allow" };
-      }
-      // Chat links / artifacts with target=_blank → LYKN in-app browser.
-      void openUrlPreferAgentBrowser(url);
-      return { action: "deny" };
-    } catch {
-      return { action: "deny" };
-    }
-  });
-
-  mainWindow.webContents.on("will-navigate", (event, url) => {
-    let origin;
-    try {
-      origin = new URL(url).origin;
-    } catch {
-      event.preventDefault();
-      return;
-    }
-    if (origin === APP_ORIGIN || isAuthNavigation(url)) return;
-    event.preventDefault();
-    void openUrlPreferAgentBrowser(url);
-  });
-
-  // Reloads land back on the dashboard tab — undock a browser parked over it.
-  mainWindow.webContents.on("did-navigate", () => {
-    try {
-      setStudioBrowserEmbed({ open: false });
-    } catch (_) {
-      /* ignore */
-    }
-  });
-
-  // Red close / ⌘W: HIDE, don't destroy (auth keeper for Glass).
-  mainWindow.on("close", (e) => {
-    if (allowQuit) return;
-    e.preventDefault();
-    hideStudioWindow();
-    updateDockVisibility();
-  });
-
-  mainWindow.on("closed", () => {
-    // Agent browser views live on this window from the moment they first dock
-    // — closing the Browser window only hides them — so they have to be handed
-    // over here whether or not the dock is active, or they'd be destroyed
-    // along with it.
-    studioStageEmbedded = false;
-    parkStudioStageViewsOnStage();
-    try {
-      studioStageChromeView?.webContents?.close?.();
-    } catch (_) {}
-    studioStageChromeView = null;
-    mainWindow = null;
-    studioWindow = null;
-    updateDockVisibility();
-    if (!allowQuit) ensureAuthKeeper();
-  });
-
-  mainWindow.webContents.on("render-process-gone", (_e, details) => {
-    console.warn("[main-window] renderer gone:", details?.reason || "unknown");
-    if (details?.reason === "clean-exit") return;
-    try {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload();
-    } catch (_) {}
-  });
-}
+function createMainWindow(...a) { return d.createMainWindow(...a); }
 
 // ── LYKN Studio ──────────────────────────────────────────────────────────────
 // Studio IS the main window (vibrancy + `/studio?glass=1`). These helpers
 // stay so older IPC (`lykn:studio-set`, browser dock) keeps working without
 // opening a second window.
-function createStudioWindow() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    createMainWindow();
-    return;
-  }
-  studioWindow = mainWindow;
-  try {
-    const cur = mainWindow.webContents.getURL() || "";
-    if (!/\/studio(\?|$)/.test(cur)) {
-      void mainWindow.loadURL(`${APP_ORIGIN}/studio?glass=1`);
-    }
-  } catch (_) {
-    void mainWindow.loadURL(`${APP_ORIGIN}/studio?glass=1`);
-  }
-  // First-launch walkthrough owns the screen — the web app boots in the
-  // hidden window and its studio IPC must not reveal it early.
-  if (welcomeGateActive) return;
-  // Re-shows come back fullscreen, matching the boot state (hide/minimize
-  // exit simple fullscreen first, so it must be re-applied here).
-  if (IS_MAC && !mainWindow.isVisible()) {
-    try {
-      if (!mainWindow.isSimpleFullScreen() && !mainWindow.isFullScreen()) {
-        mainWindow.setSimpleFullScreen(true);
-      }
-    } catch (_) {}
-  }
-  mainWindow.show();
-  mainWindow.focus();
-}
+function createStudioWindow(...a) { return d.createStudioWindow(...a); }
 
 // Studio fullscreen: simple fullscreen on macOS (fills the screen with no
 // separate Space), plain native fullscreen elsewhere.
-function studioWindowRef() {
-  if (studioWindow && !studioWindow.isDestroyed()) return studioWindow;
-  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
-  return null;
-}
+function studioWindowRef(...a) { return d.studioWindowRef(...a); }
 
-function studioFullscreenActive() {
-  const win = studioWindowRef();
-  if (!win) return false;
-  // Simple fullscreen (fills the screen without a separate macOS Space)
-  // counts as fullscreen for the studio UI.
-  try {
-    if (typeof win.isSimpleFullScreen === "function" && win.isSimpleFullScreen()) {
-      return true;
-    }
-  } catch (_) {}
-  return win.isFullScreen();
-}
+function studioFullscreenActive(...a) { return d.studioFullscreenActive(...a); }
 
-function broadcastStudioFullscreen() {
-  const win = studioWindowRef();
-  if (!win) return;
-  if (IS_MAC) {
-    try {
-      win.setWindowButtonVisibility(true);
-    } catch (_) {
-      /* ignore */
-    }
-  }
-  win.webContents.send("lykn:studio-fullscreen", {
-    fullscreen: studioFullscreenActive(),
-  });
-}
+function broadcastStudioFullscreen(...a) { return d.broadcastStudioFullscreen(...a); }
 
-function showStudioWindow() {
-  createStudioWindow();
-}
+function showStudioWindow(...a) { return d.showStudioWindow(...a); }
 
 // Runs `then` once the window is out of fullscreen — immediately when it
 // already is, otherwise after macOS's animated exit lands (hiding or
 // minimizing a fullscreen window mid-animation gets ignored).
-function afterStudioFullscreenExit(win, then) {
-  if (!win || win.isDestroyed()) return;
-  // Simple fullscreen (macOS studio default) exits instantly — no animation.
-  try {
-    if (typeof win.isSimpleFullScreen === "function" && win.isSimpleFullScreen()) {
-      win.setSimpleFullScreen(false);
-      then();
-      return;
-    }
-  } catch (_) {}
-  if (!win.isFullScreen()) {
-    then();
-    return;
-  }
-  win.once("leave-full-screen", () => {
-    if (win && !win.isDestroyed()) then();
-  });
-  win.setFullScreen(false);
-}
+function afterStudioFullscreenExit(...a) { return d.afterStudioFullscreenExit(...a); }
 
-function hideStudioWindow() {
-  const win = studioWindowRef();
-  if (!win) return;
-  afterStudioFullscreenExit(win, () => {
-    try {
-      win.hide();
-    } catch (_) {
-      /* ignore */
-    }
-    updateDockVisibility();
-  });
-}
+function hideStudioWindow(...a) { return d.hideStudioWindow(...a); }
 
 // Grant the renderer the permissions the web app already uses (microphone for
 // voice mode, etc.) but only for our own origin. Everything else is denied.
-function installPermissionHandler() {
-  const ses = require("electron").session.defaultSession;
-  const ALLOWED = new Set(["media", "clipboard-read", "clipboard-sanitized-write", "notifications"]);
-  const isOverlayContents = (webContents) =>
-    overlayWindow && !overlayWindow.isDestroyed() && webContents === overlayWindow.webContents;
-  const originAllowed = (webContents) => {
-    try {
-      return new URL(webContents.getURL()).origin === APP_ORIGIN;
-    } catch {
-      return false;
-    }
-  };
-  ses.setPermissionRequestHandler((webContents, permission, callback) => {
-    // The overlay loads from file:// (no http origin) but is our own trusted
-    // window — allow it the same media (mic) access for dictation.
-    const allow =
-      ALLOWED.has(permission) &&
-      (originAllowed(webContents) || isOverlayContents(webContents));
-    callback(allow);
-  });
-  // Some getUserMedia paths consult the synchronous check handler too.
-  ses.setPermissionCheckHandler((webContents, permission) => {
-    return ALLOWED.has(permission) && (originAllowed(webContents) || isOverlayContents(webContents));
-  });
-}
+function installPermissionHandler(...a) { return d.installPermissionHandler(...a); }
 
 // Enable system ("loopback") audio capture for the overlay's live-listen mode.
 // When the overlay calls navigator.mediaDevices.getDisplayMedia({audio:true}),
@@ -1584,32 +765,7 @@ function installPermissionHandler() {
 //   • Windows — Chromium loopback (supported natively)
 //   • macOS 13+ — ScreenCaptureKit path in Electron (no virtual device)
 // The overlay only uses the audio track (to transcribe meetings/conversations).
-function setupSystemAudioCapture() {
-  const ses = require("electron").session.defaultSession;
-  if (typeof ses.setDisplayMediaRequestHandler !== "function") return;
-  ses.setDisplayMediaRequestHandler(
-    async (request, callback) => {
-      try {
-        // Only Glass (file:// overlay) may take silent full-screen + loopback.
-        // Deny http(s) origins so XSS on lykn.io can't capture without a picker.
-        const origin = String(request?.securityOrigin || "");
-        if (/^https?:/i.test(origin) || origin === APP_ORIGIN) {
-          console.warn("[display-media] denied for web origin:", origin);
-          return callback({});
-        }
-        if (!overlayWindow || overlayWindow.isDestroyed()) {
-          return callback({});
-        }
-        const sources = await desktopCapturer.getSources({ types: ["screen"] });
-        if (!sources.length) return callback({});
-        callback({ video: sources[0], audio: "loopback" });
-      } catch {
-        callback({});
-      }
-    },
-    { useSystemPicker: false },
-  );
-}
+function setupSystemAudioCapture(...a) { return d.setupSystemAudioCapture(...a); }
 
 /* ------------------------------------------------------------------ */
 /*  Jarvis overlay — ⌘+L summons a transparent always-on-top window     */
@@ -1631,280 +787,34 @@ const GLASS_CORNER_RADIUS = 16;
 // Windows: fully transparent HWND — Win11 DWM otherwise draws square corner
 // stubs / shadow outside our CSS border-radius. CSS owns the glass card;
 // setShape hard-clips the HWND so those stubs can't paint.
-function floatingGlassChrome() {
-  if (IS_MAC) {
-    return {
-      transparent: false,
-      backgroundColor: "#00000000",
-      vibrancy: "hud",
-      visualEffectState: "active",
-      roundedCorners: true,
-      hasShadow: true,
-    };
-  }
-  return {
-    transparent: true,
-    backgroundColor: "#00000000",
-    // Win11 DWM draws its own rounded frame/shadow outside CSS radius —
-    // that shows as square "corner stubs". Kill native chrome; CSS owns shape.
-    roundedCorners: false,
-    hasShadow: false,
-    thickFrame: false,
-    backgroundMaterial: "none",
-  };
-}
+function floatingGlassChrome(...a) { return d.floatingGlassChrome(...a); }
 
 /** Approximate a rounded rect as 1px scanlines for win.setShape (Win/Linux). */
-function roundedRectShape(width, height, radius) {
-  const w = Math.max(1, Math.round(width));
-  const h = Math.max(1, Math.round(height));
-  const r = Math.max(0, Math.min(Math.round(radius), Math.floor(w / 2), Math.floor(h / 2)));
-  if (r <= 0) return [{ x: 0, y: 0, width: w, height: h }];
-  const rects = [];
-  for (let y = 0; y < h; y++) {
-    let inset = 0;
-    if (y < r) {
-      const dy = r - y;
-      inset = Math.ceil(r - Math.sqrt(Math.max(0, r * r - dy * dy)));
-    } else if (y >= h - r) {
-      const dy = y - (h - r - 1);
-      inset = Math.ceil(r - Math.sqrt(Math.max(0, r * r - dy * dy)));
-    }
-    const rw = w - inset * 2;
-    if (rw > 0) rects.push({ x: inset, y, width: rw, height: 1 });
-  }
-  return rects;
-}
+function roundedRectShape(...a) { return d.roundedRectShape(...a); }
 
 /** Clip floating glass HWND to CSS radius so Win11 can't paint square corner stubs. */
-function applyFloatingGlassShape(win, radius = GLASS_CORNER_RADIUS) {
-  if (!IS_WIN || !win || win.isDestroyed()) return;
-  if (typeof win.setShape !== "function") return;
-  try {
-    const b = win.getBounds();
-    const r = Math.min(radius, Math.floor(Math.min(b.width, b.height) / 2));
-    win.setShape(roundedRectShape(b.width, b.height, r));
-  } catch (_) { /* ignore */ }
-}
+function applyFloatingGlassShape(...a) { return d.applyFloatingGlassShape(...a); }
 
 /** Re-assert transparent glass chrome after create (some Win11 builds re-enable DWM). */
-function hardenFloatingGlass(win) {
-  if (!IS_WIN || !win || win.isDestroyed()) return;
-  try {
-    if (typeof win.setHasShadow === "function") win.setHasShadow(false);
-  } catch (_) { /* ignore */ }
-  try {
-    if (typeof win.setBackgroundMaterial === "function") win.setBackgroundMaterial("none");
-  } catch (_) { /* ignore */ }
-  applyFloatingGlassShape(win);
-  // DWM sometimes re-applies chrome on show — re-clip without stacking listeners.
-  if (!win.__lyknGlassHardened) {
-    win.__lyknGlassHardened = true;
-    win.on("show", () => hardenFloatingGlass(win));
-  }
-}
+function hardenFloatingGlass(...a) { return d.hardenFloatingGlass(...a); }
 
 /** setBounds without animation — animated resizes flicker on Win transparent HWNDs. */
-function setFloatingBounds(win, bounds) {
-  if (!win || win.isDestroyed()) return;
-  try {
-    win.setBounds(bounds, false);
-  } catch (_) {
-    try { win.setBounds(bounds); } catch (_) { /* ignore */ }
-  }
-  applyFloatingGlassShape(win);
-}
+function setFloatingBounds(...a) { return d.setFloatingBounds(...a); }
 
 /** Work area for the display that currently holds (or will hold) the glass bar. */
-function overlayWorkArea(boundsHint) {
-  try {
-    if (boundsHint && typeof boundsHint.x === "number") {
-      return screen.getDisplayMatching(boundsHint).workArea;
-    }
-    if (overlayWindow && !overlayWindow.isDestroyed()) {
-      return screen.getDisplayMatching(overlayWindow.getBounds()).workArea;
-    }
-  } catch (_) {
-    /* fall through */
-  }
-  return screen.getPrimaryDisplay().workArea;
-}
+function overlayWorkArea(...a) { return d.overlayWorkArea(...a); }
 
-function overlayPosition(height) {
-  const workArea = overlayWorkArea();
-  return {
-    x: Math.round(workArea.x + (workArea.width - OVERLAY_WIDTH) / 2),
-    y: Math.round(workArea.y + workArea.height - height - OVERLAY_BOTTOM_MARGIN),
-  };
-}
+function overlayPosition(...a) { return d.overlayPosition(...a); }
 
 /** True when most of the bar (esp. the bottom/composer) is off the work area. */
-function overlayBoundsNeedHeal(bounds, workArea) {
-  if (!bounds || !workArea) return true;
-  const margin = 4;
-  const bottom = bounds.y + bounds.height;
-  const right = bounds.x + bounds.width;
-  const workBottom = workArea.y + workArea.height;
-  const workRight = workArea.x + workArea.width;
-  // Composer lives at the bottom — if that edge is past the dock/screen, heal.
-  if (bottom > workBottom + margin) return true;
-  if (bounds.y + bounds.height * 0.5 < workArea.y) return true;
-  if (right < workArea.x + 40 || bounds.x > workRight - 40) return true;
-  // Too short to show the composer toolbar (buttons look "cut off").
-  if (bounds.height > 0 && bounds.height < 96) return true;
-  // Almost none of the window is actually visible in the work area.
-  const visibleH =
-    Math.min(bottom, workBottom) - Math.max(bounds.y, workArea.y);
-  if (visibleH < 64) return true;
-  return false;
-}
+function overlayBoundsNeedHeal(...a) { return d.overlayBoundsNeedHeal(...a); }
 
-function resetOverlayPositionToDefault() {
-  overlayUserPositioned = false;
-  overlayAnchorLeft = null;
-  overlayAnchorBottomY = null;
-}
+function resetOverlayPositionToDefault(...a) { return d.resetOverlayPositionToDefault(...a); }
 
 /** Unstick click-through + snap a clipped/tiny bar back to bottom-center. */
-function healOverlayGeometry(forceReset = false) {
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  try {
-    setOverlayClickThrough(false);
-  } catch (_) {}
-  try {
-    if (overlayCollapsed) setOverlayCollapsed(false);
-  } catch (_) {}
-  let b;
-  try {
-    b = overlayWindow.getBounds();
-  } catch (_) {
-    return;
-  }
-  const wa = overlayWorkArea(b);
-  if (forceReset || overlayBoundsNeedHeal(b, wa)) {
-    resetOverlayPositionToDefault();
-  }
-  const w = Math.max(OVERLAY_WIDTH, Math.round(b.width || OVERLAY_WIDTH));
-  // Ensure at least a full composer (title + field + toolbar) is laid out.
-  const h = Math.max(130, Math.round(b.height || OVERLAY_MIN_HEIGHT));
-  setOverlaySize(w, h);
-}
+function healOverlayGeometry(...a) { return d.healOverlayGeometry(...a); }
 
-function createOverlayWindow() {
-  const pos = overlayPosition(OVERLAY_MIN_HEIGHT);
-  overlayWindow = new BrowserWindow({
-    width: OVERLAY_WIDTH,
-    height: OVERLAY_MIN_HEIGHT,
-    x: pos.x,
-    y: pos.y,
-    show: false,
-    frame: false,
-    ...floatingGlassChrome(),
-    resizable: false,
-    movable: true,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    skipTaskbar: true,
-    // Let the panel respond to the first click/drag without being activated
-    // first, so file drops register even though it's a non-activating panel.
-    acceptFirstMouse: true,
-    // Float above everything, including full-screen apps.
-    alwaysOnTop: true,
-    // macOS: a non-activating panel can become key for text input WITHOUT
-    // activating the app, so summoning it never yanks the user to LYKN's Space
-    // or out of the full-screen app they're in. We drop the panel type when
-    // OVERLAY_ACTIVATABLE_FOR_DROPS is on so the window can accept OS file drops.
-    ...(IS_MAC && !OVERLAY_ACTIVATABLE_FOR_DROPS
-      ? { type: "panel" }
-      : {}),
-    webPreferences: {
-      preload: path.join(__dirname, "overlay-preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-
-  // Exclude the overlay itself from screen capture (NSWindowSharingNone on
-  // macOS / WDA_EXCLUDEFROMCAPTURE on Windows). The user still sees the glass
-  // bar, but our own screenshots — and any other screen recording/share — won't
-  // include it, so LYKN never "sees" its own chat window when reading the screen.
-  // User-toggleable + persisted; defaults ON.
-  overlayWindow.setContentProtection(isContentProtectionEnabled());
-  hardenFloatingGlass(overlayWindow);
-  // canJoinAllSpaces + fullScreenAuxiliary so the panel appears on the CURRENT
-  // Space (over full-screen apps too); skipTransformProcessType stops macOS
-  // from switching Spaces when it shows.
-  //
-  // ORDER MATTERS (electron#10078 / #26350): setVisibleOnAllWorkspaces can
-  // reset the NSWindow level back to normal on macOS, so the always-on-top
-  // level must be applied AFTER it — and setFullScreenable(false) in between
-  // pins NSWindowCollectionBehaviorFullScreenAuxiliary. With the level set
-  // first, whether the bar showed above a full-screen app was a coin flip.
-  // On Windows these are mostly no-ops / best-effort; always-on-top still applies.
-  overlayWindow.setVisibleOnAllWorkspaces(true, {
-    visibleOnFullScreen: true,
-    skipTransformProcessType: true,
-  });
-  overlayWindow.setFullScreenable(false);
-  // screen-saver level is the most reliable always-on-top tier on both platforms.
-  overlayWindow.setAlwaysOnTop(true, "screen-saver");
-  overlayWindow.loadFile(path.join(__dirname, "overlay.html"));
-
-  // Forward Escape to the renderer. macOS non-activating panel windows can miss
-  // normal keydown delivery depending on key-window state; before-input-event is
-  // the reliable path so Esc can stop voice mode / dismiss the bar.
-  overlayWindow.webContents.on("before-input-event", (event, input) => {
-    if (input.type !== "keyDown") return;
-    if (input.key !== "Escape" && input.code !== "Escape") return;
-    try {
-      if (!overlayWindow || overlayWindow.isDestroyed()) return;
-      overlayWindow.webContents.send("lykn:overlay-escape");
-    } catch (_) {}
-  });
-
-  // When the bar becomes key again (click back from Cursor/etc.), put caret in ask.
-  overlayWindow.on("focus", () => {
-    try {
-      if (!overlayWindow || overlayWindow.isDestroyed()) return;
-      overlayWindow.webContents.send("lykn:overlay-focus-composer");
-    } catch (_) {}
-  });
-
-  // When the user drags the bar (native drag region), remember where they put
-  // it so we stop re-centering it. Ignore our own programmatic moves.
-  overlayWindow.on("moved", () => {
-    if (overlayProgrammaticMove || !overlayWindow) return;
-    const b = overlayWindow.getBounds();
-    overlayUserPositioned = true;
-    overlayAnchorLeft = b.x;
-    overlayAnchorBottomY = b.y + b.height;
-    positionMenuWindow();
-    positionPickerWindow();
-    positionLangPickerWindow();
-    positionLiveWindow();
-    positionPanelWindow();
-    positionAgentSidebarWindow();
-  });
-
-  overlayWindow.on("closed", () => {
-    overlayWindow = null;
-  });
-
-  // If the overlay's renderer dies (GPU reset, OOM, Chromium crash), the
-  // window object survives but paints nothing — ⌘L and the tray click then
-  // toggle an invisible zombie and the overlay looks permanently dead until
-  // the whole app restarts. Tear the window down so the next toggle recreates
-  // it fresh.
-  overlayWindow.webContents.on("render-process-gone", (_e, details) => {
-    console.warn("[overlay] renderer gone:", details?.reason || "unknown");
-    try {
-      if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.destroy();
-    } catch (_) {}
-    overlayWindow = null;
-  });
-}
+function createOverlayWindow(...a) { return d.createOverlayWindow(...a); }
 
 // Grow/shrink the bar as the answer streams in. By default it stays pinned
 // bottom-center; once the user has dragged it, we keep their X and anchor the
@@ -1915,190 +825,21 @@ function createOverlayWindow() {
 const OVERLAY_BUBBLE = 54;
 let overlayCollapsed = false;
 
-function setOverlayCollapsed(collapsed) {
-  if (!overlayWindow) return;
-  overlayCollapsed = !!collapsed;
-  const b = overlayWindow.getBounds();
-  const workArea = overlayWorkArea(b);
-  const w = collapsed ? OVERLAY_BUBBLE : OVERLAY_WIDTH;
-  const h = collapsed ? OVERLAY_BUBBLE : OVERLAY_MIN_HEIGHT;
-  // Keep the bottom-left corner fixed across the swap so the chat column stays
-  // put (it lives on the left; the bubble takes the chat's bottom-left spot).
-  const left = b.x;
-  let bottom = b.y + b.height;
-  const margin = 8;
-  const maxBottom = workArea.y + workArea.height - margin;
-  bottom = Math.min(bottom, maxBottom);
-  let x = left;
-  let y = bottom - h;
-  x = Math.max(workArea.x, Math.min(x, workArea.x + workArea.width - w));
-  y = Math.max(workArea.y + margin, Math.min(y, maxBottom - h));
-
-  if (!collapsed) {
-    // Anchor future growth to where the panel reappears.
-    overlayUserPositioned = true;
-    overlayAnchorLeft = x;
-    overlayAnchorBottomY = y + h;
-    // Bring the live / side-panel / agents cards back alongside the bar.
-    if (liveCardOpen) showLiveWindow();
-    if (panelCardOpen) showPanelWindow();
-    if (agentSidebarOpen) showAgentSidebarWindow();
-  }
-
-  overlayProgrammaticMove = true;
-  setFloatingBounds(overlayWindow, {
-    x: Math.round(x),
-    y: Math.round(y),
-    width: w,
-    height: h,
-  });
-  overlayProgrammaticMove = false;
-  // Floating panels next to the bar don't belong beside the collapsed bubble —
-  // they come back when the bar expands.
-  if (collapsed) {
-    hideMenuWindow();
-    hidePickerWindow();
-    hideLangPickerWindow();
-    hideLiveWindow();
-    hidePanelWindow();
-    hideAgentSidebarWindow();
-  }
-}
+function setOverlayCollapsed(...a) { return d.setOverlayCollapsed(...a); }
 
 // Size the window to the renderer-reported content. Width varies with side panels;
 // we anchor the chat column's left edge so it never shifts when panels open.
 // Always keep the BOTTOM (composer / buttons) on-screen — never clip under the dock.
-function setOverlaySize(width, height) {
-  if (!overlayWindow || overlayCollapsed) return;
-  const hint =
-    overlayUserPositioned && overlayAnchorLeft != null && overlayAnchorBottomY != null
-      ? { x: overlayAnchorLeft, y: overlayAnchorBottomY - 40, width: OVERLAY_WIDTH, height: 40 }
-      : overlayWindow.getBounds();
-  const workArea = overlayWorkArea(hint);
-  const margin = 8;
-  const maxH = Math.max(OVERLAY_MIN_HEIGHT, workArea.height - margin * 2);
-  const w = Math.max(OVERLAY_WIDTH, Math.min(Math.round(width || OVERLAY_WIDTH), OVERLAY_MAX_WIDTH));
-  const h = Math.max(OVERLAY_MIN_HEIGHT, Math.min(Math.round(height) || OVERLAY_MIN_HEIGHT, 760, maxH));
+function setOverlaySize(...a) { return d.setOverlaySize(...a); }
 
-  let chatLeft;
-  let bottom;
-  if (overlayUserPositioned && overlayAnchorLeft != null && overlayAnchorBottomY != null) {
-    chatLeft = overlayAnchorLeft;
-    bottom = overlayAnchorBottomY;
-  } else {
-    chatLeft = Math.round(workArea.x + workArea.width / 2 - OVERLAY_WIDTH / 2);
-    bottom = workArea.y + workArea.height - OVERLAY_BOTTOM_MARGIN;
-  }
+function hideOverlay(...a) { return d.hideOverlay(...a); }
 
-  const maxBottom = workArea.y + workArea.height - margin;
-  const minBottom = workArea.y + margin + h;
-  // Prefer keeping the composer on-screen over preserving a bad drag anchor.
-  if (bottom > maxBottom || bottom < workArea.y + OVERLAY_MIN_HEIGHT) {
-    bottom = Math.min(maxBottom, Math.max(minBottom, workArea.y + workArea.height - OVERLAY_BOTTOM_MARGIN));
-    if (overlayUserPositioned) overlayAnchorBottomY = bottom;
-  } else {
-    bottom = Math.min(maxBottom, Math.max(bottom, Math.min(minBottom, maxBottom)));
-  }
-
-  let x = chatLeft;
-  let y = bottom - h;
-  x = Math.max(workArea.x, Math.min(x, workArea.x + workArea.width - w));
-  // If top would clip, shrink upward room by moving bottom down… no: move y down
-  // only within the room that still keeps bottom visible.
-  if (y < workArea.y + margin) {
-    y = workArea.y + margin;
-    bottom = y + h;
-    if (bottom > maxBottom) {
-      // Height already capped to maxH — pin to top of work area.
-      y = workArea.y + margin;
-      bottom = y + h;
-    }
-    if (overlayUserPositioned) overlayAnchorBottomY = bottom;
-  }
-  if (overlayUserPositioned) overlayAnchorLeft = x;
-
-  overlayProgrammaticMove = true;
-  setFloatingBounds(overlayWindow, {
-    x: Math.round(x),
-    y: Math.round(y),
-    width: w,
-    height: h,
-  });
-  overlayProgrammaticMove = false;
-  // Keep the floating menu/picker/live/panel cards glued to the bar's edges as it grows.
-  positionMenuWindow();
-  positionPickerWindow();
-  positionLangPickerWindow();
-  positionLiveWindow();
-  positionPanelWindow();
-  positionAgentSidebarWindow();
-}
-
-function hideOverlay() {
-  if (overlayWindow && overlayWindow.isVisible()) overlayWindow.hide();
-  // Tear down the full-screen "LYKN is on" glass alongside the bar.
-  hideOverlayGlass();
-  // And the floating three-dot menu + picker + live notes + side-panel + agents.
-  hideMenuWindow();
-  hidePickerWindow();
-  hideLangPickerWindow();
-  hideLiveWindow();
-  hidePanelWindow();
-  hideAgentSidebarWindow();
-}
-
-function setOverlayClickThrough(enabled) {
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  try {
-    overlayWindow.setIgnoreMouseEvents(!!enabled, enabled ? { forward: true } : undefined);
-  } catch (_) {}
-}
+function setOverlayClickThrough(...a) { return d.setOverlayClickThrough(...a); }
 
 /** Re-key the glass bar for typing after another app (or the agent stage) stole focus. */
-function focusOverlayForTyping() {
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  // Glass is its own feature and appears ONLY when the user summons it
-  // (⌘/Ctrl+L or an explicit "Open LYKN Glass"). If it's hidden, this
-  // must never show it — hand the keyboard to the Studio rail if that's
-  // where the work is, otherwise do nothing.
-  if (!overlayWindow.isVisible()) {
-    if (studioStageEmbedActive()) {
-      try {
-        if (studioWindow.isVisible()) studioWindow.focus();
-      } catch (_) {}
-    }
-    return;
-  }
-  try {
-    healOverlayGeometry(false);
-  } catch (_) {}
-  try {
-    // Panel windows often accept the click but never become key after Cursor/etc.
-    if (process.platform === "darwin") {
-      try {
-        app.focus({ steal: true });
-      } catch (_) {}
-    }
-    overlayWindow.moveTop();
-    overlayWindow.focus();
-    overlayWindow.webContents.focus();
-    overlayWindow.webContents.send("lykn:overlay-focus-composer");
-  } catch (_) {}
-}
+function focusOverlayForTyping(...a) { return d.focusOverlayForTyping(...a); }
 
-async function withOverlayHiddenForClick(fn) {
-  const vis = overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible();
-  if (vis) overlayWindow.hide();
-  await new Promise((r) => setTimeout(r, 200));
-  try {
-    return await fn();
-  } finally {
-    if (vis && overlayWindow && !overlayWindow.isDestroyed()) {
-      overlayWindow.show();
-      overlayWindow.moveTop();
-    }
-  }
-}
+async function withOverlayHiddenForClick(...a) { return d.withOverlayHiddenForClick(...a); }
 
 // Windows/Linux have no Screen Recording TCC pane — we cache an onboarding
 // probe so the walkthrough can show "Test screen capture". Feature gates use
@@ -2109,19 +850,7 @@ let screenProbeCache = null;
 // Serialize macOS TCC / Automation Allow dialogs so one Glass ask never stacks
 // Screen Recording + System Events + N browser prompts at once.
 let permissionPromptChain = Promise.resolve();
-async function withPermissionPrompt(_label, fn) {
-  const prev = permissionPromptChain;
-  let release;
-  permissionPromptChain = new Promise((resolve) => {
-    release = resolve;
-  });
-  try {
-    await prev.catch(() => {});
-    return await fn();
-  } finally {
-    release();
-  }
-}
+async function withPermissionPrompt(...a) { return d.withPermissionPrompt(...a); }
 
 // Session cache for Apple Events / Automation. macOS has no query API; we learn
 // from osascript success / errAEEventNotPermitted (-1743) and avoid re-probing
@@ -2133,56 +862,19 @@ const automationOk = {
   browsers: Object.create(null),
 };
 
-function isAutomationDeniedError(msg) {
-  return /-1743|not authoriz|not allowed to send|user declined|osascript is not allowed/i.test(
-    String(msg || ""),
-  );
-}
+function isAutomationDeniedError(...a) { return d.isAutomationDeniedError(...a); }
 
 // Returns 'granted' | 'denied' | 'not-determined' | 'restricted' | 'unknown'.
 // Used to gate overlay asks / live watch — on Windows defaults to allowed.
-function screenCaptureStatus() {
-  if (IS_MAC) {
-    try {
-      return systemPreferences.getMediaAccessStatus("screen");
-    } catch {
-      return "unknown";
-    }
-  }
-  return screenProbeCache === "denied" ? "denied" : "granted";
-}
+function screenCaptureStatus(...a) { return d.screenCaptureStatus(...a); }
 
 // Onboarding UI status — Windows starts as not-determined until the user tests.
-function onboardingScreenStatus() {
-  if (IS_MAC) return screenCaptureStatus();
-  return screenProbeCache || "not-determined";
-}
+function onboardingScreenStatus(...a) { return d.onboardingScreenStatus(...a); }
 
 // Microphone privacy status. Works on macOS + Windows via Chromium.
-function microphoneStatus() {
-  try {
-    if (typeof systemPreferences.getMediaAccessStatus === "function") {
-      return systemPreferences.getMediaAccessStatus("microphone");
-    }
-  } catch {
-    /* fall through */
-  }
-  // Unknown OS / API — don't block; getUserMedia will prompt if needed.
-  return IS_MAC ? "unknown" : "not-determined";
-}
+function microphoneStatus(...a) { return d.microphoneStatus(...a); }
 
-function openMicrophoneSettings() {
-  if (IS_MAC) {
-    shell.openExternal(
-      "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
-    );
-    return;
-  }
-  if (IS_WIN) {
-    shell.openExternal("ms-settings:privacy-microphone");
-    return;
-  }
-}
+function openMicrophoneSettings(...a) { return d.openMicrophoneSettings(...a); }
 
 /**
  * Open System Settings → Screen Recording.
@@ -2192,45 +884,10 @@ function openMicrophoneSettings() {
  * user closes and reopens Settings — so callers should probe first, then pass
  * `{ afterTccRegister: true }` so we wait a beat before opening.
  */
-async function openScreenPrivacySettings({ afterTccRegister = false } = {}) {
-  if (IS_MAC) {
-    if (afterTccRegister) {
-      await new Promise((r) => setTimeout(r, 700));
-    }
-    // Ventura+ Settings app; fall back to the legacy pref-pane URL.
-    try {
-      await shell.openExternal(
-        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture",
-      );
-    } catch {
-      await shell.openExternal(
-        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-      );
-    }
-    return;
-  }
-  // Windows has no Screen Recording TCC pane like macOS; privacy hub is closest.
-  if (IS_WIN) {
-    shell.openExternal("ms-settings:privacy");
-  }
-}
+async function openScreenPrivacySettings(...a) { return d.openScreenPrivacySettings(...a); }
 
 /** Tiny capture so TCC registers LYKN under Screen Recording before Settings opens. */
-async function probeScreenRecordingTcc() {
-  try {
-    await Promise.race([
-      capturePrimaryScreen({ maxWidth: 320, format: "jpeg", quality: 40 }),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("screen-permission-prompt-timeout")), 10000),
-      ),
-    ]);
-  } catch (e) {
-    // Expected until the user allows; timeout avoids hanging forever on some OS/Electron builds.
-    if (!String(e?.message || e).includes("screen-permission-prompt-timeout")) {
-      console.log("[screen] permission probe:", e?.message || e);
-    }
-  }
-}
+async function probeScreenRecordingTcc(...a) { return d.probeScreenRecordingTcc(...a); }
 
 /**
  * Make sure Screen Recording is available before Glass / capture features run.
@@ -2246,206 +903,25 @@ async function probeScreenRecordingTcc() {
  *
  * @returns {Promise<{ok:boolean,status:string,prompted?:boolean,needsSettings?:boolean}>}
  */
-async function ensureScreenRecordingAccess() {
-  if (!IS_MAC) {
-    const st = screenCaptureStatus();
-    return { ok: st !== "denied", status: st };
-  }
+async function ensureScreenRecordingAccess(...a) { return d.ensureScreenRecordingAccess(...a); }
 
-  let status = screenCaptureStatus();
-  if (status === "granted") return { ok: true, status };
-
-  // Mutex keeps this from stacking with Mic / Automation prompts.
-  // Always probe first — even when status already looks denied — so TCC has
-  // registered the app before we open Settings.
-  return withPermissionPrompt("screen", async () => {
-    status = screenCaptureStatus();
-    if (status === "granted") return { ok: true, status };
-
-    await probeScreenRecordingTcc();
-
-    status = screenCaptureStatus();
-    if (status === "granted") return { ok: true, status, prompted: true };
-
-    if (status === "denied" || status === "restricted") {
-      // Probe above registered LYKN with TCC; wait before opening so the list is fresh.
-      await openScreenPrivacySettings({ afterTccRegister: true });
-      return { ok: false, status, needsSettings: true, prompted: true };
-    }
-
-    // Still not determined — system Allow dialog should be on screen.
-    // Do NOT open Settings here; that races the dialog and shows a stale list
-    // without LYKN until the user closes and reopens Settings.
-    return { ok: false, status, prompted: true };
-  });
-}
-
-function screenRecordingDeniedMessage({ needsSettings, prompted } = {}) {
-  if (needsSettings) {
-    return (
-      "LYKN needs Screen Recording permission. Open System Settings → Privacy & Security → " +
-      "Screen Recording, turn on LYKN, then quit and reopen LYKN."
-    );
-  }
-  if (prompted) {
-    return (
-      "macOS should be asking for Screen Recording permission — click Allow in that dialog, " +
-      "then send your message again. If you don’t see a dialog, open System Settings → " +
-      "Privacy & Security → Screen Recording, enable LYKN, then quit and reopen LYKN."
-    );
-  }
-  return (
-    "LYKN needs Screen Recording permission. Enable it in System Settings → Privacy & Security → " +
-    "Screen Recording, then quit and reopen LYKN."
-  );
-}
+function screenRecordingDeniedMessage(...a) { return d.screenRecordingDeniedMessage(...a); }
 
 /** @type {BrowserWindow | null} */
 let snipWindow = null;
 /** @type {((rect: {x:number,y:number,width:number,height:number}|null) => void) | null} */
 let snipResolver = null;
 
-function closeSnipWindow() {
-  if (snipWindow && !snipWindow.isDestroyed()) {
-    try { snipWindow.close(); } catch (_) { /* ignore */ }
-  }
-  snipWindow = null;
-}
+function closeSnipWindow(...a) { return d.closeSnipWindow(...a); }
 
 // Interactive region select for Windows (and as a mac fallback). Full-screen
 // dimmed overlay → drag a rectangle → crop from a fresh primary-display capture.
-function captureInteractiveSnip() {
-  return new Promise(async (resolve) => {
-    if (snipResolver) {
-      // Only one snip at a time.
-      resolve(null);
-      return;
-    }
-    const display = getTargetCaptureDisplay();
-    const { bounds, scaleFactor } = display;
-    const physW = Math.round(bounds.width * scaleFactor);
-    const physH = Math.round(bounds.height * scaleFactor);
-
-    let fullImage = null;
-    try {
-      const sources = await desktopCapturer.getSources({
-        types: ["screen"],
-        thumbnailSize: { width: physW, height: physH },
-      });
-      const primary =
-        sources.find((s) => String(s.display_id) === String(display.id)) || sources[0];
-      if (primary && !primary.thumbnail.isEmpty()) fullImage = primary.thumbnail;
-    } catch (e) {
-      console.error("[LYKN] snip capture failed:", e && e.message);
-    }
-    if (!fullImage) {
-      resolve(null);
-      return;
-    }
-
-    snipResolver = (rect) => {
-      const done = snipResolver;
-      snipResolver = null;
-      closeSnipWindow();
-      if (!rect || !done) {
-        resolve(null);
-        return;
-      }
-      try {
-        const size = fullImage.getSize();
-        // Map selection (physical px of the snip window) onto the bitmap.
-        const sx = size.width / physW;
-        const sy = size.height / physH;
-        const crop = {
-          x: Math.max(0, Math.round(rect.x * sx)),
-          y: Math.max(0, Math.round(rect.y * sy)),
-          width: Math.max(1, Math.round(rect.width * sx)),
-          height: Math.max(1, Math.round(rect.height * sy)),
-        };
-        if (crop.x + crop.width > size.width) crop.width = size.width - crop.x;
-        if (crop.y + crop.height > size.height) crop.height = size.height - crop.y;
-        if (crop.width < 4 || crop.height < 4) {
-          resolve(null);
-          return;
-        }
-        const cropped = fullImage.crop(crop);
-        resolve({
-          kind: "image",
-          name: "Screenshot.png",
-          dataUrl: cropped.toDataURL(),
-        });
-      } catch (e) {
-        console.error("[LYKN] snip crop failed:", e && e.message);
-        resolve(null);
-      }
-    };
-
-    snipWindow = new BrowserWindow({
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.width,
-      height: bounds.height,
-      frame: false,
-      transparent: true,
-      resizable: false,
-      movable: false,
-      minimizable: false,
-      maximizable: false,
-      fullscreenable: false,
-      skipTaskbar: true,
-      alwaysOnTop: true,
-      hasShadow: false,
-      focusable: true,
-      show: false,
-      webPreferences: {
-        preload: path.join(__dirname, "snip-preload.cjs"),
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-      },
-    });
-    snipWindow.setAlwaysOnTop(true, "screen-saver");
-    snipWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    snipWindow.loadFile(path.join(__dirname, "snip.html"));
-    snipWindow.once("ready-to-show", () => {
-      if (snipWindow && !snipWindow.isDestroyed()) {
-        snipWindow.show();
-        snipWindow.focus();
-      }
-    });
-    snipWindow.on("closed", () => {
-      snipWindow = null;
-      if (snipResolver) {
-        const r = snipResolver;
-        snipResolver = null;
-        r(null);
-      }
-    });
-  });
-}
+function captureInteractiveSnip(...a) { return d.captureInteractiveSnip(...a); }
 
 // Display the overlay (or cursor) is on — so capture / burst cover the screen
 // the user is actually looking at, not always the primary (external monitors,
 // Sidecar, resolution changes).
-function getTargetCaptureDisplay() {
-  try {
-    if (overlayWindow && !overlayWindow.isDestroyed()) {
-      const b = overlayWindow.getBounds();
-      return screen.getDisplayNearestPoint({
-        x: b.x + Math.round(b.width / 2),
-        y: b.y + Math.round(b.height / 2),
-      });
-    }
-  } catch (_) {
-    /* fall through */
-  }
-  try {
-    return screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-  } catch (_) {
-    /* fall through */
-  }
-  return screen.getPrimaryDisplay();
-}
+function getTargetCaptureDisplay(...a) { return d.getTargetCaptureDisplay(...a); }
 
 // Capture the full target display and return a data URL. Always scales the
 // WHOLE screen (never a cropped sub-rectangle). desktopCapturer fails
@@ -2454,229 +930,22 @@ function getTargetCaptureDisplay() {
 // first that succeeds — sharp when possible, reliable always. Sizes are based
 // on physical pixels (bounds × scaleFactor) so Retina / HiDPI / ultrawide
 // Macs still yield a full-frame image.
-async function capturePrimaryScreen({ maxWidth, format = "png", quality = 80 } = {}) {
-  const display = getTargetCaptureDisplay();
-  const scale = Number(display.scaleFactor) || 1;
-  const dipW = Math.max(1, display.bounds.width);
-  const dipH = Math.max(1, display.bounds.height);
-  const physW = Math.max(1, Math.round(dipW * scale));
-  const physH = Math.max(1, Math.round(dipH * scale));
-  const aspect = physH / physW;
-  // When a caller only needs a smaller image (e.g. the browser thumbnail), ask
-  // the compositor for it directly instead of grabbing full Retina and
-  // downscaling — capturing fewer pixels is meaningfully faster.
-  const cap = maxWidth ? Math.min(physW, maxWidth) : Math.min(physW, 2560);
-  const rawWidths = maxWidth
-    ? [cap, Math.round(cap * 0.8), Math.min(960, cap)]
-    : [cap, Math.min(2048, cap), Math.min(1600, cap), Math.min(1280, cap), 960];
-  const widths = [...new Set(rawWidths.map((w) => Math.max(320, Math.round(w))))];
-  const sizes = widths.map((width) => ({
-    width,
-    height: Math.max(1, Math.round(width * aspect)),
-  }));
+async function capturePrimaryScreen(...a) { return d.capturePrimaryScreen(...a); }
 
-  let lastErr = null;
-  for (const thumbnailSize of sizes) {
-    try {
-      const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize });
-      const matched =
-        sources.find((s) => String(s.display_id) === String(display.id)) ||
-        sources.find((s) => {
-          // Some Electron builds leave display_id blank — pick the source whose
-          // thumbnail aspect is closest to the target display.
-          if (!s || s.thumbnail.isEmpty()) return false;
-          const sz = s.thumbnail.getSize();
-          if (!sz.width || !sz.height) return false;
-          const a = sz.height / sz.width;
-          return Math.abs(a - aspect) < 0.08;
-        }) ||
-        sources[0];
-      if (matched && !matched.thumbnail.isEmpty()) {
-        // JPEG is 5–10× smaller than PNG for a screenshot — much faster to upload
-        // and for the vision model to ingest, at no meaningful cost to OCR quality.
-        if (format === "jpeg") {
-          return `data:image/jpeg;base64,${matched.thumbnail.toJPEG(quality).toString("base64")}`;
-        }
-        return matched.thumbnail.toDataURL();
-      }
-    } catch (e) {
-      lastErr = e;
-    }
-  }
-  if (lastErr) console.error("[LYKN] screen capture failed:", lastErr.message);
-  return null;
-}
-
-async function captureBrowserScreenThumbnail() {
-  if (screenCaptureStatus() !== "granted") return "";
-  try {
-    const dataUrl = await capturePrimaryScreen({ maxWidth: 1280 });
-    if (!dataUrl) return "";
-    const img = nativeImage.createFromDataURL(dataUrl);
-    const { width } = img.getSize();
-    const resized = width > 1280 ? img.resize({ width: 1280 }) : img;
-    const jpeg = resized.toJPEG(70);
-    return `data:image/jpeg;base64,${jpeg.toString("base64")}`;
-  } catch {
-    return "";
-  }
-}
+async function captureBrowserScreenThumbnail(...a) { return d.captureBrowserScreenThumbnail(...a); }
 
 // ── Summon burst ─────────────────────────────────────────────────────────
 // A full-screen, transparent, click-through window that plays a brief color
 // wash across the WHOLE screen when the overlay is summoned. No persistent
 // outline — capture reads the full display on its own. The window covers the
 // display the overlay is on (not always primary) and hides after the anim.
-function createBurstWindow() {
-  const { bounds } = getTargetCaptureDisplay();
-  burstWindow = new BrowserWindow({
-    x: bounds.x,
-    y: bounds.y,
-    width: bounds.width,
-    height: bounds.height,
-    show: false,
-    frame: false,
-    transparent: true,
-    backgroundColor: "#00000000",
-    hasShadow: false,
-    resizable: false,
-    movable: false,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    focusable: false,
-    skipTaskbar: true,
-    alwaysOnTop: true,
-    // Same panel treatment as the overlay so it floats over full-screen apps
-    // and Spaces without yanking focus.
-    ...(process.platform === "darwin" ? { type: "panel" } : {}),
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      // Keep the renderer hot so the first summon doesn't pay a wake-up cost.
-      backgroundThrottling: false,
-    },
-  });
+function createBurstWindow(...a) { return d.createBurstWindow(...a); }
 
-  // Below the overlay (screen-saver) so the glass bar stays crisp on top, but
-  // above everything else on screen.
-  // Clicks pass straight through to whatever is underneath.
-  burstWindow.setIgnoreMouseEvents(true, { forward: true });
-  // Keep our own screen reads from capturing the flash.
-  try { burstWindow.setContentProtection(true); } catch (_) {}
-  // Workspaces first, level last — setVisibleOnAllWorkspaces can reset the
-  // window level on macOS (see createOverlayWindow).
-  burstWindow.setVisibleOnAllWorkspaces(true, {
-    visibleOnFullScreen: true,
-    skipTransformProcessType: true,
-  });
-  burstWindow.setFullScreenable(false);
-  burstWindow.setAlwaysOnTop(true, "pop-up-menu");
-  burstWindow.loadFile(path.join(__dirname, "burst.html"));
-
-  // Warm-up: run the full burst animation ONCE while the window is parked
-  // entirely off-screen (so it's invisible) — this forces the renderer to
-  // actually rasterize the blurred color layers + noise tiles, so the first
-  // real ⌘+L has everything cached and doesn't hitch.
-  burstWindow.webContents.once("did-finish-load", () => {
-    if (!burstWindow || burstWindow.isDestroyed() || burstWindowWarmed) return;
-    burstWindowWarmed = true;
-    try {
-      const { bounds } = getTargetCaptureDisplay();
-      // Park the window one full screen-height above the display.
-      burstWindow.setBounds({
-        x: bounds.x,
-        y: bounds.y - bounds.height - 120,
-        width: bounds.width,
-        height: bounds.height,
-      });
-      burstWindow.setIgnoreMouseEvents(true, { forward: true });
-      // Belt and braces: macOS can clamp "off-screen" windows back onto the
-      // display, which made this warm-up flash blue at app launch. Opacity 0
-      // keeps the renderer rasterizing while guaranteeing nothing shows.
-      burstWindow.setOpacity(0);
-      burstWindow.showInactive();
-      burstWindow.webContents
-        .executeJavaScript("window.__lyknBurst && window.__lyknBurst();", true)
-        .catch(() => {});
-      setTimeout(() => {
-        if (!burstWindow || burstWindow.isDestroyed()) return;
-        burstWindow.webContents
-          .executeJavaScript("window.__lyknBurstOff && window.__lyknBurstOff();", true)
-          .catch(() => {});
-        burstWindow.hide();
-        burstWindow.setOpacity(1);
-      }, 1500);
-    } catch (_) {
-      /* warm-up is best-effort */
-    }
-  });
-
-  burstWindow.on("closed", () => {
-    burstWindow = null;
-  });
-}
-
-function playOverlayBurst() {
-  try {
-    if (!burstWindow || burstWindow.isDestroyed()) createBurstWindow();
-    // Cover the display the overlay is on (handles external / scaled screens).
-    const { bounds } = getTargetCaptureDisplay();
-    burstWindow.setBounds({
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.width,
-      height: bounds.height,
-    });
-    burstWindow.setIgnoreMouseEvents(true, { forward: true });
-    // The boot warm-up runs at opacity 0 — a summon during that window must
-    // reset it or the real burst would be invisible.
-    burstWindow.setOpacity(1);
-    // Show without activating so the overlay keeps key focus for typing.
-    burstWindow.showInactive();
-    const fire = () => {
-      if (!burstWindow || burstWindow.isDestroyed()) return;
-      burstWindow.webContents
-        .executeJavaScript("window.__lyknBurst && window.__lyknBurst();", true)
-        .catch(() => {});
-    };
-    if (burstWindow.webContents.isLoading()) {
-      burstWindow.webContents.once("did-finish-load", fire);
-    } else {
-      fire();
-    }
-    // One-shot summon cue only — hide once the wash finishes (no persistent rim).
-    if (burstHideTimer) {
-      clearTimeout(burstHideTimer);
-      burstHideTimer = null;
-    }
-    burstHideTimer = setTimeout(() => {
-      burstHideTimer = null;
-      hideOverlayGlass();
-    }, 1400);
-  } catch (_) {
-    /* the burst is purely cosmetic — never block showing the overlay */
-  }
-}
+function playOverlayBurst(...a) { return d.playOverlayBurst(...a); }
 
 // Stop the summon animation and hide its window. Called after the one-shot
 // wash finishes, or immediately when the overlay is dismissed.
-function hideOverlayGlass() {
-  try {
-    if (!burstWindow || burstWindow.isDestroyed()) return;
-    burstWindow.webContents
-      .executeJavaScript("window.__lyknBurstOff && window.__lyknBurstOff();", true)
-      .catch(() => {});
-    if (burstHideTimer) clearTimeout(burstHideTimer);
-    burstHideTimer = setTimeout(() => {
-      burstHideTimer = null;
-      if (burstWindow && !burstWindow.isDestroyed()) burstWindow.hide();
-    }, 360);
-  } catch (_) {
-    /* purely cosmetic */
-  }
-}
+function hideOverlayGlass(...a) { return d.hideOverlayGlass(...a); }
 
 // ── Detached three-dot menu window ──────────────────────────────────────
 // The menu is its OWN small vibrancy window floating to the right of the
@@ -2690,104 +959,19 @@ const MENU_MAX_HEIGHT = 480;
 let menuWindow = null;
 let menuHeight = 420;
 
-function createMenuWindow() {
-  menuWindow = new BrowserWindow({
-    width: MENU_WIDTH,
-    height: menuHeight,
-    show: false,
-    frame: false,
-    ...floatingGlassChrome(),
-    resizable: false,
-    movable: false,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    skipTaskbar: true,
-    // Never steal focus from the bar (or the app under it) — buttons still
-    // take the first click thanks to acceptFirstMouse.
-    focusable: false,
-    acceptFirstMouse: true,
-    alwaysOnTop: true,
-    ...(IS_MAC ? { type: "panel" } : {}),
-    webPreferences: {
-      preload: path.join(__dirname, "menu-preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-  try {
-    menuWindow.setContentProtection(isContentProtectionEnabled());
-  } catch (_) {}
-  hardenFloatingGlass(menuWindow);
-  // Workspaces first, level last — setVisibleOnAllWorkspaces can reset the
-  // window level on macOS (see createOverlayWindow).
-  menuWindow.setVisibleOnAllWorkspaces(true, {
-    visibleOnFullScreen: true,
-    skipTransformProcessType: true,
-  });
-  menuWindow.setFullScreenable(false);
-  menuWindow.setAlwaysOnTop(true, "screen-saver");
-  menuWindow.loadFile(path.join(__dirname, "menu.html"));
-  menuWindow.on("closed", () => {
-    menuWindow = null;
-  });
-}
+function createMenuWindow(...a) { return d.createMenuWindow(...a); }
 
 // Bottom-aligned with the bar, hanging off its right edge (flips to the left
 // edge when there's no room on the right).
-function menuTargetBounds() {
-  const ob = overlayWindow.getBounds();
-  const { workArea } = screen.getPrimaryDisplay();
-  const h = Math.max(MENU_MIN_HEIGHT, Math.min(menuHeight, MENU_MAX_HEIGHT, workArea.height - 16));
-  // The live / panel / agent-sidebar cards occupy the bar's right flank when
-  // open — step past them so the menu doesn't land underneath.
-  const rightInset =
-    (liveWindowVisible() ? LIVE_WIDTH + MENU_GAP : 0) +
-    (panelWindowVisible() ? panelWidth + MENU_GAP : 0) +
-    (agentSidebarWindowVisible() ? AGENT_SIDEBAR_WIDTH + MENU_GAP : 0);
-  let x = ob.x + ob.width + MENU_GAP + rightInset;
-  if (x + MENU_WIDTH > workArea.x + workArea.width) x = ob.x - MENU_GAP - MENU_WIDTH;
-  x = Math.max(workArea.x, x);
-  let y = ob.y + ob.height - h;
-  y = Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - h));
-  return { x: Math.round(x), y: Math.round(y), width: MENU_WIDTH, height: h };
-}
+function menuTargetBounds(...a) { return d.menuTargetBounds(...a); }
 
-function positionMenuWindow() {
-  if (!menuWindow || menuWindow.isDestroyed() || !menuWindow.isVisible()) return;
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  setFloatingBounds(menuWindow, menuTargetBounds());
-}
+function positionMenuWindow(...a) { return d.positionMenuWindow(...a); }
 
-function notifyMenuVisibility(visible) {
-  try {
-    if (overlayWindow && !overlayWindow.isDestroyed())
-      overlayWindow.webContents.send("lykn:menu-visible", !!visible);
-  } catch (_) {}
-}
+function notifyMenuVisibility(...a) { return d.notifyMenuVisibility(...a); }
 
-function showMenuWindow() {
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  // Only one floating card next to the bar at a time.
-  hidePickerWindow();
-  if (!menuWindow || menuWindow.isDestroyed()) createMenuWindow();
-  const fire = () => {
-    if (!menuWindow || menuWindow.isDestroyed()) return;
-    setFloatingBounds(menuWindow, menuTargetBounds());
-    menuWindow.showInactive();
-    menuWindow.moveTop();
-    menuWindow.webContents.send("lykn:menu-shown");
-    notifyMenuVisibility(true);
-  };
-  if (menuWindow.webContents.isLoading()) menuWindow.webContents.once("did-finish-load", fire);
-  else fire();
-}
+function showMenuWindow(...a) { return d.showMenuWindow(...a); }
 
-function hideMenuWindow() {
-  if (menuWindow && !menuWindow.isDestroyed() && menuWindow.isVisible()) menuWindow.hide();
-  notifyMenuVisibility(false);
-}
+function hideMenuWindow(...a) { return d.hideMenuWindow(...a); }
 
 // ── Detached side-panel picker window ───────────────────────────────────
 // The "None" view picker in the bar toolbar gets the same treatment as the
@@ -2801,98 +985,19 @@ const PICKER_MAX_HEIGHT = 420;
 let pickerWindow = null;
 let pickerHeight = 280;
 
-function createPickerWindow() {
-  pickerWindow = new BrowserWindow({
-    width: PICKER_WIDTH,
-    height: pickerHeight,
-    show: false,
-    frame: false,
-    ...floatingGlassChrome(),
-    resizable: false,
-    movable: false,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    skipTaskbar: true,
-    focusable: false,
-    acceptFirstMouse: true,
-    alwaysOnTop: true,
-    ...(IS_MAC ? { type: "panel" } : {}),
-    webPreferences: {
-      preload: path.join(__dirname, "picker-preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-  try {
-    pickerWindow.setContentProtection(isContentProtectionEnabled());
-  } catch (_) {}
-  hardenFloatingGlass(pickerWindow);
-  // Workspaces first, level last — see createOverlayWindow.
-  pickerWindow.setVisibleOnAllWorkspaces(true, {
-    visibleOnFullScreen: true,
-    skipTransformProcessType: true,
-  });
-  pickerWindow.setFullScreenable(false);
-  pickerWindow.setAlwaysOnTop(true, "screen-saver");
-  pickerWindow.loadFile(path.join(__dirname, "picker.html"));
-  pickerWindow.on("closed", () => {
-    pickerWindow = null;
-  });
-}
+function createPickerWindow(...a) { return d.createPickerWindow(...a); }
 
 // Bottom-aligned with the bar, hanging off its left edge (flips to the right
 // edge when there's no room on the left).
-function pickerTargetBounds() {
-  const ob = overlayWindow.getBounds();
-  const { workArea } = screen.getPrimaryDisplay();
-  const h = Math.max(
-    PICKER_MIN_HEIGHT,
-    Math.min(pickerHeight, PICKER_MAX_HEIGHT, workArea.height - 16),
-  );
-  let x = ob.x - MENU_GAP - PICKER_WIDTH;
-  if (x < workArea.x) x = ob.x + ob.width + MENU_GAP;
-  x = Math.min(x, workArea.x + workArea.width - PICKER_WIDTH);
-  let y = ob.y + ob.height - h;
-  y = Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - h));
-  return { x: Math.round(x), y: Math.round(y), width: PICKER_WIDTH, height: h };
-}
+function pickerTargetBounds(...a) { return d.pickerTargetBounds(...a); }
 
-function positionPickerWindow() {
-  if (!pickerWindow || pickerWindow.isDestroyed() || !pickerWindow.isVisible()) return;
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  setFloatingBounds(pickerWindow, pickerTargetBounds());
-}
+function positionPickerWindow(...a) { return d.positionPickerWindow(...a); }
 
-function notifyPickerVisibility(visible) {
-  try {
-    if (overlayWindow && !overlayWindow.isDestroyed())
-      overlayWindow.webContents.send("lykn:picker-visible", !!visible);
-  } catch (_) {}
-}
+function notifyPickerVisibility(...a) { return d.notifyPickerVisibility(...a); }
 
-function showPickerWindow() {
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  // Only one floating card next to the bar at a time.
-  hideMenuWindow();
-  if (!pickerWindow || pickerWindow.isDestroyed()) createPickerWindow();
-  const fire = () => {
-    if (!pickerWindow || pickerWindow.isDestroyed()) return;
-    setFloatingBounds(pickerWindow, pickerTargetBounds());
-    pickerWindow.showInactive();
-    pickerWindow.moveTop();
-    pickerWindow.webContents.send("lykn:picker-shown");
-    notifyPickerVisibility(true);
-  };
-  if (pickerWindow.webContents.isLoading()) pickerWindow.webContents.once("did-finish-load", fire);
-  else fire();
-}
+function showPickerWindow(...a) { return d.showPickerWindow(...a); }
 
-function hidePickerWindow() {
-  if (pickerWindow && !pickerWindow.isDestroyed() && pickerWindow.isVisible()) pickerWindow.hide();
-  notifyPickerVisibility(false);
-}
+function hidePickerWindow(...a) { return d.hidePickerWindow(...a); }
 
 // ── Detached Translate-mode language picker ─────────────────────────────
 // Same vibrancy-window pattern as menu/picker: can't hang inside the overlay
@@ -2906,107 +1011,17 @@ let langPickerHeight = 160;
 /** Pill rect relative to the overlay window content (from renderer). */
 let langPickerAnchor = null;
 
-function createLangPickerWindow() {
-  langPickerWindow = new BrowserWindow({
-    width: LANG_PICKER_WIDTH,
-    height: langPickerHeight,
-    show: false,
-    frame: false,
-    ...floatingGlassChrome(),
-    resizable: false,
-    movable: false,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    skipTaskbar: true,
-    focusable: false,
-    acceptFirstMouse: true,
-    alwaysOnTop: true,
-    ...(IS_MAC ? { type: "panel" } : {}),
-    webPreferences: {
-      preload: path.join(__dirname, "lang-picker-preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-  try {
-    langPickerWindow.setContentProtection(isContentProtectionEnabled());
-  } catch (_) {}
-  hardenFloatingGlass(langPickerWindow);
-  langPickerWindow.setVisibleOnAllWorkspaces(true, {
-    visibleOnFullScreen: true,
-    skipTransformProcessType: true,
-  });
-  langPickerWindow.setFullScreenable(false);
-  langPickerWindow.setAlwaysOnTop(true, "screen-saver");
-  langPickerWindow.loadFile(path.join(__dirname, "lang-picker.html"));
-  langPickerWindow.on("closed", () => {
-    langPickerWindow = null;
-  });
-}
+function createLangPickerWindow(...a) { return d.createLangPickerWindow(...a); }
 
-function langPickerTargetBounds() {
-  const ob = overlayWindow.getBounds();
-  const { workArea } = screen.getPrimaryDisplay();
-  const h = Math.max(
-    LANG_PICKER_MIN_HEIGHT,
-    Math.min(langPickerHeight, LANG_PICKER_MAX_HEIGHT, workArea.height - 16),
-  );
-  const a = langPickerAnchor || { left: 12, bottom: 40, width: LANG_PICKER_WIDTH };
-  let x = Math.round(ob.x + Number(a.left || 0));
-  let y = Math.round(ob.y + Number(a.bottom || 0) + LANG_PICKER_GAP);
-  x = Math.max(workArea.x, Math.min(x, workArea.x + workArea.width - LANG_PICKER_WIDTH));
-  if (y + h > workArea.y + workArea.height) {
-    // Flip above the pill when there's no room below.
-    y = Math.round(ob.y + Number(a.top || a.bottom || 0) - LANG_PICKER_GAP - h);
-  }
-  y = Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - h));
-  return { x, y, width: LANG_PICKER_WIDTH, height: h };
-}
+function langPickerTargetBounds(...a) { return d.langPickerTargetBounds(...a); }
 
-function positionLangPickerWindow() {
-  if (!langPickerWindow || langPickerWindow.isDestroyed() || !langPickerWindow.isVisible()) return;
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  setFloatingBounds(langPickerWindow, langPickerTargetBounds());
-}
+function positionLangPickerWindow(...a) { return d.positionLangPickerWindow(...a); }
 
-function notifyLangPickerVisibility(visible) {
-  try {
-    if (overlayWindow && !overlayWindow.isDestroyed())
-      overlayWindow.webContents.send("lykn:lang-picker-visible", !!visible);
-  } catch (_) {}
-}
+function notifyLangPickerVisibility(...a) { return d.notifyLangPickerVisibility(...a); }
 
-function showLangPickerWindow(anchor) {
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  if (anchor && typeof anchor === "object") langPickerAnchor = anchor;
-  hideMenuWindow();
-  hidePickerWindow();
-  if (!langPickerWindow || langPickerWindow.isDestroyed()) createLangPickerWindow();
-  const fire = () => {
-    if (!langPickerWindow || langPickerWindow.isDestroyed()) return;
-    setFloatingBounds(langPickerWindow, langPickerTargetBounds());
-    langPickerWindow.showInactive();
-    langPickerWindow.moveTop();
-    langPickerWindow.webContents.send("lykn:lang-picker-shown");
-    notifyLangPickerVisibility(true);
-  };
-  if (langPickerWindow.webContents.isLoading()) {
-    langPickerWindow.webContents.once("did-finish-load", fire);
-  } else fire();
-}
+function showLangPickerWindow(...a) { return d.showLangPickerWindow(...a); }
 
-function hideLangPickerWindow() {
-  if (
-    langPickerWindow &&
-    !langPickerWindow.isDestroyed() &&
-    langPickerWindow.isVisible()
-  ) {
-    langPickerWindow.hide();
-  }
-  notifyLangPickerVisibility(false);
-}
+function hideLangPickerWindow(...a) { return d.hideLangPickerWindow(...a); }
 
 // ── Detached live meeting notes window ──────────────────────────────────
 // The live transcription / meeting notes card gets the same treatment as the
@@ -3023,101 +1038,21 @@ let lastLiveState = null;
 // the card back when the bar is re-shown/expanded mid-meeting.
 let liveCardOpen = false;
 
-function createLiveWindow() {
-  liveWindow = new BrowserWindow({
-    width: LIVE_WIDTH,
-    height: LIVE_HEIGHT,
-    show: false,
-    frame: false,
-    ...floatingGlassChrome(),
-    resizable: false,
-    movable: false,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    skipTaskbar: true,
-    focusable: false,
-    acceptFirstMouse: true,
-    alwaysOnTop: true,
-    ...(IS_MAC ? { type: "panel" } : {}),
-    webPreferences: {
-      preload: path.join(__dirname, "live-preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-  try {
-    liveWindow.setContentProtection(isContentProtectionEnabled());
-  } catch (_) {}
-  hardenFloatingGlass(liveWindow);
-  // Workspaces first, level last — see createOverlayWindow.
-  liveWindow.setVisibleOnAllWorkspaces(true, {
-    visibleOnFullScreen: true,
-    skipTransformProcessType: true,
-  });
-  liveWindow.setFullScreenable(false);
-  liveWindow.setAlwaysOnTop(true, "screen-saver");
-  liveWindow.loadFile(path.join(__dirname, "live.html"));
-  liveWindow.on("closed", () => {
-    liveWindow = null;
-  });
-}
+function createLiveWindow(...a) { return d.createLiveWindow(...a); }
 
-function liveWindowVisible() {
-  return !!(liveWindow && !liveWindow.isDestroyed() && liveWindow.isVisible());
-}
+function liveWindowVisible(...a) { return d.liveWindowVisible(...a); }
 
 // Bottom-aligned with the bar, hanging off its right edge (flips to the left
 // edge when there's no room on the right).
-function liveTargetBounds() {
-  const ob = overlayWindow.getBounds();
-  const { workArea } = screen.getPrimaryDisplay();
-  const h = Math.min(LIVE_HEIGHT, workArea.height - 16);
-  let x = ob.x + ob.width + MENU_GAP;
-  if (x + LIVE_WIDTH > workArea.x + workArea.width) x = ob.x - MENU_GAP - LIVE_WIDTH;
-  x = Math.max(workArea.x, x);
-  let y = ob.y + ob.height - h;
-  y = Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - h));
-  return { x: Math.round(x), y: Math.round(y), width: LIVE_WIDTH, height: h };
-}
+function liveTargetBounds(...a) { return d.liveTargetBounds(...a); }
 
-function positionLiveWindow() {
-  if (!liveWindowVisible()) return;
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  setFloatingBounds(liveWindow, liveTargetBounds());
-}
+function positionLiveWindow(...a) { return d.positionLiveWindow(...a); }
 
-function sendLiveState() {
-  if (!liveWindowVisible() || !lastLiveState) return;
-  try {
-    liveWindow.webContents.send("lykn:live-state", lastLiveState);
-  } catch (_) {}
-}
+function sendLiveState(...a) { return d.sendLiveState(...a); }
 
-function showLiveWindow() {
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  if (!liveWindow || liveWindow.isDestroyed()) createLiveWindow();
-  const fire = () => {
-    if (!liveWindow || liveWindow.isDestroyed()) return;
-    setFloatingBounds(liveWindow, liveTargetBounds());
-    liveWindow.showInactive();
-    liveWindow.moveTop();
-    sendLiveState();
-    // The side-panel card and three-dot menu float on the same side; re-place
-    // them so they land next to the live card instead of underneath it.
-    positionPanelWindow();
-    positionMenuWindow();
-  };
-  if (liveWindow.webContents.isLoading()) liveWindow.webContents.once("did-finish-load", fire);
-  else fire();
-}
+function showLiveWindow(...a) { return d.showLiveWindow(...a); }
 
-function hideLiveWindow() {
-  if (liveWindowVisible()) liveWindow.hide();
-  positionPanelWindow();
-  positionMenuWindow();
-}
+function hideLiveWindow(...a) { return d.hideLiveWindow(...a); }
 
 // ── Detached side-panel content window ──────────────────────────────────
 // The view picked from the bar's "None" dropdown (Sources / Tasks /
@@ -3136,105 +1071,21 @@ let lastPanelState = null;
 // back when the bar is re-shown/expanded.
 let panelCardOpen = false;
 
-function createPanelWindow() {
-  panelWindow = new BrowserWindow({
-    width: panelWidth,
-    height: panelHeight,
-    show: false,
-    frame: false,
-    ...floatingGlassChrome(),
-    resizable: false,
-    movable: false,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    skipTaskbar: true,
-    focusable: false,
-    acceptFirstMouse: true,
-    alwaysOnTop: true,
-    ...(IS_MAC ? { type: "panel" } : {}),
-    webPreferences: {
-      preload: path.join(__dirname, "panel-preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-  try {
-    panelWindow.setContentProtection(isContentProtectionEnabled());
-  } catch (_) {}
-  hardenFloatingGlass(panelWindow);
-  // Workspaces first, level last — see createOverlayWindow.
-  panelWindow.setVisibleOnAllWorkspaces(true, {
-    visibleOnFullScreen: true,
-    skipTransformProcessType: true,
-  });
-  panelWindow.setFullScreenable(false);
-  panelWindow.setAlwaysOnTop(true, "screen-saver");
-  panelWindow.loadFile(path.join(__dirname, "panel.html"));
-  panelWindow.on("closed", () => {
-    panelWindow = null;
-  });
-}
+function createPanelWindow(...a) { return d.createPanelWindow(...a); }
 
-function panelWindowVisible() {
-  return !!(panelWindow && !panelWindow.isDestroyed() && panelWindow.isVisible());
-}
+function panelWindowVisible(...a) { return d.panelWindowVisible(...a); }
 
 // Bottom-aligned with the bar on its right flank; stacks past the live
 // meeting notes card when that's open, and flips left when out of room.
-function panelTargetBounds() {
-  const ob = overlayWindow.getBounds();
-  const { workArea } = screen.getPrimaryDisplay();
-  const h = Math.max(
-    PANEL_MIN_HEIGHT,
-    Math.min(panelHeight, PANEL_MAX_HEIGHT, workArea.height - 16),
-  );
-  const rightInset =
-    (liveWindowVisible() ? LIVE_WIDTH + MENU_GAP : 0) +
-    (agentSidebarWindowVisible() ? AGENT_SIDEBAR_WIDTH + MENU_GAP : 0);
-  let x = ob.x + ob.width + MENU_GAP + rightInset;
-  if (x + panelWidth > workArea.x + workArea.width) x = ob.x - MENU_GAP - panelWidth;
-  x = Math.max(workArea.x, x);
-  let y = ob.y + ob.height - h;
-  y = Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - h));
-  return { x: Math.round(x), y: Math.round(y), width: Math.round(panelWidth), height: h };
-}
+function panelTargetBounds(...a) { return d.panelTargetBounds(...a); }
 
-function positionPanelWindow() {
-  if (!panelWindowVisible()) return;
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  setFloatingBounds(panelWindow, panelTargetBounds());
-}
+function positionPanelWindow(...a) { return d.positionPanelWindow(...a); }
 
-function sendPanelState() {
-  if (!panelWindowVisible() || !lastPanelState) return;
-  try {
-    panelWindow.webContents.send("lykn:panel-state", lastPanelState);
-  } catch (_) {}
-}
+function sendPanelState(...a) { return d.sendPanelState(...a); }
 
-function showPanelWindow() {
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  if (!panelWindow || panelWindow.isDestroyed()) createPanelWindow();
-  const fire = () => {
-    if (!panelWindow || panelWindow.isDestroyed()) return;
-    setFloatingBounds(panelWindow, panelTargetBounds());
-    panelWindow.showInactive();
-    panelWindow.moveTop();
-    sendPanelState();
-    // The three-dot menu shares the right flank; re-place it so it lands
-    // next to the panel instead of underneath it.
-    positionMenuWindow();
-  };
-  if (panelWindow.webContents.isLoading()) panelWindow.webContents.once("did-finish-load", fire);
-  else fire();
-}
+function showPanelWindow(...a) { return d.showPanelWindow(...a); }
 
-function hidePanelWindow() {
-  if (panelWindowVisible()) panelWindow.hide();
-  positionMenuWindow();
-}
+function hidePanelWindow(...a) { return d.hidePanelWindow(...a); }
 
 // ── Agent Mode: sidebar + owned browser sessions ───────────────────────────
 const AGENT_SIDEBAR_WIDTH = 280;
@@ -3249,6 +1100,10 @@ let agentRuntime = null;
 const browserWelcomeChatStreams = new Map();
 let openBrowserTaskChat = null;
 
+// ── AGENT-HARNESS BRIDGE ──────────────────────────────────────────────────
+// Browser-view Maps, runtime DI, stage embedding, and agent IPC implementation
+// stay in this file until the dedicated Agent Harness redesign. Do not relocate
+// these without a separate architecture discussion.
 function emitAgentToUi(channel, payload) {
   try {
     if (overlayWindow && !overlayWindow.isDestroyed()) {
@@ -6731,6 +4586,7 @@ function whenAgentRuntimeLoaded() {
   return agentRuntimeLoadPromise || Promise.resolve();
 }
 
+// AGENT-HARNESS BRIDGE: runtime construction and ownedBrowserAct wiring.
 function initAgentRuntime() {
   if (agentRuntime) return agentRuntime;
   loadBrowsingHabitsContext();
@@ -6857,74 +4713,11 @@ function initAgentRuntime() {
 // ⌘+L: toggle the floating glass bar. Screen capture happens silently at ask
 // time (see streamScreenAnswer) so the bar always reflects the live screen and
 // the user never sees the screenshot.
-function showOverlay() {
-  // A crashed renderer leaves a window that "shows" but paints nothing —
-  // rebuild it instead of showing a blank zombie.
-  if (overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.webContents.isCrashed()) {
-    try { overlayWindow.destroy(); } catch (_) {}
-    overlayWindow = null;
-  }
-  if (!overlayWindow) createOverlayWindow();
-  // Re-assert top-of-stack status on EVERY show. The level/ordering set at
-  // creation can be lost after an app restart, a Space switch, or a full-screen
-  // transition — which is why the panel sometimes appeared *behind* other
-  // always-on-top windows (e.g. the main window) instead of coming all the way
-  // forward. Re-applying the level + moveTop() forces it to the front again.
-  //
-  // ORDER MATTERS (electron#10078 / #26350): setVisibleOnAllWorkspaces can
-  // reset the NSWindow level on macOS, so it goes FIRST and the always-on-top
-  // level goes LAST. With the old order (level, then workspaces) the level
-  // reset raced the show and the bar intermittently stayed hidden behind
-  // full-screen apps until the user left and re-entered full screen.
-  overlayWindow.setVisibleOnAllWorkspaces(true, {
-    visibleOnFullScreen: true,
-    skipTransformProcessType: true,
-  });
-  overlayWindow.setFullScreenable(false);
-  overlayWindow.setAlwaysOnTop(true, "screen-saver");
-  // Re-assert content protection on every show — like the window level, it can
-  // be dropped after a restart or Space/full-screen transition.
-  applyContentProtection();
-  // Unstick click-through / clipped geometry before the user sees the bar.
-  healOverlayGeometry(false);
-  // Brief summon wash behind the bar (no persistent outline).
-  playOverlayBurst();
-  overlayWindow.show();
-  // Re-assert the level AFTER show too — ordering a window onto a full-screen
-  // Space can drop it again — then bring it above the burst flash.
-  overlayWindow.setAlwaysOnTop(true, "screen-saver");
-  overlayWindow.moveTop();
-  overlayWindow.focus();
-  // Heal again after show — Spaces / full-screen can rewrite bounds on map.
-  healOverlayGeometry(false);
-  // Restore the live meeting notes + side-panel + agent sidebar if still open.
-  if (liveCardOpen && !overlayCollapsed) showLiveWindow();
-  if (panelCardOpen && !overlayCollapsed) showPanelWindow();
-  if (agentSidebarOpen && !overlayCollapsed) showAgentSidebarWindow();
-  overlayWindow.webContents.send("lykn:overlay-shown");
-}
+function showOverlay(...a) { return d.showOverlay(...a); }
 
-function toggleOverlay() {
-  const alive =
-    overlayWindow &&
-    !overlayWindow.isDestroyed() &&
-    !overlayWindow.webContents.isCrashed();
-  if (alive && overlayWindow.isVisible()) {
-    hideOverlay();
-    return;
-  }
-  showOverlay();
-}
+function toggleOverlay(...a) { return d.toggleOverlay(...a); }
 
-function registerGlobalHotkey() {
-  globalShortcut.register("CommandOrControl+L", () => {
-    // Let the first-run walkthrough celebrate the user's first ⌘L.
-    if (onboardingWindow && !onboardingWindow.isDestroyed()) {
-      onboardingWindow.webContents.send("lykn:onboarding-hotkey");
-    }
-    toggleOverlay();
-  });
-}
+function registerGlobalHotkey(...a) { return d.registerGlobalHotkey(...a); }
 
 // ── Tray icon ───────────────────────────────────────────────────────────────
 // Lives in the macOS menu bar / Windows notification area for as long as the
@@ -6935,94 +4728,9 @@ function registerGlobalHotkey() {
 //   node scripts/generate-tray-icon.mjs
 // Windows: colored glyph (template images aren't used in the Win tray).
 //   node scripts/generate-windows-icons.mjs
-function refreshTrayUpdateAffordance() {
-  if (tray) {
-    const hotkeyLabel = IS_MAC ? "⌘L" : "Ctrl+L";
-    if (pendingUpdate) {
-      const ver = pendingUpdate.version ? ` ${pendingUpdate.version}` : "";
-      tray.setToolTip(`LYKN${ver} is ready — restart to update (${hotkeyLabel})`);
-      if (IS_MAC && app.dock) {
-        try { app.dock.setBadge("↑"); } catch (_) { /* cosmetic */ }
-      }
-    } else {
-      tray.setToolTip(`LYKN — open the chat overlay (${hotkeyLabel})`);
-      if (IS_MAC && app.dock) {
-        try { app.dock.setBadge(""); } catch (_) { /* cosmetic */ }
-      }
-    }
-  }
-  // Keep the app menu in sync so Restart is findable even without the tray menu.
-  try {
-    if (app.isReady()) buildAppMenu();
-  } catch (_) { /* menu not ready yet */ }
-}
+function refreshTrayUpdateAffordance(...a) { return d.refreshTrayUpdateAffordance(...a); }
 
-function createTray() {
-  if (tray) return;
-  const trayFile = IS_MAC ? "trayTemplate.png" : "tray-win.png";
-  const icon = nativeImage.createFromPath(
-    path.join(__dirname, "resources", trayFile),
-  );
-  if (IS_MAC) icon.setTemplateImage(true);
-  tray = new Tray(icon);
-  refreshTrayUpdateAffordance();
-
-  // Left click = the one-gesture action: toggle the overlay chat.
-  tray.on("click", () => {
-    toggleOverlay();
-  });
-
-  // Right-click = utility menu. Built lazily per popup so the overlay label
-  // reflects current visibility. NOT set via setContextMenu — on macOS that
-  // would hijack left-click into opening the menu instead of the overlay.
-  // On Windows, also bind to "menu" / double-click for discoverability.
-  const popupTrayMenu = () => {
-    const overlayVisible = Boolean(overlayWindow && overlayWindow.isVisible());
-    /** @type {Electron.MenuItemConstructorOptions[]} */
-    const items = [];
-    if (pendingUpdate && installPendingUpdate) {
-      const ver = pendingUpdate.version ? ` (${pendingUpdate.version})` : "";
-      items.push({
-        label: `Restart to Update${ver}`,
-        click: () => installPendingUpdate(),
-      });
-      items.push({ type: "separator" });
-    }
-    items.push(
-      {
-        label: overlayVisible ? "Hide Chat Overlay" : "Open Chat Overlay",
-        accelerator: "CommandOrControl+L",
-        click: () => toggleOverlay(),
-      },
-      {
-        label: "Open LYKN Window",
-        click: () => {
-          if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
-          else {
-            mainWindow.show();
-            mainWindow.focus();
-          }
-          // Opening the window is a natural moment to re-offer a pending update.
-          void maybePromptPendingUpdate({ force: false });
-        },
-      },
-      { type: "separator" },
-      {
-        label: "Set Up LYKN / Permissions…",
-        click: () => createOnboardingWindow(),
-      },
-      { type: "separator" },
-      { label: "Quit LYKN Completely", click: () => quitForReal() },
-    );
-    const menu = Menu.buildFromTemplate(items);
-    tray.popUpContextMenu(menu);
-  };
-  tray.on("right-click", popupTrayMenu);
-  if (IS_WIN) {
-    // Windows often surfaces the context menu on this event too.
-    tray.on("double-click", () => toggleOverlay());
-  }
-}
+function createTray(...a) { return d.createTray(...a); }
 
 // Strip the hidden control tags the chat models emit so they never leak into
 // the overlay bubble (the web app strips these too, server-side prompt aside).
@@ -7674,244 +5382,56 @@ let hiddenAuthReadPromise = null;
 // Same default session / localStorage as the main window — just never shown.
 let authKeeperWindow = null;
 
-function jwtExpiryMs(token) {
-  try {
-    const payload = JSON.parse(
-      Buffer.from(String(token).split(".")[1], "base64").toString("utf8"),
-    );
-    const exp = Number(payload?.exp || 0);
-    return Number.isFinite(exp) && exp > 0 ? exp * 1000 : 0;
-  } catch {
-    return 0;
-  }
-}
+function jwtExpiryMs(...a) { return d.jwtExpiryMs(...a); }
 
-function cacheAuthToken(token) {
-  cachedAuthToken = token;
-  // Unknown expiry → assume 5 minutes so we re-verify soon rather than serve
-  // a possibly-dead token for an hour.
-  cachedAuthTokenExpMs = jwtExpiryMs(token) || Date.now() + 5 * 60 * 1000;
-}
+function cacheAuthToken(...a) { return d.cacheAuthToken(...a); }
 
-async function readTokenFromWebContents(webContents) {
-  const raw = await webContents.executeJavaScript(READ_SUPABASE_TOKEN_JS, true);
-  return typeof raw === "string" && raw ? raw : null;
-}
+async function readTokenFromWebContents(...a) { return d.readTokenFromWebContents(...a); }
 
 // Ask the web app's own Supabase client (installAuthFetch exposes
 // window.__lyknGetFreshToken) to refresh and hand back a valid access token.
 // This is the only reliable way to recover from an EXPIRED token in storage:
 // the renderer owns the rotating refresh token, so refreshing must happen
 // through its client, not by re-reading localStorage from out here.
-async function refreshTokenViaWebContents(webContents) {
-  try {
-    const raw = await webContents.executeJavaScript(
-      "window.__lyknGetFreshToken ? window.__lyknGetFreshToken(true) : null",
-      true,
-    );
-    return typeof raw === "string" && raw ? raw : null;
-  } catch {
-    return null;
-  }
-}
+async function refreshTokenViaWebContents(...a) { return d.refreshTokenViaWebContents(...a); }
 
 // True when a JWT is missing its expiry or expires within `marginMs`.
-function tokenIsStale(token, marginMs = 60_000) {
-  const expMs = jwtExpiryMs(token);
-  return !expMs || expMs <= Date.now() + marginMs;
-}
+function tokenIsStale(...a) { return d.tokenIsStale(...a); }
 
 // Prefer the (possibly hidden) main window; otherwise the dedicated auth
 // keeper. Both share the default session and keep backgroundThrottling off
 // so Supabase's refresh timer keeps firing.
-function liveAuthWebContents() {
-  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow.webContents;
-  if (authKeeperWindow && !authKeeperWindow.isDestroyed()) {
-    return authKeeperWindow.webContents;
-  }
-  return null;
-}
+function liveAuthWebContents(...a) { return d.liveAuthWebContents(...a); }
 
 // Keep a hidden lykn.io window alive whenever there's no main window, so
 // login-item launches (and crash recovery) still have a live Supabase client
 // for Glass asks. Idempotent.
-function ensureAuthKeeper() {
-  if (mainWindow && !mainWindow.isDestroyed()) return;
-  if (authKeeperWindow && !authKeeperWindow.isDestroyed()) return;
-  try {
-    authKeeperWindow = new BrowserWindow({
-      show: false,
-      width: 400,
-      height: 300,
-      skipTaskbar: true,
-      frame: false,
-      focusable: false,
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        // Same reason as mainWindow: the refresh timer must keep firing.
-        backgroundThrottling: false,
-      },
-    });
-    authKeeperWindow.loadURL(APP_URL);
-    authKeeperWindow.on("closed", () => {
-      authKeeperWindow = null;
-    });
-  } catch (e) {
-    console.warn("[auth-keeper] failed to create:", e?.message || e);
-    authKeeperWindow = null;
-  }
-}
+function ensureAuthKeeper(...a) { return d.ensureAuthKeeper(...a); }
 
-function destroyAuthKeeper() {
-  try {
-    if (authKeeperWindow && !authKeeperWindow.isDestroyed()) authKeeperWindow.destroy();
-  } catch (_) { /* ignore */ }
-  authKeeperWindow = null;
-}
+function destroyAuthKeeper(...a) { return d.destroyAuthKeeper(...a); }
 
 // Read + optionally refresh through a live auth webContents. Returns null when
 // the window has no session (signed out) so the caller can drop the cache.
-async function readTokenFromLiveAuth(webContents, { forceRefresh = false } = {}) {
-  const token = await readTokenFromWebContents(webContents);
-  if (token && !forceRefresh && !tokenIsStale(token)) {
-    cacheAuthToken(token);
-    return token;
-  }
-  if (token || forceRefresh) {
-    const refreshed = await refreshTokenViaWebContents(webContents);
-    if (refreshed && !tokenIsStale(refreshed)) {
-      cacheAuthToken(refreshed);
-      return refreshed;
-    }
-    // Refresh hook unavailable (app still booting) or refresh failed —
-    // a present non-stale token is still worth trying; a known-stale one
-    // is not (it just becomes a guaranteed 401).
-    if (token && !tokenIsStale(token, 0)) {
-      cacheAuthToken(token);
-      return token;
-    }
-  }
-  // Alive window, no usable session → signed out.
-  if (!token && !forceRefresh) {
-    cachedAuthToken = null;
-    cachedAuthTokenExpMs = 0;
-    return null;
-  }
-  return null;
-}
+async function readTokenFromLiveAuth(...a) { return d.readTokenFromLiveAuth(...a); }
 
 // Boot (or reuse) a hidden window on the shared default session to refresh
 // the stored Supabase session. Kept around as the auth keeper afterwards so
 // the next ask doesn't pay another cold boot. Deduplicated across parallel
 // overlay asks.
-function readTokenViaHiddenWindow() {
-  if (hiddenAuthReadPromise) return hiddenAuthReadPromise;
-  hiddenAuthReadPromise = (async () => {
-    try {
-      ensureAuthKeeper();
-      const win = authKeeperWindow;
-      if (!win || win.isDestroyed()) return null;
+function readTokenViaHiddenWindow(...a) { return d.readTokenViaHiddenWindow(...a); }
 
-      // Wait for the SPA to finish its first load if we just created it.
-      if (win.webContents.isLoading()) {
-        await new Promise((resolve) => {
-          const done = () => resolve();
-          win.webContents.once("did-finish-load", done);
-          setTimeout(done, 12_000);
-        });
-      }
-
-      const hasStoredSession = await win.webContents
-        .executeJavaScript(HAS_SUPABASE_SESSION_JS, true)
-        .catch(() => false);
-      if (!hasStoredSession) return null; // genuinely signed out
-
-      // Poll while the app's Supabase client validates/refreshes the stored
-      // session. Wait for the refresh hook to appear, then force a refresh.
-      const deadline = Date.now() + 25_000;
-      while (Date.now() < deadline) {
-        const hookReady = await win.webContents
-          .executeJavaScript("typeof window.__lyknGetFreshToken === 'function'", true)
-          .catch(() => false);
-        if (hookReady) {
-          const refreshed = await refreshTokenViaWebContents(win.webContents);
-          if (refreshed && !tokenIsStale(refreshed)) {
-            cacheAuthToken(refreshed);
-            return refreshed;
-          }
-        }
-        const token = await readTokenFromWebContents(win.webContents).catch(() => null);
-        if (token && !tokenIsStale(token)) {
-          cacheAuthToken(token);
-          return token;
-        }
-        await new Promise((r) => setTimeout(r, 400));
-      }
-      return null;
-    } catch {
-      return null;
-    } finally {
-      hiddenAuthReadPromise = null;
-    }
-  })();
-  return hiddenAuthReadPromise;
-}
-
-async function getAuthToken({ forceRefresh = false } = {}) {
-  // 1. Live read from the main window (even when hidden) or the auth keeper.
-  //    An expired token in storage is NOT good enough — after the window
-  //    idles the stored access token may be dead, so validate expiry and
-  //    push a real refresh through the app's Supabase client when needed.
-  const live = liveAuthWebContents();
-  if (live) {
-    try {
-      const fromLive = await readTokenFromLiveAuth(live, { forceRefresh });
-      if (fromLive) return fromLive;
-      // Live window says signed out (no token at all, not force-refreshing).
-      if (!forceRefresh) return null;
-    } catch {
-      // Window mid-load/navigation — fall through to the cache/hidden read.
-    }
-  }
-
-  // 2. Recent token from memory (menu-bar mode within the same app run).
-  if (!forceRefresh && cachedAuthToken && Date.now() < cachedAuthTokenExpMs - 60_000) {
-    return cachedAuthToken;
-  }
-
-  // 3. Ensure an auth keeper exists and refresh through it (login-item
-  //    launch, crash recovery, or forceRefresh after a 401 with no live win).
-  return readTokenViaHiddenWindow();
-}
+async function getAuthToken(...a) { return d.getAuthToken(...a); }
 
 // ── Overlay settings (small, synchronous JSON store) ───────────────────────
 // Persists user toggles that must be known the instant the window is created
 // (before any async IPC), so we read/write it synchronously. Currently holds
 // `contentProtection` — whether the overlay is excluded from screen capture.
 
-function overlaySettingsPath() {
-  return path.join(app.getPath("userData"), "overlay-settings.json");
-}
+function overlaySettingsPath(...a) { return d.overlaySettingsPath(...a); }
 
-function readOverlaySettings() {
-  try {
-    return JSON.parse(fsSync.readFileSync(overlaySettingsPath(), "utf8")) || {};
-  } catch {
-    return {};
-  }
-}
+function readOverlaySettings(...a) { return d.readOverlaySettings(...a); }
 
-function writeOverlaySettings(patch) {
-  const next = { ...readOverlaySettings(), ...patch };
-  try {
-    fsSync.writeFileSync(overlaySettingsPath(), JSON.stringify(next, null, 2), "utf8");
-  } catch (e) {
-    console.error("[LYKN] failed to write overlay settings:", e?.message);
-  }
-  return next;
-}
+function writeOverlaySettings(...a) { return d.writeOverlaySettings(...a); }
 
 // ── Launch at login ─────────────────────────────────────────────────────────
 // LYKN is a background companion: it must already be running for ⌘+L to work,
@@ -7919,73 +5439,23 @@ function writeOverlaySettings(patch) {
 // auto-enable ONCE (marker in overlay settings) — if the user later disables
 // LYKN in System Settings › Login Items, we respect that and never re-add it.
 
-function isLoginItemEnabled() {
-  if (!app.isPackaged) return false;
-  try {
-    return !!app.getLoginItemSettings().openAtLogin;
-  } catch {
-    return false;
-  }
-}
+function isLoginItemEnabled(...a) { return d.isLoginItemEnabled(...a); }
 
-function setLoginItemEnabled(enabled) {
-  if (!app.isPackaged) return; // dev would register the bare Electron binary
-  try {
-    app.setLoginItemSettings({ openAtLogin: !!enabled });
-    // The user (or first-run) made an explicit choice — never auto-enable again.
-    writeOverlaySettings({ loginItemConfigured: true });
-  } catch (e) {
-    console.error("[LYKN] failed to update login item:", e?.message);
-  }
-}
+function setLoginItemEnabled(...a) { return d.setLoginItemEnabled(...a); }
 
-function setupLaunchAtLogin() {
-  if (!app.isPackaged) return;
-  if (readOverlaySettings().loginItemConfigured) return;
-  setLoginItemEnabled(true);
-}
+function setupLaunchAtLogin(...a) { return d.setupLaunchAtLogin(...a); }
 
 // True when macOS launched us at login (SMAppService). In that case we start
 // silently in the background — no main window — and just arm the ⌘+L hotkey.
-function launchedAtLogin() {
-  if (process.platform !== "darwin" || !app.isPackaged) return false;
-  try {
-    return !!app.getLoginItemSettings().wasOpenedAtLogin;
-  } catch {
-    return false;
-  }
-}
+function launchedAtLogin(...a) { return d.launchedAtLogin(...a); }
 
 // Default ON: the overlay stays out of the user's own screen recordings/shares
 // unless they explicitly turn it off.
-function isContentProtectionEnabled() {
-  const v = readOverlaySettings().contentProtection;
-  return v === undefined ? true : !!v;
-}
+function isContentProtectionEnabled(...a) { return d.isContentProtectionEnabled(...a); }
 
 // Apply the current content-protection setting to every capture-excludable
 // window. Safe to call repeatedly (we re-assert it on show).
-function applyContentProtection(enabled) {
-  const on = enabled === undefined ? isContentProtectionEnabled() : !!enabled;
-  for (const win of [
-    overlayWindow,
-    burstWindow,
-    menuWindow,
-    pickerWindow,
-    langPickerWindow,
-    liveWindow,
-    panelWindow,
-    agentSidebarWindow,
-    agentStageWindow,
-  ]) {
-    try {
-      if (win && !win.isDestroyed()) win.setContentProtection(on);
-    } catch {
-      /* platform may not support it (e.g. Linux) */
-    }
-  }
-  return on;
-}
+function applyContentProtection(...a) { return d.applyContentProtection(...a); }
 
 const OVERLAY_IGNORE_NOTE =
   "IMPORTANT: Ignore LYKN's own interface in the image — a translucent floating " +
@@ -8066,879 +5536,94 @@ const LIVE_WATCH_VISION_TIMEOUT_MS = 35000;
 const LIVE_WATCH_NAV_DIFF = 0.55; // full page/app switch — settle before re-reading
 const LIVE_WATCH_NAV_SETTLE_MS = 1400;
 
-function parseWatchRuleIntent(text) {
-  const t = String(text || "").trim();
-  const patterns = [
-    /^(?:tell me|let me know|notify me|alert me|warn me|ping me)\s+when\s+(.+)$/i,
-    /^watch\s+(?:for|out for)\s+(.+)$/i,
-    /^(?:alert|notify)\s+(?:me\s+)?when\s+(.+)$/i,
-    /^let me know if\s+(.+)$/i,
-  ];
-  for (const re of patterns) {
-    const m = t.match(re);
-    if (m && m[1]) return m[1].trim().replace(/[.?!]+$/, "");
-  }
-  return null;
-}
-
-function looksLikeClearWatchRules(text) {
-  const t = String(text || "").trim().toLowerCase();
-  return (
-    /\b(clear|stop|cancel|remove|delete)\b.*\b(watch rules?|alerts?|notifications?)\b/.test(t) ||
-    /^stop watching for\b/.test(t) ||
-    /^clear watch\b/.test(t)
-  );
-}
-
-function addLiveWatchRule(ruleText) {
-  const text = String(ruleText || "").trim().slice(0, 200);
-  if (!text) return null;
-  const dupe = liveWatchState.rules.some((r) => textSimilarity(r.text, text) > 0.85);
-  if (dupe) return liveWatchState.rules.find((r) => textSimilarity(r.text, text) > 0.85);
-  const entry = { id: crypto.randomUUID(), text, createdAt: Date.now() };
-  liveWatchState.rules.push(entry);
-  if (liveWatchState.rules.length > LIVE_WATCH_MAX_RULES) {
-    liveWatchState.rules = liveWatchState.rules.slice(-LIVE_WATCH_MAX_RULES);
-  }
-  liveWatchForceVision = true;
-  scheduleLiveWatchTick(100);
-  notifyLiveWatchUpdate();
-  return entry;
-}
-
-function clearLiveWatchRules() {
-  liveWatchState.rules = [];
-  notifyLiveWatchUpdate();
-}
-
-function parseLiveWatchResponse(raw) {
-  const trimmed = String(raw || "").trim();
-  if (!trimmed || /^\[unchanged\]$/i.test(trimmed)) return { type: "unchanged" };
-  const alertBracket = trimmed.match(/^\[alert:\s*(.+?)\]$/is);
-  if (alertBracket) return { type: "alert", text: alertBracket[1].trim() };
-  const alertTag = trimmed.match(/^\[alert\]\s*(.+)/is);
-  if (alertTag) return { type: "alert", text: alertTag[1].trim() };
-  const noteBracket = trimmed.match(/^\[note:\s*(.+?)\]$/is);
-  if (noteBracket) return { type: "note", text: noteBracket[1].trim() };
-  return { type: "note", text: trimmed };
-}
-
-function buildLiveWatchRulesSection() {
-  if (!liveWatchState.rules.length) return "";
-  const lines = liveWatchState.rules.map((r, i) => `${i + 1}. ${r.text}`).join("\n");
-  return (
-    "\n\nUSER WATCH RULES — check the screenshot against EACH rule. " +
-    "If one is clearly true RIGHT NOW, output [alert: one short sentence] " +
-    "describing what happened (under 15 words). Rules:\n" +
-    lines
-  );
-}
-
-function isLiveWatchEnabled() {
-  return !!readOverlaySettings().liveWatch;
-}
-
-function getLiveWatchStatus() {
-  return {
-    enabled: liveWatchState.enabled,
-    summary: liveWatchState.summary,
-    commentary: liveWatchState.commentary,
-    commentaryKind: liveWatchState.commentaryKind,
-    at: liveWatchState.at,
-    motionLevel: liveWatchState.motionLevel,
-    lastDiff: liveWatchState.lastDiff,
-    capturing: liveWatchState.capturing,
-    isNewCommentary: liveWatchState.isNewCommentary,
-    rules: liveWatchState.rules.map((r) => r.text),
-    contextSource: liveWatchState.contextSource,
-    extensionConnected: !!extensionBridge?.isConnected?.(),
-    pageTitle: liveWatchState.pageTitle || "",
-    pageUrl: liveWatchState.pageUrl || "",
-  };
-}
-
-function getFreshLiveWatchSummary(maxAgeMs = LIVE_WATCH_SUMMARY_MAX_AGE_MS) {
-  const text = String(liveWatchState.summary || "").trim();
-  if (!text || !liveWatchState.at) return "";
-  if (Date.now() - liveWatchState.at > maxAgeMs) return "";
-  return text;
-}
-
-function getLiveWatchContextSection() {
-  const text = getFreshLiveWatchSummary();
-  if (!text) return "";
-  const ageSec = Math.max(0, Math.round((Date.now() - liveWatchState.at) / 1000));
-  return (
-    "\n\n[LIVE SCREEN WATCH] LYKN has been continuously watching the user's screen " +
-    `(last updated ${ageSec}s ago). Use this rolling summary as your live view — ` +
-    "it may be more current than a single screenshot for fast-moving apps and games.\n" +
-    `--- LIVE SCREEN SUMMARY ---\n${text}\n--- END LIVE SCREEN SUMMARY ---`
-  );
-}
-
-function notifyLiveWatchUpdate() {
-  if (overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.webContents.send("lykn:live-watch-update", getLiveWatchStatus());
-  }
-}
-
-function setLiveWatchCapturing(on) {
-  const next = !!on;
-  if (liveWatchState.capturing === next) return;
-  liveWatchState.capturing = next;
-  notifyLiveWatchUpdate();
-}
-
-function setLiveWatchSummary(text, { motionLevel, diff, kind = "note" } = {}) {
-  const trimmed = String(text || "").trim();
-  if (!trimmed) return;
-  const prev = liveWatchState.commentary || liveWatchState.summary;
-  const isNew = kind === "alert" || !prev || textSimilarity(prev, trimmed) < 0.62;
-  liveWatchState.summary = trimmed.slice(0, 4000);
-  liveWatchState.commentary = trimmed.slice(0, 1200);
-  liveWatchState.commentaryKind = kind === "alert" ? "alert" : "note";
-  liveWatchState.isNewCommentary = isNew;
-  liveWatchState.at = Date.now();
-  if (motionLevel) liveWatchState.motionLevel = motionLevel;
-  if (typeof diff === "number") liveWatchState.lastDiff = diff;
-  notifyLiveWatchUpdate();
-  liveWatchState.isNewCommentary = false;
-}
-
-function liveWatchIntervalMs() {
-  const now = Date.now();
-  // Slow down while a vision/text call is in flight — prevents pile-up on page switches.
-  if (liveWatchVisionInFlight || liveWatchTextInFlight) return LIVE_WATCH_STATIC_MS;
-  if (now < liveWatchSettleUntil) return 400;
-  if (now < liveWatchBurstUntil || liveWatchState.motionLevel === "burst") {
-    return LIVE_WATCH_BURST_MS;
-  }
-  if (liveWatchState.motionLevel === "active") return LIVE_WATCH_ACTIVE_MS;
-  return LIVE_WATCH_STATIC_MS;
-}
-
-async function captureForLiveWatch() {
-  try {
-    return await Promise.race([
-      capturePrimaryScreen({ maxWidth: 960, format: "jpeg", quality: 72 }),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("capture_timeout")), LIVE_WATCH_CAPTURE_TIMEOUT_MS),
-      ),
-    ]);
-  } catch (e) {
-    console.warn("[live-watch] capture failed:", e?.message);
-    return null;
-  }
-}
-
-async function postAiStreamTextWithTimeout(body, token, timeoutMs = LIVE_WATCH_VISION_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${API_BASE}/api/ai/stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    if (!res.ok || !res.body) return "";
-    const ctype = res.headers.get("content-type") || "";
-    if (!ctype.includes("text/event-stream")) {
-      const data = await res.json().catch(() => null);
-      return stripHiddenTags(data?.response || data?.answer || data?.text || "").trim();
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    let accumulated = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const lines = buf.split("\n");
-      buf = lines.pop() || "";
-      for (const line of lines) {
-        const t = line.trim();
-        if (!t.startsWith("data:")) continue;
-        const payload = t.slice(t.indexOf(":") + 1).trim();
-        if (!payload || payload === "[DONE]") continue;
-        try {
-          const j = JSON.parse(payload);
-          if (typeof j.t === "string") accumulated += j.t;
-        } catch {
-          /* ignore keepalive */
-        }
-      }
-    }
-    return stripHiddenTags(accumulated).trim();
-  } catch (e) {
-    if (e?.name === "AbortError") console.warn("[live-watch] vision timed out");
-    else console.warn("[live-watch] vision fetch failed:", e?.message);
-    return "";
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function scheduleLiveWatchTick(delayMs) {
-  if (liveWatchTimer) clearTimeout(liveWatchTimer);
-  if (!liveWatchState.enabled) {
-    liveWatchTimer = null;
-    return;
-  }
-  liveWatchTimer = setTimeout(() => void liveWatchTick(), Math.max(50, delayMs || liveWatchIntervalMs()));
-}
-
-function stopLiveWatch() {
-  liveWatchState.enabled = false;
-  if (liveWatchTimer) {
-    clearTimeout(liveWatchTimer);
-    liveWatchTimer = null;
-  }
-  liveWatchCaptureInFlight = false;
-  liveWatchForceVision = false;
-  liveWatchState.motionLevel = "static";
-  setLiveWatchCapturing(false);
-  liveWatchState.commentary = "";
-  liveWatchState.summary = "";
-  liveWatchState.rules = [];
-  liveWatchSettleUntil = 0;
-  liveWatchPendingNavVision = false;
-  liveWatchConsecutiveBurstFrames = 0;
-  liveWatchTextInFlight = false;
-  liveWatchForceTextPass = false;
-  liveWatchPendingTextPass = false;
-  liveWatchLastPageText = "";
-  liveWatchLastPageSig = "";
-  liveWatchLastPageUrl = "";
-  liveWatchLastScrapeAt = 0;
-  liveWatchState.contextSource = "vision";
-  liveWatchState.pageTitle = "";
-  liveWatchState.pageUrl = "";
-  notifyLiveWatchUpdate();
-}
-
-async function startLiveWatch() {
-  const access = await ensureScreenRecordingAccess();
-  if (!access.ok) {
-    return { ok: false, error: "no_permission", ...access };
-  }
-  liveWatchState.enabled = true;
-  liveWatchForceVision = true;
-  liveWatchLastFingerprint = "";
-  liveWatchLastFrameUrl = "";
-  liveWatchSettleUntil = 0;
-  liveWatchPendingNavVision = false;
-  liveWatchConsecutiveBurstFrames = 0;
-  notifyLiveWatchUpdate();
-  scheduleLiveWatchTick(100);
-  return { ok: true, ...getLiveWatchStatus() };
-}
-
-async function setLiveWatchEnabled(on) {
-  const enabled = !!on;
-  if (enabled) {
-    const result = await startLiveWatch();
-    if (!result.ok) return result;
-    writeOverlaySettings({ liveWatch: true });
-    return { ...result, needsExtension: !extensionBridge?.isConnected?.() };
-  }
-  writeOverlaySettings({ liveWatch: false });
-  stopLiveWatch();
-  return { ok: true, enabled: false, ...getLiveWatchStatus() };
-}
-
-function getExtensionDir() {
-  const userCopy = getUserExtensionDir(app.getPath("userData"));
-  if (fsSync.existsSync(userCopy)) return userCopy;
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, "extensions", "save-to-lykn");
-  }
-  return path.join(__dirname, "..", "extensions", "save-to-lykn");
-}
-
-function restoreOverlayAfterExtensionInstall() {
-  if (
-    overlayVisibleBeforeExtensionInstall &&
-    overlayWindow &&
-    !overlayWindow.isDestroyed()
-  ) {
-    overlayWindow.show();
-    overlayWindow.moveTop();
-  }
-  overlayVisibleBeforeExtensionInstall = false;
-}
-
-function createExtensionInstallWindow() {
-  if (extensionInstallWindow && !extensionInstallWindow.isDestroyed()) {
-    overlayVisibleBeforeExtensionInstall =
-      overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible();
-    if (overlayVisibleBeforeExtensionInstall) hideOverlay();
-    extensionInstallWindow.show();
-    extensionInstallWindow.focus();
-    return;
-  }
-
-  overlayVisibleBeforeExtensionInstall =
-    overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible();
-  if (overlayVisibleBeforeExtensionInstall) hideOverlay();
-
-  extensionInstallWindow = new BrowserWindow({
-    width: 440,
-    height: 640,
-    resizable: false,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    title: "Chrome Live Feed",
-    backgroundColor: "#0b0b0f",
-    webPreferences: {
-      preload: path.join(__dirname, "extension-install-preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-  extensionInstallWindow.setMenu(null);
-  extensionInstallWindow.loadFile(path.join(__dirname, "extension-install.html"));
-  extensionInstallWindow.center();
-  extensionInstallWindow.on("closed", () => {
-    extensionInstallWindow = null;
-    restoreOverlayAfterExtensionInstall();
-  });
-}
-
-async function describeLiveWatchFrame(dataURL, previousSummary, { diff = 1, motionLevel = "static", rulesOnly = false } = {}) {
-  const token = await getAuthToken();
-  if (!token) return { error: "not_authenticated" };
-
-  const prev = String(previousSummary || "").trim();
-  const hasRules = liveWatchState.rules.length > 0;
-  const rulesSection = buildLiveWatchRulesSection();
-  const changePct = Math.round(Math.min(1, Math.max(0, diff)) * 100);
-  const changeLine =
-    diff >= 0.99
-      ? ""
-      : `\n\nSnapshot metadata: ~${changePct}% of screen pixels changed since the last capture ` +
-        `(motion: ${motionLevel}).`;
-
-  const outputRules =
-    "OUTPUT (pick exactly one):\n" +
-    "- [unchanged] — nothing new" +
-    (hasRules ? ", no watch rules triggered" : "") +
-    "\n" +
-    (hasRules ? "- [alert: message] — a USER WATCH RULE is true on screen now (max 15 words)\n" : "") +
-    (rulesOnly
-      ? "- Rules-only check: output [alert: …] or [unchanged] only.\n"
-      : "- [note: message] — one brief basic line if something changed (max 12 words)\n");
-
-  const prompt = prev
-    ? "You are LYKN watching the user's screen via still snapshots every 1–2 seconds.\n\n" +
-      `LAST UPDATE:\n${prev.slice(0, 800)}\n\n` +
-      outputRules +
-      rulesSection +
-      LIVE_WATCH_SNAPSHOT_NOTE +
-      changeLine +
-      "\n" +
-      OVERLAY_IGNORE_NOTE
-    : "You are LYKN watching the user's screen via still snapshots every 1–2 seconds.\n\n" +
-      outputRules +
-      rulesSection +
-      "If nothing to say yet, output [unchanged]. Otherwise one short [note: …] about what they're doing (max 12 words).\n" +
-      LIVE_WATCH_SNAPSHOT_NOTE +
-      "\n" +
-      OVERLAY_IGNORE_NOTE;
-
-  const text = await postAiStreamTextWithTimeout(
-    {
-      model: "lykn",
-      intent: "ask",
-      text: "Live screen watch.",
-      prompt,
-      imageUrls: [dataURL],
-      useTools: false,
-      skipWebSearch: true,
-      overlayAsk: true,
-      liveWatch: true,
-    },
-    token,
-  );
-  const parsed = parseLiveWatchResponse(text);
-  if (parsed.type === "unchanged") return { error: "unchanged" };
-  const out = parsed.text.trim();
-  if (!out) return { error: "unchanged" };
-  if (parsed.type === "alert") return { text: out, kind: "alert" };
-  // Reject pause/idling guesses when pixels barely moved — classic snapshot artifact.
-  if (diff < 0.05 && /\b(paused?|on pause|you(?:'re| are) idle|standing still|not moving|game is paused)\b/i.test(out)) {
-    return { error: "unchanged" };
-  }
-  // Skip long general chatter — keep live feed basic.
-  if (out.split(/\s+/).length > 18) {
-    return { text: out.split(/\s+/).slice(0, 15).join(" ") + "…", kind: "note" };
-  }
-  return { text: out, kind: "note" };
-}
-
-async function describeLiveWatchPageText(snap, previousSummary, { textSim = 0, rulesOnly = false } = {}) {
-  const token = await getAuthToken();
-  if (!token) return { error: "not_authenticated" };
-
-  const prev = String(previousSummary || "").trim();
-  const hasRules = liveWatchState.rules.length > 0;
-  const rulesSection = buildLiveWatchRulesSection();
-  const changePct = Math.round(Math.min(100, Math.max(0, (1 - textSim) * 100)));
-  const pageBlock =
-    `PAGE: ${snap.title || "Untitled"}\nURL: ${snap.url || ""}\n\n` +
-    `VISIBLE TEXT (live DOM from browser — not a screenshot):\n${String(snap.text || "").slice(0, 8000)}`;
-
-  const outputRules =
-    "OUTPUT (pick exactly one):\n" +
-    "- [unchanged] — nothing new" +
-    (hasRules ? ", no watch rules triggered" : "") +
-    "\n" +
-    (hasRules ? "- [alert: message] — a USER WATCH RULE is true on this page now (max 15 words)\n" : "") +
-    (rulesOnly
-      ? "- Rules-only check: output [alert: …] or [unchanged] only.\n"
-      : "- [note: message] — one brief basic line if something changed (max 12 words)\n");
-
-  const prompt = prev
-    ? "You are LYKN watching the user's browser via live page text (DOM, not screenshots).\n\n" +
-      `LAST UPDATE:\n${prev.slice(0, 800)}\n\n` +
-      `${pageBlock}\n\n` +
-      `Page text ~${changePct}% changed since last check.\n\n` +
-      outputRules +
-      rulesSection +
-      "\n" +
-      OVERLAY_IGNORE_NOTE
-    : "You are LYKN watching the user's browser via live page text (DOM, not screenshots).\n\n" +
-      `${pageBlock}\n\n` +
-      outputRules +
-      rulesSection +
-      "If nothing to say yet, output [unchanged]. Otherwise one short [note: …] about what they're reading or doing (max 12 words).\n" +
-      "\n" +
-      OVERLAY_IGNORE_NOTE;
-
-  const text = await postAiStreamTextWithTimeout(
-    {
-      model: "lykn",
-      intent: "ask",
-      text: "Live browser watch.",
-      prompt,
-      useTools: false,
-      skipWebSearch: true,
-      overlayAsk: true,
-      liveWatch: true,
-    },
-    token,
-  );
-  const parsed = parseLiveWatchResponse(text);
-  if (parsed.type === "unchanged") return { error: "unchanged" };
-  const out = parsed.text.trim();
-  if (!out) return { error: "unchanged" };
-  if (parsed.type === "alert") return { text: out, kind: "alert" };
-  if (out.split(/\s+/).length > 18) {
-    return { text: out.split(/\s+/).slice(0, 15).join(" ") + "…", kind: "note" };
-  }
-  return { text: out, kind: "note" };
-}
-
-async function liveWatchTextPass(snap, { textSim = 0, rulesOnly = false } = {}) {
-  if (liveWatchTextInFlight) return;
-  const now = Date.now();
-  const force = liveWatchForceTextPass;
-  if (!force && now - liveWatchLastVisionAt < LIVE_WATCH_TEXT_MIN_MS) return;
-
-  liveWatchTextInFlight = true;
-  liveWatchForceTextPass = false;
-  liveWatchLastVisionAt = now;
-  if (rulesOnly) liveWatchLastRuleCheckAt = now;
-  try {
-    const result = await describeLiveWatchPageText(snap, liveWatchState.summary, { textSim, rulesOnly });
-    if (result?.text) {
-      setLiveWatchSummary(result.text, {
-        motionLevel: liveWatchState.motionLevel,
-        diff: 1 - textSim,
-        kind: result.kind || "note",
-      });
-    }
-  } catch (e) {
-    console.warn("[live-watch] text pass failed:", e?.message);
-  } finally {
-    liveWatchTextInFlight = false;
-  }
-}
-
-async function tryLiveWatchBrowserScrape() {
-  // Don't poke Automation while Screen Recording is still unsettled, or after
-  // the user already denied System Events — Live Watch can rely on vision alone.
-  if (screenCaptureStatus() !== "granted") return null;
-  if (automationOk.systemEvents === false) return null;
-
-  const now = Date.now();
-  if (now - liveWatchLastScrapeAt < LIVE_WATCH_SCRAPE_MIN_MS) return null;
-  liveWatchLastScrapeAt = now;
-  try {
-    const target = await getActiveBrowserTarget();
-    if (!target?.appName) return null;
-    const live = await getBrowserPageText(target.appName);
-    const text = String(live?.text || live?.pageText || "").trim();
-    if (text.length < 80) return null;
-    const url = String(live?.url || target.url || "");
-    const title = String(live?.title || target.title || "");
-    const sig = `${url}|${text.length}|${text.slice(0, 240)}|${text.slice(-120)}`;
-    return { url, title, text: text.slice(0, 15000), sig, at: Date.now(), source: "scrape" };
-  } catch {
-    return null;
-  }
-}
-
-async function liveWatchPageTextTick(snap, source) {
-  liveWatchState.contextSource = source;
-  liveWatchState.extensionConnected = source === "extension" || !!extensionBridge?.isConnected?.();
-  liveWatchState.pageTitle = String(snap.title || "").trim();
-  liveWatchState.pageUrl = String(snap.url || "").trim();
-
-  const textSim =
-    snap.sig && snap.sig === liveWatchLastPageSig
-      ? 1
-      : liveWatchLastPageText
-        ? textSimilarity(liveWatchLastPageText, snap.text)
-        : 0;
-  const textChanged = 1 - textSim >= LIVE_WATCH_TEXT_CHANGE;
-  liveWatchState.lastDiff = 1 - textSim;
-
-  const now = Date.now();
-  const urlChanged = liveWatchLastPageUrl && snap.url && liveWatchLastPageUrl !== snap.url;
-
-  if (urlChanged) {
-    liveWatchSettleUntil = now + 800;
-    liveWatchPendingTextPass = true;
-    liveWatchLastPageUrl = snap.url;
-    liveWatchLastPageText = snap.text;
-    liveWatchLastPageSig = snap.sig || "";
-    return Math.max(300, liveWatchSettleUntil - now + 50);
-  }
-
-  if (now < liveWatchSettleUntil) {
-    return Math.max(200, liveWatchSettleUntil - now + 50);
-  }
-
-  if (liveWatchPendingTextPass) {
-    liveWatchPendingTextPass = false;
-    liveWatchForceTextPass = true;
-  }
-
-  liveWatchState.motionLevel = textChanged ? "active" : "static";
-
-  const hasRules = liveWatchState.rules.length > 0;
-  const ruleCheckDue = hasRules && now - liveWatchLastRuleCheckAt >= LIVE_WATCH_RULE_CHECK_MS;
-  const shouldPass =
-    liveWatchForceTextPass || !liveWatchState.summary || textChanged || ruleCheckDue;
-  const skipNearDuplicate =
-    !liveWatchForceTextPass && !ruleCheckDue && liveWatchState.summary && textSim > 0.97;
-
-  if (shouldPass && !skipNearDuplicate && !liveWatchTextInFlight) {
-    void liveWatchTextPass(snap, { textSim, rulesOnly: ruleCheckDue && !textChanged });
-  }
-
-  liveWatchLastPageText = snap.text;
-  liveWatchLastPageSig = snap.sig || "";
-  liveWatchLastPageUrl = snap.url || "";
-
-  notifyLiveWatchUpdate();
-  return textChanged ? LIVE_WATCH_ACTIVE_MS : LIVE_WATCH_STATIC_MS;
-}
-
-async function liveWatchVisionPass(dataURL, diff, { rulesOnly = false } = {}) {
-  if (liveWatchVisionInFlight) return;
-  const now = Date.now();
-  const force = liveWatchForceVision;
-  if (!force && now - liveWatchLastVisionAt < LIVE_WATCH_VISION_MIN_MS) return;
-
-  liveWatchVisionInFlight = true;
-  liveWatchForceVision = false;
-  liveWatchLastVisionAt = now;
-  if (rulesOnly) liveWatchLastRuleCheckAt = now;
-  try {
-    const result = await describeLiveWatchFrame(dataURL, liveWatchState.summary, {
-      diff,
-      motionLevel: liveWatchState.motionLevel,
-      rulesOnly,
-    });
-    if (result?.text) {
-      setLiveWatchSummary(result.text, {
-        motionLevel: liveWatchState.motionLevel,
-        diff,
-        kind: result.kind || "note",
-      });
-    }
-  } catch (e) {
-    console.warn("[live-watch] vision pass failed:", e?.message);
-  } finally {
-    liveWatchVisionInFlight = false;
-  }
-}
-
-async function liveWatchTick() {
-  if (!liveWatchState.enabled) return;
-  if (screenCaptureStatus() !== "granted") {
-    stopLiveWatch();
-    return;
-  }
-  if (liveWatchCaptureInFlight) {
-    scheduleLiveWatchTick(liveWatchIntervalMs());
-    return;
-  }
-
-  liveWatchCaptureInFlight = true;
-  let nextDelay = null;
-
-  try {
-    // Text-first: browser extension (cheapest — no screenshot, no vision).
-    const extSnap = extensionBridge?.getSnapshot?.(6000);
-    if (extSnap?.text && extSnap.text.length >= 80) {
-      nextDelay = await liveWatchPageTextTick(extSnap, "extension");
-      return;
-    }
-
-    // Text fallback: AppleScript DOM scrape when extension not connected.
-    const scrapeSnap = await tryLiveWatchBrowserScrape();
-    if (scrapeSnap?.text && scrapeSnap.text.length >= 80) {
-      nextDelay = await liveWatchPageTextTick(scrapeSnap, "scrape");
-      return;
-    }
-
-    liveWatchState.extensionConnected = !!extensionBridge?.isConnected?.();
-    liveWatchState.contextSource = "vision";
-
-    setLiveWatchCapturing(true);
-    const dataURL = await captureForLiveWatch();
-    if (!liveWatchState.enabled) return;
-    if (!dataURL) {
-      nextDelay = LIVE_WATCH_STATIC_MS;
-      return;
-    }
-
-    liveWatchLastFrameUrl = dataURL;
-    const fp = screenFingerprint(dataURL);
-    const diff = liveWatchLastFingerprint ? screenDiffRatio(liveWatchLastFingerprint, fp) : 1;
-    liveWatchLastFingerprint = fp;
-    liveWatchState.lastDiff = diff;
-
-    const now = Date.now();
-    const navigated = diff >= LIVE_WATCH_NAV_DIFF;
-
-    if (navigated) {
-      // Page/app switch — wait for the new screen to settle instead of burst-flooding vision.
-      liveWatchSettleUntil = now + LIVE_WATCH_NAV_SETTLE_MS;
-      liveWatchPendingNavVision = true;
-      liveWatchBurstUntil = 0;
-      liveWatchConsecutiveBurstFrames = 0;
-      liveWatchState.motionLevel = "static";
-      nextDelay = Math.max(200, liveWatchSettleUntil - now + 50);
-      return;
-    }
-
-    if (now < liveWatchSettleUntil) {
-      nextDelay = Math.max(200, liveWatchSettleUntil - now + 50);
-      return;
-    }
-
-    if (liveWatchPendingNavVision) {
-      liveWatchPendingNavVision = false;
-      liveWatchForceVision = true;
-    }
-
-    if (diff >= LIVE_WATCH_DIFF_BURST) {
-      liveWatchConsecutiveBurstFrames += 1;
-      if (liveWatchConsecutiveBurstFrames >= 2) {
-        liveWatchState.motionLevel = "burst";
-        liveWatchBurstUntil = now + LIVE_WATCH_BURST_DURATION_MS;
-      } else {
-        liveWatchState.motionLevel = "active";
-      }
-    } else if (diff >= LIVE_WATCH_DIFF_MOTION) {
-      liveWatchConsecutiveBurstFrames = 0;
-      liveWatchState.motionLevel = "active";
-    } else if (now >= liveWatchBurstUntil) {
-      liveWatchConsecutiveBurstFrames = 0;
-      liveWatchState.motionLevel = "static";
-    }
-
-    const hasRules = liveWatchState.rules.length > 0;
-    const ruleCheckDue = hasRules && now - liveWatchLastRuleCheckAt >= LIVE_WATCH_RULE_CHECK_MS;
-    const shouldVision =
-      liveWatchForceVision ||
-      !liveWatchState.summary ||
-      diff >= LIVE_WATCH_DIFF_VISION ||
-      ruleCheckDue;
-    const skipNearDuplicate =
-      !liveWatchForceVision && !ruleCheckDue && liveWatchState.summary && diff < 0.03;
-    if (shouldVision && !skipNearDuplicate && !liveWatchVisionInFlight) {
-      void liveWatchVisionPass(dataURL, diff, { rulesOnly: ruleCheckDue && diff < LIVE_WATCH_DIFF_VISION });
-    }
-  } catch (e) {
-    console.warn("[live-watch] capture tick failed:", e?.message);
-    nextDelay = LIVE_WATCH_STATIC_MS;
-  } finally {
-    liveWatchCaptureInFlight = false;
-    setLiveWatchCapturing(false);
-    if (liveWatchState.enabled) {
-      scheduleLiveWatchTick(nextDelay != null ? nextDelay : liveWatchIntervalMs());
-    }
-  }
-}
-
-function overlaySessionsPath() {
-  return path.join(app.getPath("userData"), "overlay-sessions.json");
-}
-
-async function readOverlaySessionsStore() {
-  try {
-    const raw = await fs.readFile(overlaySessionsPath(), "utf8");
-    const data = JSON.parse(raw);
-    return {
-      sessions: Array.isArray(data.sessions) ? data.sessions : [],
-      currentSessionId: data.currentSessionId || null,
-    };
-  } catch {
-    return { sessions: [], currentSessionId: null };
-  }
-}
-
-async function writeOverlaySessionsStore(store) {
-  await fs.writeFile(overlaySessionsPath(), JSON.stringify(store, null, 2), "utf8");
-}
-
-function overlaySessionTitle(messages) {
-  const firstUser = (messages || []).find((m) => m && m.role === "user" && String(m.content || "").trim());
-  if (firstUser) return String(firstUser.content).trim().slice(0, 72);
-  return IS_MAC ? "⌘L chat" : "Ctrl+L chat";
-}
-
-function overlaySessionPreview(messages) {
-  for (let i = (messages || []).length - 1; i >= 0; i -= 1) {
-    const m = messages[i];
-    const text = String(m?.content || "").trim();
-    if (text) return text.slice(0, 140);
-  }
-  return "";
-}
+function parseWatchRuleIntent(...a) { return d.parseWatchRuleIntent(...a); }
+
+function looksLikeClearWatchRules(...a) { return d.looksLikeClearWatchRules(...a); }
+
+function addLiveWatchRule(...a) { return d.addLiveWatchRule(...a); }
+
+function clearLiveWatchRules(...a) { return d.clearLiveWatchRules(...a); }
+
+function parseLiveWatchResponse(...a) { return d.parseLiveWatchResponse(...a); }
+
+function buildLiveWatchRulesSection(...a) { return d.buildLiveWatchRulesSection(...a); }
+
+function isLiveWatchEnabled(...a) { return d.isLiveWatchEnabled(...a); }
+
+function getLiveWatchStatus(...a) { return d.getLiveWatchStatus(...a); }
+
+function getFreshLiveWatchSummary(...a) { return d.getFreshLiveWatchSummary(...a); }
+
+function getLiveWatchContextSection(...a) { return d.getLiveWatchContextSection(...a); }
+
+function notifyLiveWatchUpdate(...a) { return d.notifyLiveWatchUpdate(...a); }
+
+function setLiveWatchCapturing(...a) { return d.setLiveWatchCapturing(...a); }
+
+function setLiveWatchSummary(...a) { return d.setLiveWatchSummary(...a); }
+
+function liveWatchIntervalMs(...a) { return d.liveWatchIntervalMs(...a); }
+
+async function captureForLiveWatch(...a) { return d.captureForLiveWatch(...a); }
+
+async function postAiStreamTextWithTimeout(...a) { return d.postAiStreamTextWithTimeout(...a); }
+
+function scheduleLiveWatchTick(...a) { return d.scheduleLiveWatchTick(...a); }
+
+function stopLiveWatch(...a) { return d.stopLiveWatch(...a); }
+
+async function startLiveWatch(...a) { return d.startLiveWatch(...a); }
+
+async function setLiveWatchEnabled(...a) { return d.setLiveWatchEnabled(...a); }
+
+function getExtensionDir(...a) { return d.getExtensionDir(...a); }
+
+function restoreOverlayAfterExtensionInstall(...a) { return d.restoreOverlayAfterExtensionInstall(...a); }
+
+function createExtensionInstallWindow(...a) { return d.createExtensionInstallWindow(...a); }
+
+async function describeLiveWatchFrame(...a) { return d.describeLiveWatchFrame(...a); }
+
+async function describeLiveWatchPageText(...a) { return d.describeLiveWatchPageText(...a); }
+
+async function liveWatchTextPass(...a) { return d.liveWatchTextPass(...a); }
+
+async function tryLiveWatchBrowserScrape(...a) { return d.tryLiveWatchBrowserScrape(...a); }
+
+async function liveWatchPageTextTick(...a) { return d.liveWatchPageTextTick(...a); }
+
+async function liveWatchVisionPass(...a) { return d.liveWatchVisionPass(...a); }
+
+async function liveWatchTick(...a) { return d.liveWatchTick(...a); }
+
+function overlaySessionsPath(...a) { return d.overlaySessionsPath(...a); }
+
+async function readOverlaySessionsStore(...a) { return d.readOverlaySessionsStore(...a); }
+
+async function writeOverlaySessionsStore(...a) { return d.writeOverlaySessionsStore(...a); }
+
+function overlaySessionTitle(...a) { return d.overlaySessionTitle(...a); }
+
+function overlaySessionPreview(...a) { return d.overlaySessionPreview(...a); }
 
 // Normalize a URL to a stable "page key" so we can recognize when the user is
 // back on the same page across sessions. Drops protocol, www, query, hash, and
 // trailing slashes — host + path is a good balance between "same page" and not
 // over-merging different articles on one site.
-function normalizeUrlForMatch(url) {
-  const raw = String(url || "").trim();
-  if (!raw) return "";
-  try {
-    const u = new URL(raw);
-    const host = u.hostname.replace(/^www\./i, "");
-    const path = u.pathname.replace(/\/+$/, "");
-    return `${host}${path}`.toLowerCase();
-  } catch {
-    return raw
-      .toLowerCase()
-      .replace(/^[a-z]+:\/\//, "")
-      .replace(/^www\./, "")
-      .replace(/[#?].*$/, "")
-      .replace(/\/+$/, "");
-  }
-}
+function normalizeUrlForMatch(...a) { return d.normalizeUrlForMatch(...a); }
 
 // Find earlier ⌘L conversations that happened on the same page (matched by
 // normalized URL) and format the most recent excerpts. Lets the overlay AI
 // remember what it already discussed when the user returns to a page.
-async function buildPastPageConversationSection(normalizedUrl, excludeSessionId) {
-  if (!normalizedUrl) return "";
-  let store;
-  try {
-    store = await readOverlaySessionsStore();
-  } catch {
-    return "";
-  }
-  const matches = (store.sessions || [])
-    .filter((s) => s && s.id !== excludeSessionId && Array.isArray(s.messages) && s.messages.length)
-    .filter((s) => {
-      const pages = Array.isArray(s.pages) ? s.pages : [];
-      if (pages.includes(normalizedUrl)) return true;
-      if (s.pageUrl && normalizeUrlForMatch(s.pageUrl) === normalizedUrl) return true;
-      return false;
-    })
-    .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime())
-    .slice(0, 3);
-  if (!matches.length) return "";
+async function buildPastPageConversationSection(...a) { return d.buildPastPageConversationSection(...a); }
 
-  const blocks = [];
-  let budget = 4000;
-  for (const s of matches) {
-    const when = s.updatedAt
-      ? new Date(s.updatedAt).toLocaleString(undefined, {
-          month: "short",
-          day: "numeric",
-          hour: "numeric",
-          minute: "2-digit",
-        })
-      : "";
-    const turns = s.messages
-      .slice(-6)
-      .map((m) => {
-        const role = m && m.role === "assistant" ? "LYKN" : "User";
-        const content = String((m && m.content) || "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 600);
-        return content ? `${role}: ${content}` : "";
-      })
-      .filter(Boolean)
-      .join("\n");
-    if (!turns) continue;
-    const entry = `Earlier conversation${when ? ` (${when})` : ""}:\n${turns}`;
-    if (entry.length > budget) break;
-    budget -= entry.length;
-    blocks.push(entry);
-  }
-  return blocks.join("\n\n");
-}
-
-async function fetchAppChatsForOverlay() {
-  const token = await getAuthToken();
-  if (!token) return { chats: [], error: "not_signed_in" };
-  try {
-    const res = await fetch(`${API_BASE}/api/desktop/chats?limit=40`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      return { chats: [], error: body || `http_${res.status}` };
-    }
-    const data = await res.json();
-    return { chats: Array.isArray(data.chats) ? data.chats : [] };
-  } catch (e) {
-    return { chats: [], error: e && e.message ? e.message : "fetch_failed" };
-  }
-}
+async function fetchAppChatsForOverlay(...a) { return d.fetchAppChatsForOverlay(...a); }
 
 // Mirror an overlay conversation into the app's durable chat store so it shows
 // up in the actual app's "previous chats" alongside chats started in-app. The
 // overlay sessionId is already a UUID, so it doubles as the lykn_chats row id —
 // repeated saves of the same conversation upsert the same row. Best-effort.
-async function pushOverlaySessionToApp(sessionId, title, messages) {
-  try {
-    const token = await getAuthToken();
-    if (!token) return false;
-    if (!sessionId || !Array.isArray(messages) || !messages.length) return false;
-    const res = await fetch(`${API_BASE}/api/desktop/chats/save`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ chatId: sessionId, title, messages }),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
+async function pushOverlaySessionToApp(...a) { return d.pushOverlaySessionToApp(...a); }
 
 // Capture the screen, send it + the user's question to LYKN's streaming chat
 // endpoint, and forward text deltas to the overlay. Runs in the main process so
@@ -8951,6 +5636,10 @@ async function pushOverlaySessionToApp(sessionId, title, messages) {
 // browser. When LYKN's overlay has keyboard focus our own app is "frontmost",
 // so we fall back to the first running browser that has an open window. This
 // lets the user just ask "what's this article about?" without pasting a link.
+// Shared AppleScript browser scrape. Used by overlay ask, live watch, and
+// browser-execute. Left here because extracting it requires a brace-safe
+// splitter (destructured params + regex literals) and it is shared with the
+// Agent Harness browser-execute path.
 function runOsascript(script, timeout = 4000) {
   return new Promise((resolve) => {
     execFile("osascript", ["-e", script], { timeout }, (err, stdout, stderr) => {
@@ -10720,6 +7409,8 @@ async function gatherOverlayPageContext({
   return { pageContext, pastPageSection };
 }
 
+// Overlay ask pipeline. Deferred from this pass: the function signature uses
+// a destructured parameter object, and a naive brace matcher truncates it.
 async function streamScreenAnswer(event, {
   text,
   history,
@@ -11470,235 +8161,20 @@ function pickArtifactUrl(result) {
  * skills and models out of a file that is, by design, about to be emailed to
  * someone.
  */
-async function saveDiagnosticsReport() {
-  let report = "";
-  try {
-    report = buildDiagnosticsReport({
-      userDataPath: app.getPath("userData"),
-      env: {
-        appVersion: app.getVersion(),
-        platform: process.platform,
-        arch: process.arch,
-        electron: process.versions.electron,
-        packaged: app.isPackaged,
-      },
-    });
-  } catch (e) {
-    dialog.showErrorBox(
-      "Could not build diagnostics",
-      String(e?.message || e).slice(0, 500),
-    );
-    return;
-  }
+async function saveDiagnosticsReport(...a) { return d.saveDiagnosticsReport(...a); }
 
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-  const { canceled, filePath } = await dialog.showSaveDialog({
-    title: "Save LYKN Diagnostics",
-    defaultPath: path.join(app.getPath("downloads"), `lykn-diagnostics-${stamp}.txt`),
-    filters: [{ name: "Text", extensions: ["txt"] }],
-  });
-  if (canceled || !filePath) return;
-
-  try {
-    await fs.writeFile(filePath, report, "utf8");
-    // Reveal rather than open: the point is to attach it to something, and a
-    // revealed file is one drag away from an email.
-    shell.showItemInFolder(filePath);
-  } catch (e) {
-    dialog.showErrorBox("Could not save diagnostics", String(e?.message || e).slice(0, 500));
-  }
-}
-
-function buildAppMenu() {
-  // macOS: standard app/edit/window menu. Windows: File + Edit so Alt shortcuts
-  // and copy/paste still work with autoHideMenuBar.
-  const loginItem = {
-    label: "Start LYKN at Login",
-    type: "checkbox",
-    checked: isLoginItemEnabled(),
-    enabled: app.isPackaged,
-    click: (item) => setLoginItemEnabled(item.checked),
-  };
-  // TODO(devtools): we want a developer mode here — a `toggleDevTools` role,
-  // gated so it is unreachable on a normal install (an env var we set, or an
-  // internal-account check), plus a raw trace viewer for browser-agent runs.
-  //
-  // It is deliberately absent for now rather than half-built. DevTools on any
-  // LYKN window exposes the whole product: the agent's prompt corpus and skill
-  // files, the IPC surface, the snapshot format the agent builds from a page,
-  // and every request to our own API. Shipping that behind nothing but an
-  // obscure shortcut hands the architecture to anyone who goes looking. When it
-  // is built, the gate is the feature — not the toggle.
-  //
-  // "Save Diagnostics…" below is the supported path in the meantime: it answers
-  // support questions from the same data without exposing any of it.
-  const viewMenu = {
-    label: "View",
-    submenu: [
-      { role: "reload" },
-      { role: "forceReload" },
-      { type: "separator" },
-      { role: "resetZoom" },
-      { role: "zoomIn" },
-      { role: "zoomOut" },
-      { type: "separator" },
-      { role: "togglefullscreen" },
-    ],
-  };
-  // Diagnostics is an internal tool and is not part of the shipped product.
-  //
-  // Even though the report it writes is counts-only, the menu item itself
-  // advertises that the agent has more than one runtime, that runs have rounds,
-  // recoveries and grounding — the shape of the architecture, handed to anyone
-  // who opens the Help menu. So it exists in dev builds, and in a packaged build
-  // only when someone deliberately launches with LYKN_DIAGNOSTICS=1, which is
-  // how we would walk an internal tester through producing one.
-  //
-  // If this ever needs to reach real users for support, gate it on the account
-  // (the internal-email list the server already keeps) rather than by making it
-  // visible to everybody.
-  const diagnosticsEnabled = !app.isPackaged || process.env.LYKN_DIAGNOSTICS === "1";
-  const helpMenu = {
-    role: "help",
-    submenu: [
-      { label: "Set Up LYKN / Permissions…", click: () => createOnboardingWindow() },
-      ...(diagnosticsEnabled
-        ? [
-            { type: "separator" },
-            { label: "Save Diagnostics…", click: () => saveDiagnosticsReport() },
-          ]
-        : []),
-    ],
-  };
-
-  /** @type {Electron.MenuItemConstructorOptions[]} */
-  const updateMenuItems =
-    pendingUpdate && installPendingUpdate
-      ? [
-          {
-            label: `Restart to Update${pendingUpdate.version ? ` (${pendingUpdate.version})` : ""}`,
-            click: () => installPendingUpdate(),
-          },
-          { type: "separator" },
-        ]
-      : [];
-
-  /** @type {Electron.MenuItemConstructorOptions[]} */
-  let template;
-  if (IS_MAC) {
-    template = [
-      {
-        role: "appMenu",
-        submenu: [
-          { role: "about" },
-          { type: "separator" },
-          ...updateMenuItems,
-          loginItem,
-          { type: "separator" },
-          { role: "services" },
-          { type: "separator" },
-          { role: "hide" },
-          { role: "hideOthers" },
-          { role: "unhide" },
-          { type: "separator" },
-          // ⌘Q closes the windows but LYKN keeps running in the menu bar (the
-          // before-quit hook reroutes it); the labels make that explicit.
-          { role: "quit", label: "Close LYKN (Keeps Running in Menu Bar)" },
-          {
-            label: "Quit LYKN Completely",
-            accelerator: "Command+Alt+Q",
-            click: () => quitForReal(),
-          },
-        ],
-      },
-      { role: "editMenu" },
-      viewMenu,
-      { role: "windowMenu" },
-      helpMenu,
-    ];
-  } else {
-    template = [
-      {
-        label: "File",
-        submenu: [
-          ...updateMenuItems,
-          loginItem,
-          { type: "separator" },
-          // Alt+F4 / File→Close hides windows; tray + Ctrl+L stay armed.
-          {
-            label: "Close Window (Keeps Running in Tray)",
-            accelerator: "Alt+F4",
-            click: () => {
-              try {
-                if (overlayWindow && overlayWindow.isVisible()) hideOverlay();
-              } catch (_) { /* ignore */ }
-              try {
-                if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
-              } catch (_) { /* ignore */ }
-            },
-          },
-          {
-            label: "Quit LYKN Completely",
-            accelerator: "Control+Shift+Q",
-            click: () => quitForReal(),
-          },
-        ],
-      },
-      { role: "editMenu" },
-      viewMenu,
-      helpMenu,
-    ];
-  }
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
-}
+function buildAppMenu(...a) { return d.buildAppMenu(...a); }
 
 /* ------------------------------------------------------------------ */
 /*  First-run setup — guide the user through the two permissions LYKN   */
 /*  needs (Screen Recording + "Allow JavaScript from Apple Events").    */
 /* ------------------------------------------------------------------ */
 
-function onboardingMarkerPath() {
-  return path.join(app.getPath("userData"), "onboarding-complete");
-}
+function onboardingMarkerPath(...a) { return d.onboardingMarkerPath(...a); }
 
-async function onboardingComplete() {
-  try {
-    await fs.access(onboardingMarkerPath());
-    return true;
-  } catch {
-    return false;
-  }
-}
+async function onboardingComplete(...a) { return d.onboardingComplete(...a); }
 
-function createOnboardingWindow() {
-  if (onboardingWindow && !onboardingWindow.isDestroyed()) {
-    onboardingWindow.show();
-    onboardingWindow.focus();
-    return;
-  }
-  onboardingWindow = new BrowserWindow({
-    width: 580,
-    height: 640,
-    resizable: false,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    title: "Set up LYKN",
-    backgroundColor: "#0b0b0f",
-    titleBarStyle: IS_MAC ? "hiddenInset" : "default",
-    autoHideMenuBar: IS_WIN,
-    webPreferences: {
-      preload: path.join(__dirname, "onboarding-preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-  onboardingWindow.loadFile(path.join(__dirname, "onboarding.html"));
-  onboardingWindow.on("closed", () => {
-    onboardingWindow = null;
-  });
-}
+function createOnboardingWindow(...a) { return d.createOnboardingWindow(...a); }
 
 /* ------------------------------------------------------------------ */
 /*  First-launch welcome splash — a floating glass panel playing the    */
@@ -11706,157 +8182,18 @@ function createOnboardingWindow() {
 /*  then never again (marker file). LYKN_FORCE_WELCOME=1 replays it.    */
 /* ------------------------------------------------------------------ */
 
-function welcomeMarkerPath() {
-  return path.join(app.getPath("userData"), "welcome-shown");
-}
+function welcomeMarkerPath(...a) { return d.welcomeMarkerPath(...a); }
 
-function hasSeenWelcomeSplash() {
-  try {
-    fsSync.accessSync(welcomeMarkerPath());
-    return true;
-  } catch {
-    return false;
-  }
-}
+function hasSeenWelcomeSplash(...a) { return d.hasSeenWelcomeSplash(...a); }
 
-function showWelcomeSplash() {
-  if (welcomeWindow && !welcomeWindow.isDestroyed()) {
-    welcomeWindow.show();
-    welcomeWindow.focus();
-    return;
-  }
-  // Cover the entire screen (menu bar and dock included) — a full glass
-  // sheet over the desktop, like the snip overlay.
-  const { bounds } = screen.getPrimaryDisplay();
-  welcomeWindow = new BrowserWindow({
-    x: bounds.x,
-    y: bounds.y,
-    width: bounds.width,
-    height: bounds.height,
-    frame: false,
-    resizable: false,
-    movable: false,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    skipTaskbar: true,
-    show: false,
-    ...floatingGlassChrome(),
-    // Full-bleed sheet — no rounded corners at the screen edges.
-    roundedCorners: false,
-    webPreferences: {
-      preload: path.join(__dirname, "welcome-preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-  // Workspaces first, level last — setVisibleOnAllWorkspaces can reset the
-  // window level on macOS (see createOverlayWindow). The main window boots
-  // fullscreen (its own Space), so the splash must ride above it; screen-saver
-  // level clears the menu bar like the snip overlay.
-  welcomeWindow.setVisibleOnAllWorkspaces(true, {
-    visibleOnFullScreen: true,
-    skipTransformProcessType: true,
-  });
-  welcomeWindow.setAlwaysOnTop(true, "screen-saver");
-  welcomeWindow.once("ready-to-show", () => {
-    // showInactive: never steal keyboard focus — the user may be typing while
-    // the app boots, and a stray keystroke would land on (and dismiss) the
-    // splash. Clicks still skip it; it closes itself when the reveal ends.
-    if (welcomeWindow && !welcomeWindow.isDestroyed()) welcomeWindow.showInactive();
-  });
-  welcomeWindow.on("closed", () => {
-    welcomeWindow = null;
-    if (!welcomeGateActive) return;
-    // The welcome stages are the whole walkthrough. Its final handoff opens
-    // the normal glass Studio, not the retired sign-in surface.
-    welcomeGateActive = false;
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      const revealStudio = () => {
-        if (!mainWindow || mainWindow.isDestroyed()) return;
-        if (mainWindow.isMinimized()) mainWindow.restore();
-        mainWindow.show();
-        mainWindow.focus();
-        // The window boots windowed while gated (fullscreen would have made
-        // it visible behind the welcome glass) — go fullscreen at reveal.
-        // macOS uses simple fullscreen so it stays on the regular desktop.
-        if (IS_MAC) {
-          try {
-            if (!mainWindow.isSimpleFullScreen()) mainWindow.setSimpleFullScreen(true);
-          } catch (_) {}
-        } else if (!mainWindow.isFullScreen()) {
-          mainWindow.setFullScreen(true);
-        }
-        broadcastStudioFullscreen();
-      };
-      // Normal walkthrough handoff: the studio finished loading behind the
-      // welcome loader — reveal it as-is. Reloading here would restart the
-      // app boot and flash its loading screen.
-      if (welcomeStudioPreloaded) {
-        revealStudio();
-        return;
-      }
-      void mainWindow
-        .loadURL(`${APP_ORIGIN}/studio?glass=1&walkthrough=1`)
-        .then(revealStudio)
-        .catch((err) => {
-          console.warn("[welcome] Studio handoff:", err?.message || err);
-          revealStudio();
-        });
-    } else {
-      createMainWindow();
-    }
-  });
-  void welcomeWindow.loadFile(path.join(__dirname, "welcome.html"));
-  try {
-    fsSync.writeFileSync(welcomeMarkerPath(), new Date().toISOString(), "utf8");
-  } catch {
-    /* non-fatal — worst case the splash replays next launch */
-  }
-}
+function showWelcomeSplash(...a) { return d.showWelcomeSplash(...a); }
 
 /** Password is held only until the welcome verification completes. */
 let welcomeSignupSecret = null;
 
-function welcomeSupabaseAuthCreds() {
-  let url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "";
-  let key = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || "";
-  if ((!url || !key) && !app.isPackaged) {
-    try {
-      for (const line of fsSync.readFileSync(path.join(__dirname, "..", ".env"), "utf8").split("\n")) {
-        const match = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
-        if (!match) continue;
-        const value = match[2].replace(/^["']|["']$/g, "").trim();
-        if (!url && ["VITE_SUPABASE_URL", "SUPABASE_URL"].includes(match[1])) url = value;
-        if (!key && ["VITE_SUPABASE_ANON_KEY", "SUPABASE_ANON_KEY"].includes(match[1])) key = value;
-      }
-    } catch {
-      /* development .env is optional */
-    }
-  }
-  return url && key ? { url, key } : null;
-}
+function welcomeSupabaseAuthCreds(...a) { return d.welcomeSupabaseAuthCreds(...a); }
 
-async function signInWelcomeAccount() {
-  const secret = welcomeSignupSecret;
-  welcomeSignupSecret = null;
-  const creds = welcomeSupabaseAuthCreds();
-  if (!secret || !creds) return false;
-  try {
-    const response = await fetch(`${creds.url}/auth/v1/token?grant_type=password`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", apikey: creds.key },
-      body: JSON.stringify(secret),
-    });
-    const session = await response.json().catch(() => ({}));
-    if (!response.ok || !session?.access_token || !session?.refresh_token) return false;
-    deliverAuthTokensToRenderer(session.access_token, session.refresh_token);
-    return true;
-  } catch {
-    return false;
-  }
-}
+async function signInWelcomeAccount(...a) { return d.signInWelcomeAccount(...a); }
 
 
 
@@ -11902,68 +8239,7 @@ app.on("second-instance", (_event, commandLine) => {
 // (login launch / always-on Mac mini). A parentless dialog is easy to miss,
 // so we surface Dock + window, parent the dialog, fire a Notification, keep a
 // tray "Restart to Update" item, and re-prompt on activate / resume.
-function initAutoUpdate() {
-  if (!app.isPackaged) return;
-  let autoUpdater;
-  try {
-    ({ autoUpdater } = require("electron-updater"));
-  } catch (e) {
-    console.log("[update] electron-updater unavailable:", e && e.message);
-    return;
-  }
-  // electron-updater's property is `autoDownload` (a previous typo set the
-  // nonexistent `autoDownloadAll`, silently relying on the default).
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
-
-  installPendingUpdate = () => {
-    // Installing an update is a legitimate exit — don't reroute it to
-    // background mode via before-quit.
-    allowQuit = true;
-    try {
-      autoUpdater.quitAndInstall();
-    } catch (e) {
-      console.log("[update] quitAndInstall failed:", e && e.message ? e.message : e);
-      quitForReal();
-    }
-  };
-
-  autoUpdater.on("error", (err) => {
-    console.log("[update] error:", err && err.message ? err.message : err);
-  });
-  autoUpdater.on("update-available", (info) => {
-    console.log("[update] available:", info && info.version);
-  });
-  autoUpdater.on("update-not-available", () => {
-    console.log("[update] up to date");
-  });
-  autoUpdater.on("update-downloaded", (info) => {
-    console.log("[update] downloaded:", info && info.version);
-    pendingUpdate = { version: (info && info.version) || "" };
-    refreshTrayUpdateAffordance();
-    // Force the first prompt so always-on / background launches still see it.
-    void maybePromptPendingUpdate({ force: true });
-  });
-
-  const check = () => {
-    autoUpdater.checkForUpdates().catch((err) => {
-      console.log("[update] check failed:", err && err.message ? err.message : err);
-    });
-  };
-
-  // Check on launch, every 6 hours while alive, and again after sleep/wake
-  // (Mac mini / laptop lids often skip the interval until the process wakes).
-  check();
-  setInterval(check, 6 * 60 * 60 * 1000);
-  try {
-    powerMonitor.on("resume", () => {
-      setTimeout(check, 15_000);
-      void maybePromptPendingUpdate({ force: false });
-    });
-  } catch (_) {
-    /* older Electron */
-  }
-}
+function initAutoUpdate(...a) { return d.initAutoUpdate(...a); }
 
 const d = {
   electron: {
@@ -11988,7 +8264,21 @@ const d = {
   openExternalSafe,
 };
 
+attachDesktopAuth(d);
+
 function bindShellContext() {
+  attachDesktopAuth(d);
+  attachAutoUpdate(d);
+  attachGlassChrome(d);
+  attachOverlayFamily(d);
+  attachScreenCapture(d);
+  attachOverlaySatellites(d);
+  attachMainStudio(d);
+  attachTray(d);
+  attachOverlaySettings(d);
+  attachLiveWatch(d);
+  attachOverlaySessions(d);
+  attachWelcomeOnboarding(d);
   Object.defineProperty(d, "pendingAuthTokens", { enumerable: true, get: () => pendingAuthTokens, set: (v) => { pendingAuthTokens = v; } });
   Object.defineProperty(d, "pendingDesktopAuthState", { enumerable: true, get: () => pendingDesktopAuthState, set: (v) => { pendingDesktopAuthState = v; } });
   Object.defineProperty(d, "lastAcceptedAuthHandoff", { enumerable: true, get: () => lastAcceptedAuthHandoff, set: (v) => { lastAcceptedAuthHandoff = v; } });
@@ -12104,108 +8394,108 @@ function bindShellContext() {
   d.toolStatusLabel = toolStatusLabel;
   d.notifyMainProjectsChanged = notifyMainProjectsChanged;
   d.maybeNotifyProjectsChangedFromTool = maybeNotifyProjectsChangedFromTool;
-  d.isAuthNavigation = isAuthNavigation;
-  d.desktopAuthStatePath = desktopAuthStatePath;
-  d.persistDesktopAuthState = persistDesktopAuthState;
-  d.loadDesktopAuthState = loadDesktopAuthState;
-  d.clearDesktopAuthState = clearDesktopAuthState;
-  d.authHandoffAllowedOrigin = authHandoffAllowedOrigin;
-  d.isReplayOfLastAuthHandoff = isReplayOfLastAuthHandoff;
-  d.deliverAuthTokensToRenderer = deliverAuthTokensToRenderer;
-  d.acceptAuthHandoffPayload = acceptAuthHandoffPayload;
-  d.startAuthHandoffServer = startAuthHandoffServer;
-  d.mintDesktopAuthUrl = mintDesktopAuthUrl;
-  d.flushPendingAuthTokens = flushPendingAuthTokens;
-  d.handleAuthDeepLink = handleAuthDeepLink;
-  d.findLyknUrlInArgv = findLyknUrlInArgv;
-  d.findPackagedLyknApp = findPackagedLyknApp;
-  d.preferPackagedLyknUrlHandler = preferPackagedLyknUrlHandler;
-  d.claimLyknProtocol = claimLyknProtocol;
-  d.quitForReal = quitForReal;
-  d.ensureAppSurfacedForUpdate = ensureAppSurfacedForUpdate;
-  d.notifyUpdateReady = notifyUpdateReady;
+  if (typeof d.isAuthNavigation !== "function") d.isAuthNavigation = isAuthNavigation;
+  if (typeof d.desktopAuthStatePath !== "function") d.desktopAuthStatePath = desktopAuthStatePath;
+  if (typeof d.persistDesktopAuthState !== "function") d.persistDesktopAuthState = persistDesktopAuthState;
+  if (typeof d.loadDesktopAuthState !== "function") d.loadDesktopAuthState = loadDesktopAuthState;
+  if (typeof d.clearDesktopAuthState !== "function") d.clearDesktopAuthState = clearDesktopAuthState;
+  if (typeof d.authHandoffAllowedOrigin !== "function") d.authHandoffAllowedOrigin = authHandoffAllowedOrigin;
+  if (typeof d.isReplayOfLastAuthHandoff !== "function") d.isReplayOfLastAuthHandoff = isReplayOfLastAuthHandoff;
+  if (typeof d.deliverAuthTokensToRenderer !== "function") d.deliverAuthTokensToRenderer = deliverAuthTokensToRenderer;
+  if (typeof d.acceptAuthHandoffPayload !== "function") d.acceptAuthHandoffPayload = acceptAuthHandoffPayload;
+  if (typeof d.startAuthHandoffServer !== "function") d.startAuthHandoffServer = startAuthHandoffServer;
+  if (typeof d.mintDesktopAuthUrl !== "function") d.mintDesktopAuthUrl = mintDesktopAuthUrl;
+  if (typeof d.flushPendingAuthTokens !== "function") d.flushPendingAuthTokens = flushPendingAuthTokens;
+  if (typeof d.handleAuthDeepLink !== "function") d.handleAuthDeepLink = handleAuthDeepLink;
+  if (typeof d.findLyknUrlInArgv !== "function") d.findLyknUrlInArgv = findLyknUrlInArgv;
+  if (typeof d.findPackagedLyknApp !== "function") d.findPackagedLyknApp = findPackagedLyknApp;
+  if (typeof d.preferPackagedLyknUrlHandler !== "function") d.preferPackagedLyknUrlHandler = preferPackagedLyknUrlHandler;
+  if (typeof d.claimLyknProtocol !== "function") d.claimLyknProtocol = claimLyknProtocol;
+  if (typeof d.quitForReal !== "function") d.quitForReal = quitForReal;
+  if (typeof d.ensureAppSurfacedForUpdate !== "function") d.ensureAppSurfacedForUpdate = ensureAppSurfacedForUpdate;
+  if (typeof d.notifyUpdateReady !== "function") d.notifyUpdateReady = notifyUpdateReady;
   d.showAgentFinishedPopup = showAgentFinishedPopup;
   d.closeAgentFinishedPopup = closeAgentFinishedPopup;
   d.notifyAgentFinished = notifyAgentFinished;
-  d.maybePromptPendingUpdate = maybePromptPendingUpdate;
-  d.updateDockVisibility = updateDockVisibility;
-  d.createMainWindow = createMainWindow;
-  d.createStudioWindow = createStudioWindow;
-  d.studioWindowRef = studioWindowRef;
-  d.studioFullscreenActive = studioFullscreenActive;
-  d.broadcastStudioFullscreen = broadcastStudioFullscreen;
-  d.showStudioWindow = showStudioWindow;
-  d.afterStudioFullscreenExit = afterStudioFullscreenExit;
-  d.hideStudioWindow = hideStudioWindow;
-  d.installPermissionHandler = installPermissionHandler;
-  d.setupSystemAudioCapture = setupSystemAudioCapture;
-  d.floatingGlassChrome = floatingGlassChrome;
-  d.roundedRectShape = roundedRectShape;
-  d.applyFloatingGlassShape = applyFloatingGlassShape;
-  d.hardenFloatingGlass = hardenFloatingGlass;
-  d.setFloatingBounds = setFloatingBounds;
-  d.overlayWorkArea = overlayWorkArea;
-  d.overlayPosition = overlayPosition;
-  d.overlayBoundsNeedHeal = overlayBoundsNeedHeal;
-  d.resetOverlayPositionToDefault = resetOverlayPositionToDefault;
-  d.healOverlayGeometry = healOverlayGeometry;
-  d.createOverlayWindow = createOverlayWindow;
-  d.setOverlayCollapsed = setOverlayCollapsed;
-  d.setOverlaySize = setOverlaySize;
-  d.hideOverlay = hideOverlay;
-  d.setOverlayClickThrough = setOverlayClickThrough;
-  d.focusOverlayForTyping = focusOverlayForTyping;
-  d.withOverlayHiddenForClick = withOverlayHiddenForClick;
-  d.withPermissionPrompt = withPermissionPrompt;
-  d.isAutomationDeniedError = isAutomationDeniedError;
-  d.screenCaptureStatus = screenCaptureStatus;
-  d.onboardingScreenStatus = onboardingScreenStatus;
-  d.microphoneStatus = microphoneStatus;
-  d.openMicrophoneSettings = openMicrophoneSettings;
-  d.openScreenPrivacySettings = openScreenPrivacySettings;
-  d.probeScreenRecordingTcc = probeScreenRecordingTcc;
-  d.ensureScreenRecordingAccess = ensureScreenRecordingAccess;
-  d.screenRecordingDeniedMessage = screenRecordingDeniedMessage;
-  d.closeSnipWindow = closeSnipWindow;
-  d.captureInteractiveSnip = captureInteractiveSnip;
-  d.getTargetCaptureDisplay = getTargetCaptureDisplay;
-  d.capturePrimaryScreen = capturePrimaryScreen;
-  d.captureBrowserScreenThumbnail = captureBrowserScreenThumbnail;
-  d.createBurstWindow = createBurstWindow;
-  d.playOverlayBurst = playOverlayBurst;
-  d.hideOverlayGlass = hideOverlayGlass;
-  d.createMenuWindow = createMenuWindow;
-  d.menuTargetBounds = menuTargetBounds;
-  d.positionMenuWindow = positionMenuWindow;
-  d.notifyMenuVisibility = notifyMenuVisibility;
-  d.showMenuWindow = showMenuWindow;
-  d.hideMenuWindow = hideMenuWindow;
-  d.createPickerWindow = createPickerWindow;
-  d.pickerTargetBounds = pickerTargetBounds;
-  d.positionPickerWindow = positionPickerWindow;
-  d.notifyPickerVisibility = notifyPickerVisibility;
-  d.showPickerWindow = showPickerWindow;
-  d.hidePickerWindow = hidePickerWindow;
-  d.createLangPickerWindow = createLangPickerWindow;
-  d.langPickerTargetBounds = langPickerTargetBounds;
-  d.positionLangPickerWindow = positionLangPickerWindow;
-  d.notifyLangPickerVisibility = notifyLangPickerVisibility;
-  d.showLangPickerWindow = showLangPickerWindow;
-  d.hideLangPickerWindow = hideLangPickerWindow;
-  d.createLiveWindow = createLiveWindow;
-  d.liveWindowVisible = liveWindowVisible;
-  d.liveTargetBounds = liveTargetBounds;
-  d.positionLiveWindow = positionLiveWindow;
-  d.sendLiveState = sendLiveState;
-  d.showLiveWindow = showLiveWindow;
-  d.hideLiveWindow = hideLiveWindow;
-  d.createPanelWindow = createPanelWindow;
-  d.panelWindowVisible = panelWindowVisible;
-  d.panelTargetBounds = panelTargetBounds;
-  d.positionPanelWindow = positionPanelWindow;
-  d.sendPanelState = sendPanelState;
-  d.showPanelWindow = showPanelWindow;
-  d.hidePanelWindow = hidePanelWindow;
+  if (typeof d.maybePromptPendingUpdate !== "function") d.maybePromptPendingUpdate = maybePromptPendingUpdate;
+  if (typeof d.updateDockVisibility !== "function") d.updateDockVisibility = updateDockVisibility;
+  if (typeof d.createMainWindow !== "function") d.createMainWindow = createMainWindow;
+  if (typeof d.createStudioWindow !== "function") d.createStudioWindow = createStudioWindow;
+  if (typeof d.studioWindowRef !== "function") d.studioWindowRef = studioWindowRef;
+  if (typeof d.studioFullscreenActive !== "function") d.studioFullscreenActive = studioFullscreenActive;
+  if (typeof d.broadcastStudioFullscreen !== "function") d.broadcastStudioFullscreen = broadcastStudioFullscreen;
+  if (typeof d.showStudioWindow !== "function") d.showStudioWindow = showStudioWindow;
+  if (typeof d.afterStudioFullscreenExit !== "function") d.afterStudioFullscreenExit = afterStudioFullscreenExit;
+  if (typeof d.hideStudioWindow !== "function") d.hideStudioWindow = hideStudioWindow;
+  if (typeof d.installPermissionHandler !== "function") d.installPermissionHandler = installPermissionHandler;
+  if (typeof d.setupSystemAudioCapture !== "function") d.setupSystemAudioCapture = setupSystemAudioCapture;
+  if (typeof d.floatingGlassChrome !== "function") d.floatingGlassChrome = floatingGlassChrome;
+  if (typeof d.roundedRectShape !== "function") d.roundedRectShape = roundedRectShape;
+  if (typeof d.applyFloatingGlassShape !== "function") d.applyFloatingGlassShape = applyFloatingGlassShape;
+  if (typeof d.hardenFloatingGlass !== "function") d.hardenFloatingGlass = hardenFloatingGlass;
+  if (typeof d.setFloatingBounds !== "function") d.setFloatingBounds = setFloatingBounds;
+  if (typeof d.overlayWorkArea !== "function") d.overlayWorkArea = overlayWorkArea;
+  if (typeof d.overlayPosition !== "function") d.overlayPosition = overlayPosition;
+  if (typeof d.overlayBoundsNeedHeal !== "function") d.overlayBoundsNeedHeal = overlayBoundsNeedHeal;
+  if (typeof d.resetOverlayPositionToDefault !== "function") d.resetOverlayPositionToDefault = resetOverlayPositionToDefault;
+  if (typeof d.healOverlayGeometry !== "function") d.healOverlayGeometry = healOverlayGeometry;
+  if (typeof d.createOverlayWindow !== "function") d.createOverlayWindow = createOverlayWindow;
+  if (typeof d.setOverlayCollapsed !== "function") d.setOverlayCollapsed = setOverlayCollapsed;
+  if (typeof d.setOverlaySize !== "function") d.setOverlaySize = setOverlaySize;
+  if (typeof d.hideOverlay !== "function") d.hideOverlay = hideOverlay;
+  if (typeof d.setOverlayClickThrough !== "function") d.setOverlayClickThrough = setOverlayClickThrough;
+  if (typeof d.focusOverlayForTyping !== "function") d.focusOverlayForTyping = focusOverlayForTyping;
+  if (typeof d.withOverlayHiddenForClick !== "function") d.withOverlayHiddenForClick = withOverlayHiddenForClick;
+  if (typeof d.withPermissionPrompt !== "function") d.withPermissionPrompt = withPermissionPrompt;
+  if (typeof d.isAutomationDeniedError !== "function") d.isAutomationDeniedError = isAutomationDeniedError;
+  if (typeof d.screenCaptureStatus !== "function") d.screenCaptureStatus = screenCaptureStatus;
+  if (typeof d.onboardingScreenStatus !== "function") d.onboardingScreenStatus = onboardingScreenStatus;
+  if (typeof d.microphoneStatus !== "function") d.microphoneStatus = microphoneStatus;
+  if (typeof d.openMicrophoneSettings !== "function") d.openMicrophoneSettings = openMicrophoneSettings;
+  if (typeof d.openScreenPrivacySettings !== "function") d.openScreenPrivacySettings = openScreenPrivacySettings;
+  if (typeof d.probeScreenRecordingTcc !== "function") d.probeScreenRecordingTcc = probeScreenRecordingTcc;
+  if (typeof d.ensureScreenRecordingAccess !== "function") d.ensureScreenRecordingAccess = ensureScreenRecordingAccess;
+  if (typeof d.screenRecordingDeniedMessage !== "function") d.screenRecordingDeniedMessage = screenRecordingDeniedMessage;
+  if (typeof d.closeSnipWindow !== "function") d.closeSnipWindow = closeSnipWindow;
+  if (typeof d.captureInteractiveSnip !== "function") d.captureInteractiveSnip = captureInteractiveSnip;
+  if (typeof d.getTargetCaptureDisplay !== "function") d.getTargetCaptureDisplay = getTargetCaptureDisplay;
+  if (typeof d.capturePrimaryScreen !== "function") d.capturePrimaryScreen = capturePrimaryScreen;
+  if (typeof d.captureBrowserScreenThumbnail !== "function") d.captureBrowserScreenThumbnail = captureBrowserScreenThumbnail;
+  if (typeof d.createBurstWindow !== "function") d.createBurstWindow = createBurstWindow;
+  if (typeof d.playOverlayBurst !== "function") d.playOverlayBurst = playOverlayBurst;
+  if (typeof d.hideOverlayGlass !== "function") d.hideOverlayGlass = hideOverlayGlass;
+  if (typeof d.createMenuWindow !== "function") d.createMenuWindow = createMenuWindow;
+  if (typeof d.menuTargetBounds !== "function") d.menuTargetBounds = menuTargetBounds;
+  if (typeof d.positionMenuWindow !== "function") d.positionMenuWindow = positionMenuWindow;
+  if (typeof d.notifyMenuVisibility !== "function") d.notifyMenuVisibility = notifyMenuVisibility;
+  if (typeof d.showMenuWindow !== "function") d.showMenuWindow = showMenuWindow;
+  if (typeof d.hideMenuWindow !== "function") d.hideMenuWindow = hideMenuWindow;
+  if (typeof d.createPickerWindow !== "function") d.createPickerWindow = createPickerWindow;
+  if (typeof d.pickerTargetBounds !== "function") d.pickerTargetBounds = pickerTargetBounds;
+  if (typeof d.positionPickerWindow !== "function") d.positionPickerWindow = positionPickerWindow;
+  if (typeof d.notifyPickerVisibility !== "function") d.notifyPickerVisibility = notifyPickerVisibility;
+  if (typeof d.showPickerWindow !== "function") d.showPickerWindow = showPickerWindow;
+  if (typeof d.hidePickerWindow !== "function") d.hidePickerWindow = hidePickerWindow;
+  if (typeof d.createLangPickerWindow !== "function") d.createLangPickerWindow = createLangPickerWindow;
+  if (typeof d.langPickerTargetBounds !== "function") d.langPickerTargetBounds = langPickerTargetBounds;
+  if (typeof d.positionLangPickerWindow !== "function") d.positionLangPickerWindow = positionLangPickerWindow;
+  if (typeof d.notifyLangPickerVisibility !== "function") d.notifyLangPickerVisibility = notifyLangPickerVisibility;
+  if (typeof d.showLangPickerWindow !== "function") d.showLangPickerWindow = showLangPickerWindow;
+  if (typeof d.hideLangPickerWindow !== "function") d.hideLangPickerWindow = hideLangPickerWindow;
+  if (typeof d.createLiveWindow !== "function") d.createLiveWindow = createLiveWindow;
+  if (typeof d.liveWindowVisible !== "function") d.liveWindowVisible = liveWindowVisible;
+  if (typeof d.liveTargetBounds !== "function") d.liveTargetBounds = liveTargetBounds;
+  if (typeof d.positionLiveWindow !== "function") d.positionLiveWindow = positionLiveWindow;
+  if (typeof d.sendLiveState !== "function") d.sendLiveState = sendLiveState;
+  if (typeof d.showLiveWindow !== "function") d.showLiveWindow = showLiveWindow;
+  if (typeof d.hideLiveWindow !== "function") d.hideLiveWindow = hideLiveWindow;
+  if (typeof d.createPanelWindow !== "function") d.createPanelWindow = createPanelWindow;
+  if (typeof d.panelWindowVisible !== "function") d.panelWindowVisible = panelWindowVisible;
+  if (typeof d.panelTargetBounds !== "function") d.panelTargetBounds = panelTargetBounds;
+  if (typeof d.positionPanelWindow !== "function") d.positionPanelWindow = positionPanelWindow;
+  if (typeof d.sendPanelState !== "function") d.sendPanelState = sendPanelState;
+  if (typeof d.showPanelWindow !== "function") d.showPanelWindow = showPanelWindow;
+  if (typeof d.hidePanelWindow !== "function") d.hidePanelWindow = hidePanelWindow;
   d.emitAgentToUi = emitAgentToUi;
   d.createAgentSidebarWindow = createAgentSidebarWindow;
   d.agentSidebarWindowVisible = agentSidebarWindowVisible;
@@ -12321,11 +8611,11 @@ function bindShellContext() {
   d.planOwnedBrowserNext = planOwnedBrowserNext;
   d.whenAgentRuntimeLoaded = whenAgentRuntimeLoaded;
   d.initAgentRuntime = initAgentRuntime;
-  d.showOverlay = showOverlay;
-  d.toggleOverlay = toggleOverlay;
-  d.registerGlobalHotkey = registerGlobalHotkey;
-  d.refreshTrayUpdateAffordance = refreshTrayUpdateAffordance;
-  d.createTray = createTray;
+  if (typeof d.showOverlay !== "function") d.showOverlay = showOverlay;
+  if (typeof d.toggleOverlay !== "function") d.toggleOverlay = toggleOverlay;
+  if (typeof d.registerGlobalHotkey !== "function") d.registerGlobalHotkey = registerGlobalHotkey;
+  if (typeof d.refreshTrayUpdateAffordance !== "function") d.refreshTrayUpdateAffordance = refreshTrayUpdateAffordance;
+  if (typeof d.createTray !== "function") d.createTray = createTray;
   d.stripHiddenTags = stripHiddenTags;
   d.parseVaultAttachmentsFromContent = parseVaultAttachmentsFromContent;
   d.stripVaultAttachmentsMarker = stripVaultAttachmentsMarker;
@@ -12342,65 +8632,65 @@ function bindShellContext() {
   d.trimPartialControlTagTail = trimPartialControlTagTail;
   d.parseJsonFromAiText = parseJsonFromAiText;
   d.fetchAiStreamCompletion = fetchAiStreamCompletion;
-  d.jwtExpiryMs = jwtExpiryMs;
-  d.cacheAuthToken = cacheAuthToken;
-  d.readTokenFromWebContents = readTokenFromWebContents;
-  d.refreshTokenViaWebContents = refreshTokenViaWebContents;
-  d.tokenIsStale = tokenIsStale;
-  d.liveAuthWebContents = liveAuthWebContents;
-  d.ensureAuthKeeper = ensureAuthKeeper;
-  d.destroyAuthKeeper = destroyAuthKeeper;
-  d.readTokenFromLiveAuth = readTokenFromLiveAuth;
-  d.readTokenViaHiddenWindow = readTokenViaHiddenWindow;
-  d.getAuthToken = getAuthToken;
-  d.overlaySettingsPath = overlaySettingsPath;
-  d.readOverlaySettings = readOverlaySettings;
-  d.writeOverlaySettings = writeOverlaySettings;
-  d.isLoginItemEnabled = isLoginItemEnabled;
-  d.setLoginItemEnabled = setLoginItemEnabled;
-  d.setupLaunchAtLogin = setupLaunchAtLogin;
-  d.launchedAtLogin = launchedAtLogin;
-  d.isContentProtectionEnabled = isContentProtectionEnabled;
-  d.applyContentProtection = applyContentProtection;
-  d.parseWatchRuleIntent = parseWatchRuleIntent;
-  d.looksLikeClearWatchRules = looksLikeClearWatchRules;
-  d.addLiveWatchRule = addLiveWatchRule;
-  d.clearLiveWatchRules = clearLiveWatchRules;
-  d.parseLiveWatchResponse = parseLiveWatchResponse;
-  d.buildLiveWatchRulesSection = buildLiveWatchRulesSection;
-  d.isLiveWatchEnabled = isLiveWatchEnabled;
-  d.getLiveWatchStatus = getLiveWatchStatus;
-  d.getFreshLiveWatchSummary = getFreshLiveWatchSummary;
-  d.getLiveWatchContextSection = getLiveWatchContextSection;
-  d.notifyLiveWatchUpdate = notifyLiveWatchUpdate;
-  d.setLiveWatchCapturing = setLiveWatchCapturing;
-  d.setLiveWatchSummary = setLiveWatchSummary;
-  d.liveWatchIntervalMs = liveWatchIntervalMs;
-  d.captureForLiveWatch = captureForLiveWatch;
-  d.postAiStreamTextWithTimeout = postAiStreamTextWithTimeout;
-  d.scheduleLiveWatchTick = scheduleLiveWatchTick;
-  d.stopLiveWatch = stopLiveWatch;
-  d.startLiveWatch = startLiveWatch;
-  d.setLiveWatchEnabled = setLiveWatchEnabled;
-  d.getExtensionDir = getExtensionDir;
-  d.restoreOverlayAfterExtensionInstall = restoreOverlayAfterExtensionInstall;
-  d.createExtensionInstallWindow = createExtensionInstallWindow;
-  d.describeLiveWatchFrame = describeLiveWatchFrame;
-  d.describeLiveWatchPageText = describeLiveWatchPageText;
-  d.liveWatchTextPass = liveWatchTextPass;
-  d.tryLiveWatchBrowserScrape = tryLiveWatchBrowserScrape;
-  d.liveWatchPageTextTick = liveWatchPageTextTick;
-  d.liveWatchVisionPass = liveWatchVisionPass;
-  d.liveWatchTick = liveWatchTick;
-  d.overlaySessionsPath = overlaySessionsPath;
-  d.readOverlaySessionsStore = readOverlaySessionsStore;
-  d.writeOverlaySessionsStore = writeOverlaySessionsStore;
-  d.overlaySessionTitle = overlaySessionTitle;
-  d.overlaySessionPreview = overlaySessionPreview;
-  d.normalizeUrlForMatch = normalizeUrlForMatch;
-  d.buildPastPageConversationSection = buildPastPageConversationSection;
-  d.fetchAppChatsForOverlay = fetchAppChatsForOverlay;
-  d.pushOverlaySessionToApp = pushOverlaySessionToApp;
+  if (typeof d.jwtExpiryMs !== "function") d.jwtExpiryMs = jwtExpiryMs;
+  if (typeof d.cacheAuthToken !== "function") d.cacheAuthToken = cacheAuthToken;
+  if (typeof d.readTokenFromWebContents !== "function") d.readTokenFromWebContents = readTokenFromWebContents;
+  if (typeof d.refreshTokenViaWebContents !== "function") d.refreshTokenViaWebContents = refreshTokenViaWebContents;
+  if (typeof d.tokenIsStale !== "function") d.tokenIsStale = tokenIsStale;
+  if (typeof d.liveAuthWebContents !== "function") d.liveAuthWebContents = liveAuthWebContents;
+  if (typeof d.ensureAuthKeeper !== "function") d.ensureAuthKeeper = ensureAuthKeeper;
+  if (typeof d.destroyAuthKeeper !== "function") d.destroyAuthKeeper = destroyAuthKeeper;
+  if (typeof d.readTokenFromLiveAuth !== "function") d.readTokenFromLiveAuth = readTokenFromLiveAuth;
+  if (typeof d.readTokenViaHiddenWindow !== "function") d.readTokenViaHiddenWindow = readTokenViaHiddenWindow;
+  if (typeof d.getAuthToken !== "function") d.getAuthToken = getAuthToken;
+  if (typeof d.overlaySettingsPath !== "function") d.overlaySettingsPath = overlaySettingsPath;
+  if (typeof d.readOverlaySettings !== "function") d.readOverlaySettings = readOverlaySettings;
+  if (typeof d.writeOverlaySettings !== "function") d.writeOverlaySettings = writeOverlaySettings;
+  if (typeof d.isLoginItemEnabled !== "function") d.isLoginItemEnabled = isLoginItemEnabled;
+  if (typeof d.setLoginItemEnabled !== "function") d.setLoginItemEnabled = setLoginItemEnabled;
+  if (typeof d.setupLaunchAtLogin !== "function") d.setupLaunchAtLogin = setupLaunchAtLogin;
+  if (typeof d.launchedAtLogin !== "function") d.launchedAtLogin = launchedAtLogin;
+  if (typeof d.isContentProtectionEnabled !== "function") d.isContentProtectionEnabled = isContentProtectionEnabled;
+  if (typeof d.applyContentProtection !== "function") d.applyContentProtection = applyContentProtection;
+  if (typeof d.parseWatchRuleIntent !== "function") d.parseWatchRuleIntent = parseWatchRuleIntent;
+  if (typeof d.looksLikeClearWatchRules !== "function") d.looksLikeClearWatchRules = looksLikeClearWatchRules;
+  if (typeof d.addLiveWatchRule !== "function") d.addLiveWatchRule = addLiveWatchRule;
+  if (typeof d.clearLiveWatchRules !== "function") d.clearLiveWatchRules = clearLiveWatchRules;
+  if (typeof d.parseLiveWatchResponse !== "function") d.parseLiveWatchResponse = parseLiveWatchResponse;
+  if (typeof d.buildLiveWatchRulesSection !== "function") d.buildLiveWatchRulesSection = buildLiveWatchRulesSection;
+  if (typeof d.isLiveWatchEnabled !== "function") d.isLiveWatchEnabled = isLiveWatchEnabled;
+  if (typeof d.getLiveWatchStatus !== "function") d.getLiveWatchStatus = getLiveWatchStatus;
+  if (typeof d.getFreshLiveWatchSummary !== "function") d.getFreshLiveWatchSummary = getFreshLiveWatchSummary;
+  if (typeof d.getLiveWatchContextSection !== "function") d.getLiveWatchContextSection = getLiveWatchContextSection;
+  if (typeof d.notifyLiveWatchUpdate !== "function") d.notifyLiveWatchUpdate = notifyLiveWatchUpdate;
+  if (typeof d.setLiveWatchCapturing !== "function") d.setLiveWatchCapturing = setLiveWatchCapturing;
+  if (typeof d.setLiveWatchSummary !== "function") d.setLiveWatchSummary = setLiveWatchSummary;
+  if (typeof d.liveWatchIntervalMs !== "function") d.liveWatchIntervalMs = liveWatchIntervalMs;
+  if (typeof d.captureForLiveWatch !== "function") d.captureForLiveWatch = captureForLiveWatch;
+  if (typeof d.postAiStreamTextWithTimeout !== "function") d.postAiStreamTextWithTimeout = postAiStreamTextWithTimeout;
+  if (typeof d.scheduleLiveWatchTick !== "function") d.scheduleLiveWatchTick = scheduleLiveWatchTick;
+  if (typeof d.stopLiveWatch !== "function") d.stopLiveWatch = stopLiveWatch;
+  if (typeof d.startLiveWatch !== "function") d.startLiveWatch = startLiveWatch;
+  if (typeof d.setLiveWatchEnabled !== "function") d.setLiveWatchEnabled = setLiveWatchEnabled;
+  if (typeof d.getExtensionDir !== "function") d.getExtensionDir = getExtensionDir;
+  if (typeof d.restoreOverlayAfterExtensionInstall !== "function") d.restoreOverlayAfterExtensionInstall = restoreOverlayAfterExtensionInstall;
+  if (typeof d.createExtensionInstallWindow !== "function") d.createExtensionInstallWindow = createExtensionInstallWindow;
+  if (typeof d.describeLiveWatchFrame !== "function") d.describeLiveWatchFrame = describeLiveWatchFrame;
+  if (typeof d.describeLiveWatchPageText !== "function") d.describeLiveWatchPageText = describeLiveWatchPageText;
+  if (typeof d.liveWatchTextPass !== "function") d.liveWatchTextPass = liveWatchTextPass;
+  if (typeof d.tryLiveWatchBrowserScrape !== "function") d.tryLiveWatchBrowserScrape = tryLiveWatchBrowserScrape;
+  if (typeof d.liveWatchPageTextTick !== "function") d.liveWatchPageTextTick = liveWatchPageTextTick;
+  if (typeof d.liveWatchVisionPass !== "function") d.liveWatchVisionPass = liveWatchVisionPass;
+  if (typeof d.liveWatchTick !== "function") d.liveWatchTick = liveWatchTick;
+  if (typeof d.overlaySessionsPath !== "function") d.overlaySessionsPath = overlaySessionsPath;
+  if (typeof d.readOverlaySessionsStore !== "function") d.readOverlaySessionsStore = readOverlaySessionsStore;
+  if (typeof d.writeOverlaySessionsStore !== "function") d.writeOverlaySessionsStore = writeOverlaySessionsStore;
+  if (typeof d.overlaySessionTitle !== "function") d.overlaySessionTitle = overlaySessionTitle;
+  if (typeof d.overlaySessionPreview !== "function") d.overlaySessionPreview = overlaySessionPreview;
+  if (typeof d.normalizeUrlForMatch !== "function") d.normalizeUrlForMatch = normalizeUrlForMatch;
+  if (typeof d.buildPastPageConversationSection !== "function") d.buildPastPageConversationSection = buildPastPageConversationSection;
+  if (typeof d.fetchAppChatsForOverlay !== "function") d.fetchAppChatsForOverlay = fetchAppChatsForOverlay;
+  if (typeof d.pushOverlaySessionToApp !== "function") d.pushOverlaySessionToApp = pushOverlaySessionToApp;
   d.runOsascript = runOsascript;
   d.listRunningBrowserApps = listRunningBrowserApps;
   d.readBrowserFrontTabUrl = readBrowserFrontTabUrl;
@@ -12449,17 +8739,17 @@ function bindShellContext() {
   d.saveBufferToVault = saveBufferToVault;
   d.saveUrlToVault = saveUrlToVault;
   d.pickArtifactUrl = pickArtifactUrl;
-  d.saveDiagnosticsReport = saveDiagnosticsReport;
-  d.buildAppMenu = buildAppMenu;
-  d.onboardingMarkerPath = onboardingMarkerPath;
-  d.onboardingComplete = onboardingComplete;
-  d.createOnboardingWindow = createOnboardingWindow;
-  d.welcomeMarkerPath = welcomeMarkerPath;
-  d.hasSeenWelcomeSplash = hasSeenWelcomeSplash;
-  d.showWelcomeSplash = showWelcomeSplash;
-  d.welcomeSupabaseAuthCreds = welcomeSupabaseAuthCreds;
-  d.signInWelcomeAccount = signInWelcomeAccount;
-  d.initAutoUpdate = initAutoUpdate;
+  if (typeof d.saveDiagnosticsReport !== "function") d.saveDiagnosticsReport = saveDiagnosticsReport;
+  if (typeof d.buildAppMenu !== "function") d.buildAppMenu = buildAppMenu;
+  if (typeof d.onboardingMarkerPath !== "function") d.onboardingMarkerPath = onboardingMarkerPath;
+  if (typeof d.onboardingComplete !== "function") d.onboardingComplete = onboardingComplete;
+  if (typeof d.createOnboardingWindow !== "function") d.createOnboardingWindow = createOnboardingWindow;
+  if (typeof d.welcomeMarkerPath !== "function") d.welcomeMarkerPath = welcomeMarkerPath;
+  if (typeof d.hasSeenWelcomeSplash !== "function") d.hasSeenWelcomeSplash = hasSeenWelcomeSplash;
+  if (typeof d.showWelcomeSplash !== "function") d.showWelcomeSplash = showWelcomeSplash;
+  if (typeof d.welcomeSupabaseAuthCreds !== "function") d.welcomeSupabaseAuthCreds = welcomeSupabaseAuthCreds;
+  if (typeof d.signInWelcomeAccount !== "function") d.signInWelcomeAccount = signInWelcomeAccount;
+  if (typeof d.initAutoUpdate !== "function") d.initAutoUpdate = initAutoUpdate;
   d.IMAGE_MIME_BY_EXT = IMAGE_MIME_BY_EXT;
   d.TEXT_FILE_RE = TEXT_FILE_RE;
   d.BROWSER_APP_NAMES = BROWSER_APP_NAMES;
