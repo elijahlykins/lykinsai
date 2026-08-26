@@ -1,0 +1,2710 @@
+{
+  "_comment": [
+    "GENERATED — do not edit by hand. Regenerate with: npm run test:server:update-manifest",
+    "Ordered registration surface of server.js (Express app). Entry order IS the contract:",
+    "Express matches in registration order, so any reordering here is a behavior change."
+  ],
+  "routeCount": 161,
+  "middlewareCount": 6,
+  "byMethod": {
+    "DELETE": 4,
+    "GET": 46,
+    "PATCH": 8,
+    "POST": 103
+  },
+  "byDomain": {
+    "account": 8,
+    "admin": 9,
+    "assistAi": 8,
+    "authFlows": 8,
+    "billing": 10,
+    "chatCore": 5,
+    "connections": 11,
+    "connectors": 8,
+    "customModels": 1,
+    "desktop": 9,
+    "discover": 2,
+    "feeds": 9,
+    "files": 6,
+    "learning": 20,
+    "platform": 4,
+    "synthesis": 12,
+    "usage": 3,
+    "vaultMedia": 6,
+    "voice": 11,
+    "webtools": 3,
+    "youtube": 8
+  },
+  "duplicates": [],
+  "orderHazards": {
+    "shadowedStatic": [],
+    "orderSensitive": []
+  },
+  "entries": [
+    {
+      "kind": "use",
+      "name": "<anonymous>",
+      "mount": "/",
+      "argc": 3
+    },
+    {
+      "kind": "use",
+      "name": "<anonymous>",
+      "mount": "/",
+      "argc": 3
+    },
+    {
+      "kind": "use",
+      "name": "<anonymous>",
+      "mount": "/",
+      "argc": 3
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/stripe/webhook",
+      "chain": [
+        "rawParser",
+        "<anonymous>"
+      ],
+      "domain": "billing",
+      "flags": [
+        "rawBody",
+        "webhook",
+        "externalContract",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "use",
+      "name": "<anonymous>",
+      "mount": "/",
+      "argc": 3
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/client-error",
+      "chain": [
+        "jsonParser",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "platform",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/health",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "platform",
+      "flags": [
+        "externalContract"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/f/:token",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "platform",
+      "flags": [
+        "externalContract"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/artifacts/react/rebuild",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "platform",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "use",
+      "name": "<anonymous>",
+      "mount": "/api/",
+      "argc": 3
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/ai/models",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "chatCore",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/stream-guest",
+      "chain": [
+        "guestAiGlobalLimiter",
+        "<anonymous>",
+        "<anonymous>",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "chatCore",
+      "flags": [
+        "streaming"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/synthesis/reindex",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "synthesis",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/synthesis/purge",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "synthesis",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/synthesis/refresh-profile",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "synthesis",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/synthesis/profile/status",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "synthesis",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/synthesis/intake",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "synthesis",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/synthesis/profile/facts",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "synthesis",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/synthesis/profile/facts/:id/feedback",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "synthesis",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/synthesis/profile/learn-now",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "synthesis",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/account/preferences",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "account",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "path": "/api/account/preferences",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "account",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/night-shift/briefs",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "account",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/steward/items",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "account",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/steward/items",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "account",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "path": "/api/steward/items/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "account",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "path": "/api/account",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "account",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/auth/apple/token-exchange",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "authFlows",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/metrics/ingest",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "account",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/learned",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/user-facts",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/user-facts/propose",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/user-facts/:id/confirm",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/user-facts/:id/dismiss",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/learned/auto",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/synthesis/profile/revisions",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "synthesis",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/beliefs",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/v1/synthesis/activity",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/beliefs/promote",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/beliefs/:id/ratify",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/beliefs/:id/retire",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "path": "/api/beliefs/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/beliefs/manual",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/beliefs/:id/propose-rules",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/rules/:id/ratify",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/rules/:id/retire",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "path": "/api/rules/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/applied",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/applied/:id/feedback",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/feedback",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "learning",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/custom-connections",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connections",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/custom-connections",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connections",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "path": "/api/custom-connections/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connections",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "path": "/api/custom-connections/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connections",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/custom-connections/:id/test",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connections",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/v1/custom-models/published",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "customModels",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/v1/concepts",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connections",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/v1/concepts/:id/links",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connections",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/v1/concepts",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connections",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "path": "/api/v1/concepts/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connections",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/v1/concepts/:id/merge",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connections",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/v1/concepts/:id/link",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connections",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/discover/feed",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "discover",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/discover/ingest",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "discover",
+      "flags": [
+        "secretGated",
+        "externalContract"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/vault/enrich-note",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "synthesis",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/vault/reconcile",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "synthesis",
+      "flags": [
+        "secretGated",
+        "externalContract"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/synthesis/backfill",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "synthesis",
+      "flags": [
+        "secretGated",
+        "externalContract"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/invoke",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "checkAiUsageLimit",
+        "<anonymous>"
+      ],
+      "domain": "chatCore",
+      "flags": [
+        "auth",
+        "appAccess",
+        "usageGate",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/local-tool-result",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "chatCore",
+      "flags": [
+        "auth",
+        "agentTool"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/stream",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "checkAiUsageLimit",
+        "<anonymous>"
+      ],
+      "domain": "chatCore",
+      "flags": [
+        "auth",
+        "appAccess",
+        "usageGate",
+        "streaming",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/vault-search",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "vaultMedia",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/storage/signed-url",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "vaultMedia",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/storage/file-proxy-url",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "vaultMedia",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/vault/backfill-descriptions",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "vaultMedia",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/imagine-image",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "vaultMedia",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/describe-image",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "vaultMedia",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/transcribe",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>",
+        "checkAiUsageLimit",
+        "multerMiddleware",
+        "<anonymous>"
+      ],
+      "domain": "assistAi",
+      "flags": [
+        "auth",
+        "appAccess",
+        "usageGate",
+        "upload",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/meeting-chunk",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>",
+        "checkAiUsageLimit",
+        "multerMiddleware",
+        "<anonymous>"
+      ],
+      "domain": "assistAi",
+      "flags": [
+        "auth",
+        "appAccess",
+        "usageGate",
+        "upload",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/summarize-conversation",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "assistAi",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/clean-transcript",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "assistAi",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/live-assist",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "assistAi",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/meeting-notes",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "assistAi",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/suggest",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "assistAi",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/name-grid",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "assistAi",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/desktop/agent-intent",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "desktop",
+      "flags": [
+        "auth",
+        "appAccess",
+        "agentTool"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/desktop/browser-plan",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "desktop",
+      "flags": [
+        "auth",
+        "appAccess",
+        "agentTool"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/desktop/agent-model",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "desktop",
+      "flags": [
+        "auth",
+        "appAccess",
+        "agentTool"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/desktop/agent-ground",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "desktop",
+      "flags": [
+        "auth",
+        "appAccess",
+        "agentTool"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/desktop/browser-plan-next",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "desktop",
+      "flags": [
+        "auth",
+        "appAccess",
+        "agentTool"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/desktop/browser-report",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "desktop",
+      "flags": [
+        "auth",
+        "appAccess",
+        "agentTool"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/desktop/chats",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "desktop",
+      "flags": [
+        "auth",
+        "agentTool"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/desktop/chats/save",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "desktop",
+      "flags": [
+        "auth",
+        "agentTool"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/name-chat",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "desktop",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/tts",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>",
+        "checkAiUsageLimit",
+        "<anonymous>"
+      ],
+      "domain": "voice",
+      "flags": [
+        "auth",
+        "appAccess",
+        "usageGate",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/realtime/session",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>",
+        "checkAiUsageLimit",
+        "<anonymous>"
+      ],
+      "domain": "voice",
+      "flags": [
+        "auth",
+        "appAccess",
+        "usageGate",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/realtime/tool",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "voice",
+      "flags": [
+        "auth",
+        "appAccess",
+        "agentTool"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/tune-instructions",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "voice",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/elevenlabs/signed-url",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>",
+        "checkAiUsageLimit",
+        "<anonymous>"
+      ],
+      "domain": "voice",
+      "flags": [
+        "auth",
+        "appAccess",
+        "usageGate",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/realtime/screen",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "voice",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/ai/elevenlabs/voices",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>"
+      ],
+      "domain": "voice",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/elevenlabs/llm/chat/completions",
+      "chain": [
+        "<anonymous>",
+        "elevenCustomLlmHandler"
+      ],
+      "domain": "voice",
+      "flags": [
+        "streaming",
+        "externalContract"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/elevenlabs/llm",
+      "chain": [
+        "<anonymous>",
+        "elevenCustomLlmHandler"
+      ],
+      "domain": "voice",
+      "flags": [
+        "streaming",
+        "externalContract"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/elevenlabs/llm/chat/completions/chat/completions",
+      "chain": [
+        "<anonymous>",
+        "elevenCustomLlmHandler"
+      ],
+      "domain": "voice",
+      "flags": [
+        "streaming",
+        "externalContract"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/ai/elevenlabs/llm/_debug",
+      "chain": [
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "voice",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/youtube/search",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "youtube",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/youtube/video",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "youtube",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/youtube/transcript",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "youtube",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/youtube/transcript-priority",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "youtube",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/youtube/localize",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "youtube",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/youtube/retranscribe-segment",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "youtube",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/youtube/answer",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "youtube",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/whisper/transcribe",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "multerMiddleware",
+        "<anonymous>"
+      ],
+      "domain": "youtube",
+      "flags": [
+        "auth",
+        "appAccess",
+        "upload"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/search",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "webtools",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/scrape",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "webtools",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/unfurl",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "webtools",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/files/extract-text",
+      "chain": [
+        "requireAuth",
+        "multerMiddleware",
+        "<anonymous>"
+      ],
+      "domain": "files",
+      "flags": [
+        "auth",
+        "upload"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/files/parse-spreadsheet",
+      "chain": [
+        "requireAuth",
+        "multerMiddleware",
+        "<anonymous>"
+      ],
+      "domain": "files",
+      "flags": [
+        "auth",
+        "upload"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/vault/save-image",
+      "chain": [
+        "requireAuth",
+        "multerMiddleware",
+        "<anonymous>"
+      ],
+      "domain": "files",
+      "flags": [
+        "auth",
+        "upload"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/vault/save-file",
+      "chain": [
+        "requireAuth",
+        "multerMiddleware",
+        "<anonymous>"
+      ],
+      "domain": "files",
+      "flags": [
+        "auth",
+        "upload"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/files/process",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "files",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/files/search",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "files",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/feedback",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "authFlows",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/auth/signup-start",
+      "chain": [
+        "<anonymous>",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "authFlows",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/auth/signup-resend",
+      "chain": [
+        "<anonymous>",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "authFlows",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/auth/signup-verify",
+      "chain": [
+        "<anonymous>",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "authFlows",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/auth/password-reset-start",
+      "chain": [
+        "<anonymous>",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "authFlows",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/auth/password-reset-confirm",
+      "chain": [
+        "<anonymous>",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "authFlows",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/projects/invite",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "authFlows",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/usage/me",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "usage",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/usage/session/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "usage",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/usage/history",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "usage",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/admin/usage/overview",
+      "chain": [
+        "requireAuth",
+        "requireAdmin",
+        "<anonymous>"
+      ],
+      "domain": "admin",
+      "flags": [
+        "auth",
+        "admin"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/admin/usage/users",
+      "chain": [
+        "requireAuth",
+        "requireAdmin",
+        "<anonymous>"
+      ],
+      "domain": "admin",
+      "flags": [
+        "auth",
+        "admin"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/admin/usage/users/:userId",
+      "chain": [
+        "requireAuth",
+        "requireAdmin",
+        "<anonymous>"
+      ],
+      "domain": "admin",
+      "flags": [
+        "auth",
+        "admin"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/admin/usage/recent",
+      "chain": [
+        "requireAuth",
+        "requireAdmin",
+        "<anonymous>"
+      ],
+      "domain": "admin",
+      "flags": [
+        "auth",
+        "admin"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/admin/usage/live",
+      "chain": [
+        "requireAuth",
+        "requireAdmin",
+        "<anonymous>"
+      ],
+      "domain": "admin",
+      "flags": [
+        "auth",
+        "admin"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/admin/usage/diagnostics",
+      "chain": [
+        "requireAuth",
+        "requireAdmin",
+        "<anonymous>"
+      ],
+      "domain": "admin",
+      "flags": [
+        "auth",
+        "admin"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/admin/billing/overview",
+      "chain": [
+        "requireAuth",
+        "requireAdmin",
+        "<anonymous>"
+      ],
+      "domain": "admin",
+      "flags": [
+        "auth",
+        "admin"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/admin/usage/mcp",
+      "chain": [
+        "requireAuth",
+        "requireAdmin",
+        "<anonymous>"
+      ],
+      "domain": "admin",
+      "flags": [
+        "auth",
+        "admin"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/admin/security/audit",
+      "chain": [
+        "requireAuth",
+        "requireAdmin",
+        "<anonymous>"
+      ],
+      "domain": "admin",
+      "flags": [
+        "auth",
+        "admin"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/billing/me",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "billing",
+      "flags": [
+        "auth",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/billing/checkout",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "billing",
+      "flags": [
+        "auth",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/billing/credits",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "billing",
+      "flags": [
+        "auth",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/billing/topup",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "billing",
+      "flags": [
+        "auth",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/billing/stripe-config",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "billing",
+      "flags": [
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/billing/trial-checkout",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "billing",
+      "flags": [
+        "auth",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/billing/portal",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "billing",
+      "flags": [
+        "auth",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/billing/waitlist",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "billing",
+      "flags": [
+        "auth",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/billing/waitlist",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "billing",
+      "flags": [
+        "auth",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/feeds/discover",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "feeds",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/feeds",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "feeds",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/feeds",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "feeds",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "path": "/api/feeds/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "feeds",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "path": "/api/feeds/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "feeds",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/feeds/:id/refresh",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "feeds",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/feeds/poll-due",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "feeds",
+      "flags": [
+        "secretGated",
+        "externalContract"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/connections/poll-due",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "feeds",
+      "flags": [
+        "secretGated",
+        "externalContract"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/cursor-builds/poll-due",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "feeds",
+      "flags": [
+        "secretGated",
+        "externalContract"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/connections/:provider/start",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/oauth/callback/:provider",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": [
+        "externalContract"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/connections/:provider/connect-info",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/connections/:provider/connect-token",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/connections",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/connections/:id/sync",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "path": "/api/connections/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "path": "/api/connections/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "use",
+      "name": "<anonymous>",
+      "mount": "/",
+      "argc": 4
+    }
+  ]
+}
