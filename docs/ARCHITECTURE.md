@@ -152,9 +152,17 @@ a feature subfolder.
 
 ## Known structural debt (tracked, not yet acted on)
 
-The five megafiles — `server.js` (~27.8k), `electron/main.cjs` (~16.4k),
-`electron/ownedBrowserAct.cjs` (~12.8k), `electron/agentRuntime.cjs` (~11.9k),
-`src/pages/Vault.jsx` (~10.2k) — plus `src/index.css` (~10.5k, mixes product and
-marketing styles). See `REFACTOR_LOG.md` for the incremental extraction plan and
-history. `electron/browser-agent/` and `electron/bot-harness/` show the preferred
+The remaining megafiles — `server.js` (~27.8k), `electron/main.cjs` (~16.4k),
+`electron/ownedBrowserAct.cjs` (~12.8k), `electron/agentRuntime.cjs` (~11.9k) —
+plus `src/index.css` (~10.5k, mixes product and marketing styles). See
+`REFACTOR_LOG.md` for the incremental extraction plan and history.
+`electron/browser-agent/` and `electron/bot-harness/` show the preferred
 modular shape for new work.
+
+`src/pages/Vault.jsx` was decomposed in Phase V (9.5k → ~3.7k lines): behavior
+lives in `src/hooks/useVault*.{js,jsx}` (signed URLs, tags, concept search,
+quick capture, ordering, reveal, masonry, card mutations, AI Drive window),
+rendering in `src/components/vault/` (card renderer factories, preview
+overlay, card popovers, toolbar, grid). Its state/responsibility map is in
+`VAULT_STATE_MAP.md` (18 ownership groups, cross-group dependency tree);
+consult it before moving any remaining Vault state.

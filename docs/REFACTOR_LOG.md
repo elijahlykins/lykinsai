@@ -214,3 +214,85 @@ expressions untouched.
 
 ### Result
 `Vault.jsx`: 9,498 → 9,455 lines (−43). New component file: 49 lines.
+
+---
+
+## Phase V — 2026-08-25 — Vault megafile decomposition
+
+### Change
+Full architectural decomposition of `src/pages/Vault.jsx` (9,455 → 3,744
+lines) guided by `docs/VAULT_STATE_MAP.md`. One coherent phase, staged as a
+single commit. All code moved verbatim ("move first, improve later"); every
+extraction validated with ESLint no-undef probing plus a Vite production
+build before proceeding.
+
+### Modules created
+
+Hooks (behavioral subsystems; state that page memos read stays in Vault.jsx
+and is passed in):
+- `src/hooks/useVaultSignedUrls.js` (689) — signed-URL/media resolution:
+  visibility-driven resolve queue, signed-URL cache, video posters, drive
+  artifact markup, image-dimension learning + DB backfill, tab-refocus pass.
+- `src/hooks/useVaultTags.js` (216) — tag directory, filter selection, tag
+  picker state, tag mutations, AI Drive tag strip.
+- `src/hooks/useVaultConceptSearch.js` (199) — hybrid local+AI concept
+  search behavior (state stays on the page; visibleCards reads it).
+- `src/hooks/useVaultQuickCapture.js` (240) — quick-note composer,
+  new-note chooser, save-link dialog write paths.
+- `src/hooks/useVaultCardOrdering.js` (185) — manual collage order
+  (localStorage-persisted), connector-folder pinning, wake strip split,
+  Tags/Type groupings.
+- `src/hooks/useVaultReveal.js` (233) — progressive reveal window for the
+  feed views + plain infinite scroll for Tags/Type.
+- `src/hooks/useVaultMasonry.js` (93) — fixed-column JS masonry: column
+  count, frozen height estimates, shortest-column buckets.
+- `src/hooks/useVaultCardMutations.jsx` (728) — every per-card write path:
+  delete (single/confirmed/bulk+undo), project membership, comments CRUD,
+  "why" field, move-to-folder, wake-preview local equivalents.
+- `src/hooks/useVaultDriveWindow.js` (487) — AI Drive listing integration:
+  entries + preview art, select/open/folder navigation, file-window picks
+  (move / add-to-project), save-to-device, ?pane=drive deep link. Exports
+  `DRIVE_FOLDERS` (also read by the page's visibleCards memo).
+
+Components / render modules:
+- `src/components/vault/vaultCardRenderers.jsx` (1,218) —
+  `renderConnectorListCard` plus `createRenderAttachmentCard` /
+  `createRenderCollageCard` factories (deliberately factories, not
+  components, to preserve closure/reconciliation semantics).
+- `src/components/vault/VaultPreviewOverlay.jsx` (1,156) — expanded-card
+  lightbox + details rail + `VaultPreviewShareMenu` (named export).
+- `src/components/vault/VaultCardPopovers.jsx` (539) — the three
+  card-anchored portals: "⋯" action menu, comment composer, tag picker.
+- `src/components/vault/VaultToolbar.jsx` (429) — search inputs (embedded +
+  standard), view dropdown, tag-filter dropdown, connect-apps buttons,
+  concept-search status line. Owns `VAULT_VIEW_OPTIONS`.
+- `src/components/vault/VaultGrid.jsx` (449) — the card views: breadcrumb,
+  empty state, Tags/Type groupings, wake strip, masonry/plain grid feed,
+  sentinel, load-more skeletons.
+
+Lib:
+- `src/lib/vault/signedUrlCache.js` (76) — pure signed-URL cache helpers
+  over a caller-owned Map (cache identity/lifetime unchanged: still a ref).
+
+### Deliberately left in Vault.jsx (cohesive page concerns)
+Data loading (notes query + pagination + ghost-card merge), the vaultCards /
+visibleCards memos and the state they read (search, view, drive folder),
+selection + card press handling, picker-mode postMessage protocol, upload /
+drag-drop wiring, popover chrome effects (shared dismissal/positioning),
+first-paint eager preload gate, page JSX composition.
+
+### Behavior changes
+None intended. Known pre-existing dead code kept as-is: `handleCardDrag` /
+`handleCardDragEnd` were already unreferenced at HEAD (only
+`handleCardDragStart` is wired).
+
+### Validation
+- ESLint on all phase files: 0 errors (6 warnings, pre-existing).
+- `npm run test:vault`: 51/51 pass.
+- `npm run typecheck`: 822 errors before AND after (repo baseline; zero
+  introduced — verified by stashing and re-running).
+- `npx vite build`: success (repeated after every extraction).
+
+### Result
+`Vault.jsx`: 9,455 → 3,744 lines (−5,711). 15 new modules, 6,937 lines.
+Diff: 18 files changed, +7,620 / −6,257.
