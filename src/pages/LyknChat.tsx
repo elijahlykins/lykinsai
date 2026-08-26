@@ -2236,7 +2236,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
             : `mode-guard-${Date.now().toString(36)}`;
         setChatMessages((prev) => [
           ...prev,
-          { id, role: "user", content: text, aiResponse: notice, kind: "prompt" } as unknown as PromptMessage,
+          { id, role: "user", content: text, aiResponse: notice, kind: "prompt" },
         ]);
         try {
           aiThreadRef.current = [
@@ -2796,10 +2796,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
 
   const handleImagineBatchCommit = useCallback((commit: ImagineCommit) => {
     const current = chatMessagesRef.current || [];
-    const existingIdx = findImagineTurnIndex(
-      current as Array<{ imagine?: { batchId?: string } }>,
-      commit.id,
-    );
+    const existingIdx = findImagineTurnIndex(current, commit.id);
     const note = imagineTurnNote(commit);
     const images = imagesFromImagineCommit(commit);
     const persistImages = commit.pending
@@ -2816,10 +2813,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     };
 
     if (existingIdx >= 0) {
-      const prev = current[existingIdx] as PromptMessage & {
-        aiImages?: ReturnType<typeof imagesFromImagineCommit>;
-        imagine?: { pending?: boolean };
-      };
+      const prev = current[existingIdx];
       if (imagineTurnUnchanged(prev, commit)) return;
       const next = current.slice();
       next[existingIdx] = {
@@ -2829,7 +2823,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         ...(commit.pending ? {} : { aiCompletedAt: new Date().toISOString() }),
         aiImages: persistImages,
         imagine: imagineMeta,
-      } as unknown as PromptMessage;
+      };
       persistImagineThread(next, commit, note);
       return;
     }
@@ -2837,9 +2831,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     // Switching Imagine ↔ Chat remounts the canvas; skip a settled batch
     // already written into this thread so the turn is not appended again.
     const already = !commit.pending && current.some((m) => {
-      const imgs = Array.isArray((m as { aiImages?: { url?: string }[] }).aiImages)
-        ? (m as { aiImages: { url?: string }[] }).aiImages
-        : [];
+      const imgs = Array.isArray(m.aiImages) ? m.aiImages : [];
       if (!imgs.length) return false;
       const samePrompt = String(m.content || "").trim() === String(commit.prompt || "").trim();
       const sameImages =
@@ -2851,7 +2843,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
 
     const stamp = new Date().toISOString();
     const refs = imagineReferenceAttachments(commit);
-    const turn = {
+    const turn: PromptMessage = {
       id: newMsgId(),
       role: "user",
       content: commit.prompt,
@@ -2862,14 +2854,14 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
       aiImages: persistImages,
       imagine: imagineMeta,
       ...(refs.length ? { attachments: refs } : {}),
-    } as unknown as PromptMessage;
+    };
 
     persistImagineThread([...(chatMessagesRef.current || []), turn], commit, note);
   }, [newMsgId, persistImagineThread, chatMessagesRef]);
 
   /** Past Imagine turns in this chat, replayed onto the canvas after a reload. */
   const imagineSeedBatches = useMemo(
-    () => imagineBatchesFromTurns(chatMessages as unknown as Parameters<typeof imagineBatchesFromTurns>[0]),
+    () => imagineBatchesFromTurns(chatMessages),
     [chatMessages],
   );
 

@@ -16,8 +16,15 @@ import {
   stripAppliedTagFromStream,
   stripAppliedTagFromFinal,
   postAppliedAttribution,
-  type AppliedAttribution,
 } from "@/lib/ai/appliedTag";
+import type {
+  ToolCallEvent,
+  ChatNeuronAttachment,
+  PromptMessage,
+  FocusedChatAttachment,
+  CreateAction,
+  OrchestratorResult,
+} from "@/lib/lyknChat/chatTurnTypes";
 import {
   stripToolSyntaxFromStream,
   stripToolSyntaxFromFinal,
@@ -171,285 +178,29 @@ function maybeNotifyModelDowngrade(res: Response | null | undefined) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Shared types re-exported so callers don't need LyknChat           */
+/*  Shared chat types — canonical home is lyknChat/chatTurnTypes       */
 /* ------------------------------------------------------------------ */
 
-/**
- * One tool the AI invoked during this chat turn (the in-app agent loop in
- * server.js → chat-agent-loop.js). Lives on PromptMessage.toolCalls so the
- * chat surface can render an inline pill per call ("Listed 7 projects",
- * "Searched vault: 12 hits") below the assistant bubble.
- *
- * `status` transitions running → done | error as the server emits
- * `tool_call` SSE events. The orchestrator keeps the same `id` across
- * events so the UI updates the same pill in place.
- *
- * `result` is the JSON the tool handler returned (see runChatTool in
- * mcp-tools/chatTools.js). Shape varies by tool — readers should branch
- * on `name` before reading specific fields. Cap from the server is ~16KB,
- * so safe to keep in memory.
- */
-export type ToolCallEvent = {
-  id: string;
-  name: string;
-  args: Record<string, unknown>;
-  /**
-   * running → done | error for server-run tools. Local Mode tools add
-   * `awaiting_client` (the desktop app must run the file/terminal tool) and
-   * `awaiting_approval` (the client is showing the user an approval prompt).
-   */
-  status: "running" | "done" | "error" | "awaiting_client" | "awaiting_approval";
-  result?: any;
-  error?: string;
-  latencyMs?: number;
-  startedAt: number;
-  finishedAt?: number;
-};
-
-/**
- * A neuron the AI has "brought into the chat" during this turn — currently
- * triggered when the in-app agent loop runs `lykn_loadNeuron` and the call
- * succeeds. The orchestrator extracts the rich payload from the tool result
- * and stashes it on the assistant message under `aiNeurons`; the chat
- * surface renders one ChatNeuronCard per entry under the assistant bubble.
- *
- * One entry per successful loadNeuron call. We dedupe on the `id` field
- * (the tool_call event id) so the same SSE event firing twice
- * (running → done) doesn't double-add the card.
- *
- * The shape is intentionally permissive (`payload: any`) — the rendering
- * component (ChatNeuronCard) is the authority on which kinds it supports
- * and how to lay each one out. The orchestrator just gates on `payload.ok
- * === true` and `payload.kind` being one of the recognised neuron kinds.
- */
-export type ChatNeuronAttachment = {
-  id: string;
-  payload: any;
-  addedAt: number;
-  /**
-   * True only for VAULT items the user explicitly asked to SEE in full this
-   * turn ("pull that up", "bring it in", "show me the whole thing") or
-   * affirmed an assistant offer to. The chat surface opens the full embedded
-   * document reader (VaultDocumentViewer) on the card automatically when set.
-   */
-  autoOpen?: boolean;
-};
+// Wave 2 (chat type authority): the shared chat message/attachment types this
+// file used to define (PromptMessage, FocusedChatAttachment, ToolCallEvent,
+// ChatNeuronAttachment, CreateAction, OrchestratorResult) now live in the
+// canonical chat-turn module. They are re-exported here so existing
+// `from "@/lib/ai/chatSendOrchestrator"` type imports keep resolving — but
+// this file must not define its own copies again.
+export type {
+  ToolCallEvent,
+  ChatNeuronAttachment,
+  PromptMessage,
+  FocusedChatAttachment,
+  CreateAction,
+  OrchestratorResult,
+} from "@/lib/lyknChat/chatTurnTypes";
 
 // node_id prefixes lykn_loadNeuron uses to discriminate which store the
 // neuron lives in. Mirrors the same set the tool handler accepts and is
 // also what ChatNeuronCard renders per-kind layouts for.
 const LOAD_NEURON_KINDS = new Set(["vault", "belief", "fact", "concept"]);
 
-
-export type PromptMessage = {
-  id: string;
-  role: "user";
-  content: string;
-  aiResponse?: string;
-  aiImageUrl?: string;
-  aiImageStoragePath?: string;
-  /**
-   * Imagine mode renders a batch of variations per prompt, so one turn can
-   * carry several images where `aiImageUrl` carries one. The storage path is
-   * the durable half — signed urls expire, and reSignChatAttachments mints a
-   * fresh one from the path when the chat is loaded again.
-   */
-  aiImages?: { url: string; storagePath?: string }[];
-  /**
-   * What Imagine needs to rebuild its canvas from this turn: the ratio the
-   * grid draws at, whether this was a fresh generation or an edit of an
-   * earlier one, and the creative brief that edit rounds stay anchored to.
-   */
-  imagine?: {
-    aspect: string;
-    kind: "generate" | "refine" | "variations";
-    concept?: string;
-    batchId?: string;
-    pending?: boolean;
-  };
-  aiYouTubeUrls?: { url: string; videoId: string }[];
-  aiWebLinks?: string[];
-  sources?: { title: string; url: string }[];
-  /**
-   * "load-in-greeting" is the briefing the chat opens with rather than a turn
-   * the user typed. The orchestrator never reads this, but the chat page's own
-   * message type has always allowed it, and the two have to line up for the
-   * thread to pass between them.
-   */
-  kind?: "prompt" | "load-in-greeting";
-  attachments?: FocusedChatAttachment[];
-  /**
-   * Tool calls fired by the in-app agent loop during this turn. Each entry
-   * starts in `status: "running"` and transitions to `"done"` (or
-   * `"error"`) once the server pushes the matching `tool_call` SSE event.
-   * Render one pill per entry under the assistant bubble; see ToolCallPill.
-   *
-   * Order matches emission order from the server (hop 0 calls first, then
-   * hop 1, …). Within a hop, OpenAI may emit parallel calls — those land
-   * in whatever order they completed.
-   */
-  toolCalls?: ToolCallEvent[];
-  /**
-   * Neurons (vault items, beliefs, facts, concepts) the AI brought into
-   * the chat during this turn via lykn_loadNeuron. Each entry renders as
-   * a rich ChatNeuronCard under the assistant bubble so the user can see
-   * the actual saved item (image, link card, note body, belief text, …)
-   * directly in the conversation rather than relying on the model to
-   * paraphrase it in text.
-   *
-   * Populated by the SSE `tool_call` handler when a `lykn_loadNeuron`
-   * call lands with status `done` and `result.ok === true`. Deduped on
-   * the tool_call id so repeated events for the same call don't double-
-   * insert the card.
-   */
-  aiNeurons?: ChatNeuronAttachment[];
-  /**
-   * Set on this message when the AI's reply ended with a hidden
-   * <learned kind="...">phrase</learned><reason>why</reason> tag pair —
-   * meaning a brand-new (or freshly reinforced) "neuron" was minted in the
-   * user's synthesis layer in real time. The chat surfaces a glowing
-   * "Neuron created" pill underneath the AI response when this is set.
-   *
-   * id may be null when the server upsert succeeded but the row lookup
-   * failed (rare); the pill still renders, click still navigates to the
-   * synthesis layer.
-   */
-  factNeuron?: {
-    id: string | null;
-    text: string;
-    kind: string;
-    reason?: string | null;
-    isNew: boolean;
-    /**
-     * True when this entry came from an <updated old="..."> tag — the AI
-     * refined an existing neuron in place rather than minting a new one.
-     * The pill renders "Neuron updated" instead of "Neuron created" in this
-     * case, and `previousText` carries what the neuron used to say.
-     */
-    isUpdate?: boolean;
-    previousText?: string | null;
-    needsConfirm?: boolean;
-  };
-  /**
-   * Set on this message when the AI's reply ended with a hidden
-   * <applied rule_id="..."> tag — meaning a user-ratified belief-window
-   * rule shaped this specific reply. The chat surfaces a small "Why" /
-   * "Applied a rule" pill underneath the AI response when this is set.
-   *
-   * The server validated the rule exists, is owned by the user, and is
-   * currently active before inserting an attribution row; anything else
-   * is dropped server-side, so by the time this lands on a message we
-   * know the citation is honest.
-   */
-  appliedAttribution?: AppliedAttribution;
-  /** ISO timestamp when the user sent this message. */
-  createdAt?: string;
-  /** Model id that produced aiResponse (for multi-model chat attribution). */
-  aiModel?: string;
-  /** ISO timestamp when the assistant reply finished streaming. */
-  aiCompletedAt?: string;
-};
-
-export type FocusedChatAttachment = {
-  id: string;
-  type: string;
-  url: string;
-  name: string;
-  mime: string;
-  size: number;
-  videoId?: string;
-  vaultTitle?: string;
-  vaultContent?: string;
-  transcript?: string;
-  pdfText?: string;
-  extractedText?: string;
-  /** Client-side OCR text recovered from an image attachment (fallback so
-   *  dense/small text survives even on a weak-vision model). */
-  ocrText?: string;
-  /** AI vision description of an image (2-3 sentences: subject, colors, style,
-   *  any text/logos). Lets the TEXT-ONLY voice LLM "see" a pasted image — it
-   *  can't fetch the url, so without this a photo with no OCR text is invisible
-   *  to it. Populated from /api/ai/describe-image. */
-  aiDescription?: string;
-  canvasBlockId?: string;
-  rawFile?: File;
-  /** Durable Supabase Storage location for binary attachments (image / pdf /
-   *  file / video / audio). When set, the inline `url` (a data URL or a
-   *  short-lived signed URL) is stripped on persist and re-minted from this
-   *  path on reload by `reSignChatAttachments`, so the attachment survives
-   *  leaving and returning to the chat. Without it, a stripped url can never
-   *  be recovered and the image renders as "couldn't load image". */
-  storagePath?: string;
-  storageBucket?: string;
-  /** Open Graph metadata for `link`/`bookmark` attachments, populated by
-   *  the /api/unfurl endpoint so the chat renders the same rich
-   *  LinkPreview card the Vault shows (hero image, site name, title,
-   *  description) instead of a bare file chip. */
-  linkTitle?: string;
-  linkDescription?: string;
-  linkImage?: string;
-  linkSiteName?: string;
-  linkFavicon?: string;
-  oembedType?: string;
-  authorName?: string;
-  authorHandle?: string;
-};
-
-export type CreateAction =
-  | { type: "create_sheet"; content?: string; title?: string }
-  | { type: "create_spreadsheet"; rows?: number; cols?: number; cells?: Record<string, string>; cells2d?: string[][] }
-  | { type: "create_table"; headers?: string[]; rows?: string[][]; cols?: number }
-  | { type: "create_list"; listType?: "todo" | "bulleted" | "numbered"; items?: string[] }
-  | { type: "create_design_board"; board?: any; title?: string; seedText?: string }
-  | { type: "create_code_block"; language?: string; content?: string }
-  | { type: "create_universal_block"; universalType?: string; name?: string; data?: Record<string, unknown> }
-  | { type: "create_youtube_block"; url?: string; title?: string }
-  | { type: "create_heading"; level?: 1 | 2 | 3; content?: string }
-  | { type: "create_h1"; content?: string }
-  | { type: "create_h2"; content?: string }
-  | { type: "create_h3"; content?: string }
-  | { type: "create_quote"; content?: string }
-  | { type: "create_callout"; content?: string }
-  | { type: "create_text"; content?: string; format?: string }
-  | { type: "create_brick"; content?: string; format?: string }
-  | { type: "create_text_block"; content?: string; format?: string }
-  | { type: "create_card"; content?: string }
-  | { type: "create_toggle"; content?: string }
-  | { type: "create_task_board"; title?: string; columns?: Array<{ title: string; tasks?: string[] }> }
-  | { type: "create_kanban"; title?: string; columns?: Array<{ title: string; tasks?: string[] }> }
-  | { type: "create_media"; url?: string; mode?: string; name?: string }
-  | { type: "create_embed"; url?: string; name?: string }
-  | { type: "create_image_block"; url?: string; src?: string }
-  | { type: "create_video_block"; url?: string }
-  | { type: "organize_grid"; strategy?: "grid" | "column" | "vertical"; columns?: number }
-  | { type: "auto_organize"; strategy?: string }
-  | { type: "move_block"; blockId: string; x?: number; y?: number; dx?: number; dy?: number }
-  | { type: "move_blocks"; moves: Array<{ blockId: string; x?: number; y?: number; dx?: number; dy?: number }> }
-  | { type: "resize_block"; blockId: string; width?: number; height?: number }
-  | { type: "update_text_block"; blockId: string; content?: string; append?: string; data?: Record<string, any> }
-  | { type: "update_block"; blockId: string; content?: string; append?: string; data?: Record<string, any> }
-  | { type: "edit_block"; blockId: string; content?: string; append?: string; data?: Record<string, any> }
-  | { type: "update_list"; blockId: string; items?: string[]; append?: string[]; listType?: string }
-  | { type: "update_spreadsheet"; blockId: string; cells?: Record<string, string>; cells2d?: string[][]; startRow?: number; startCol?: number }
-  | { type: "update_code_block"; blockId: string; content?: string; append?: string; language?: string }
-  | { type: "create_database_relation"; fromDatabaseName?: string; toDatabaseName?: string; relationType?: "one-to-one" | "one-to-many" | "many-to-many"; rollup?: { property?: string; aggregation?: "sum" | "count" | "average" } }
-  | { type: "delete_block"; blockId?: string; blockIds?: string[] }
-  | { type: "color_block"; blockId?: string; blockIds?: string[]; brickColor?: string; textColor?: string }
-  | { type: "connect_blocks"; fromId: string; toId: string; fromSide?: string; toSide?: string }
-  | { type: "add_wire"; fromId: string; toId: string; fromSide?: string; toSide?: string }
-  | { type: "remove_connection"; fromId?: string; toId?: string; wireId?: string }
-  | { type: "disconnect_blocks"; fromId?: string; toId?: string }
-  | { type: "update_notes"; content: string | object }
-  | { type: "append_notes"; content: string | object }
-  | { type: string; [key: string]: any };
-
-export type OrchestratorResult = {
-  response: string;
-  followUpQuestions: string[];
-  actions: CreateAction[];
-  requiresClarification: boolean;
-  groundingSummary?: string;
-};
 
 /* ------------------------------------------------------------------ */
 /*  Dependency interfaces                                              */
@@ -1843,7 +1594,7 @@ async function postProcessResponse(
     const msgs = p.chatMessages || [];
     let userTurnsSeen = 0;
     for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i] as PromptMessage & { factNeuron?: { needsConfirm?: boolean } };
+      const m = msgs[i];
       if (m?.id === promptId) continue;
       if (m?.role !== "user") continue;
       userTurnsSeen += 1;

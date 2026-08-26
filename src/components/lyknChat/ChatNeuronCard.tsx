@@ -28,6 +28,7 @@ import {
   SYNTHESIS_LAYER_UI_ENABLED,
   synthesisLayerHref,
 } from "@/lib/synthesisLayerUi";
+import type { ChatNeuronAttachment as ChatTurnNeuronAttachment } from "@/lib/lyknChat/chatTurnTypes";
 
 // ============================================================================
 // ChatNeuronCard — a neuron/vault item the AI has "brought into the chat"
@@ -131,21 +132,13 @@ export type ChatNeuronPayload =
   | ChatNeuronFactPayload
   | ChatNeuronConceptPayload;
 
-// One entry as it lives on PromptMessage.aiNeurons. Carries the tool
-// call id so the orchestrator can dedupe re-emitted events from the
-// SSE stream (running → done re-fires with the same id).
-export type ChatNeuronAttachment = {
-  /** id from the originating tool_call event (lykn_loadNeuron) */
-  id: string;
+// One entry as it lives on PromptMessage.aiNeurons — the canonical shape
+// (chatTurnTypes) with `payload` narrowed from `any` to the payload union
+// this renderer actually supports. This component is the authority on the
+// per-kind payload shapes; the canonical entry stays permissive because the
+// orchestrator stashes loosely-typed tool-result JSON there.
+export type ChatNeuronAttachment = Omit<ChatTurnNeuronAttachment, "payload"> & {
   payload: ChatNeuronPayload;
-  addedAt: number;
-  /**
-   * When true, the card opens its full embedded reader (VaultDocumentViewer)
-   * automatically on mount. Set by the orchestrator only for VAULT items the
-   * user explicitly asked to "pull up / bring in / show fully" this turn (or
-   * affirmed an assistant offer to). Belief/fact/concept cards never auto-open.
-   */
-  autoOpen?: boolean;
 };
 
 const KIND_ICON = {

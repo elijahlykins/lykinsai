@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { extractChatArtifacts, extractLeakedHtmlDocument, buildLeakedHtmlArtifact } from "./chatArtifacts";
-import type { ToolCallEvent } from "./chatSendOrchestrator";
+import type { ToolCallEvent } from "../lyknChat/chatTurnTypes";
 
 describe("extractLeakedHtmlDocument", () => {
   it("extracts a complete bare HTML document and keeps surrounding prose", () => {

@@ -1,4 +1,4 @@
-import type { FocusedChatAttachment } from "@/lib/ai/chatSendOrchestrator";
+import type { FocusedChatAttachment } from "@/lib/lyknChat/chatTurnTypes";
 
 /**
  * Shared file → chat-attachment ingestion.

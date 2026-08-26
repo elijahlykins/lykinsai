@@ -15,7 +15,7 @@ import {
   subscribeThreadRuntime,
   type ThreadSnapshot,
 } from "@/lib/chat/chatThreadRuntime";
-import type { PromptMessage } from "@/lib/ai/chatSendOrchestrator";
+import type { PromptMessage } from "@/lib/lyknChat/chatTurnTypes";
 import { ChatPopImage } from "@/components/lyknChat/LyknMediaPop";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
 import { useBuildThoughtTrail } from "@/hooks/useThinkingStatus";

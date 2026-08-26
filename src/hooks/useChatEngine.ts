@@ -22,12 +22,14 @@ import { detectSocialPlatform, isSocialEmbedType } from "@/lib/media/socialEmbed
 import {
   orchestrateChatSend,
   buildAttachmentContext,
-  type PromptMessage,
-  type FocusedChatAttachment,
-  type CreateAction,
-  type OrchestratorResult,
   type ChatSendParams,
 } from "@/lib/ai/chatSendOrchestrator";
+import type {
+  PromptMessage,
+  FocusedChatAttachment,
+  CreateAction,
+  OrchestratorResult,
+} from "@/lib/lyknChat/chatTurnTypes";
 import { type ChatArtifact, toArtifactEditContext } from "@/lib/ai/chatArtifacts";
 import { handleLyknBrowserClick } from "@/lib/lyknChat/openInStudioBrowser";
 import { resolveArtifactSendPlan } from "@/lib/ai/artifactSendPlan";
@@ -986,8 +988,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         const missing = reactMsgs.slice(reconcileSnap.chatMessages.length);
         reconcileSnap.chatMessages = [...reconcileSnap.chatMessages, ...missing];
         for (const m of missing) {
-          const atts = Array.isArray((m as PromptMessage).attachments) ? (m as PromptMessage).attachments || [] : [];
-          const attCtx = atts.length ? buildAttachmentContext(atts as FocusedChatAttachment[]) : "";
+          const atts = Array.isArray(m.attachments) ? m.attachments || [] : [];
+          const attCtx = atts.length ? buildAttachmentContext(atts) : "";
           const userContent = `${String(m.content || "").trim()}${attCtx}`.trim();
           if (userContent) reconcileSnap.aiThread.push({ role: "user", content: userContent });
           if (m.aiResponse) reconcileSnap.aiThread.push({ role: "assistant", content: String(m.aiResponse) });

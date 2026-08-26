@@ -177,7 +177,7 @@ export function useChatVoiceMode({
     const id = newMsgId();
     voiceTurnIdRef.current = id;
     lastVoiceUserTextRef.current = content;
-    const msg = { id, role: "user", content, kind: "prompt", viaVoice: true } as unknown as PromptMessage;
+    const msg: PromptMessage = { id, role: "user", content, kind: "prompt", viaVoice: true };
     setChatMessages((prev) => [...prev, msg]);
     try { aiThreadRef.current = [...(aiThreadRef.current || []), { role: "user", content }]; } catch { /* ignore */ }
   }, [newMsgId, setChatMessages, aiThreadRef]);
@@ -194,7 +194,7 @@ export function useChatVoiceMode({
         return prev.map((m) => (m.id === pendingId ? { ...m, aiResponse: reply } : m));
       }
       const id = newMsgId();
-      return [...prev, { id, role: "user", content: "", aiResponse: reply, kind: "prompt", viaVoice: true } as unknown as PromptMessage];
+      return [...prev, { id, role: "user", content: "", aiResponse: reply, kind: "prompt", viaVoice: true }];
     });
     voiceTurnIdRef.current = null;
     try { aiThreadRef.current = [...(aiThreadRef.current || []), { role: "assistant", content: reply }]; } catch { /* ignore */ }
@@ -236,9 +236,9 @@ export function useChatVoiceMode({
     // the shared picker/paste pipeline (text extraction + background upload).
     try {
       if (input?.files?.length) {
-        await ingestChatFiles(input.files, add as never, {
+        await ingestChatFiles(input.files, add, {
           userId: user?.id,
-          updateAttachment: update as never,
+          updateAttachment: update,
         });
       }
     } catch { /* ingestion is best-effort */ }
@@ -259,11 +259,11 @@ export function useChatVoiceMode({
           if (res.ok) {
             const meta = await res.json();
             linkAtt.name = meta?.title || linkAtt.name;
-            (linkAtt as Record<string, unknown>).linkTitle = meta?.title || "";
-            (linkAtt as Record<string, unknown>).linkDescription = meta?.description || "";
-            (linkAtt as Record<string, unknown>).linkImage = meta?.image || "";
-            (linkAtt as Record<string, unknown>).linkSiteName = meta?.siteName || "";
-            (linkAtt as Record<string, unknown>).linkFavicon = meta?.favicon || "";
+            linkAtt.linkTitle = meta?.title || "";
+            linkAtt.linkDescription = meta?.description || "";
+            linkAtt.linkImage = meta?.image || "";
+            linkAtt.linkSiteName = meta?.siteName || "";
+            linkAtt.linkFavicon = meta?.favicon || "";
           }
         } catch { /* unfurl is best-effort */ }
       }
@@ -276,7 +276,7 @@ export function useChatVoiceMode({
     // voice LLM is text-only; the image itself still rides into the written
     // chat where the vision model can see it on the next typed turn).
     try {
-      await ocrImageAttachments(collected as never, new AbortController().signal, () => {});
+      await ocrImageAttachments(collected, new AbortController().signal, () => {});
     } catch { /* OCR is additive, never blocking */ }
 
     // Describe pasted IMAGES with a vision model. The realtime voice LLM is
@@ -325,14 +325,14 @@ export function useChatVoiceMode({
       : collected.length > 1
         ? `Shared ${collected.length} files`
         : "";
-    const mirrorMsg = {
+    const mirrorMsg: PromptMessage = {
       id,
       role: "user",
       content: noteText || fallbackLabel,
       kind: "prompt",
       viaVoice: true,
       ...(collected.length ? { attachments: collected } : {}),
-    } as unknown as PromptMessage;
+    };
     setChatMessages((prev) => [...prev, mirrorMsg]);
     try {
       const threadNote = [noteText, buildAttachmentContext(collected)].filter(Boolean).join("\n");

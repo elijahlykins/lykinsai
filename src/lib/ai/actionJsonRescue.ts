@@ -7,7 +7,7 @@
 // src/lib/ai/chatSendOrchestrator.ts (chat engine decomposition Wave 1, see
 // docs/REFACTOR_LOG.md). Algorithms, regexes, and fallback ordering are
 // unchanged.
-import type { CreateAction } from "@/lib/ai/chatSendOrchestrator";
+import type { CreateAction } from "@/lib/lyknChat/chatTurnTypes";
 
 /**
  * The model occasionally drops raw action JSON into the visible chat instead of

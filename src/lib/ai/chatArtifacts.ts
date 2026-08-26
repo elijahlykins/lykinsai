@@ -1,4 +1,4 @@
-import type { ToolCallEvent } from "@/lib/ai/chatSendOrchestrator";
+import type { ToolCallEvent } from "@/lib/lyknChat/chatTurnTypes";
 
 /** Visual / downloadable output from a capability tool — rendered inline in chat. */
 export type ChatArtifactKind = "html" | "image" | "video" | "download";
