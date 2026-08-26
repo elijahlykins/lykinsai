@@ -43,7 +43,7 @@
     "test:drag": "node --import ./scripts/test-alias-loader.mjs --test src/components/macfiles/filesDrag.test.mjs src/components/macfiles/preview.test.mjs src/lib/drag/dragEngine.test.mjs src/components/macdesktop/desktopGrid.test.mjs src/components/macdesktop/desktopOrder.test.mjs",
     "test:folders": "node --test src/lib/lyknFolders.test.mjs",
     "test:rag": "node --test lib/rag/rag.test.mjs",
-    "test:tools": "node --test mcp-tools/openApp.test.mjs mcp-tools/githubTools.test.mjs mcp-tools/firstPartyCapabilities.test.mjs",
+    "test:tools": "node --test mcp-tools/openApp.test.mjs mcp-tools/githubTools.test.mjs mcp-tools/firstPartyCapabilities.test.mjs mcp-tools/voiceTools.test.mjs mcp-tools/toolResultBounds.test.mjs",
     "test:store": "node --test electron/localStore/localStore.test.cjs",
     "test:embed": "node --test electron/localStore/embed.test.cjs",
     "test:import": "node --test electron/localStore/import.test.cjs",

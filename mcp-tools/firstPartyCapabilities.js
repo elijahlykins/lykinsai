@@ -22,8 +22,7 @@
 //   Local Mode: Electron approval + localToolNames
 //   TaskRuntime (when Chat is a Task): capabilities[] ∩ consequence
 //
-// This module does not execute tools, does not own MCP connections, and
-// does not change Voice.
+// This module does not execute tools and does not own MCP connections.
 
 import { CHAT_TOOL_NAMES, buildOpenAiTools } from './chatTools.js';
 import { LOCAL_TOOL_NAMES, looksLikeLocalSystemAsk, mightBeBrowserTaskAsk } from './localTools.js';
@@ -439,7 +438,7 @@ export const FIRST_PARTY_TOOL_EXCLUSIONS = Object.freeze([
   Object.freeze({
     name: 'lykn_listCustomModels',
     status: 'feature-gated',
-    rationale: 'CUSTOM_MODELS_ENABLED is off; overlay voice still lists a drifted alias.',
+    rationale: 'CUSTOM_MODELS_ENABLED is off; excluded from ordinary Voice/Chat disclosure.',
   }),
   Object.freeze({
     name: 'lykn_delegate_to_sub_model',
@@ -459,7 +458,7 @@ export const FIRST_PARTY_TOOL_EXCLUSIONS = Object.freeze([
   Object.freeze({
     name: 'lykn_communicate_with_model',
     status: 'feature-gated',
-    rationale: 'Soft-unplugged custom-model chat. Prompt residue only until Phase B.',
+    rationale: 'Soft-unplugged custom-model chat. Excluded from ordinary disclosure.',
   }),
 ]);
 

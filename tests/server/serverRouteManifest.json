@@ -4,13 +4,13 @@
     "Ordered registration surface of server.js (Express app). Entry order IS the contract:",
     "Express matches in registration order, so any reordering here is a behavior change."
   ],
-  "routeCount": 127,
+  "routeCount": 128,
   "middlewareCount": 6,
   "byMethod": {
     "DELETE": 4,
     "GET": 38,
     "PATCH": 5,
-    "POST": 80
+    "POST": 81
   },
   "byDomain": {
     "account": 8,
@@ -30,7 +30,7 @@
     "synthesis": 5,
     "usage": 3,
     "vaultMedia": 6,
-    "voice": 11,
+    "voice": 12,
     "webtools": 3,
     "youtube": 8
   },
@@ -1021,6 +1021,24 @@
         "appAccess",
         "usageGate",
         "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ai/realtime/tools",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "voice",
+      "flags": [
+        "auth",
+        "appAccess"
       ]
     },
     {

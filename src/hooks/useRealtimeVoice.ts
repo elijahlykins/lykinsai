@@ -73,6 +73,7 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
   // call_id -> tool name, captured from the function_call output item so we
   // know which tool to run when its arguments finish streaming.
   const toolNamesRef = useRef<Map<string, string>>(new Map());
+  const voiceToolDefsRef = useRef<Map<string, Record<string, unknown>>>(new Map());
 
   useEffect(() => { buildInstructionsRef.current = buildInstructions; }, [buildInstructions]);
   useEffect(() => { chatIdRef.current = chatId ?? null; }, [chatId]);
@@ -158,6 +159,33 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
     } catch { /* ignore */ }
   }, [authHeaders]);
 
+  const applyVoiceToolsAndRespond = useCallback(async (transcript: string) => {
+    const dc = dcRef.current;
+    if (!dc || dc.readyState !== "open") return;
+    try {
+      const headers = await authHeaders();
+      const res = await fetch(`${API_BASE_URL}/api/ai/realtime/tools`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ message: transcript, chatId: chatIdRef.current }),
+      });
+      const data = await res.json().catch(() => ({}));
+      const incoming = Array.isArray(data?.tools) ? data.tools : [];
+      for (const tool of incoming) {
+        const name = typeof tool?.name === "string" ? tool.name : "";
+        if (name) voiceToolDefsRef.current.set(name, tool as Record<string, unknown>);
+      }
+      const tools = [...voiceToolDefsRef.current.values()];
+      dc.send(JSON.stringify({
+        type: "session.update",
+        session: { tools, tool_choice: "auto" },
+      }));
+    } catch { /* respond anyway so the user is never stuck */ }
+    try {
+      dc.send(JSON.stringify({ type: "response.create" }));
+    } catch { /* ignore */ }
+  }, [authHeaders]);
+
   const stopMonitor = useCallback(() => {
     if (rafRef.current != null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
   }, []);
@@ -200,6 +228,7 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
     analyserRef.current = null;
     dataRef.current = null;
     toolNamesRef.current.clear();
+    voiceToolDefsRef.current.clear();
     setMicLevel(0);
     setVoiceState("idle");
   }, [setVoiceState, stopMonitor]);
@@ -246,6 +275,9 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
           const t = String(evt.transcript).trim();
           setTranscript(t);
           if (t) { try { onUserTranscriptRef.current?.(t); } catch { /* ignore */ } }
+          void applyVoiceToolsAndRespond(t);
+        } else {
+          void applyVoiceToolsAndRespond("");
         }
         break;
       case "response.created":
@@ -285,7 +317,7 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
       default:
         break;
     }
-  }, [setVoiceState, executeToolCall]);
+  }, [setVoiceState, executeToolCall, applyVoiceToolsAndRespond]);
 
   const connect = useCallback(async () => {
     setErrorText("");

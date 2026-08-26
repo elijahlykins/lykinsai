@@ -1,8 +1,8 @@
 // ============================================================================
 // mcp-tools/loadNeuron.js — hydrate one vault item into chat
 // ============================================================================
-// `lykn_searchVault` returns snippets. This tool loads the selected vault
-// item's full body only when the user asks to read or display it.
+// Project membership and Voice search return snippets + node_id. This tool
+// loads the selected vault item's full body when the user asks to read it.
 //
 // Vault content cap: 16KB. Bigger than the per-hop tool-result cap in
 // chat-agent-loop.js (also 16KB) so the full note can fit when there
@@ -54,20 +54,19 @@ export const loadNeuronTool = {
   scope: 'read',
   description: [
     'Load a specific vault item from a vault_<uuid> node_id returned by',
-    'lykn_searchVault or lykn_getProjectNeurons. Returns the full body so',
+    'lykn_getProjectNeurons or a prior vault card. Returns the full body so',
     'you can quote, summarize, or display the saved item accurately.',
     '',
     'TYPICAL FLOW:',
-    '  1. lykn_searchVault({ query })',
-    '  2. choose one vault_<uuid> result',
-    '  3. lykn_loadNeuron({ node_id })',
+    '  1. lykn_getProjectNeurons or an existing vault_<uuid> in context',
+    '  2. lykn_loadNeuron({ node_id })',
   ].join('\n'),
   inputSchema: {
     type: 'object',
     properties: {
       node_id: {
         type: 'string',
-        description: 'Stable vault item id from searchVault output, prefixed vault_<uuid>.',
+        description: 'Stable vault item id prefixed vault_<uuid> (from project members or a prior vault card).',
       },
     },
     required: ['node_id'],

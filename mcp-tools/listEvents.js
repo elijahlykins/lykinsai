@@ -14,8 +14,8 @@ import { jsonContent, errorContent } from './index.js';
 
 const DEFAULT_DAYS_AHEAD = 14;
 const MAX_DAYS_AHEAD = 366;
-const DEFAULT_LIMIT = 100;
-const MAX_LIMIT = 250;
+const DEFAULT_LIMIT = 25;
+const MAX_LIMIT = 80;
 
 export const listEventsTool = {
   name: 'lykn_listEvents',
@@ -35,7 +35,7 @@ export const listEventsTool = {
     'window (default keeps the window\'s natural bounds).',
     '',
     'Each result includes id, title, description, starts_at (ISO), ends_at,',
-    'all_day, location, timezone, color, status, and external_provider/read_only.',
+    'all_day, location, timezone, status, and external_provider/read_only.',
     'To act on one, pass its id to lykn_updateEvent or lykn_deleteEvent. Rows',
     'with read_only:true are synced in from the user\'s Google/Apple calendar',
     '(external_provider tells you which) — they CANNOT be edited or deleted in',
@@ -73,7 +73,7 @@ export const listEventsTool = {
         type: 'integer',
         minimum: 1,
         maximum: MAX_LIMIT,
-        description: `Max events to return (1-${MAX_LIMIT}). Defaults to ${DEFAULT_LIMIT}.`,
+        description: `Max events to return (1-${MAX_LIMIT}). Defaults to ${DEFAULT_LIMIT}. Compact rows; pass a tighter from/to for a single day.`,
       },
     },
     additionalProperties: false,
@@ -119,7 +119,7 @@ export const listEventsTool = {
 
     let q = ctx.supabaseAdmin
       .from('lykn_events')
-      .select('id, title, description, starts_at, ends_at, all_day, location, timezone, color, status, project_id, external_provider, read_only, created_at')
+      .select('id, title, description, starts_at, ends_at, all_day, location, timezone, status, project_id, external_provider, read_only')
       .eq('user_id', ctx.userId)
       .order('starts_at', { ascending: true })
       .limit(limit);

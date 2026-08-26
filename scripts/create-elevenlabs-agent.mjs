@@ -92,12 +92,12 @@ const secretId = await ensureSecret(SECRET_NAME, llmSecret);
 console.log(`  secret_id: ${secretId}`);
 
 // The LYKN voice tools live in a shared module so create + update scripts can't
-// drift. Names MUST match the client-tool keys in OmniaVoiceModeEleven.tsx and
-// LYKN_VOICE_TOOL_DEFS in server.js.
+// drift. Names MUST match the client-tool keys in LyknChatVoiceModeEleven.tsx and
+// LYKN_VOICE_TOOL_DEFS in mcp-tools/voiceTools.js.
 const tools = LYKN_VOICE_CLIENT_TOOLS;
 
-// The agent prompt is intentionally a placeholder: real grounding (beliefs,
-// rules, project state, workspace context) is injected by our custom-LLM
+// The agent prompt is intentionally a placeholder: real grounding (Markdown
+// Memory, project state, workspace context) is injected by our custom-LLM
 // endpoint per conversation. The client OVERRIDES this prompt at session start
 // with `LYKN_SESSION_TOKEN=<token>` so the endpoint can resolve the user.
 const basePrompt =

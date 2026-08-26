@@ -13,7 +13,7 @@
 
 import { jsonContent, errorContent } from './index.js';
 
-const DEFAULT_LIMIT = 50;
+const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 200;
 const PRIORITY_RANK = { high: 0, normal: 1, low: 2 };
 

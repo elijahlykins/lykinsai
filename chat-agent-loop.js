@@ -42,6 +42,7 @@ import {
   buildGeminiTools,
 } from './mcp-tools/chatTools.js';
 import { inferNewBuildActivities } from './lib/ai/buildNarration.js';
+import { boundToolResult } from './mcp-tools/toolResultBounds.js';
 
 const MAX_HOPS = 6;
 /** Complex coding / multi-file artifact builds get a longer tool loop. */
@@ -489,13 +490,13 @@ export function makeToolSyntaxStripper(onTextChunk, MAX_HOLD = 16384) {
 // lean and prevents the model from echoing raw markup back into the chat.
 const CLIENT_ONLY_RESULT_FIELDS = ['preview_html', 'artifact_code', 'artifact_files'];
 
-function serialiseToolResult(payload) {
+function serialiseToolResult(payload, name) {
   try {
-    let forModel = payload;
-    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    let forModel = boundToolResult(name, payload);
+    if (forModel && typeof forModel === 'object' && !Array.isArray(forModel)) {
       let stripped = false;
       const copy = {};
-      for (const [k, v] of Object.entries(payload)) {
+      for (const [k, v] of Object.entries(forModel)) {
         if (CLIENT_ONLY_RESULT_FIELDS.includes(k)) {
           stripped = true;
           continue;
@@ -1097,7 +1098,7 @@ async function runOpenAiCompatLoop({
       messages.push({
         role: 'tool',
         tool_call_id: r.id,
-        content: serialiseToolResult(r.payload),
+        content: serialiseToolResult(r.payload, r.name),
       });
       if (
         forceToolName &&
@@ -1390,7 +1391,7 @@ async function runAnthropicLoop({
     const resultBlocks = results.map((r) => ({
       type: 'tool_result',
       tool_use_id: r.id,
-      content: serialiseToolResult(r.payload),
+      content: serialiseToolResult(r.payload, r.name),
       is_error: Boolean(r.isError),
     }));
     messages.push({ role: 'user', content: resultBlocks });
@@ -1657,7 +1658,7 @@ async function runGeminiLoop({
         name: r.name,
         response: {
           ok: !r.isError,
-          payload: r.payload,
+          payload: boundToolResult(r.name, r.payload),
         },
       },
     }));

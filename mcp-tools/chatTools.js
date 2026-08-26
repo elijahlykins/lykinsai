@@ -11,8 +11,8 @@
 //
 // Adding a tool to in-app chat = include it in CHAT_TOOL_NAMES below,
 // add a row in mcp-tools/firstPartyCapabilities.js, and keep the when-to-call
-// policy in server.js in sync (slim guidance lists the disclosed names;
-// LYKN_CHAT_TOOL_GUIDANCE remains the Create/Imagine detail menu). The schema
+// policy in mcp-tools/chatToolGuidance.js (slim + capability family stubs).
+// Create/Imagine still attach visual detail blocks from server.js. The schema
 // converters below pick the tool up automatically. Per-turn disclosure is
 // FirstPartyCapabilityResolver → FirstPartyToolResolver, not a full dump.
 //

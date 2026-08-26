@@ -33,7 +33,6 @@ const TOOL_RUNNING_STATUS: Record<string, string> = {
   lykn_setActiveProject: "Switching what you're on…",
   lykn_updateProject: "Updating the project…",
   lykn_deleteProject: "Removing the project…",
-  lykn_proposeBelief: "Updating who you are…",
   lykn_createVaultNote: "Saving to your stuff…",
   lykn_updateUserPreference: "Updating your settings…",
   lykn_open_settings: "Opening your settings…",

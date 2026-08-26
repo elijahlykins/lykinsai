@@ -7,8 +7,10 @@
 // re-minting it). Keeping the list here prevents the two scripts from drifting.
 //
 // Names + params MUST stay in lockstep with:
-//   • LYKN_VOICE_TOOL_DEFS in server.js (the dispatch + OpenAI Realtime surface)
-//   • TOOL_NAMES in src/components/omnia/OmniaVoiceModeEleven.tsx (client tools)
+//   • LYKN_VOICE_TOOL_DEFS in mcp-tools/voiceTools.js
+//   • TOOL_NAMES in src/components/lyknChat/LyknChatVoiceModeEleven.tsx
+// Custom-model aliases (list_custom_models / communicate_with_model) are
+// feature-gated and must not be re-added to ordinary Voice disclosure.
 //
 // `expects_response: true` makes the agent WAIT for the tool result (needed for
 // reads like search_vault / get_project_state / list_reminders).

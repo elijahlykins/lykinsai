@@ -36,7 +36,7 @@ export const webSearchTool = {
     '',
     'WHEN NOT TO CALL:',
     '  • Question is answerable from vault, project state, or conversation.',
-    '  • User is asking about their saved notes — use lykn_searchVault instead.',
+    '  • User is asking about their saved notes — use vault/project tools, not web search.',
     '',
     'Returns ranked snippets + optional full text from top result pages.',
     'Cite sources in your reply when you use these results.',

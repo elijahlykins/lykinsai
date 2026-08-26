@@ -4685,9 +4685,8 @@ const VOICE_TOOL_NAMES = [
   "list_projects", "get_project_state", "set_active_project", "create_project",
   "update_project_state", "get_recent_activity", "create_reminder", "list_reminders",
   "update_reminder", "create_event", "list_events", "update_event", "delete_event",
-  "create_todo", "list_todos", "update_todo", "delete_todo", "list_custom_models",
-  "communicate_with_model", "build_with_cursor", "check_cursor_build", "save_to_vault",
-  "save_link_to_vault", "add_to_project",
+  "create_todo", "list_todos", "update_todo", "delete_todo", "build_with_cursor",
+  "check_cursor_build", "save_to_vault", "save_link_to_vault", "add_to_project",
 ];
 let voiceConvo = null;
 let voiceActive = false;
