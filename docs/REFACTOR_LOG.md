@@ -134,3 +134,42 @@ and their props untouched.
 
 ### Result
 `Vault.jsx`: 9,704 → 9,649 lines (−55). New component file: 59 lines.
+
+---
+
+## Batch 4 — 2026-08-25 — Extract WhyEditor component
+
+### Change
+Moved the inline `WhyEditor` component (formerly `src/pages/Vault.jsx`
+lines 467–617, including its docblock) into
+`src/components/vault/WhyEditor.jsx` (default export). Added one import in
+`Vault.jsx`.
+
+### Reason
+Next difficulty step after the skeleton: a component with local draft state
+(`useState` ×3, `useEffect`), async `onSave` handling, and icon imports —
+but all data/callbacks arrive via props (`initialValue`, `onSave`, `busy`,
+`variant`, `onAddComment`, `commentActive`) and it has exactly one call
+site. Proves the extraction workflow for stateful presentational
+components.
+
+### Dependencies
+New file imports `useEffect`/`useState` (react) and
+`MessageCircle`/`Pencil` (lucide-react). Both icons remain imported in
+`Vault.jsx` for their other call sites (5 and 2 remaining uses) — shared
+import, no code duplication.
+
+### Behavioral change
+None intended. 151-line body verified byte-identical against
+`git show HEAD` (diff clean); the single call site (~line 9062) and its
+props/callback expressions untouched.
+
+### References checked
+- Exactly one definition repo-wide after move.
+- `Vault.jsx` refs: 1 import + 1 call site; prop names/defaults identical.
+- ESLint on both files: 0 errors (8 pre-existing unused eslint-disable
+  warnings, out of scope).
+- `npm run build` (vite): success.
+
+### Result
+`Vault.jsx`: 9,649 → 9,498 lines (−151). New component file: 158 lines.
