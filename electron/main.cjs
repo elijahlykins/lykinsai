@@ -31,22 +31,24 @@ const {
   net: electronNet,
 } = require("electron");
 
-const IS_MAC = process.platform === "darwin";
-const IS_WIN = process.platform === "win32";
+const {
+  IS_MAC,
+  IS_WIN,
+  GLASS_FALLBACK,
+  APP_URL,
+  APP_ORIGIN,
+  API_BASE,
+} = require("./shell/appEnv.cjs");
+const {
+  assertPublicHttpUrl,
+  safeFetchMain,
+  openExternalSafe,
+} = require("./net/safeFetch.cjs");
+const overlayConstants = require("./windows/overlayConstants.cjs");
+const { initializeElectronServices } = require("./services/initializeElectronServices.cjs");
+const { registerAllIpc } = require("./ipc/index.cjs");
 
-// Intel-Mac GPUs hit a Chromium compositor bug where CSS backdrop-filter's
-// IOSurface texture share silently fails, so every blurred region renders as
-// a fully transparent hole (same class of bug tracked across Electron apps,
-// e.g. openai/codex#23458 — GPU flags do not reliably fix it). Native window
-// vibrancy is macOS-side and unaffected. The shell therefore strips
-// page-level backdrop-filter from every LYKN-owned document on those
-// machines, and the web app compensates with a near-opaque tint
-// (html.lykn-glass-fallback in index.css, flagged through the preload).
-// LYKN_GLASS_FALLBACK=1|0 forces the mode on any machine for testing.
-const GLASS_FALLBACK =
-  process.env.LYKN_GLASS_FALLBACK != null
-    ? process.env.LYKN_GLASS_FALLBACK === "1"
-    : IS_MAC && process.arch === "x64";
+// Intel-Mac glass fallback: see GLASS_FALLBACK in shell/appEnv.cjs.
 
 // Let the welcome walkthrough play its reveal sound without a prior click —
 // Chromium otherwise mutes un-gestured audio (the video is muted; the sound
@@ -119,8 +121,6 @@ const { pathToFileURL } = require("node:url");
 const fs = require("node:fs/promises");
 const fsSync = require("node:fs");
 const crypto = require("node:crypto");
-const dns = require("node:dns/promises");
-const net = require("node:net");
 const http = require("node:http");
 const { execFile } = require("node:child_process");
 const {
@@ -174,21 +174,6 @@ const IMAGE_MIME_BY_EXT = {
 const TEXT_FILE_RE =
   /\.(txt|md|markdown|csv|json|xml|ya?ml|js|ts|jsx|tsx|py|rb|go|rs|java|c|cpp|h|css|html?|sh|sql|log)$/i;
 
-// The live web app. Override with LYKN_APP_URL=http://localhost:5173 to point
-// the shell at a local dev server instead of production.
-const APP_URL = process.env.LYKN_APP_URL || "https://lykn.io";
-const APP_ORIGIN = (() => {
-  try {
-    return new URL(APP_URL).origin;
-  } catch {
-    return "https://lykn.io";
-  }
-})();
-
-// LYKN AI backend (the streaming chat endpoint the web app uses). Override with
-// LYKN_API_URL=http://localhost:3001 when testing against a local backend.
-const API_BASE = process.env.LYKN_API_URL || "https://api.lykn.io";
-
 // Intel-Mac glass fallback (see GLASS_FALLBACK above): kill page-level
 // backdrop-filter in every document WE ship — the app itself plus the
 // overlay-family html (bar, menu, picker, live, stage chrome…). External
@@ -212,105 +197,6 @@ if (GLASS_FALLBACK) {
         .catch(() => {});
     });
   });
-}
-
-// ---------------------------------------------------------------------------
-// SSRF guard for main-process fetches of renderer/AI-supplied URLs.
-// download-file / artifact-code fetch arbitrary URLs that originate from AI
-// markdown, so we must block requests that would reach loopback, private,
-// link-local, or cloud-metadata addresses. The check runs on the RESOLVED IP
-// (not the hostname string) and is re-run on every redirect hop.
-// ---------------------------------------------------------------------------
-function isPrivateIpMain(ip) {
-  if (!ip) return true;
-  const v = String(ip).toLowerCase().replace(/^\[|\]$/g, "");
-  if (net.isIPv6(v)) {
-    if (v === "::1" || v === "::") return true;
-    if (v.startsWith("fe80") || v.startsWith("fc") || v.startsWith("fd") || v.startsWith("ff")) return true;
-    const mapped = v.match(/(?:::ffff:)((?:\d{1,3}\.){3}\d{1,3})$/);
-    if (mapped) return isPrivateIpMain(mapped[1]);
-    return false;
-  }
-  if (!net.isIPv4(v)) return true; // unparseable → unsafe
-  const [a, b] = v.split(".").map((n) => parseInt(n, 10));
-  if (a === 0 || a === 10 || a === 127) return true;
-  if (a === 169 && b === 254) return true; // link-local incl. 169.254.169.254 metadata
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
-  if (a >= 224) return true; // multicast + reserved
-  return false;
-}
-
-async function assertPublicHttpUrl(urlStr) {
-  let parsed;
-  try {
-    parsed = new URL(String(urlStr || ""));
-  } catch {
-    return { ok: false, error: "invalid_url" };
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return { ok: false, error: "bad_scheme" };
-  }
-  const host = parsed.hostname.replace(/^\[|\]$/g, "");
-  if (net.isIP(host)) {
-    if (isPrivateIpMain(host)) return { ok: false, error: "private_ip" };
-    return { ok: true, url: parsed.toString() };
-  }
-  let addrs;
-  try {
-    addrs = await dns.lookup(host, { all: true });
-  } catch {
-    return { ok: false, error: "dns_failed" };
-  }
-  if (!addrs || !addrs.length) return { ok: false, error: "dns_empty" };
-  for (const { address } of addrs) {
-    if (isPrivateIpMain(address)) return { ok: false, error: "private_ip" };
-  }
-  return { ok: true, url: parsed.toString() };
-}
-
-// SSRF-safe fetch: validate the URL, follow redirects manually, re-validate
-// every hop so an allowed public URL can't 30x into an internal address.
-async function safeFetchMain(url, init = {}, { maxRedirects = 5 } = {}) {
-  let current = String(url || "");
-  for (let hop = 0; hop <= maxRedirects; hop += 1) {
-    const safe = await assertPublicHttpUrl(current);
-    if (!safe.ok) {
-      const err = new Error(`ssrf_blocked:${safe.error}`);
-      err.code = "SSRF_BLOCKED";
-      throw err;
-    }
-    const res = await fetch(safe.url, { ...init, redirect: "manual" });
-    const loc = res.headers.get("location");
-    if (res.status >= 300 && res.status < 400 && loc) {
-      current = new URL(loc, safe.url).toString();
-      continue;
-    }
-    return res;
-  }
-  const err = new Error("ssrf_blocked:too_many_redirects");
-  err.code = "SSRF_BLOCKED";
-  throw err;
-}
-
-// Open a URL in the user's real browser, but only for web/mail schemes. This
-// stops an injected/open-redirect link on the app origin from handing the OS a
-// file:/smb:/custom-scheme URL via shell.openExternal (which the OS would then
-// route to a native handler). Hardcoded `x-apple.systempreferences:` deep links
-// call shell.openExternal directly since they are trusted constants.
-const OPEN_EXTERNAL_SCHEMES = new Set(["http:", "https:", "mailto:", "tel:"]);
-function openExternalSafe(url) {
-  try {
-    const proto = new URL(String(url || "")).protocol;
-    if (OPEN_EXTERNAL_SCHEMES.has(proto)) {
-      shell.openExternal(url);
-      return true;
-    }
-  } catch {
-    /* unparseable → never open */
-  }
-  return false;
 }
 
 // Friendly fallback labels for tool-call events that arrive without a server
@@ -11567,3012 +11453,6 @@ function pickArtifactUrl(result) {
   return "";
 }
 
-function registerOverlayIpc() {
-  ipcMain.on("lykn:hide-overlay", () => hideOverlay());
-  // Renderer-initiated summon (Studio desktop right-click → "Open LYKN Glass").
-  // Same path as the ⌘/Ctrl+L hotkey: show the bar and focus the composer.
-  ipcMain.on("lykn:show-overlay", () => {
-    try {
-      showOverlay();
-      focusOverlayForTyping();
-    } catch (_) {}
-  });
-  ipcMain.on("lykn:focus-overlay-composer", () => focusOverlayForTyping());
-  ipcMain.on("lykn:agent-finished-popup-close", () => closeAgentFinishedPopup());
-  ipcMain.on("lykn:agent-finished-popup-open", (_e, agentId) => {
-    const fallbackId =
-      agentFinishedPopup && !agentFinishedPopup.isDestroyed()
-        ? String(agentFinishedPopup.__lyknAgentId || "").trim()
-        : "";
-    const id = String(agentId || fallbackId || "").trim();
-    closeAgentFinishedPopup();
-    try {
-      if (id) {
-        const rt = initAgentRuntime();
-        const switched = rt.switchAgent?.(id);
-        // Always raise that worker's browser tab (even welcome-only tabs).
-        // showAgentBrowserWindow raises the right host (Studio dock or,
-        // only when no Studio window exists, the standalone stage).
-        showAgentBrowserWindow(id, {
-          focus: true,
-          label: switched?.agent?.title || "Agent",
-        });
-      }
-      // Glass only appears on an explicit summon (⌘L / "Open LYKN Glass") —
-      // clicking a finish notice raises the agent's browser, nothing else.
-    } catch (_) {}
-  });
-  ipcMain.on("lykn:reset-overlay-position", () => {
-    resetOverlayPositionToDefault();
-    healOverlayGeometry(true);
-    try {
-      if (overlayWindow && !overlayWindow.isDestroyed()) {
-        overlayWindow.webContents.send("lykn:overlay-shown");
-      }
-    } catch (_) {}
-  });
-  ipcMain.on("lykn:open-main", () => {
-    if (!mainWindow) createMainWindow();
-    else {
-      mainWindow.show();
-      mainWindow.focus();
-    }
-  });
-  ipcMain.on("lykn:open-vault", (_e, noteId) => {
-    const id = String(noteId || "").trim();
-    const url = id
-      ? `${APP_ORIGIN}/vault?note=${encodeURIComponent(id)}`
-      : `${APP_ORIGIN}/vault`;
-    if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
-    // Always navigate — createMainWindow loads the default app URL first.
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(url);
-    mainWindow.show();
-    mainWindow.focus();
-  });
-  ipcMain.on("lykn:open-app-chat", (_e, chatId) => {
-    // Studio replaced the AppSidebar chat shell as the product home.
-    void chatId;
-    showStudioWindow();
-  });
-  // ── LYKN Studio (liquid-glass workspace window) ────────────────────────
-  ipcMain.on("lykn:studio-set", (_e, { open } = {}) => {
-    if (open) showStudioWindow();
-    else hideStudioWindow();
-  });
-  // Fullscreen toggle for the Studio window — plain native fullscreen; the
-  // enter/leave events broadcast the new state to the renderer. While the
-  // window is in SIMPLE fullscreen (no separate Space), exit that mode
-  // instead — setFullScreen(false) wouldn't touch it.
-  ipcMain.on("lykn:studio-fullscreen-set", (_e, { fullscreen } = {}) => {
-    const win = studioWindowRef();
-    if (!win) return;
-    try {
-      if (typeof win.isSimpleFullScreen === "function" && win.isSimpleFullScreen()) {
-        if (!fullscreen) {
-          win.setSimpleFullScreen(false);
-          broadcastStudioFullscreen();
-        }
-        return;
-      }
-    } catch (_) {}
-    win.setFullScreen(!!fullscreen);
-  });
-  ipcMain.handle("lykn:studio-fullscreen-get", () => ({
-    fullscreen: studioFullscreenActive(),
-  }));
-  // Yellow dot — native or in-page: exit fullscreen if needed, then minimize.
-  ipcMain.on("lykn:studio-minimize", () => {
-    const win = studioWindowRef();
-    if (!win) return;
-    afterStudioFullscreenExit(win, () => win.minimize());
-  });
-  ipcMain.on("lykn:resize", (_e, payload) => {
-    // Back-compat: a bare number is height-only; an object carries width too.
-    if (payload && typeof payload === "object") {
-      setOverlaySize(payload.width, payload.height);
-    } else {
-      setOverlaySize(OVERLAY_WIDTH, payload);
-    }
-  });
-  ipcMain.on("lykn:collapse", (_e, collapsed) => setOverlayCollapsed(!!collapsed));
-  // ── Detached three-dot menu window ────────────────────────────────────
-  ipcMain.on("lykn:menu-set", (_e, { open } = {}) => {
-    if (open) {
-      hideLangPickerWindow();
-      showMenuWindow();
-    } else hideMenuWindow();
-  });
-  ipcMain.on("lykn:menu-close", () => hideMenuWindow());
-  // The menu card reports its content height (menu vs past-chats view).
-  ipcMain.on("lykn:menu-resize", (_e, { height } = {}) => {
-    const h = Math.round(Number(height) || 0);
-    if (h > 0) {
-      menuHeight = h;
-      positionMenuWindow();
-    }
-  });
-  // ── Detached side-panel picker window ─────────────────────────────────
-  ipcMain.on("lykn:picker-set", (_e, { open } = {}) => {
-    if (open) {
-      hideLangPickerWindow();
-      showPickerWindow();
-    } else hidePickerWindow();
-  });
-  ipcMain.on("lykn:picker-close", () => hidePickerWindow());
-  // Translate-mode language picker (detached vibrancy card under the To pill).
-  ipcMain.on("lykn:lang-picker-set", (_e, { open, anchor } = {}) => {
-    if (open) showLangPickerWindow(anchor);
-    else hideLangPickerWindow();
-  });
-  ipcMain.on("lykn:lang-picker-close", () => hideLangPickerWindow());
-  ipcMain.on("lykn:lang-picker-resize", (_e, { height } = {}) => {
-    const h = Math.round(Number(height) || 0);
-    if (h > 0) {
-      langPickerHeight = h;
-      positionLangPickerWindow();
-    }
-  });
-  ipcMain.on("lykn:lang-picker-select", (_e, { lang } = {}) => {
-    try {
-      if (overlayWindow && !overlayWindow.isDestroyed()) {
-        overlayWindow.webContents.send("lykn:lang-picker-select", {
-          lang: String(lang || ""),
-        });
-      }
-    } catch (_) {}
-  });
-  ipcMain.handle("lykn:lang-picker-state", async () => {
-    try {
-      if (!overlayWindow || overlayWindow.isDestroyed()) return null;
-      return await overlayWindow.webContents.executeJavaScript(
-        "window.__lyknLangPickerState ? window.__lyknLangPickerState() : null",
-        true,
-      );
-    } catch (_) {
-      return null;
-    }
-  });
-  // The picker card reports its content height (varies with option count).
-  ipcMain.on("lykn:picker-resize", (_e, { height } = {}) => {
-    const h = Math.round(Number(height) || 0);
-    if (h > 0) {
-      pickerHeight = h;
-      positionPickerWindow();
-    }
-  });
-  // A view was picked — apply it in the overlay renderer, which owns the
-  // side-panel state and rendering.
-  ipcMain.on("lykn:picker-select", (_e, { id } = {}) => {
-    if (!overlayWindow || overlayWindow.isDestroyed()) return;
-    overlayWindow.webContents
-      .executeJavaScript(
-        `window.__lyknPickerSelect && window.__lyknPickerSelect(${JSON.stringify(
-          String(id || ""),
-        )});`,
-        true,
-      )
-      .catch(() => {});
-  });
-  // Snapshot of the picker options (labels, counts, active view) from the overlay.
-  ipcMain.handle("lykn:picker-state", async () => {
-    if (!overlayWindow || overlayWindow.isDestroyed()) return null;
-    try {
-      return await overlayWindow.webContents.executeJavaScript(
-        "window.__lyknPickerState ? window.__lyknPickerState() : null",
-        true,
-      );
-    } catch (_) {
-      return null;
-    }
-  });
-  // ── Detached live meeting notes window ────────────────────────────────
-  ipcMain.on("lykn:live-set", (_e, { open } = {}) => {
-    liveCardOpen = !!open;
-    if (liveCardOpen) showLiveWindow();
-    else {
-      lastLiveState = null;
-      hideLiveWindow();
-    }
-  });
-  // The overlay renderer pushes render snapshots (head state + pane HTML);
-  // we cache the latest so a freshly (re)created window paints immediately.
-  ipcMain.on("lykn:live-push", (_e, state) => {
-    lastLiveState = state || null;
-    sendLiveState();
-  });
-  // ── Detached side-panel content window ─────────────────────────────────
-  ipcMain.on("lykn:panel-set", (_e, { open } = {}) => {
-    panelCardOpen = !!open;
-    if (panelCardOpen) showPanelWindow();
-    else {
-      lastPanelState = null;
-      hidePanelWindow();
-    }
-  });
-  // The overlay renderer pushes render snapshots (title + section HTML);
-  // we cache the latest so a freshly (re)created window paints immediately.
-  ipcMain.on("lykn:panel-push", (_e, state) => {
-    lastPanelState = state || null;
-    const w = Math.round(Number(state && state.width) || 0);
-    if (w > 0 && w !== panelWidth) {
-      panelWidth = w;
-      positionPanelWindow();
-      positionMenuWindow();
-    }
-    sendPanelState();
-  });
-  // The panel card reports its content height (varies with section count).
-  ipcMain.on("lykn:panel-resize", (_e, { height } = {}) => {
-    const h = Math.round(Number(height) || 0);
-    if (h > 0 && h !== panelHeight) {
-      panelHeight = h;
-      positionPanelWindow();
-    }
-  });
-  // User actions in the panel card (open link, ask follow-up, install
-  // extension, close) run in the OVERLAY renderer, which owns the state.
-  ipcMain.on("lykn:panel-cmd", (_e, { name, arg } = {}) => {
-    if (!overlayWindow || overlayWindow.isDestroyed()) return;
-    overlayWindow.webContents
-      .executeJavaScript(
-        `window.__lyknPanelCmd && window.__lyknPanelCmd(${JSON.stringify(
-          String(name || ""),
-        )}, ${JSON.stringify(arg == null ? null : arg)});`,
-        true,
-      )
-      .catch(() => {});
-  });
-  // User actions in the live card (tabs, close, copy, save, ask) run in the
-  // OVERLAY renderer, which owns the audio streams + transcript state.
-  ipcMain.on("lykn:live-cmd", (_e, { name, arg } = {}) => {
-    if (!overlayWindow || overlayWindow.isDestroyed()) return;
-    overlayWindow.webContents
-      .executeJavaScript(
-        `window.__lyknLiveCmd && window.__lyknLiveCmd(${JSON.stringify(
-          String(name || ""),
-        )}, ${JSON.stringify(arg == null ? null : arg)});`,
-        true,
-      )
-      .catch(() => {});
-  });
-  // Menu actions run in the OVERLAY renderer, which owns the real feature
-  // logic (voice, live notes, watch, stealth, attach, snip, sessions…).
-  ipcMain.on("lykn:menu-cmd", (_e, { name, arg } = {}) => {
-    if (!overlayWindow || overlayWindow.isDestroyed()) return;
-    overlayWindow.webContents
-      .executeJavaScript(
-        `window.__lyknMenuCmd && window.__lyknMenuCmd(${JSON.stringify(
-          String(name || ""),
-        )}, ${JSON.stringify(arg == null ? null : arg)});`,
-        true,
-      )
-      .catch(() => {});
-  });
-  // Snapshot of the overlay's toggle states so the menu badges stay in sync.
-  ipcMain.handle("lykn:menu-state", async () => {
-    if (!overlayWindow || overlayWindow.isDestroyed()) return null;
-    try {
-      return await overlayWindow.webContents.executeJavaScript(
-        "window.__lyknMenuState ? window.__lyknMenuState() : null",
-        true,
-      );
-    } catch (_) {
-      return null;
-    }
-  });
-  // Content protection (exclude the overlay from screen capture). Persisted so
-  // it survives restarts; applied to overlay + burst windows immediately.
-  ipcMain.handle("lykn:get-content-protection", () => isContentProtectionEnabled());
-  ipcMain.handle("lykn:set-content-protection", (_e, enabled) => {
-    const on = !!enabled;
-    writeOverlaySettings({ contentProtection: on });
-    applyContentProtection(on);
-    return on;
-  });
-  // Live Watch — continuous screen awareness with motion-aware frame diffing.
-  ipcMain.handle("lykn:get-live-watch", () => getLiveWatchStatus());
-  ipcMain.handle("lykn:set-live-watch", (_e, enabled) => setLiveWatchEnabled(!!enabled));
-  ipcMain.handle("lykn:add-live-watch-rule", (_e, { text } = {}) => {
-    if (!liveWatchState.enabled) return { ok: false, error: "watch_off" };
-    const ruleText = parseWatchRuleIntent(text) || String(text || "").trim();
-    if (!ruleText) return { ok: false, error: "empty_rule" };
-    const entry = addLiveWatchRule(ruleText);
-    return { ok: true, rule: entry?.text || ruleText, rules: liveWatchState.rules.map((r) => r.text) };
-  });
-  ipcMain.handle("lykn:clear-live-watch-rules", () => {
-    clearLiveWatchRules();
-    return { ok: true, rules: [] };
-  });
-  ipcMain.handle("lykn:get-night-briefs", async () => {
-    try {
-      const token = await getAuthToken();
-      if (!token) return { ok: false, briefs: [] };
-      const res = await fetch(`${API_BASE}/api/night-shift/briefs`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) return { ok: false, briefs: [], error: data?.error || res.status };
-      return { ok: true, briefs: Array.isArray(data.briefs) ? data.briefs : [] };
-    } catch (e) {
-      return { ok: false, briefs: [], error: e?.message || "fetch_failed" };
-    }
-  });
-  // During drag, only move the bar. Repositioning menu/picker/live/panel on
-  // every pixel was stalling the cursor; those catch up on lykn:move-end.
-  let overlayMoveSideTimer = null;
-  const followOverlaySideWindows = () => {
-    if (overlayMoveSideTimer) {
-      clearTimeout(overlayMoveSideTimer);
-      overlayMoveSideTimer = null;
-    }
-    positionMenuWindow();
-    positionPickerWindow();
-    positionLangPickerWindow();
-    positionLiveWindow();
-    positionPanelWindow();
-    positionAgentSidebarWindow();
-  };
-  ipcMain.on("lykn:move-by", (_e, { dx, dy } = {}) => {
-    if (!overlayWindow || overlayWindow.isDestroyed()) return;
-    const rdx = Math.round(dx || 0);
-    const rdy = Math.round(dy || 0);
-    if (!rdx && !rdy) return;
-    const b = overlayWindow.getBounds();
-    const workArea = overlayWorkArea(b);
-    const margin = 8;
-    const maxX = workArea.x + workArea.width - b.width;
-    const maxY = workArea.y + workArea.height - b.height - margin;
-    const nx = Math.max(workArea.x, Math.min(b.x + rdx, maxX));
-    const ny = Math.max(workArea.y + margin, Math.min(b.y + rdy, Math.max(workArea.y + margin, maxY)));
-    overlayProgrammaticMove = true;
-    try {
-      overlayWindow.setBounds(
-        { x: nx, y: ny, width: b.width, height: b.height },
-        false,
-      );
-    } catch (_) {
-      try {
-        overlayWindow.setBounds({ x: nx, y: ny, width: b.width, height: b.height });
-      } catch (_) {
-        /* ignore */
-      }
-    }
-    overlayProgrammaticMove = false;
-    overlayUserPositioned = true;
-    overlayAnchorLeft = nx;
-    overlayAnchorBottomY = ny + b.height;
-    // Safety net if the renderer never sends move-end (stuck drag / crash).
-    if (overlayMoveSideTimer) clearTimeout(overlayMoveSideTimer);
-    overlayMoveSideTimer = setTimeout(() => {
-      overlayMoveSideTimer = null;
-      followOverlaySideWindows();
-    }, 120);
-  });
-  ipcMain.on("lykn:move-end", () => {
-    followOverlaySideWindows();
-  });
-  ipcMain.on("lykn:ask", (event, args) => {
-    streamScreenAnswer(event, args || {});
-  });
-
-  // ── Agent Mode IPC (parallel agents; does not share overlayAskGeneration) ─
-  const runtime = () => initAgentRuntime();
-
-  ipcMain.handle("lykn:agent-create", async (_e, payload = {}) => {
-    // "New agent" from the rail = new tab too: agents and tabs are paired.
-    const res = runtime().createAgent(payload || {});
-    // Silent creation (LYKN Bots building a Bot) still gets its paired tab
-    // from the runtime, but must not raise the browser window or steal focus.
-    if (res?.ok && res.agentId && !payload?.silent) {
-      try {
-        showAgentBrowserWindow(res.agentId, {
-          focus: true,
-          label: res.agent?.title || "New agent",
-        });
-        requestOmniboxFocusForTab(res.agentId);
-      } catch (_) {}
-    }
-    return res;
-  });
-  // LYKN Bots adopting an agent created before the headless flag existed:
-  // mark it so the runtime stops raising the browser window for its runs.
-  ipcMain.handle("lykn:agent-set-headless", async (_e, { agentId, headless } = {}) => {
-    return runtime().setAgentHeadless?.(agentId, headless !== false) || { ok: false };
-  });
-  ipcMain.handle("lykn:agent-list", async () => {
-    const rt = runtime();
-    return {
-      agents: rt.listPublic(),
-      activeAgentId: rt.getActiveId(),
-      agentModeOn: rt.isAgentModeOn(),
-    };
-  });
-  ipcMain.handle("lykn:agent-switch", async (_e, agentId) => runtime().switchAgent(agentId));
-  ipcMain.handle("lykn:agent-stop", async (_e, agentId) => runtime().stopAgent(agentId));
-  ipcMain.handle("lykn:agent-close", async (_e, agentId) => {
-    // Deleting an agent from the rail also retires its browser tab — capture
-    // it for the History section before teardown wipes the view/meta.
-    const snap = snapshotAgentBrowserHistory(agentId);
-    const res = runtime().closeAgent(agentId);
-    if (res?.ok) commitAgentBrowserHistory(snap);
-    return res;
-  });
-  ipcMain.handle("lykn:agent-reset-main", async () => runtime().resetMainChat());
-  ipcMain.handle("lykn:agent-send", async (_e, payload = {}) => {
-    const { agentId, text, attachments } = payload || {};
-    return runtime().send(agentId, { text, attachments });
-  });
-  ipcMain.handle("lykn:agent-choice-resolve", async (_e, payload = {}) => {
-    const { agentId, choiceId, buttonId } = payload || {};
-    return runtime().resolveChoice(agentId, { choiceId, buttonId });
-  });
-  ipcMain.handle("lykn:agent-mode-set", async (_e, { open } = {}) => {
-    const rt = runtime();
-    const res = rt.setAgentMode(!!open);
-    agentSidebarOpen = !!open;
-    if (open) {
-      showAgentSidebarWindow();
-      // Glass stays on Main; always open the agent browser (standby worker tab).
-      const agents = Array.isArray(res.agents) ? res.agents : [];
-      const worker =
-        agents.find((a) => a && a.role !== "main") ||
-        agents.find((a) => a && a.id && a.id !== res.mainAgentId);
-      let browserId = worker?.id || res.linkedBrowserId || "";
-      if (!browserId) {
-        try {
-          const created = rt.createAgent?.({
-            title: "Agent 1",
-            silent: true,
-            activate: false,
-          });
-          browserId = created?.agentId || "";
-          if (browserId) {
-            agents.push(created.agent);
-          }
-        } catch (_) {}
-      }
-      if (browserId) {
-        try {
-          rt.setMainLinkedBrowser?.(browserId);
-        } catch (_) {}
-        showAgentBrowserWindow(browserId, {
-          focus: false,
-          label: (worker && worker.title) || "Agent 1",
-        });
-      }
-    } else {
-      hideAgentSidebarWindow();
-    }
-    return { ...res, browserVisible: open ? agentStageVisible() : false };
-  });
-  ipcMain.handle("lykn:agent-history", async (_e, agentId) => {
-    return runtime().getSwitchSnapshot(agentId);
-  });
-  ipcMain.handle("lykn:agent-show-browser", async (_e, { agentId, visible } = {}) => {
-    const id = agentId || runtime().getActiveId();
-    if (!id) return { ok: false, error: "no_agent" };
-    if (visible === false) {
-      hideAllAgentBrowserWindows();
-      return { ok: true, visible: false };
-    }
-    showAgentBrowserWindow(id, { focus: true });
-    return { ok: true, visible: agentStageVisible() };
-  });
-  ipcMain.handle("lykn:agent-browser-visible", async () => ({
-    ok: true,
-    visible: agentStageVisible(),
-  }));
-  ipcMain.handle("lykn:agent-show-step", async (_e, { agentId, stepIndex } = {}) => {
-    const id = agentId || runtime().getActiveId();
-    if (!id) return { ok: false, error: "no_agent" };
-    return runtime().showStepDeliverable(id, stepIndex);
-  });
-  ipcMain.on("lykn:agent-sidebar-set", (_e, { open } = {}) => {
-    agentSidebarOpen = !!open;
-    if (open) showAgentSidebarWindow();
-    else hideAgentSidebarWindow();
-  });
-  ipcMain.on("lykn:agent-sidebar-resize", (_e, { height } = {}) => {
-    const h = Math.round(Number(height) || 0);
-    if (h > 0 && h !== agentSidebarHeight) {
-      agentSidebarHeight = h;
-      positionAgentSidebarWindow();
-      positionMenuWindow();
-    }
-  });
-  ipcMain.handle("lykn:agent-stage-navigate", async (_e, { url } = {}) => {
-    // Chrome-style omnibox: URLs load directly, plain text Googles it.
-    const target = omniboxToUrl(url);
-    if (!target) return { ok: false, error: "missing_url" };
-    let id = agentStageActiveId || runtime().getActiveId();
-    // Typing with no tab open just starts one, like a fresh browser window.
-    if (!id) {
-      openFreshStudioBrowserTab();
-      id = agentStageActiveId || [...agentBrowserViews.keys()].pop();
-    }
-    if (!id) return { ok: false, error: "no_agent" };
-    if (isAgentArtifactTabId(id)) {
-      const view = agentBrowserViews.get(id);
-      const wc = view?.webContents;
-      if (!wc || wc.isDestroyed()) return { ok: false, error: "no_browser" };
-      if (!agentStageUrlAllowed(target)) return { ok: false, error: "blocked_url" };
-      try {
-        await wc.loadURL(target);
-        pushAgentStageState();
-        return { ok: true, url: target };
-      } catch (e) {
-        return { ok: false, error: e?.message || "nav_failed" };
-      }
-    }
-    const wc = getAgentBrowserWebContents(id);
-    if (!wc) return { ok: false, error: "no_browser" };
-    showAgentBrowserWindow(id, { focus: true });
-    const nav = await ownedBrowserAct.navigate(wc, target);
-    if (nav?.ok && nav.url) {
-      pushAgentStageState();
-    }
-    return nav;
-  });
-  ipcMain.handle("lykn:agent-stage-back", async () => {
-    const wc = getActiveAgentBrowserWebContents();
-    if (wc?.canGoBack()) wc.goBack();
-    return { ok: true };
-  });
-  ipcMain.handle("lykn:agent-stage-forward", async () => {
-    const wc = getActiveAgentBrowserWebContents();
-    if (wc?.canGoForward()) wc.goForward();
-    return { ok: true };
-  });
-  ipcMain.handle("lykn:agent-stage-reload", async () => {
-    const wc = getActiveAgentBrowserWebContents();
-    if (wc) wc.reload();
-    return { ok: true };
-  });
-  // Download the active tab. Artifact tabs (reports, built apps) save their
-  // HTML into ~/Downloads; regular pages download the current URL.
-  ipcMain.handle("lykn:agent-stage-download", async () => {
-    const id = agentStageActiveId;
-    const view = id ? agentBrowserViews.get(id) : null;
-    const wc = view?.webContents;
-    if (!id || !wc || wc.isDestroyed()) return { ok: false, error: "no_tab" };
-    const meta = agentBrowserMeta.get(id) || {};
-    const url = String(wc.getURL() || "");
-    const isArtifactTab =
-      meta.kind === "artifact" ||
-      isAgentArtifactTabId(id) ||
-      /^data:|^lykn-artifact:/i.test(url);
-    if (isArtifactTab) {
-      let html = "";
-      // Prefer the original source over the rendered DOM.
-      const cacheHit = url.match(/^lykn-artifact:\/\/([a-z0-9]+)/i);
-      if (cacheHit) html = artifactHtmlCache.get(cacheHit[1]) || "";
-      if (!html && /^data:text\/html/i.test(url)) {
-        try {
-          const [head, payload = ""] = url.split(/,(.+)/s);
-          html = /;base64/i.test(head)
-            ? Buffer.from(payload, "base64").toString("utf8")
-            : decodeURIComponent(payload);
-        } catch (_) {}
-      }
-      if (!html) {
-        try {
-          html = String(
-            (await wc.executeJavaScript("document.documentElement.outerHTML", true)) || "",
-          );
-          if (html && !/^\s*<!doctype/i.test(html)) html = `<!doctype html>\n${html}`;
-        } catch (_) {}
-      }
-      if (!html.trim()) return { ok: false, error: "no_content" };
-      try {
-        const target = saveHtmlToDownloads(html, meta.pageTitle || wc.getTitle() || "artifact");
-        try {
-          shell.showItemInFolder(target);
-        } catch (_) {}
-        return { ok: true, path: target };
-      } catch (err) {
-        return { ok: false, error: err?.message || String(err) };
-      }
-    }
-    if (/^https?:\/\//i.test(url)) {
-      try {
-        wc.downloadURL(url);
-        return { ok: true, started: true };
-      } catch (err) {
-        return { ok: false, error: err?.message || String(err) };
-      }
-    }
-    return { ok: false, error: "nothing_to_download" };
-  });
-  ipcMain.handle("lykn:agent-stage-select", async (_e, { agentId } = {}) => {
-    const id = String(agentId || "").trim();
-    if (!id) return { ok: false, error: "missing_id" };
-    if (!agentBrowserViews.has(id)) return { ok: false, error: "not_found" };
-
-    // Switching away cancels a pending new-tab omnibox focus.
-    if (agentStagePendingOmniboxFocusId && agentStagePendingOmniboxFocusId !== id) {
-      agentStagePendingOmniboxFocusId = null;
-    }
-
-    // Correlate stage tab → Glass agent chat. Legacy art-* tabs use ownerAgentId;
-    // one-tab-per-agent reuses the agent id even when kind is "artifact".
-    const meta = agentBrowserMeta.get(id) || {};
-    const tabAgentId = isAgentArtifactTabId(id)
-      ? String(meta.ownerAgentId || "").trim()
-      : id;
-
-    const rt = runtime();
-    const glassId = rt.getActiveId?.();
-
-    // One agent per tab: clicking a tab always selects its agent in the rail.
-    let switched = { ok: true, agentId: glassId || tabAgentId || id };
-    if (tabAgentId) {
-      switched = rt.switchAgent(tabAgentId);
-      showAgentBrowserWindow(id, { focus: true });
-    }
-
-    // Keep the clicked stage tab visible.
-    agentStageActiveId = id;
-    raiseAgentBrowserHost({ focus: true });
-    layoutAgentStageViews();
-    pushAgentStageState();
-    return { ...switched, tabId: id, linkedOnly: false };
-  });
-  ipcMain.handle("lykn:agent-stage-close-tab", async (_e, { agentId } = {}) => {
-    const id = String(agentId || "").trim();
-    if (!id) return { ok: false, error: "missing_id" };
-    // Capture the tab for the rail's History section before teardown.
-    const historySnap = snapshotAgentBrowserHistory(id);
-    // The PRIMARY tab is the agent: closing it retires the agent entirely
-    // (aborts the run, removes it from the agent list, tears down its browser
-    // view). Tabs with no agent behind them — artifact previews, agent-owned
-    // browse sub-tabs, manual new-tab pages, and the pinned Main agent
-    // (closeAgent refuses to delete it) — just close the browser surface.
-    const surfaceOnly = isAgentArtifactTabId(id) || agentTabIds.isSubTabId(id);
-    let retired = null;
-    if (!surfaceOnly) {
-      try {
-        retired = runtime().closeAgent?.(id);
-      } catch (_) {}
-    }
-    if (!retired?.ok) {
-      destroyAgentBrowserWindow(id);
-      if (!surfaceOnly) {
-        try {
-          runtime().clearBrowserSurface?.(id);
-        } catch (_) {}
-      }
-    }
-    commitAgentBrowserHistory(historySnap);
-    pushAgentStageState();
-    return { ok: true };
-  });
-  // "+" on the stage tab strip — new agent chat + empty browser tab.
-  ipcMain.handle("lykn:agent-stage-new-tab", async () => {
-    if (agentBrowserMainTabCount() >= MAX_AGENT_BROWSER_TABS) {
-      return { ok: false, error: `max_tabs_${MAX_AGENT_BROWSER_TABS}` };
-    }
-    const rt = runtime();
-    if (!rt.isAgentModeOn?.()) {
-      rt.setAgentMode?.(true);
-      // The Studio has its own agent rail beside the docked browser — only
-      // pop the floating glass-chat sidebar when running standalone.
-      if (!studioStageEmbedded) {
-        agentSidebarOpen = true;
-        try {
-          showAgentSidebarWindow();
-        } catch (_) {}
-      }
-    }
-    const res = rt.createAgent({ title: "New agent" });
-    if (!res?.ok || !res.agentId) return res || { ok: false, error: "create_failed" };
-    showAgentBrowserWindow(res.agentId, {
-      focus: true,
-      label: res.agent?.title || "New agent",
-    });
-    requestOmniboxFocusForTab(res.agentId);
-    return res;
-  });
-  ipcMain.handle("lykn:agent-stage-toggle-incognito", async () => {
-    try {
-      return await toggleAgentIncognito(agentStageActiveId);
-    } catch (e) {
-      return { ok: false, error: e?.message || "toggle_failed" };
-    }
-  });
-  // Studio browser history — closed tabs/agents shown under the rail's
-  // Agents section. Open = reopen the page in a fresh agent tab.
-  ipcMain.handle("lykn:agent-browser-history-list", async () => ({
-    ok: true,
-    items: readAgentBrowserHistory(),
-  }));
-  ipcMain.handle("lykn:agent-browser-history-remove", async (_e, { entryId } = {}) => {
-    const items = readAgentBrowserHistory();
-    const idx = items.findIndex((i) => i.id === entryId);
-    if (idx >= 0) {
-      items.splice(idx, 1);
-      persistAgentBrowserHistory();
-      pushAgentBrowserHistory();
-    }
-    return { ok: true };
-  });
-  ipcMain.handle("lykn:agent-browser-history-open", async (_e, { entryId } = {}) => {
-    const entry = readAgentBrowserHistory().find((i) => i.id === entryId);
-    if (!entry) return { ok: false, error: "not_found" };
-    if (agentBrowserMainTabCount() >= MAX_AGENT_BROWSER_TABS) {
-      return { ok: false, error: `max_tabs_${MAX_AGENT_BROWSER_TABS}` };
-    }
-    const rt = runtime();
-    if (!rt.isAgentModeOn?.()) rt.setAgentMode?.(true);
-    // Restore the saved conversation with the agent so the rail shows the full
-    // chat, and reopen its page in the same tab.
-    const res = rt.createAgent({
-      title: entry.title || "Agent",
-      history: Array.isArray(entry.history) ? entry.history : [],
-      activate: true,
-    });
-    if (!res?.ok || !res.agentId) return res || { ok: false, error: "create_failed" };
-    showAgentBrowserWindow(res.agentId, {
-      focus: true,
-      label: entry.title || "Agent",
-    });
-    if (entry.url) {
-      try {
-        const wc = getAgentBrowserWebContents(res.agentId);
-        if (wc) ownedBrowserAct.navigate(wc, entry.url).catch(() => {});
-      } catch (_) {}
-    }
-    // Switch so the rail loads the restored thread (switchPayload carries it).
-    try {
-      rt.switchAgent(res.agentId);
-    } catch (_) {}
-    pushAgentStageState();
-    return { ok: true, agentId: res.agentId };
-  });
-  // ── Chrome / Chromium sync (Polar-style) ──────────────────────────────────
-  // Detect installed browsers + their profiles. No Keychain/Automation prompt
-  // here — this only reads plaintext profile metadata so the UI can offer it.
-  ipcMain.handle("lykn:chrome-sync-status", async () => {
-    if (!chromeSync.IS_MAC) return { ok: true, supported: false, browsers: [] };
-    try {
-      const browsers = chromeSync.detectBrowsers().map((b) => ({
-        id: b.id,
-        name: b.name,
-        profiles: chromeSync.listProfiles(b).map((p) => ({ dir: p.dir, name: p.name })),
-      }));
-      return { ok: true, supported: true, browsers };
-    } catch (e) {
-      return { ok: false, supported: true, browsers: [], error: e?.message || "status_failed" };
-    }
-  });
-  // Import logins (cookies) and/or open tabs from a chosen browser profile.
-  // First run triggers the Keychain prompt (cookies) and Automation prompt
-  // (tabs) — both are the user's explicit consent.
-  ipcMain.handle("lykn:chrome-sync-run", async (_e, opts = {}) => {
-    if (!chromeSync.IS_MAC) return { ok: false, error: "unsupported_platform" };
-    const browserId = String(opts.browserId || "chrome");
-    const wantCookies = opts.importCookies !== false;
-    const wantTabs = opts.importTabs !== false;
-    const wantHistory = opts.importHistory !== false;
-    const browser = chromeSync.detectBrowsers().find((b) => b.id === browserId);
-    if (!browser) return { ok: false, error: "browser_not_found" };
-    const profiles = chromeSync.listProfiles(browser);
-    const profile =
-      profiles.find((p) => p.dir === opts.profileDir) || profiles[0] || null;
-    if (!profile) return { ok: false, error: "no_profile" };
-
-    const result = {
-      ok: true,
-      browser: browser.name,
-      profile: profile.name,
-      cookies: { imported: 0, failed: 0 },
-      tabs: { opened: 0, found: 0 },
-      habits: { learned: false },
-      warnings: [],
-    };
-
-    if (wantCookies) {
-      const read = await chromeSync.readProfileCookies(browser, profile);
-      if (!read.ok) {
-        result.warnings.push(read.error || "cookie_read_failed");
-        // A declined Keychain prompt means the user declined the sync. Do not
-        // continue with tabs/history — opening the agent browser after "Deny"
-        // is both surprising and violates the all-or-nothing welcome flow.
-        return result;
-      } else {
-        try {
-          const ses = session.fromPartition(AGENT_BROWSER_SHARED_PARTITION);
-          // Families with partial decrypt failures are skipped wholesale —
-          // importing half of Google's auth cookie set logs the user out.
-          const { imported, failed, skipped } = await chromeSync.importCookiesToSession(
-            ses,
-            read.cookies,
-            { skipDomains: read.corruptDomains || [] },
-          );
-          result.cookies = { imported, failed, skipped: skipped || 0 };
-          if ((read.corruptDomains || []).length) {
-            result.warnings.push(
-              `cookies_kept_existing_login: ${read.corruptDomains.join(", ")}`,
-            );
-          }
-        } catch (e) {
-          result.warnings.push(`cookie_import_failed: ${e?.message || e}`);
-        }
-      }
-    }
-
-    if (wantTabs) {
-      const open = await chromeSync.getOpenTabs(browser);
-      if (!open.ok) {
-        result.warnings.push(open.error || "tab_read_failed");
-      } else {
-        result.tabs.found = open.tabs.length;
-        // Build the set of URLs already open, normalized, from LIVE webContents
-        // (fresh tabs haven't written meta.url yet) plus stored meta. This makes
-        // re-syncing idempotent and collapses trailing-slash / #hash variants.
-        const seen = new Set();
-        for (const [id, view] of agentBrowserViews) {
-          const meta = agentBrowserMeta.get(id) || {};
-          let u = meta.url || "";
-          try {
-            if (view?.webContents && !view.webContents.isDestroyed()) {
-              u = view.webContents.getURL() || u;
-            }
-          } catch (_) {}
-          const n = normalizeSyncUrl(u);
-          if (n) seen.add(n);
-        }
-        // De-dupe the incoming Chrome list against itself + what's open, then
-        // open the rest (each as its own agent), respecting the tab cap.
-        let first = true;
-        for (const url of open.tabs) {
-          const n = normalizeSyncUrl(url);
-          if (!n || seen.has(n)) continue;
-          seen.add(n);
-          if (agentBrowserMainTabCount() >= MAX_AGENT_BROWSER_TABS) {
-            result.warnings.push(`tab_cap_${MAX_AGENT_BROWSER_TABS}`);
-            break;
-          }
-          const id = openAgentBrowserTabWithUrl(url, { focus: first });
-          if (id) {
-            result.tabs.opened += 1;
-            first = false;
-          }
-        }
-        // Active-tab id changed → relayout the view bounds, then refresh strip.
-        layoutAgentStageViews();
-        pushAgentStageState();
-      }
-    }
-
-    if (wantHistory) {
-      const hist = await chromeSync.readHistory(browser, profile, { limit: 60 });
-      if (!hist.ok) {
-        result.warnings.push(hist.error || "history_read_failed");
-      } else {
-        // Store privately as agent context — never shown to the user.
-        result.habits.learned = setBrowsingContextFromHistory(hist, browser.name);
-        if (!result.habits.learned) result.warnings.push("history_empty");
-      }
-    }
-
-    return result;
-  });
-  ipcMain.handle("lykn:agent-recents-list", async () => {
-    const items = agentRecentVisits.readRecents(app.getPath("userData")).items || [];
-    return { ok: true, items };
-  });
-  ipcMain.handle("lykn:agent-recents-remove", async (_e, { id, host, url } = {}) => {
-    const result = agentRecentVisits.removeRecent(app.getPath("userData"), {
-      id,
-      host,
-      url,
-    });
-    pushAgentStageState();
-    return { ok: !!result?.ok, items: result.items || [] };
-  });
-  // Local Mode — Vault switch grants file/terminal access to LYKN agents.
-  // Device-level setting; tools only ever execute here in main.
-  localSystem.configure(app.getPath("userData"));
-  const broadcastToAllWindows = (channel, payload) => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      try {
-        if (!win.isDestroyed()) win.webContents.send(channel, payload);
-      } catch (_) {}
-    }
-  };
-  // The Files browser watches whichever folder it's showing, so a change made
-  // in Finder relists it here without the user having to hit refresh.
-  macFiles.configure({
-    userDataPath: app.getPath("userData"),
-    onChange: (dirPath) => broadcastToAllWindows("lykn:files-changed", { path: dirPath }),
-  });
-  // File access for installed apps rides on Local Mode rather than inventing a
-  // second allowlist: the user already chose which folders LYKN may touch, and
-  // an app should never be able to reach further than LYKN itself can.
-  require("./appBridge.cjs").configure({
-    onFilesList: async (dirPath) => {
-      const { enabled } = localSystem.readLocalMode(app.getPath("userData"));
-      if (!enabled) throw new Error("Local mode is off — enable it in the Vault first.");
-      const res = await localSystem.run(
-        "local_list_dir",
-        { path: dirPath || "~" },
-        { userDataPath: app.getPath("userData") },
-      );
-      if (!res?.ok) throw new Error(res?.error || "could not list that folder");
-      return { path: res.path, entries: res.entries };
-    },
-    onFilesRead: async (filePath) => {
-      const { enabled } = localSystem.readLocalMode(app.getPath("userData"));
-      if (!enabled) throw new Error("Local mode is off — enable it in the Vault first.");
-      const res = await localSystem.run(
-        "local_read_file",
-        { path: filePath },
-        { userDataPath: app.getPath("userData") },
-      );
-      if (!res?.ok) throw new Error(res?.error || "could not read that file");
-      return { path: res.path, content: res.content, truncated: res.truncated };
-    },
-  });
-
-  ipcMain.handle("lykn:local-mode-get", () => {
-    const { enabled, syncAll, syncedFolders } = localSystem.readLocalMode(app.getPath("userData"));
-    return { ok: true, enabled, syncAll, syncedFolders };
-  });
-  ipcMain.handle("lykn:local-mode-set", (_e, { enabled } = {}) => {
-    const next = localSystem.writeLocalMode(app.getPath("userData"), !!enabled);
-    // Every window (main app, Studio, overlay) should see the flip immediately.
-    broadcastToAllWindows("lykn:local-mode-changed", { enabled: next.enabled });
-    return { ok: true, enabled: next.enabled };
-  });
-  ipcMain.handle("lykn:local-tool-run", async (_e, { name, args, approvalToken } = {}) => {
-    const { enabled } = localSystem.readLocalMode(app.getPath("userData"));
-    if (!enabled) {
-      return { ok: false, error: "Local mode is off — enable it in the Vault first." };
-    }
-    const toolName = String(name || "");
-    const toolArgs = args || {};
-    // Approval is NEVER taken from a renderer-supplied boolean. It is granted
-    // only by a main-issued, single-use token bound to this exact tool + args.
-    // Consuming here (before the run) makes the token one-shot; a missing,
-    // wrong, expired, or already-used token simply yields approved=false.
-    const approved = localApprovals.consume(approvalToken, toolName, toolArgs);
-    const result = await localSystem.run(toolName, toolArgs, {
-      approved,
-      userDataPath: app.getPath("userData"),
-    });
-    // First pass on a risky action: main's own classifier asked for approval.
-    // Mint a token so the approval UI can re-invoke the SAME action once the
-    // user confirms. The token is bound to (tool, normalized args), so it can
-    // only authorize this action.
-    if (result && result.needsApproval === true) {
-      result.approvalToken = localApprovals.issue(toolName, toolArgs);
-    }
-    return result;
-  });
-
-  // Serve files from this Mac to the Files browser. Independent of the local
-  // store below — it gates on Local Mode and the sync allowlist instead — so
-  // it binds out here rather than inside that try.
-  require("./macFileProtocol.cjs").bind(session.defaultSession);
-
-  // --- Local store: the on-device home for vault, chat, and artifacts -------
-  // Unlike Local Mode this is not gated on a user switch — it is the app's own
-  // storage, not access to the user's filesystem. The renderer loads a remote
-  // origin, so IPC is the only way it can reach the database.
-  try {
-    const opened = localStore.configure(app.getPath("userData"));
-    console.log(`[LYKN] local store ready (schema v${opened.version ?? "?"})`);
-
-    // Serve locally stored media to the window. Bound only once the store is
-    // open, because the handler resolves paths through it.
-    require("./localStore/blobProtocol.cjs").bind(session.defaultSession);
-
-    // Installed apps. Each app runs in its own session partition, so the
-    // protocol is bound there on open rather than only on the default session.
-    require("./appProtocol.cjs").bind(session.defaultSession);
-    require("./appBridge.cjs").bind();
-
-    // Catch the retrieval index up on anything saved while the model was
-    // unavailable, or left over from a previous model version. Deferred and
-    // conditional: loading the model costs ~400 MB, so a launch with nothing
-    // outstanding must not pay for it. Progress is polled via `index.status`.
-    setTimeout(() => {
-      try {
-        const pending = localStore.indexer.pendingCount();
-        const total = pending.items + pending.threads;
-        if (!total) return;
-        console.log(`[LYKN] embedding backfill: ${total} source(s) outstanding`);
-        localStore.indexer.backfill().catch((err) => {
-          console.error("[LYKN] backfill failed to start:", err?.message);
-        });
-      } catch (err) {
-        console.error("[LYKN] backfill check failed:", err?.message);
-      }
-    }, 30_000).unref?.();
-  } catch (err) {
-    // A store that will not open must not take the whole app down with it —
-    // everything still reads from Supabase at this stage.
-    console.error("[LYKN] local store failed to open:", err?.message);
-  }
-
-  ipcMain.handle("lykn:store-run", async (_e, { op, args } = {}) =>
-    localStore.run(String(op || ""), args || {}),
-  );
-
-  // --- Installed apps ------------------------------------------------------
-  // Managing apps (install, open, uninstall) is the main renderer's job. What
-  // an app can do to the user's data is a different surface entirely and lives
-  // on lykn:app-bridge, which only frames on a lykn-app:// origin can reach.
-  const appHost = require("./appHost.cjs");
-
-  ipcMain.handle("lykn:app-install", async (_e, payload = {}) => {
-    const result = await appHost.installApp(payload || {});
-    if (result.ok) {
-      broadcastToAllWindows("lykn:apps-changed", { id: result.app.id, action: "install" });
-    }
-    return result;
-  });
-
-  ipcMain.handle("lykn:app-open", (_e, { id } = {}) => appHost.openApp(id));
-
-  ipcMain.handle("lykn:app-uninstall", (_e, { id } = {}) => {
-    const result = appHost.uninstallApp(id);
-    broadcastToAllWindows("lykn:apps-changed", { id: String(id || ""), action: "uninstall" });
-    return result;
-  });
-
-  ipcMain.handle("lykn:app-verify", async (_e, { id } = {}) => appHost.rebuildAndVerify(id));
-
-  // Picking an icon is a user action, so it sticks: `icon_source` keeps the
-  // next rebuild from handing the manifest's icon back.
-  ipcMain.handle("lykn:app-set-icon", (_e, { id, icon } = {}) => {
-    const record = localStore.apps.getApp(id);
-    if (!record) return { ok: false, error: "app not found" };
-    const app = localStore.apps.setAppIcon(id, icon);
-    broadcastToAllWindows("lykn:apps-changed", { id: String(id), action: "update" });
-    return { ok: true, app };
-  });
-
-  ipcMain.handle("lykn:app-list", () => ({ ok: true, apps: localStore.apps.listApps() }));
-
-  ipcMain.handle("lykn:app-permissions", (_e, { id } = {}) => {
-    const record = localStore.apps.getApp(id);
-    if (!record) return { ok: false, error: "app not found" };
-    return {
-      ok: true,
-      capabilities: record.capabilities || [],
-      grants: record.grants || {},
-      catalog: require("./appBridge.cjs").CAPABILITIES,
-    };
-  });
-
-  // Revoking is a user action from settings; the app cannot do it to itself.
-  ipcMain.handle("lykn:app-set-permission", (_e, { id, capability, allowed } = {}) => {
-    const record = localStore.apps.getApp(id);
-    if (!record) return { ok: false, error: "app not found" };
-    const grants = { ...(record.grants || {}), [String(capability)]: allowed === true };
-    localStore.apps.updateApp(id, { grants });
-    return { ok: true, grants };
-  });
-
-  // --- Sync with Mac: synced-folders allowlist -----------------------------
-  const macSyncState = (cfg) => ({
-    ok: true,
-    enabled: cfg.enabled,
-    syncAll: cfg.syncAll,
-    syncedFolders: cfg.syncedFolders,
-    excludedFolders: cfg.excludedFolders,
-  });
-  ipcMain.handle("lykn:mac-sync-get", () =>
-    macSyncState(localSystem.readLocalMode(app.getPath("userData")))
-  );
-  ipcMain.handle("lykn:mac-sync-set", (_e, { syncAll, syncedFolders } = {}) => {
-    const next = localSystem.writeMacSync(app.getPath("userData"), { syncAll, syncedFolders });
-    broadcastToAllWindows("lykn:mac-sync-changed", macSyncState(next));
-    return macSyncState(next);
-  });
-  // One folder's switch, from its page in the Vault. Main works out what that
-  // means for the allowlist so the renderer never has to reason about it.
-  ipcMain.handle("lykn:mac-sync-folder", (_e, { folder, synced } = {}) => {
-    const next = localSystem.writeFolderSync(app.getPath("userData"), { folder, synced });
-    broadcastToAllWindows("lykn:mac-sync-changed", macSyncState(next));
-    return macSyncState(next);
-  });
-  ipcMain.handle("lykn:mac-sync-pick-folder", async (e) => {
-    const parent = BrowserWindow.fromWebContents(e.sender) || BrowserWindow.getFocusedWindow();
-    const res = await dialog.showOpenDialog(parent, {
-      title: "Choose folders to sync with LYKN",
-      buttonLabel: "Sync",
-      properties: ["openDirectory", "multiSelections", "createDirectory"],
-      defaultPath: app.getPath("home"),
-    });
-    if (res.canceled || !res.filePaths?.length) return { ok: false, canceled: true };
-    return { ok: true, folders: res.filePaths };
-  });
-
-  // --- Mac Files browser (renderer-facing, gated on Local Mode + allowlist) -
-  ipcMain.handle("lykn:mac-fs-list", async (_e, { path: dirPath } = {}) => {
-    const cfg = localSystem.readLocalMode(app.getPath("userData"));
-    if (!cfg.enabled) return { ok: false, error: "local_mode_off" };
-    return localSystem.run("local_list_dir", { path: dirPath }, {
-      userDataPath: app.getPath("userData"),
-    });
-  });
-  ipcMain.handle("lykn:mac-fs-open", async (_e, { path: targetPath, reveal } = {}) => {
-    const cfg = localSystem.readLocalMode(app.getPath("userData"));
-    if (!cfg.enabled) return { ok: false, error: "local_mode_off" };
-    const abs = localSystem.resolveUserPath(targetPath);
-    if (!abs || !localSystem.isAllowedPath(abs, cfg)) {
-      return { ok: false, error: "Path is not inside a synced folder" };
-    }
-    try {
-      if (reveal) {
-        shell.showItemInFolder(abs);
-        return { ok: true };
-      }
-      const err = await shell.openPath(abs);
-      return err ? { ok: false, error: err } : { ok: true };
-    } catch (err) {
-      return { ok: false, error: err?.message || "open failed" };
-    }
-  });
-  // --- Files browser (the Vault's Locations sidebar) ------------------------
-  // Richer than mac-fs-list above: sorting, hidden files, sidebar roots, the
-  // editing operations, and a watcher so the view tracks the real disk. Each
-  // op re-checks Local Mode and the allowlist inside macFiles itself.
-  ipcMain.handle("lykn:files-list", (_e, args = {}) => macFiles.list(args));
-  ipcMain.handle("lykn:files-thumbnail", (_e, args = {}) => macFiles.thumbnail(args));
-  ipcMain.handle("lykn:files-roots", () => macFiles.roots());
-  ipcMain.handle("lykn:files-mkdir", (_e, args = {}) => macFiles.mkdir(args));
-  ipcMain.handle("lykn:files-rename", (_e, args = {}) => macFiles.rename(args));
-  ipcMain.handle("lykn:files-move", (_e, args = {}) => macFiles.move(args));
-  ipcMain.handle("lykn:files-copy", (_e, args = {}) => macFiles.copy(args));
-  ipcMain.handle("lykn:files-duplicate", (_e, args = {}) => macFiles.duplicate(args));
-  ipcMain.handle("lykn:files-trash", (_e, args = {}) => macFiles.trash(args));
-  ipcMain.handle("lykn:files-watch", (_e, args = {}) => macFiles.watch(args));
-  ipcMain.handle("lykn:files-unwatch", (_e, args = {}) => macFiles.unwatch(args));
-
-  /**
-   * Write bytes the renderer already holds into ~/Downloads.
-   *
-   * Chromium's own download plumbing is what an `<a download>` reaches, and
-   * where it puts the file depends on the user's browser settings — which is
-   * the wrong answer inside a desktop app that promises "it's in Downloads".
-   * The bytes come over as a transferable buffer rather than a URL because
-   * they're often a `lykn-blob://` or a data URL that only the renderer can
-   * read.
-   */
-  ipcMain.handle("lykn:save-to-downloads", async (_e, { name, bytes } = {}) => {
-    try {
-      const buf = Buffer.from(bytes || []);
-      if (!buf.length) return { ok: false, error: "empty" };
-      const target = uniqueDownloadPath(name);
-      await fs.writeFile(target, buf);
-      return { ok: true, path: target };
-    } catch (err) {
-      return { ok: false, error: err?.message || "write failed" };
-    }
-  });
-
-  /**
-   * The same bytes, but somewhere the user points at. The Mac's own save sheet
-   * is the folder picker — it names the file and chooses the folder in one
-   * step, and it is the panel people already know for "put this over there".
-   */
-  ipcMain.handle("lykn:save-file-as", async (e, { name, bytes, filters } = {}) => {
-    try {
-      const buf = Buffer.from(bytes || []);
-      if (!buf.length) return { ok: false, error: "empty" };
-      const parent =
-        BrowserWindow.fromWebContents(e.sender) ||
-        BrowserWindow.getFocusedWindow() ||
-        undefined;
-      const res = await dialog.showSaveDialog(parent, {
-        defaultPath: path.join(app.getPath("downloads"), String(name || "file")),
-        filters: Array.isArray(filters) && filters.length ? filters : undefined,
-        properties: ["createDirectory", "showOverwriteConfirmation"],
-      });
-      if (res.canceled || !res.filePath) return { ok: false, canceled: true };
-      await fs.writeFile(res.filePath, buf);
-      return { ok: true, path: res.filePath };
-    } catch (err) {
-      return { ok: false, error: err?.message || "write failed" };
-    }
-  });
-
-  // The real, localized locations of the user's folders — Settings needs the
-  // absolute Desktop path to mirror it and to add it to the sync allowlist.
-  ipcMain.handle("lykn:mac-fs-home", () => {
-    try {
-      return {
-        ok: true,
-        home: app.getPath("home"),
-        desktop: app.getPath("desktop"),
-        documents: app.getPath("documents"),
-        downloads: app.getPath("downloads"),
-      };
-    } catch (err) {
-      return { ok: false, error: err?.message || "path lookup failed" };
-    }
-  });
-
-  // --- Mac app dock: installed apps, launch, running-state ------------------
-  ipcMain.handle("lykn:mac-apps-list", async () => {
-    try {
-      const apps = await appDock.listAppsWithIcons();
-      return { ok: true, apps };
-    } catch (err) {
-      return { ok: false, error: err?.message || "app scan failed", apps: [] };
-    }
-  });
-  ipcMain.handle("lykn:mac-app-launch", (_e, { path: bundlePath } = {}) =>
-    appDock.launchApp(bundlePath)
-  );
-  ipcMain.handle("lykn:mac-app-quit", (_e, { path: bundlePath } = {}) =>
-    appDock.quitApp(bundlePath)
-  );
-  ipcMain.handle("lykn:mac-apps-running", () => appDock.getRunningApps());
-  // Studio dock subscribes while visible; polling stops when nobody listens.
-  const runningAppWatchers = new Map(); // webContents.id -> unsubscribe
-  ipcMain.on("lykn:mac-apps-watch", (e, { on } = {}) => {
-    const wc = e.sender;
-    const existing = runningAppWatchers.get(wc.id);
-    if (!on) {
-      if (existing) {
-        existing();
-        runningAppWatchers.delete(wc.id);
-      }
-      return;
-    }
-    if (existing) return;
-    const unsubscribe = appDock.subscribeRunningApps((snapshot) => {
-      try {
-        if (!wc.isDestroyed()) {
-          wc.send("lykn:mac-apps-running-changed", snapshot);
-        }
-      } catch (_) {}
-    });
-    runningAppWatchers.set(wc.id, unsubscribe);
-    wc.once("destroyed", () => {
-      const un = runningAppWatchers.get(wc.id);
-      if (un) {
-        un();
-        runningAppWatchers.delete(wc.id);
-      }
-    });
-  });
-  ipcMain.on("lykn:agent-stage-chrome-height", (_e, { height } = {}) => {
-    const h = Math.round(Number(height) || 0);
-    if (h > 40 && h !== agentStageChromeHeight) {
-      agentStageChromeHeight = h;
-      layoutAgentStageViews();
-    }
-  });
-  // Saved-links dropdown open/closed — overlay the chrome above the page so
-  // the menu renders in front of the browser instead of behind it.
-  ipcMain.on("lykn:agent-stage-menu-overlay", (_e, { open } = {}) => {
-    const next = !!open;
-    if (next === agentStageMenuOverlay) return;
-    agentStageMenuOverlay = next;
-    try {
-      // Transparent while overlaying so the page shows through around the
-      // dropdown; opaque again once closed (normal seam-filling behavior).
-      studioStageChromeView?.setBackgroundColor(next ? "#00000000" : "#ececeb");
-    } catch (_) {}
-    layoutAgentStageViews();
-  });
-  // Docked browser chrome → the Studio's floating Browser window. Its tab
-  // strip carries the traffic lights and the title-bar drag, and it's a native
-  // view, so the clicks land out here rather than in the Studio's DOM.
-  ipcMain.on("lykn:studio-window-control", (_e, payload = {}) => {
-    try {
-      if (studioWindow && !studioWindow.isDestroyed()) {
-        studioWindow.webContents.send("lykn:studio-window-control", payload || {});
-      }
-    } catch (_) {}
-  });
-  ipcMain.on("lykn:agent-stage-set", (_e, { open } = {}) => {
-    if (open) {
-      raiseAgentBrowserHost({ focus: true });
-      pushAgentStageState();
-    } else {
-      hideAllAgentBrowserWindows();
-    }
-  });
-  // Use LYKN pill / Studio close — show or hide the agent chat side panel.
-  const setAgentChatOpen = (open, agentId = "") => {
-    const next = !!open;
-    if (next === agentChatOpen) {
-      if (agentId) {
-        emitAgentToUi("lykn:agent-chat-visibility", { open: next, agentId });
-      }
-      pushAgentStageState();
-      return next;
-    }
-    agentChatOpen = next;
-    emitAgentToUi("lykn:agent-chat-visibility", {
-      open: next,
-      ...(agentId ? { agentId } : {}),
-    });
-    pushAgentStageState();
-    return next;
-  };
-  openBrowserTaskChat = (agentId) => setAgentChatOpen(true, agentId);
-  ipcMain.handle("lykn:agent-chat-set", (_e, { open, toggle, agentId } = {}) => {
-    if (toggle) return setAgentChatOpen(!agentChatOpen, agentId);
-    return setAgentChatOpen(!!open, agentId);
-  });
-  ipcMain.handle("lykn:agent-chat-get", () => ({
-    open: !!agentChatOpen,
-    agentId: agentStageActiveId || runtime().getActiveId?.() || "",
-  }));
-  // Studio "Browser" tab — dock/undock the agent browser inside the Studio
-  // window at the panel bounds the Studio renderer measured.
-  ipcMain.on("lykn:studio-browser-set", (_e, payload = {}) => {
-    try {
-      setStudioBrowserEmbed(payload);
-    } catch (err) {
-      console.warn("[studio-browser] embed failed:", err?.message || err);
-    }
-  });
-  // Sent as the Browser window starts opening, before it can report bounds —
-  // load the chrome and the first tab while the frame animates.
-  ipcMain.on("lykn:studio-browser-warm", () => {
-    void warmStudioBrowser().catch((err) => {
-      console.warn("[studio-browser] warm failed:", err?.message || err);
-    });
-  });
-  // Red traffic light on the Studio Browser window — tear the session down.
-  // Yellow minimize only parks the views via `studio-browser-set { open:false }`.
-  ipcMain.handle("lykn:studio-browser-close", async () => {
-    try {
-      return closeStudioBrowserSession();
-    } catch (err) {
-      console.warn("[studio-browser] close failed:", err?.message || err);
-      return { ok: false, error: err?.message || "close_failed" };
-    }
-  });
-  // Studio artifact "Open" → open the URL in the Studio's own browser
-  // (never the OS browser) as a fresh AGENT tab, so a new agent lands in
-  // the rail and the AI can act on the page. The renderer switches the
-  // Studio to its Browser tab right after this call, which docks the
-  // views — so when the browser isn't docked yet the tab is selected
-  // quietly instead of flashing the standalone stage window.
-  ipcMain.handle("lykn:studio-open-url", async (_e, { url, title, chatId, attachChat } = {}) => {
-    const target = String(url || "").trim();
-    if (!/^https?:\/\//i.test(target)) return { ok: false, error: "bad_url" };
-    if (agentBrowserMainTabCount() >= MAX_AGENT_BROWSER_TABS) {
-      return { ok: false, error: `max_tabs_${MAX_AGENT_BROWSER_TABS}` };
-    }
-    const label = String(title || "").trim().slice(0, 48);
-    const sourceChatId = String(chatId || "").trim();
-    const docked = studioStageEmbedActive();
-    const studioOpen = !!(studioWindow && !studioWindow.isDestroyed());
-    // Quiet create when Studio is open but Browser isn't docked yet — the
-    // renderer will switch tabs and dock, and a loud create would flash the
-    // standalone stage + race the welcome page over the real navigation.
-    const quiet = studioOpen && !docked;
-    const id =
-      openAgentBrowserTabWithUrl(target, {
-        title: label,
-        focus: true,
-        show: !quiet,
-      }) || openStudioBrowserTabWithUrl(target, { focus: docked });
-    if (!id) return { ok: false, error: "open_failed" };
-    if (label) agentBrowserLabels.set(id, label);
-    if (sourceChatId) {
-      agentBrowserMeta.set(id, {
-        ...(agentBrowserMeta.get(id) || {}),
-        sourceChatId,
-      });
-    }
-    setAgentChatOpen(true, id);
-    notifyStudioShowBrowser({
-      agentId: id,
-      url: target,
-      title: label || undefined,
-      openRail: true,
-    });
-    if (docked) {
-      showAgentBrowserWindow(id, { focus: true, label: label || undefined });
-    } else {
-      agentStageActiveId = id;
-      layoutAgentStageViews();
-      pushAgentStageState();
-    }
-    return { ok: true, id };
-  });
-
-  // Chat artifact open — same as studio-open-url but prefers inlined HTML when
-  // provided (srcDoc) so React/deck artifacts paint even if the signed preview
-  // URL is slow/expired, and marks the tab as an artifact so docking can't
-  // wipe it back to the welcome page.
-  ipcMain.handle("lykn:studio-open-artifact", async (_e, payload = {}) => {
-    const url = String(payload.url || "").trim();
-    const html = typeof payload.html === "string" ? payload.html : "";
-    const label = String(payload.title || "Artifact").trim().slice(0, 48) || "Artifact";
-    const kind = String(payload.kind || "artifact").trim() || "artifact";
-    const sourceChatId = String(payload.chatId || "").trim();
-    if (!url && !html.trim()) return { ok: false, error: "empty" };
-
-    const docked = studioStageEmbedActive();
-    const studioOpen = !!(studioWindow && !studioWindow.isDestroyed());
-    const quiet = studioOpen && !docked;
-
-    // Prefer a real agent tab (AI can act on the page). Fall back to a bare
-    // stage artifact tab only if agent creation fails.
-    let ownerId = null;
-    try {
-      const rt = initAgentRuntime();
-      if (!rt.isAgentModeOn?.()) rt.setAgentMode?.(true);
-      const res = rt.createAgent({ title: label, activate: true, silent: quiet || !docked });
-      if (res?.ok && res.agentId) ownerId = res.agentId;
-    } catch (_) {}
-
-    if (ownerId) {
-      agentBrowserLabels.set(ownerId, label);
-      agentBrowserMeta.set(ownerId, {
-        kind: "artifact",
-        artifactKind: kind,
-        ownerAgentId: ownerId,
-        url: url || "lykn://artifact",
-        pageTitle: label,
-        ...(sourceChatId ? { sourceChatId } : {}),
-      });
-      ensureAgentBrowserWindow(ownerId, {
-        show: docked,
-        focus: true,
-        label,
-      });
-      const painted = await paintArtifactIntoAgentTab(ownerId, {
-        url,
-        html,
-        title: label,
-        kind,
-      });
-      setAgentChatOpen(true, ownerId);
-      notifyStudioShowBrowser({
-        agentId: ownerId,
-        url: url || undefined,
-        title: label,
-        openRail: true,
-      });
-      if (docked) {
-        showAgentBrowserWindow(ownerId, { focus: true, label });
-      } else {
-        agentStageActiveId = ownerId;
-        layoutAgentStageViews();
-        pushAgentStageState();
-      }
-      return { ok: !!painted?.ok, id: ownerId, ...(painted || {}) };
-    }
-
-    // Last resort: classic deliverable subtab (no paired agent).
-    const opened = openAgentStageArtifact({
-      url: url || undefined,
-      html: html || undefined,
-      title: label,
-      kind,
-      show: docked,
-      focus: true,
-      // The user clicked "Open" — fronting is the whole point here.
-      force: true,
-    });
-    notifyStudioShowBrowser({
-      url: url || undefined,
-      title: label,
-      openRail: true,
-    });
-    return opened;
-  });
-  // The pre-send browser-route classifier and its offer flow are gone: the
-  // chat model now sees local_browser_agent in its tool schemas and decides
-  // for itself when a task belongs in the browser (see mcp-tools/localTools.js
-  // and src/lib/ai/localToolExecutor.ts).
-
-  // Studio agent rail chat bar → Main orchestrator. Enables Agent Mode
-  // quietly (no floating sidebar window — the rail is already showing).
-  ipcMain.handle("lykn:studio-bar-send", async (_e, { text, attachments, agentId, fromSuggestion, bot } = {}) => {
-    const rt = runtime();
-    try {
-      if (!rt.isAgentModeOn?.()) rt.setAgentMode?.(true);
-    } catch (_) {}
-    // Route to the agent the rail currently has selected, falling back to the
-    // runtime's active agent. With no target at all, the runtime creates a
-    // fresh agent (and its paired tab) for the prompt.
-    const target = String(agentId || "").trim() || rt.getActiveId?.() || "";
-    return rt.send(target, { text, attachments, fromSuggestion: !!fromSuggestion, bot: bot || null });
-  });
-
-  // Empty browser-tab composer → the browser agent. The preload exists on all
-  // agent pages, so verify this is our bundled welcome document and identify
-  // its paired agent from the sender before accepting the prompt.
-  ipcMain.handle("lykn:agent-browser-ai-mode", async (event, { text, attachments } = {}) => {
-    const sender = agentBrowserHomeSender(event);
-    if (!sender) return { ok: false, error: "invalid_sender" };
-    let agentId = "";
-    for (const [id, view] of agentBrowserViews) {
-      if (view?.webContents === sender) {
-        agentId = id;
-        break;
-      }
-    }
-    if (!agentId) return { ok: false, error: "unknown_browser_tab" };
-    const rt = runtime();
-    try {
-      if (!rt.isAgentModeOn?.()) rt.setAgentMode?.(true);
-    } catch (_) {}
-    setAgentChatOpen(true, agentId);
-    const goal = String(text || "").trim();
-    const atts = sanitizeHomeAttachments(attachments);
-    if (goal || atts.length) {
-      void rt.send(agentId, {
-        text: goal,
-        attachments: atts,
-        fromSuggestion: false,
-      }).catch(() => {});
-    }
-    return { ok: true };
-  });
-
-  ipcMain.handle("lykn:agent-browser-ensure-mic", async (event) => {
-    if (!agentBrowserHomeSender(event)) return false;
-    try {
-      const status = microphoneStatus();
-      if (status === "granted") return true;
-      if (IS_MAC) {
-        if (status === "not-determined") {
-          return await withPermissionPrompt("microphone", () =>
-            systemPreferences.askForMediaAccess("microphone"),
-          );
-        }
-        openMicrophoneSettings();
-        return false;
-      }
-      if (status === "denied" || status === "restricted") {
-        openMicrophoneSettings();
-        return false;
-      }
-      return true;
-    } catch {
-      return !IS_MAC;
-    }
-  });
-
-  ipcMain.handle("lykn:agent-browser-transcribe", async (event, { audio, mimeType, prompt } = {}) => {
-    if (!agentBrowserHomeSender(event)) return { error: "invalid_sender" };
-    try {
-      const token = await getAuthToken();
-      if (!token) return { error: "Sign in to LYKN first to use dictation." };
-
-      const buf = Buffer.from(audio || []);
-      if (!buf || buf.length < 2000) return { text: "" };
-
-      const fd = new FormData();
-      fd.append("audio", new Blob([buf], { type: mimeType || "audio/webm" }), "dictation.webm");
-      fd.append("model", "whisper-1");
-      fd.append("language", "en");
-      if (prompt) fd.append("prompt", String(prompt).split(/\s+/).slice(-12).join(" "));
-
-      const res = await fetch(`${API_BASE}/api/ai/transcribe`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: fd,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) return { error: `Transcription failed (${res.status}).` };
-      return {
-        text: String(data?.text || "").trim(),
-        noSpeech: Number(data?.no_speech_prob) || 0,
-      };
-    } catch (e) {
-      return { error: `Transcription failed: ${e && e.message ? e.message : e}` };
-    }
-  });
-
-  ipcMain.handle("lykn:agent-browser-pick-files", async (event) => {
-    const sender = agentBrowserHomeSender(event);
-    if (!sender) return [];
-    try {
-      const parent =
-        BrowserWindow.fromWebContents(sender) ||
-        (studioWindow && !studioWindow.isDestroyed() ? studioWindow : undefined) ||
-        BrowserWindow.getFocusedWindow() ||
-        undefined;
-      const res = await dialog.showOpenDialog(parent, {
-        title: "Attach files",
-        buttonLabel: "Add",
-        properties: ["openFile", "multiSelections"],
-      });
-      if (res.canceled || !Array.isArray(res.filePaths) || !res.filePaths.length) {
-        return [];
-      }
-      return attachmentsFromPickedPaths(res.filePaths);
-    } catch {
-      return [];
-    }
-  });
-
-  ipcMain.handle("lykn:agent-browser-welcome-send", async (event, { text, requestId } = {}) => {
-    const goal = String(text || "").trim();
-    if (!goal) return { ok: false, error: "empty_prompt" };
-    const sender = event?.sender;
-    const senderUrl = String(sender?.getURL?.() || "");
-    // Exact packaged-document identity — a remote page whose path ends in
-    // agent-browser-welcome.html must not reach the agent.
-    if (!isTrustedAgentBrowserHomeUrl(senderUrl)) {
-      return { ok: false, error: "invalid_sender" };
-    }
-    let agentId = "";
-    for (const [id, view] of agentBrowserViews) {
-      if (view?.webContents === sender) {
-        agentId = id;
-        break;
-      }
-    }
-    if (!agentId) return { ok: false, error: "unknown_browser_tab" };
-
-    const rt = runtime();
-    try {
-      if (!rt.isAgentModeOn?.()) rt.setAgentMode?.(true);
-    } catch (_) {}
-    // Use the runtime's own routing logic. Conversational prompts stay in the
-    // new-tab thread; browser work opens the established task sidebar.
-    // The new-tab composer is a normal chat surface. Keep every submitted
-    // turn here and explicitly close any sidebar left open by a prior task.
-    // Task handoff remains available from the existing browser chrome while
-    // its dedicated inline handoff UI is built separately.
-    const skill = "general";
-    const task = false;
-    setAgentChatOpen(false);
-    browserWelcomeChatStreams.set(agentId, {
-      sender,
-      requestId: String(requestId || ""),
-    });
-    const run = rt.send(agentId, {
-      text: goal,
-      attachments: [],
-      fromSuggestion: false,
-    });
-    if (task) {
-      // The existing sidebar receives live agent progress for task work.
-      void run.catch(() => {});
-      return { ok: true, task: true, requestedSkill: skill };
-    }
-    // Chat remains on the new-tab surface. Return routing immediately, then
-    // deliver the final conversational answer to its originating page.
-    void run
-      .then((result) => {
-        browserWelcomeChatStreams.delete(agentId);
-        if (!sender.isDestroyed?.()) {
-          sender.send("lykn:agent-browser-welcome-result", {
-            requestId: String(requestId || ""),
-            ok: !!result?.ok,
-            text: String(result?.text || ""),
-          });
-        }
-      })
-      .catch((error) => {
-        browserWelcomeChatStreams.delete(agentId);
-        if (!sender.isDestroyed?.()) {
-          sender.send("lykn:agent-browser-welcome-result", {
-            requestId: String(requestId || ""),
-            ok: false,
-            error: error?.message || "send_failed",
-          });
-        }
-      });
-    return { ok: true, task: false, requestedSkill: skill };
-  });
-
-  // Save a note (task summary, meeting notes, snippet, etc.) into the user's LYKN vault.
-  ipcMain.handle("lykn:save-vault-note", async (_e, { title, content, tags, folder, source } = {}) => {
-    try {
-      const body = String(content || "").trim();
-      if (!body) return { ok: false, error: "empty" };
-      const token = await getAuthToken();
-      if (!token) return { ok: false, error: "no_auth" };
-      const payload = {
-        title: String(title || "").slice(0, 200),
-        content: body.slice(0, 60000),
-        tags: Array.isArray(tags) ? tags.slice(0, 12).map((t) => String(t).slice(0, 32)) : undefined,
-        folder: folder ? String(folder).slice(0, 80) : undefined,
-      };
-      // Overlay-authored notes (meetings, browser tasks) stamp a stable
-      // `source` so the vault can render them as formatted docs — not
-      // plain "Quick Note" cards.
-      const src = typeof source === "string" ? source.trim().slice(0, 64) : "";
-      if (src) payload.source = src;
-      const res = await fetch(`${API_BASE}/api/v1/synthesis/vault`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data || data.ok === false) {
-        return { ok: false, error: (data && (data.error || data.text)) || `HTTP ${res.status}` };
-      }
-      return { ok: true, note: data.note || null };
-    } catch (e) {
-      return { ok: false, error: e && e.message ? e.message : "save_failed" };
-    }
-  });
-
-  // Native "attach files" picker. Dragging onto an always-on-top non-activating
-  // panel is unreliable on macOS, so this is the dependable way to attach. We
-  // read the files here and return ready-to-send attachment objects.
-  ipcMain.handle("lykn:pick-files", async () => {
-    try {
-      // The overlay is a non-activating panel, so the app isn't frontmost — pull
-      // it forward and parent the dialog to the overlay so the picker appears in
-      // front instead of behind whatever app the user is in.
-      try { app.focus({ steal: true }); } catch {}
-      const parent =
-        overlayWindow && !overlayWindow.isDestroyed() ? overlayWindow : undefined;
-      const res = await dialog.showOpenDialog(parent, {
-        properties: ["openFile", "multiSelections"],
-        title: "Attach files to LYKN",
-      });
-      if (res.canceled || !Array.isArray(res.filePaths)) return [];
-      const out = [];
-      for (const p of res.filePaths.slice(0, 6)) {
-        try {
-          const name = path.basename(p);
-          const ext = path.extname(p).toLowerCase();
-          const imgMime = IMAGE_MIME_BY_EXT[ext];
-          if (imgMime) {
-            const buf = await fs.readFile(p);
-            out.push({ kind: "image", name, dataUrl: `data:${imgMime};base64,${buf.toString("base64")}` });
-          } else if (TEXT_FILE_RE.test(name)) {
-            const text = await fs.readFile(p, "utf8");
-            out.push({ kind: "text", name, text });
-          } else {
-            out.push({ kind: "text", name, text: "(Unsupported file type — not included.)" });
-          }
-        } catch {
-          /* skip unreadable file */
-        }
-      }
-      return out;
-    } catch {
-      return [];
-    }
-  });
-
-  // Studio chat-bar Finder: the ordinary macOS Open panel, parented to the
-  // window that asked so it isn't attached to the Glass overlay (which is
-  // often hidden, so the picker would appear to do nothing). Returns the
-  // chosen files as bytes the renderer can wrap in File objects.
-  ipcMain.handle("lykn:pick-open-files", async (e) => {
-    try {
-      const parent =
-        BrowserWindow.fromWebContents(e.sender) ||
-        BrowserWindow.getFocusedWindow() ||
-        undefined;
-      const res = await dialog.showOpenDialog(parent, {
-        title: "Choose files",
-        buttonLabel: "Add",
-        properties: ["openFile", "multiSelections"],
-      });
-      if (res.canceled || !Array.isArray(res.filePaths) || !res.filePaths.length) {
-        return [];
-      }
-      const out = [];
-      for (const p of res.filePaths) {
-        try {
-          const [buf, st] = await Promise.all([fs.readFile(p), fs.stat(p)]);
-          if (st.isDirectory()) continue;
-          const ext = path.extname(p).toLowerCase();
-          out.push({
-            name: path.basename(p),
-            type: IMAGE_MIME_BY_EXT[ext] || "",
-            lastModified: Math.round(st.mtimeMs) || Date.now(),
-            data: buf,
-          });
-        } catch {
-          /* skip unreadable file */
-        }
-      }
-      return out;
-    } catch {
-      return [];
-    }
-  });
-
-  // Snip-to-attach: drag-select a region and return it as an image attachment.
-  // macOS uses the native screencapture crosshair; Windows (and fallback) uses
-  // our fullscreen snip overlay. The glass bar is hidden so it isn't in the shot.
-  ipcMain.handle("lykn:snip-screen", async () => {
-    if (IS_MAC) {
-      const outPath = path.join(app.getPath("temp"), `lykn-snip-${crypto.randomUUID()}.png`);
-      try {
-        await withOverlayHiddenForClick(
-          () =>
-            new Promise((resolve) => {
-              // -i: interactive region select, -x: no camera sound.
-              execFile("screencapture", ["-i", "-x", outPath], () => resolve());
-            }),
-        );
-        let buf = null;
-        try {
-          buf = await fs.readFile(outPath);
-        } catch {
-          buf = null;
-        }
-        if (!buf || !buf.length) return null;
-        return {
-          kind: "image",
-          name: "Screenshot.png",
-          dataUrl: `data:image/png;base64,${buf.toString("base64")}`,
-        };
-      } catch {
-        return null;
-      } finally {
-        try {
-          await fs.unlink(outPath);
-        } catch {
-          /* nothing to clean up */
-        }
-      }
-    }
-    return withOverlayHiddenForClick(() => captureInteractiveSnip());
-  });
-
-  // Snip overlay IPC (Windows region picker).
-  ipcMain.on("lykn:snip-commit", (_e, rect) => {
-    if (typeof snipResolver === "function") snipResolver(rect || null);
-  });
-  ipcMain.on("lykn:snip-cancel", () => {
-    if (typeof snipResolver === "function") snipResolver(null);
-  });
-
-  // Past chats — merge ⌘L overlay sessions (local) with app chats (Supabase).
-  ipcMain.handle("lykn:list-chats", async () => {
-    const store = await readOverlaySessionsStore();
-    const overlay = store.sessions
-      .map((s) => ({
-        id: s.id,
-        title: s.title || overlaySessionTitle(s.messages),
-        preview: overlaySessionPreview(s.messages),
-        updatedAt: s.updatedAt || null,
-        source: "overlay",
-      }))
-      .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
-    const appResult = await fetchAppChatsForOverlay();
-    // Overlay sessions are now also mirrored into the app store (so they show
-    // in the app's sidebar), which means they come back in BOTH lists with the
-    // same id. The local overlay copy is canonical here (clicking it loads the
-    // session inline), so drop the app duplicates to avoid double entries.
-    const overlayIds = new Set(overlay.map((s) => s.id));
-    const app = (appResult.chats || []).filter((c) => !overlayIds.has(c.id));
-    return {
-      overlay,
-      app,
-      currentSessionId: store.currentSessionId,
-      error: appResult.error || null,
-    };
-  });
-
-  ipcMain.handle("lykn:list-projects", async () => {
-    const token = await getAuthToken().catch(() => null);
-    if (!token) return { projects: [], error: "not_signed_in" };
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/synthesis/projects?status=active&limit=40`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.status === 401 || res.status === 403) {
-        return { projects: [], error: "not_signed_in" };
-      }
-      if (!res.ok) {
-        return { projects: [], error: `Could not load projects (${res.status}).` };
-      }
-      const data = await res.json().catch(() => ({}));
-      const projects = Array.isArray(data?.projects) ? data.projects : [];
-      return {
-        projects: projects.map((p) => ({
-          id: p.id,
-          name: p.name || "Untitled project",
-          description: p.description || "",
-          last_active_at: p.last_active_at || null,
-          is_focus: !!p.is_focus,
-        })),
-        error: null,
-      };
-    } catch (err) {
-      return { projects: [], error: err?.message || "Could not load projects." };
-    }
-  });
-
-  ipcMain.handle("lykn:get-overlay-session", async (_e, sessionId) => {
-    const id = String(sessionId || "").trim();
-    if (!id) return null;
-    const store = await readOverlaySessionsStore();
-    const session = store.sessions.find((s) => s.id === id);
-    return session || null;
-  });
-
-  ipcMain.handle("lykn:save-overlay-session", async (_e, payload = {}) => {
-    const messages = Array.isArray(payload.messages)
-      ? payload.messages
-          .filter((m) => m && (m.role === "user" || m.role === "assistant") && String(m.content || "").trim())
-          .map((m) => ({
-            role: m.role,
-            content: String(m.content).slice(0, 12000),
-            at: m.at || new Date().toISOString(),
-          }))
-      : [];
-    if (!messages.length) return { ok: false };
-
-    const store = await readOverlaySessionsStore();
-    let sessionId = String(payload.sessionId || store.currentSessionId || "").trim();
-    if (!sessionId) sessionId = crypto.randomUUID();
-
-    const now = new Date().toISOString();
-    const title = String(payload.title || "").trim() || overlaySessionTitle(messages);
-    const existingIdx = store.sessions.findIndex((s) => s.id === sessionId);
-    const existing = existingIdx >= 0 ? store.sessions[existingIdx] : null;
-
-    // Track which pages this conversation touched so we can recall it later when
-    // the user returns to the same page. Merge with any pages already recorded.
-    const pageSource =
-      payload.pageSource && payload.pageSource.url ? payload.pageSource : null;
-    const pages = new Set(
-      existing && Array.isArray(existing.pages) ? existing.pages : [],
-    );
-    let pageUrl = existing ? existing.pageUrl || null : null;
-    let pageTitle = existing ? existing.pageTitle || null : null;
-    if (pageSource) {
-      const norm = normalizeUrlForMatch(pageSource.url);
-      if (norm) pages.add(norm);
-      pageUrl = pageSource.url;
-      pageTitle = pageSource.title || pageTitle;
-    }
-
-    const session = {
-      id: sessionId,
-      title,
-      updatedAt: now,
-      messages,
-      pages: Array.from(pages).slice(-20),
-      pageUrl,
-      pageTitle,
-    };
-    if (existingIdx >= 0) store.sessions[existingIdx] = session;
-    else store.sessions.unshift(session);
-
-    store.sessions.sort(
-      (a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime(),
-    );
-    store.sessions = store.sessions.slice(0, 80);
-    store.currentSessionId = sessionId;
-    await writeOverlaySessionsStore(store);
-
-    // Mirror the conversation into the app's chat store (lykn_chats /
-    // lykn_chat_states) so it also appears in the actual app's "previous
-    // chats" — not just the overlay's local list. Fire-and-forget: a failure
-    // (offline, signed out) must never break the local save above.
-    void pushOverlaySessionToApp(sessionId, title, messages);
-
-    return { ok: true, sessionId };
-  });
-
-  ipcMain.handle("lykn:new-overlay-session", async () => {
-    const store = await readOverlaySessionsStore();
-    const sessionId = crypto.randomUUID();
-    store.currentSessionId = sessionId;
-    await writeOverlaySessionsStore(store);
-    return { sessionId };
-  });
-
-  ipcMain.handle("lykn:ensure-overlay-session", async () => {
-    const store = await readOverlaySessionsStore();
-    if (store.currentSessionId) return { sessionId: store.currentSessionId };
-    const sessionId = crypto.randomUUID();
-    store.currentSessionId = sessionId;
-    await writeOverlaySessionsStore(store);
-    return { sessionId };
-  });
-
-  // Voice Mode: fetch an ElevenLabs session (signed URL / conversation token)
-  // with the user's auth attached, so the overlay can open a live voice session.
-  ipcMain.handle("lykn:voice-signed-url", async (_e, { instructions, timezone } = {}) => {
-    try {
-      const token = await getAuthToken();
-      if (!token) return { error: "Sign in to LYKN first to use voice mode." };
-      const res = await fetch(`${API_BASE}/api/ai/elevenlabs/signed-url`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          instructions: String(instructions || ""),
-          chatId: null,
-          timezone: timezone || null,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) return { error: String(data?.error || `Voice session failed (${res.status}).`) };
-      return data;
-    } catch (e) {
-      return { error: `Voice session failed: ${e && e.message ? e.message : e}` };
-    }
-  });
-
-  // Voice Mode tool dispatch — forwards an agent tool call to LYKN's realtime
-  // tool endpoint with auth, mirroring the web app's /api/ai/realtime/tool path.
-  ipcMain.handle("lykn:voice-tool", async (_e, { name, args } = {}) => {
-    try {
-      const token = await getAuthToken();
-      if (!token) return { ok: false, error: "not_authenticated" };
-      const res = await fetch(`${API_BASE}/api/ai/realtime/tool`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ name, arguments: args ?? {}, chatId: null }),
-      });
-      const data = await res.json().catch(() => ({ ok: false, error: "bad_tool_response" }));
-      maybeNotifyProjectsChangedFromTool(name, "done", data);
-      return data;
-    } catch {
-      return { ok: false, error: "tool_request_failed" };
-    }
-  });
-
-  // Voice Mode: capture + describe the current screen so the overlay can feed it
-  // to the live agent as contextual text (voice can't take image inputs).
-  ipcMain.handle("lykn:screen-context", async () => {
-    return await captureScreenDescription();
-  });
-
-  // Voice Mode: capture + describe the screen, then push it to the server keyed
-  // by the live session token so the custom-LLM injects it into every turn's
-  // grounding. This is the reliable "voice sees your screen" path (it doesn't
-  // depend on ElevenLabs forwarding contextual updates to the custom LLM).
-  ipcMain.handle("lykn:voice-screen", async (_e, { sessionToken } = {}) => {
-    try {
-      if (!sessionToken) return { ok: false, error: "no_session" };
-      const desc = await captureScreenDescription();
-      if (!desc || desc.error || !desc.text) {
-        return { ok: false, error: (desc && desc.error) || "no_text" };
-      }
-      const token = await getAuthToken();
-      if (!token) return { ok: false, error: "not_authenticated" };
-      const res = await fetch(`${API_BASE}/api/ai/realtime/screen`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ sessionToken, text: desc.text }),
-      });
-      const data = await res.json().catch(() => ({}));
-      console.log("[voice-screen] pushed:", res.status, "ok:", !!(data && data.ok));
-      return data && data.ok ? { ok: true } : { ok: false, error: (data && data.error) || `http_${res.status}` };
-    } catch (e) {
-      return { ok: false, error: e && e.message ? e.message : "failed" };
-    }
-  });
-
-  // Make sure the OS has granted microphone access before the renderer records.
-  ipcMain.handle("lykn:ensure-mic", async () => {
-    try {
-      const status = microphoneStatus();
-      if (status === "granted") return true;
-      if (IS_MAC) {
-        if (status === "not-determined") {
-          return await withPermissionPrompt("microphone", () =>
-            systemPreferences.askForMediaAccess("microphone"),
-          );
-        }
-        openMicrophoneSettings();
-        return false;
-      }
-      // Windows: Chromium prompts on getUserMedia; if previously denied, open Settings.
-      if (status === "denied" || status === "restricted") {
-        openMicrophoneSettings();
-        return false;
-      }
-      return true;
-    } catch {
-      return !IS_MAC;
-    }
-  });
-
-  // Transcribe dictated audio. The renderer records (getUserMedia/MediaRecorder)
-  // and hands us the bytes; we attach the auth token and post to LYKN's whisper
-  // endpoint here so the token never lives in the overlay renderer.
-  ipcMain.handle("lykn:transcribe", async (_e, { audio, mimeType, prompt }) => {
-    try {
-      const token = await getAuthToken();
-      if (!token) return { error: "Sign in to LYKN first to use dictation." };
-
-      const buf = Buffer.from(audio);
-      if (!buf || buf.length < 2000) return { text: "" };
-
-      const fd = new FormData();
-      fd.append("audio", new Blob([buf], { type: mimeType || "audio/webm" }), "dictation.webm");
-      fd.append("model", "whisper-1");
-      fd.append("language", "en");
-      if (prompt) fd.append("prompt", String(prompt).split(/\s+/).slice(-12).join(" "));
-
-      const res = await fetch(`${API_BASE}/api/ai/transcribe`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: fd,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) return { error: `Transcription failed (${res.status}).` };
-      return {
-        text: String(data?.text || "").trim(),
-        noSpeech: Number(data?.no_speech_prob) || 0,
-      };
-    } catch (e) {
-      return { error: `Transcription failed: ${e && e.message ? e.message : e}` };
-    }
-  });
-
-  // Live meeting notes — VAD-endpointed utterances from the overlay. fast=1
-  // returns raw ASR text immediately (the overlay polishes asynchronously),
-  // and gpt-4o-mini-transcribe beats whisper-1 on both speed and accuracy
-  // for short conversational clips.
-  ipcMain.handle("lykn:meeting-chunk", async (_e, { audio, mimeType, prompt, context } = {}) => {
-    try {
-      const token = await getAuthToken();
-      if (!token) return { error: "Sign in to LYKN first." };
-
-      const buf = Buffer.from(audio);
-      if (!buf || buf.length < 800) return { text: "" };
-
-      const mime = mimeType || "audio/webm";
-      const ext = /wav/i.test(mime) ? "wav" : "webm";
-      const fd = new FormData();
-      fd.append("audio", new Blob([buf], { type: mime }), `meeting.${ext}`);
-      fd.append("model", "gpt-4o-mini-transcribe");
-      fd.append("fast", "1");
-      fd.append("language", "en");
-      // A longer rolling tail biases the ASR toward in-domain vocabulary
-      // (names, jargon) — the single biggest accuracy lever Whisper exposes.
-      if (prompt) fd.append("prompt", String(prompt).split(/\s+/).slice(-40).join(" "));
-      if (context) fd.append("context", String(context).slice(-600));
-
-      const res = await fetch(`${API_BASE}/api/ai/meeting-chunk`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: fd,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) return { error: `Transcription failed (${res.status}).` };
-      return {
-        text: String(data?.text || "").trim(),
-        noSpeech: Number(data?.no_speech_prob) || 0,
-      };
-    } catch (e) {
-      return { error: `Transcription failed: ${e && e.message ? e.message : e}` };
-    }
-  });
-
-  // Cluely-style live assist — the overlay streams the rolling transcript
-  // after each utterance; the backend decides if this moment deserves a help
-  // card (question answer, company brief, fact check, suggested reply) and
-  // may run a live web search mid-sentence to compose it.
-  ipcMain.handle("lykn:live-assist", async (_e, { transcript, shown } = {}) => {
-    try {
-      const token = await getAuthToken();
-      if (!token) return { insight: null };
-      const res = await fetch(`${API_BASE}/api/ai/live-assist`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          transcript: String(transcript || "").slice(-2400),
-          shown: Array.isArray(shown) ? shown.slice(-10) : [],
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) return { insight: null };
-      return { insight: data?.insight || null };
-    } catch (_) {
-      return { insight: null };
-    }
-  });
-
-  // Wispr-Flow-style cleanup for the live-listen transcript: strip fillers,
-  // false starts, stutters and repeats from a raw Whisper chunk. Fails open
-  // (returns the raw text) so the transcript never stalls on an error.
-  ipcMain.handle("lykn:clean-transcript", async (_e, { text, context } = {}) => {
-    const raw = String(text || "").trim();
-    if (!raw) return { text: "" };
-    try {
-      const token = await getAuthToken();
-      if (!token) return { text: raw };
-      const res = await fetch(`${API_BASE}/api/ai/clean-transcript`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ text: raw, context: String(context || "") }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) return { text: raw };
-      return { text: String(data?.text || "").trim() };
-    } catch (_) {
-      return { text: raw };
-    }
-  });
-
-  // Open a URL from overlay / Studio chat links. Always opens a fresh agent
-  // tab in the LYKN browser (never the OS browser for http(s)).
-  // Never navigate the overlay window itself.
-  ipcMain.on("lykn:open-url", (_e, payload) => {
-    // Accept legacy string payloads and { url, title } from newer callers.
-    const url =
-      typeof payload === "string"
-        ? payload
-        : String(payload?.url || "");
-    const title =
-      typeof payload === "object" && payload
-        ? String(payload.title || "")
-        : "";
-    void openUrlPreferAgentBrowser(url, { title });
-  });
-
-  // macOS sharing-services picker (AirDrop, Messages, Mail, Notes, Photos…).
-  // Electron only exposes it through the native `shareMenu` role, and the
-  // services are attached by AppKit when the menu holding that item is built —
-  // the item's JS `submenu` is always empty, so it must never be popped on its
-  // own (that shows an empty, invisible menu, i.e. "the button does nothing").
-  ipcMain.handle("lykn:native-share", async (event, payload = {}) => {
-    if (!IS_MAC) return { ok: false, error: "unsupported" };
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (!win || win.isDestroyed()) return { ok: false, error: "no_window" };
-    const title = String(payload.title || "").trim().slice(0, 500);
-    const text = String(payload.text || "").trim().slice(0, 20_000);
-    const rawUrl = String(payload.url || "").trim().slice(0, 8_000);
-    let url = "";
-    try {
-      const parsed = new URL(rawUrl);
-      if (parsed.protocol === "http:" || parsed.protocol === "https:") url = parsed.href;
-    } catch {
-      /* text-only sharing remains available */
-    }
-
-    // Sharing the bytes (not a signed link) is what unlocks AirDrop, Add to
-    // Photos, and Mail attachments — the services a Mac user expects to see.
-    let filePath = "";
-    if (url && payload.asFile) {
-      filePath = await stageNativeShareFile(url, payload.filename || title);
-    }
-
-    const sharingItem = {};
-    if (filePath) sharingItem.filePaths = [filePath];
-    const texts = [text || title].filter(Boolean);
-    if (texts.length) sharingItem.texts = texts;
-    // A signed asset URL alongside the file only duplicates the payload, and
-    // some services then offer the link instead of the attachment.
-    if (url && !filePath) sharingItem.urls = [url];
-    if (!sharingItem.filePaths && !sharingItem.texts && !sharingItem.urls) {
-      return { ok: false, error: "empty" };
-    }
-
-    const bounds = win.getContentBounds();
-    const x = Math.max(0, Math.min(Math.round(Number(payload.x) || 0), Math.max(0, bounds.width - 1)));
-    const y = Math.max(0, Math.min(Math.round(Number(payload.y) || 0), Math.max(0, bounds.height - 1)));
-    const menu = Menu.buildFromTemplate([{ role: "shareMenu", sharingItem }]);
-    // positioningItem puts "Share" itself under the cursor, so the services
-    // list is one hover away — same feel as Finder's Share menu.
-    menu.popup({ window: win, x, y, positioningItem: 0 });
-    // `api` lets the renderer tell this handler apart from an older main
-    // process still loaded from before a restart — without it, a stale build
-    // answers `ok` while showing nothing and the Share button looks dead.
-    return { ok: true, api: 2, sharedFile: !!filePath };
-  });
-
-  // Download a generated file (image mode picture, Build-mode artifact) into
-  // ~/Downloads and reveal it in Finder. The overlay page is file:// so anchor
-  // `download` attributes don't work on the cross-origin proxy URLs — the
-  // main process fetches and writes the file instead. The same bytes are also
-  // saved into the user's Vault (best-effort) so the artifact survives past
-  // the signed URL's expiry.
-  ipcMain.handle("lykn:download-file", async (_e, { url, name, title } = {}) => {
-    const u = String(url || "").trim();
-    if (!/^https?:\/\//i.test(u) && !/^lykn-artifact:\/\//i.test(u)) {
-      return { ok: false, error: "bad_url" };
-    }
-    try {
-      let buf;
-      let mime = "application/octet-stream";
-      let filename = String(name || "").trim();
-
-      if (/^lykn-artifact:\/\//i.test(u)) {
-        const key = new URL(u).hostname.replace(/\/$/, "");
-        const html = artifactHtmlCache.get(key);
-        if (!html) return { ok: false, error: "expired" };
-        buf = Buffer.from(html, "utf8");
-        mime = "text/html";
-      } else {
-        const res = await fetchOverlayMedia(u);
-        if (!res || !res.ok) return { ok: false, error: `http_${res?.status || 0}` };
-        buf = Buffer.from(await res.arrayBuffer());
-        mime = (res.headers.get("content-type") || "").split(";")[0].trim() || mime;
-        if (!filename) {
-          const cd = res.headers.get("content-disposition") || "";
-          const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
-          if (m) {
-            try {
-              filename = decodeURIComponent(m[1]);
-            } catch {
-              filename = m[1];
-            }
-          }
-        }
-        if (!filename) {
-          try {
-            filename = decodeURIComponent(new URL(u).pathname.split("/").pop() || "");
-          } catch {
-            /* fall through */
-          }
-        }
-      }
-
-      filename =
-        filename.replace(/[/\\:*?"<>|]+/g, "-").replace(/^\.+/, "").slice(0, 120) || "download";
-      if (!/\.[a-z0-9]{1,8}$/i.test(filename)) {
-        const ext = {
-          "image/png": ".png",
-          "image/jpeg": ".jpg",
-          "image/webp": ".webp",
-          "image/gif": ".gif",
-          "image/svg+xml": ".svg",
-          "text/html": ".html",
-          "application/pdf": ".pdf",
-          "text/plain": ".txt",
-          "video/mp4": ".mp4",
-          "video/webm": ".webm",
-        }[mime.toLowerCase()] || "";
-        filename += ext;
-      }
-
-      const dir = app.getPath("downloads");
-      const dot = filename.lastIndexOf(".");
-      const base = dot > 0 ? filename.slice(0, dot) : filename;
-      const ext = dot > 0 ? filename.slice(dot) : "";
-      let target = path.join(dir, filename);
-      for (let i = 2; fsSync.existsSync(target); i += 1) {
-        target = path.join(dir, `${base} (${i})${ext}`);
-      }
-      await fs.writeFile(target, buf);
-      shell.showItemInFolder(target);
-
-      // Vault copy — best-effort: a vault failure (offline, signed out, cap
-      // reached) must not fail the local download the user asked for.
-      let savedToVault = false;
-      try {
-        const token = await getAuthToken();
-        if (token) {
-          const form = new FormData();
-          form.append("file", new Blob([buf], { type: mime }), filename);
-          form.append("title", String(title || "").trim() || filename.replace(/\.[a-z0-9]{1,8}$/i, ""));
-          const vaultRes = await fetch(`${API_BASE}/api/vault/save-file`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${token}` },
-            body: form,
-          });
-          const vaultData = await vaultRes.json().catch(() => null);
-          savedToVault = !!(vaultRes.ok && vaultData && vaultData.ok);
-        }
-      } catch {
-        savedToVault = false;
-      }
-
-      return { ok: true, path: target, savedToVault };
-    } catch (err) {
-      return { ok: false, error: err?.message || "download_failed" };
-    }
-  });
-
-  // Extract the raw JSX source of a Build-mode artifact. The runner HTML
-  // embeds it in a <script id="lykn-artifact-source" type="application/json">
-  // block, so we fetch the artifact URL here (main process — no CORS) and
-  // hand the decoded component source back to the overlay's Code view.
-  ipcMain.handle("lykn:artifact-code", async (_e, { url } = {}) => {
-    const u = String(url || "").trim();
-    if (!/^https?:\/\//i.test(u) && !/^lykn-artifact:\/\//i.test(u)) {
-      return { ok: false, error: "bad_url" };
-    }
-    try {
-      let html = "";
-      if (/^lykn-artifact:\/\//i.test(u)) {
-        const key = new URL(u).hostname.replace(/\/$/, "");
-        html = artifactHtmlCache.get(key) || "";
-        if (!html) return { ok: false, error: "expired" };
-      } else {
-        const res = await fetchOverlayMedia(u);
-        if (!res || !res.ok) return { ok: false, error: `http_${res?.status || 0}` };
-        html = await res.text();
-      }
-      const code = await extractReactArtifactCodeFromHtml(html);
-      if (!code) return { ok: false, error: "no_source_block" };
-      return { ok: true, code };
-    } catch (err) {
-      return { ok: false, error: err?.message || "fetch_failed" };
-    }
-  });
-
-  // Seed Build-mode refine from a vault/generated artifact URL (Edit button).
-  ipcMain.handle("lykn:seed-artifact-from-url", async (_e, { url, title } = {}) => {
-    const u = String(url || "").trim();
-    if (!/^https?:\/\//i.test(u) && !/^lykn-artifact:\/\//i.test(u)) {
-      return { ok: false, error: "bad_url" };
-    }
-    try {
-      const code = await extractReactArtifactCodeFromResult({
-        file_url: u,
-        title: String(title || "Artifact"),
-      });
-      if (!code || !String(code).trim()) {
-        return { ok: false, error: "no_source_block" };
-      }
-      lastOverlayReactArtifact = {
-        toolName: "lykn_build_react_artifact",
-        title: String(title || "Artifact").replace(/\s+/g, " ").trim() || "Artifact",
-        code: String(code),
-      };
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: err?.message || "seed_failed" };
-    }
-  });
-
-  // Fetch an image (or any allowlisted media URL) as a data URL for Image mode.
-  ipcMain.handle("lykn:fetch-as-data-url", async (_e, { url } = {}) => {
-    const u = String(url || "").trim();
-    if (!/^https?:\/\//i.test(u) && !/^data:image\//i.test(u)) {
-      return { ok: false, error: "bad_url" };
-    }
-    if (/^data:image\//i.test(u)) return { ok: true, dataUrl: u };
-    try {
-      const res = await safeFetchMain(u);
-      if (!res.ok) return { ok: false, error: `http_${res.status}` };
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (!buf.length) return { ok: false, error: "empty" };
-      const mime =
-        (res.headers.get("content-type") || "").split(";")[0].trim() || "image/png";
-      if (!/^image\//i.test(mime)) return { ok: false, error: "not_image" };
-      return { ok: true, dataUrl: `data:${mime};base64,${buf.toString("base64")}` };
-    } catch (err) {
-      return { ok: false, error: err?.message || "fetch_failed" };
-    }
-  });
-
-  // Cluely-style suggestions after an answer: follow-up questions + real source
-  // links looked up on the web. Best-effort: returns empty on any failure.
-  // Browser control for the ⌘L overlay — scan interactables + plan/execute via
-  // AppleScript JavaScript in the user's active browser tab.
-  ipcMain.handle("lykn:browser-capability", async () => {
-    // Click/type control still needs Apple Events (macOS). Page *reading* works
-    // on Windows via the Chrome Live Feed extension.
-    if (!IS_MAC) {
-      const target = await getActiveBrowserTarget();
-      const connected = !!extensionBridge?.isConnected?.();
-      if (target?.url) {
-        return {
-          ok: false,
-          error: "control_mac_only",
-          browser: target.appName,
-          url: target.url,
-          title: target.title || "",
-          reading: true,
-          message:
-            "LYKN can read this tab via Chrome Live Feed. Clicking and typing in the browser is macOS-only for now — ask about what's on screen instead.",
-        };
-      }
-      return {
-        ok: false,
-        error: connected ? "no_browser" : "needs_extension",
-        message: connected
-          ? "Open an https:// page in Chrome/Edge, then try again."
-          : "Install Chrome Live Feed (tray → Open LYKN, or the Live Feed button) so LYKN can read your active tab. Browser click-control is macOS-only for now.",
-      };
-    }
-    const target = await getActiveBrowserTarget();
-    if (!target) {
-      return { ok: false, error: "no_browser", message: "Open a browser tab first." };
-    }
-    const probe = await collectBrowserInteractables(runOsascript, target.appName);
-    if (probe.error === "apple_events_disabled") {
-      return {
-        ok: false,
-        error: "apple_events_disabled",
-        browser: target.appName,
-        url: target.url,
-        message: "Enable “Allow JavaScript from Apple Events” in your browser.",
-      };
-    }
-    if (probe.error) {
-      return {
-        ok: false,
-        error: probe.error,
-        browser: target.appName,
-        url: target.url,
-        message: probe.message || "Could not read the page.",
-      };
-    }
-    return {
-      ok: true,
-      browser: target.appName,
-      url: probe.page?.url || target.url,
-      title: probe.page?.title || "",
-      elementCount: Array.isArray(probe.page?.items) ? probe.page.items.length : 0,
-    };
-  });
-
-  ipcMain.handle("lykn:browser-plan", async (_e, { intent, conversationHistory } = {}) => {
-    const fail = (error, extra = {}) => ({ ok: false, error, ...extra });
-    if (!IS_MAC) {
-      return fail("control_mac_only", {
-        message:
-          "Browser click-control is macOS-only for now. Install Chrome Live Feed to let LYKN read your tab, or ask about what's on your screen.",
-      });
-    }
-    const goal = String(intent || "").trim().slice(0, 500);
-    if (!goal) return fail("no_intent");
-    const target = await getActiveBrowserTarget();
-    if (!target) {
-      const hint = await describeBrowserTabProblem();
-      return fail(hint?.error || "no_browser", {
-        message: hint?.message || "Open an https:// page in your browser, then try again.",
-      });
-    }
-    const collected = await collectBrowserInteractables(runOsascript, target.appName);
-    if (collected.error === "apple_events_disabled") {
-      return fail("apple_events_disabled", {
-        browser: target.appName,
-        url: target.url,
-        message: "Enable “Allow JavaScript from Apple Events” in your browser.",
-      });
-    }
-    if (collected.error || !collected.page) {
-      return fail(collected.error || "scan_failed", {
-        browser: target.appName,
-        url: target.url,
-        message: collected.message || "Could not scan the page.",
-      });
-    }
-    const token = await getAuthToken();
-    if (!token) return fail("no_auth", { message: "Sign in to LYKN to use browser control." });
-    const pageCtx = await collectBrowserPageContext(runOsascript, target.appName);
-    let pageText = String(pageCtx?.text || "");
-    try {
-      const live = await getBrowserPageText(target.appName);
-      if (live && live.length > pageText.length) pageText = live;
-    } catch (_) {}
-    const imageUrl = await captureBrowserScreenThumbnail();
-    try {
-      const res = await fetch(`${API_BASE}/api/desktop/browser-plan`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          intent: goal,
-          url: collected.page.url || target.url,
-          title: collected.page.title || "",
-          pageText: pageText.slice(0, 15000),
-          imageUrl: imageUrl || "",
-          items: (collected.page.items || []).slice(0, 130),
-          conversationHistory: Array.isArray(conversationHistory) ? conversationHistory.slice(-8) : [],
-        }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data) {
-        return fail("plan_failed", { message: (data && data.error) || "Could not plan actions." });
-      }
-      const actions = resolvePlanActions(data.actions, collected.page.items || []);
-      const explanation =
-        String(data.explanation || "").trim() ||
-        (actions.length
-          ? ""
-          : "Click Run once. LYKN will read the page, act step by step, and verify as it goes.");
-      return {
-        ok: true,
-        browser: target.appName,
-        appName: target.appName,
-        url: collected.page.url || target.url,
-        title: collected.page.title || "",
-        explanation,
-        taskPlan: String(data.taskPlan || "").trim(),
-        plannedAnswer: String(data.plannedAnswer || "").trim(),
-        actions,
-        agentMode: data.agentMode || "",
-        holoMessages: data.holoMessages || null,
-      };
-    } catch (e) {
-      return fail("plan_failed", { message: e && e.message ? e.message : "Could not plan actions." });
-    }
-  });
-
-  ipcMain.handle("lykn:browser-execute", async (event, { actions, appName, url, intent, taskPlan, conversationHistory, holoMessages: seedHoloMessages } = {}) => {
-    const sendProgress = (status) => {
-      try {
-        if (event.sender && !event.sender.isDestroyed()) {
-          event.sender.send("lykn:browser-progress", { status: String(status || "") });
-        }
-      } catch (_) {}
-    };
-    if (browserExecuteInFlight) {
-      return {
-        ok: false,
-        error: "busy",
-        results: [],
-        message: "Browser control is already running. Wait for it to finish.",
-      };
-    }
-    if (!IS_MAC) {
-      return {
-        ok: false,
-        error: "control_mac_only",
-        results: [],
-        message:
-          "Browser click-control is macOS-only for now. LYKN can still read your tab via Chrome Live Feed — ask about the page instead.",
-      };
-    }
-    const browser = String(appName || "").trim();
-    if (!browser) {
-      return {
-        ok: false,
-        error: "no_browser",
-        results: [],
-        message: "Missing browser name. Plan again from Control this page.",
-      };
-    }
-    // Hard allowlist: `browser` is interpolated verbatim into AppleScript
-    // (`tell application "<browser>" …`), so a renderer-supplied name containing
-    // quotes/newlines could break out and run arbitrary osascript. Only exact
-    // matches from our own detected-browser list are ever allowed.
-    if (!BROWSER_APP_NAMES.includes(browser)) {
-      return {
-        ok: false,
-        error: "unsupported_browser",
-        results: [],
-        message: "Unsupported browser. Plan again from Control this page.",
-      };
-    }
-    const pageUrl = String(url || "").trim();
-    const goal = String(intent || "").trim();
-
-    if (goal) {
-      const trusted = systemPreferences.isTrustedAccessibilityClient(false);
-      if (!trusted) {
-        await withPermissionPrompt("accessibility", async () => {
-          systemPreferences.isTrustedAccessibilityClient(true);
-        });
-      }
-      if (!systemPreferences.isTrustedAccessibilityClient(false)) {
-        return {
-          ok: false,
-          error: "accessibility_required",
-          results: [],
-          message:
-            "Browser clicks need Accessibility. Open System Settings → Privacy & Security → Accessibility, enable LYKN (or Electron when developing), then quit and reopen the app.",
-        };
-      }
-    }
-
-    browserExecuteInFlight = true;
-    const hadOverlay =
-      overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible();
-    if (hadOverlay) setOverlayClickThrough(true);
-    await new Promise((r) => setTimeout(r, 200));
-
-    let holoMessages = Array.isArray(seedHoloMessages) && seedHoloMessages.length ? seedHoloMessages : null;
-    let lastScreenBrief = "";
-    let lastAgentResult = "";
-
-    async function callPlanNext(body) {
-      const token = await getAuthToken();
-      if (!token) return { error: "no_auth", message: "Sign in to LYKN to use browser control." };
-
-      let pageText = String(body.pageText || "");
-      if (!pageText) {
-        const ctx = await collectBrowserPageContext(runOsascript, browser);
-        if (ctx?.text) {
-          pageText = ctx.text;
-        } else {
-          const live = await getBrowserPageText(browser);
-          pageText = String(live || "");
-        }
-      } else {
-        try {
-          const live = await getBrowserPageText(browser);
-          if (live && live.length > pageText.length) pageText = live;
-        } catch (_) {}
-      }
-
-      const payload = {
-        intent: String(body.intent || ""),
-        url: String(body.url || ""),
-        title: String(body.title || ""),
-        pageText: pageText.slice(0, 15000),
-        imageUrl: String(body.imageUrl || ""),
-        items: Array.isArray(body.items) ? body.items : [],
-        completedSteps: Array.isArray(body.completedSteps) ? body.completedSteps : [],
-        stuckHint: String(body.stuckHint || "").slice(0, 500),
-        taskPlan: String(body.taskPlan || "").slice(0, 2000),
-        lastReasoning: String(body.lastReasoning || "").slice(0, 800),
-        lastActionDiff: String(body.lastActionDiff || "").slice(0, 400),
-        sessionSummary: String(body.sessionSummary || "").slice(0, 1200),
-        conversationHistory: Array.isArray(body.conversationHistory) ? body.conversationHistory.slice(-8) : [],
-      };
-
-      if (holoMessages) payload.holoMessages = holoMessages;
-      if (body.toolName) {
-        payload.toolName = String(body.toolName);
-        payload.toolOutput = body.toolOutput != null ? String(body.toolOutput).slice(0, 2000) : "ok";
-      }
-
-      if (userWantsSearchOrType(payload.intent) && !payload.stuckHint) {
-        const query = payload.intent
-          .replace(/^search( for| up)?\s*/i, "")
-          .replace(/^look up\s*/i, "")
-          .trim();
-        payload.searchHint = query.slice(0, 120);
-      }
-
-      let res = await fetch(`${API_BASE}/api/desktop/browser-plan-next`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data) {
-        const hint =
-          res.status === 404
-            ? "Restart npm run server (or dev:overlay). API route missing."
-            : "";
-        return {
-          error: "plan_failed",
-          message: (data && data.error) || hint || `Could not plan next step (HTTP ${res.status}).`,
-        };
-      }
-
-      if (Array.isArray(data.holoMessages)) holoMessages = data.holoMessages;
-      if (data.screenBrief) lastScreenBrief = String(data.screenBrief);
-      if (data.agentResult) lastAgentResult = String(data.agentResult);
-      else if (data.done && data.explanation) lastAgentResult = String(data.explanation);
-
-      let actions = resolvePlanActions(data.actions, payload.items);
-      // Server may return raw DOM ordinal clicks with id+selector — ensure id resolves.
-      if (!actions.length && Array.isArray(data.actions) && data.actions[0]?.selector) {
-        actions = data.actions.slice(0, 1);
-      }
-      if (!(actions[0]?.type === "type" && actions[1]?.type === "press")) {
-        actions = actions.slice(0, 1);
-      } else {
-        actions = actions.slice(0, 2);
-      }
-
-      // Planner returned prose but no executable action — retry only for non-MCQ flows.
-      if (!actions.length && !data.done && !data.planFailed && data.agentMode !== "holo") {
-        const stuckHint = userWantsSearchOrType(payload.intent)
-          ? `User wants to search: "${payload.searchHint || payload.intent}". TYPE the query into the search field, then press Enter. Do not click unrelated navigation.`
-          : "Your last response had no actions. Think like chat advice, then return exactly one click or type action from ELEMENTS.";
-        const retryRes = await fetch(`${API_BASE}/api/desktop/browser-plan-next`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            ...payload,
-            stuckHint,
-            forceAction: true,
-          }),
-        });
-        const retryData = await retryRes.json().catch(() => null);
-        if (retryRes.ok && retryData) {
-          data.done = retryData.done;
-          data.explanation = retryData.explanation || data.explanation;
-          data.reasoning = retryData.reasoning || data.reasoning;
-          data.taskPlan = retryData.taskPlan || data.taskPlan;
-          data.actions = retryData.actions;
-          data.solved = retryData.solved ?? data.solved;
-          data.actionKind = retryData.actionKind || data.actionKind;
-          data.planFailed = retryData.planFailed ?? data.planFailed;
-          actions = resolvePlanActions(retryData.actions, payload.items);
-          if (!(actions[0]?.type === "type" && actions[1]?.type === "press")) {
-            actions = actions.slice(0, 1);
-          } else {
-            actions = actions.slice(0, 2);
-          }
-        }
-      }
-
-      // Never infer done from "no actions" — only trust an explicit done flag.
-      // Empty actions after some steps usually means the planner stalled, not finished.
-      const done = typeof data.done === "boolean" ? data.done : false;
-
-      return {
-        done,
-        explanation: String(data.explanation || "").trim(),
-        reasoning: String(data.reasoning || "").trim(),
-        taskPlan: String(data.taskPlan || payload.taskPlan || "").trim(),
-        actions,
-        screenBrief: String(data.screenBrief || lastScreenBrief || "").trim(),
-        agentResult: String(data.agentResult || "").trim(),
-        planFailed:
-          data.planFailed
-            ? String(data.explanation || "").trim() || "Planning failed. Could not determine the next step."
-            : !done && !actions.length
-              ? String(data.explanation || "").trim() || "Planner returned no action"
-              : "",
-      };
-    }
-
-    try {
-      const initialTaskPlan = String(taskPlan || "").slice(0, 2000);
-      const convHistory = Array.isArray(conversationHistory) ? conversationHistory.slice(-8) : [];
-
-      // Dynamic pages: re-scan, verify, and replan after each action.
-      if (goal) {
-        const out = await executeAdaptiveBrowserTask(
-          runOsascript,
-          (payload) =>
-            callPlanNext({
-              ...payload,
-              conversationHistory: convHistory,
-              taskPlan: payload.taskPlan || initialTaskPlan,
-            }),
-          browser,
-          goal,
-          pageUrl,
-          {
-            maxRounds: undefined,
-            onProgress: sendProgress,
-            captureScreen: captureBrowserScreenThumbnail,
-            initialTaskPlan,
-            conversationHistory: convHistory,
-          },
-        );
-        const failed = out.results.find((r) => !r.ok);
-        const taskOk = out.done && !failed;
-        let message = failed
-          ? `Stopped at “${failed.label || "step"}”: ${failed.error || "failed"}`
-          : out.done
-            ? out.explanation || "Done. Task completed in your browser."
-            : out.message || "Stopped before the task finished.";
-
-        try {
-          const token = await getAuthToken();
-          if (token) {
-            const reportRes = await fetch(`${API_BASE}/api/desktop/browser-report`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-              body: JSON.stringify({
-                intent: goal,
-                ok: taskOk,
-                url: pageUrl,
-                title: "",
-                screenBrief: lastScreenBrief,
-                agentResult: lastAgentResult || out.explanation || "",
-                completedSteps: out.completed || [],
-                conversationHistory: convHistory,
-              }),
-            });
-            const reportData = await reportRes.json().catch(() => null);
-            if (reportRes.ok && reportData?.message) {
-              message = String(reportData.message).trim();
-            }
-          }
-        } catch (_) {
-          /* keep fallback message */
-        }
-
-        return {
-          ok: taskOk,
-          adaptive: true,
-          results: out.results,
-          rounds: out.completed?.length || out.results.length,
-          message,
-          explanation: out.explanation || "",
-        };
-      }
-
-      const steps = Array.isArray(actions)
-        ? actions
-            .filter((a) => a && typeof a === "object" && a.type)
-            .slice(0, 8)
-            .map((a) => ({
-              type: String(a.type || "").toLowerCase(),
-              selector: String(a.selector || ""),
-              label: String(a.label || a.selector || "step"),
-              value: a.value != null ? String(a.value) : undefined,
-              key: a.key != null ? String(a.key) : undefined,
-              delta: a.delta != null ? Number(a.delta) : undefined,
-            }))
-        : [];
-      if (!steps.length) {
-        console.log("[browser-execute] no steps — raw actions:", actions);
-        return {
-          ok: false,
-          error: "no_actions",
-          results: [],
-          message: "No actions reached the browser. Close and re-open Control this page, then Run again.",
-        };
-      }
-      const results = await executeBrowserActions(runOsascript, browser, steps, { pageUrl });
-      const failed = results.find((r) => !r.ok);
-      return {
-        ok: !failed,
-        results,
-        message: failed
-          ? `Stopped at “${failed.label || "step"}”: ${failed.error || "failed"}`
-          : "Done.",
-      };
-    } catch (e) {
-      console.log("[browser-execute] error:", e && e.message ? e.message : e);
-      return {
-        ok: false,
-        error: "execute_failed",
-        results: [],
-        message: e && e.message ? e.message : "Failed to run browser actions.",
-      };
-    } finally {
-      browserExecuteInFlight = false;
-      if (hadOverlay && overlayWindow && !overlayWindow.isDestroyed()) {
-        setOverlayClickThrough(false);
-        overlayWindow.moveTop();
-      }
-    }
-  });
-
-  ipcMain.handle("lykn:suggest", async (_e, { question, answer, mode } = {}) => {
-    const empty = { followups: [], links: [] };
-    try {
-      const token = await getAuthToken();
-      if (!token) return empty;
-      const res = await fetch(`${API_BASE}/api/ai/suggest`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          question: String(question || ""),
-          answer: String(answer || ""),
-          mode: String(mode || ""),
-        }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data) return empty;
-      return {
-        followups: Array.isArray(data.followups) ? data.followups : [],
-        links: Array.isArray(data.links) ? data.links : [],
-      };
-    } catch (_) {
-      return empty;
-    }
-  });
-
-  // Rolling meeting notes (summary + key points + action items) from the live
-  // transcript. Best-effort: returns empty notes on any failure.
-  ipcMain.handle("lykn:meeting-notes", async (_e, { transcript, previousNotes } = {}) => {
-    const empty = {
-      summary: "",
-      keyPoints: [],
-      actionItems: [],
-      questionsToAsk: [],
-      suggestions: [],
-      topics: [],
-    };
-    const t = String(transcript || "").trim();
-    if (t.length < 40) return empty;
-    try {
-      const token = await getAuthToken();
-      if (!token) return empty;
-      const res = await fetch(`${API_BASE}/api/ai/meeting-notes`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ transcript: t, previousNotes: previousNotes || null }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data) return empty;
-      return {
-        summary: String(data.summary || "").trim(),
-        keyPoints: Array.isArray(data.keyPoints) ? data.keyPoints : [],
-        actionItems: Array.isArray(data.actionItems) ? data.actionItems : [],
-        questionsToAsk: Array.isArray(data.questionsToAsk) ? data.questionsToAsk : [],
-        suggestions: Array.isArray(data.suggestions) ? data.suggestions : [],
-        topics: Array.isArray(data.topics) ? data.topics : [],
-      };
-    } catch (_) {
-      return empty;
-    }
-  });
-}
 
 /**
  * Write a shareable diagnostics report next to wherever the user asks for it.
@@ -14978,1140 +11858,8 @@ async function signInWelcomeAccount() {
   }
 }
 
-function registerWelcomeIpc() {
-  // "Get started" on the essentials page: apply the chosen options. The
-  // renderer then completes the walkthrough in the same window.
-  ipcMain.handle("lykn:welcome-get-started", (_e, opts = {}) => {
-    if (opts.login) {
-      setLoginItemEnabled(true);
-    }
-    if (opts.defaultBrowser) {
-      try {
-        app.setAsDefaultProtocolClient("http");
-        app.setAsDefaultProtocolClient("https");
-      } catch (e) {
-        console.warn("[welcome] default browser:", e?.message);
-      }
-    }
-    if (opts.dock && IS_MAC && app.isPackaged) {
-      // Pin the .app to the Dock (persistent-apps plist + Dock restart).
-      // Packaged only — in dev this would pin the bare Electron binary.
-      try {
-        const appBundle = path.resolve(process.execPath, "..", "..", "..");
-        if (appBundle.endsWith(".app")) {
-          const entry =
-            `<dict><key>tile-data</key><dict><key>file-data</key><dict>` +
-            `<key>_CFURLString</key><string>${appBundle}</string>` +
-            `<key>_CFURLStringType</key><integer>0</integer>` +
-            `</dict></dict></dict>`;
-          execFile("defaults", ["write", "com.apple.dock", "persistent-apps", "-array-add", entry], (err) => {
-            if (!err) execFile("killall", ["Dock"], () => {});
-          });
-        }
-      } catch (e) {
-        console.warn("[welcome] dock pin:", e?.message);
-      }
-    }
-    return { ok: true };
-  });
 
-  // Past the reveal, drop from screen-saver level to a normal window. The
-  // window still covers the screen; it just stops pinning itself.
-  ipcMain.on("lykn:welcome-stage", (_e, stage) => {
-    if (Number(stage) < 2) return;
-    if (!welcomeWindow || welcomeWindow.isDestroyed()) return;
-    welcomeWindow.setAlwaysOnTop(false);
-    welcomeWindow.setVisibleOnAllWorkspaces(false);
-    // The reveal used showInactive; from here on it's a real form window.
-    welcomeWindow.focus();
-  });
 
-  ipcMain.handle("lykn:welcome-signup", async (_e, { email, password } = {}) => {
-    const normalizedEmail = String(email || "").trim();
-    const secret = String(password || "");
-    try {
-      const response = await fetch(`${API_BASE}/api/auth/signup-start`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: normalizedEmail, password: secret }),
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok || !result?.ok) {
-        return { ok: false, error: result?.error || "Could not create account." };
-      }
-      welcomeSignupSecret = { email: normalizedEmail, password: secret };
-      return { ok: true };
-    } catch (error) {
-      console.warn("[welcome] signup:", error?.message || error);
-      return { ok: false, error: "Couldn't reach LYKN — check your connection and try again." };
-    }
-  });
-
-  ipcMain.handle("lykn:welcome-signin", async (_e, { email, password } = {}) => {
-    const creds = welcomeSupabaseAuthCreds();
-    if (!creds) return { ok: false, error: "Sign-in is unavailable. Check your connection and try again." };
-    try {
-      const response = await fetch(`${creds.url}/auth/v1/token?grant_type=password`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", apikey: creds.key },
-        body: JSON.stringify({ email: String(email || "").trim(), password: String(password || "") }),
-      });
-      const session = await response.json().catch(() => ({}));
-      if (!response.ok || !session?.access_token || !session?.refresh_token) {
-        return { ok: false, error: session?.error_description || "Incorrect email or password." };
-      }
-      deliverAuthTokensToRenderer(session.access_token, session.refresh_token);
-      return { ok: true };
-    } catch {
-      return { ok: false, error: "Couldn't reach LYKN — check your connection and try again." };
-    }
-  });
-
-  // "Continue with Google": Google blocks OAuth in embedded windows, so the
-  // round-trip runs in the system browser via /desktop-auth — the same flow
-  // the main app uses. The session comes back through the loopback handoff
-  // and deliverAuthTokensToRenderer pings the walkthrough to advance.
-  ipcMain.handle("lykn:welcome-google", () => {
-    const url = mintDesktopAuthUrl(`${APP_ORIGIN}/desktop-auth`);
-    void shell.openExternal(url);
-    return { ok: true };
-  });
-
-  ipcMain.handle("lykn:welcome-resend", async (_e, { email } = {}) => {
-    try {
-      const response = await fetch(`${API_BASE}/api/auth/signup-resend`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: String(email || "").trim() }),
-      });
-      const result = await response.json().catch(() => ({}));
-      return response.ok && result?.ok
-        ? { ok: true }
-        : { ok: false, error: result?.error || "Could not resend code." };
-    } catch {
-      return { ok: false, error: "Couldn't reach LYKN — check your connection and try again." };
-    }
-  });
-
-  ipcMain.handle("lykn:welcome-verify", async (_e, { email, code } = {}) => {
-    try {
-      const response = await fetch(`${API_BASE}/api/auth/signup-verify`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: String(email || "").trim(), code: String(code || "").trim() }),
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok || !result?.ok) {
-        return { ok: false, error: result?.error || "Could not verify code." };
-      }
-      await signInWelcomeAccount();
-      return { ok: true };
-    } catch (error) {
-      console.warn("[welcome] verify:", error?.message || error);
-      return { ok: false, error: "Couldn't reach LYKN — check your connection and try again." };
-    }
-  });
-
-  // Import stage: Chromium browsers whose sessions can be securely synced.
-  ipcMain.handle("lykn:welcome-browsers", () => {
-    if (IS_MAC) {
-      return chromeSync.detectBrowsers().map((browser) => ({
-        id: browser.id,
-        name: browser.name,
-        profiles: chromeSync.listProfiles(browser).map((p) => ({
-          dir: p.dir,
-          name: p.name,
-        })),
-      }));
-    }
-    return [];
-  });
-
-  const welcomeProfileFile = () =>
-    path.join(app.getPath("userData"), "welcome-profile.json");
-
-  const readWelcomeProfile = () => {
-    try {
-      const profile = JSON.parse(fsSync.readFileSync(welcomeProfileFile(), "utf8"));
-      return profile && typeof profile === "object" ? profile : {};
-    } catch {
-      return {};
-    }
-  };
-
-  // Welcome-profile writes are merges — each stage adds what it learned.
-  const mergeWelcomeProfile = (patch) => {
-    const file = welcomeProfileFile();
-    let profile = {};
-    try {
-      profile = JSON.parse(fsSync.readFileSync(file, "utf8"));
-    } catch {
-      /* fresh profile */
-    }
-    try {
-      fsSync.writeFileSync(file, JSON.stringify({ ...profile, ...patch }, null, 2), "utf8");
-    } catch (e) {
-      console.warn("[welcome] profile store:", e?.message);
-    }
-  };
-
-  // Import stage "Next": remember the chosen source browser — the actual
-  // import runs later, once that feature lands.
-  ipcMain.handle("lykn:welcome-import", (_e, browser) => {
-    if (browser && typeof browser === "object") {
-      mergeWelcomeProfile({
-        importBrowser: String(browser.id || browser.browser || ""),
-        importProfileDir: String(browser.profileDir || ""),
-      });
-    } else {
-      mergeWelcomeProfile({ importBrowser: String(browser || "") });
-    }
-    return { ok: true };
-  });
-
-  // Logins stage: the user wants saved passwords brought over too.
-  ipcMain.handle("lykn:welcome-import-logins", (_e, wanted) => {
-    mergeWelcomeProfile({ importLogins: !!wanted });
-    return { ok: true };
-  });
-
-  // Studio Mac dock pins — which local apps the user keeps on the dock strip.
-  ipcMain.handle("lykn:mac-dock-pins-get", () => {
-    try {
-      const file = path.join(app.getPath("userData"), "welcome-profile.json");
-      const profile = JSON.parse(fsSync.readFileSync(file, "utf8"));
-      return { ok: true, pins: Array.isArray(profile.macDockPins) ? profile.macDockPins : [] };
-    } catch {
-      return { ok: true, pins: [] };
-    }
-  });
-  ipcMain.handle("lykn:mac-dock-pins-set", (_e, { pins } = {}) => {
-    const clean = (Array.isArray(pins) ? pins : [])
-      .map((p) => String(p || ""))
-      .filter(Boolean)
-      .slice(0, 30);
-    mergeWelcomeProfile({ macDockPins: clean });
-    return { ok: true, pins: clean };
-  });
-
-  // Mac sync stage: persist the synced-folders allowlist and switch Local
-  // Mode on — this is the consent moment for LYKN reading local files.
-  ipcMain.handle("lykn:welcome-macsync", (_e, { syncAll, folders } = {}) => {
-    const userData = app.getPath("userData");
-    const cleanFolders = (Array.isArray(folders) ? folders : [])
-      .map((f) => String(f || "").trim())
-      .filter(Boolean)
-      .slice(0, 100);
-    const next = localSystem.writeMacSync(userData, {
-      syncAll: syncAll === true,
-      syncedFolders: syncAll === true ? [] : cleanFolders,
-    });
-    localSystem.writeLocalMode(userData, true);
-    for (const win of BrowserWindow.getAllWindows()) {
-      try {
-        if (!win.isDestroyed()) {
-          win.webContents.send("lykn:local-mode-changed", { enabled: true });
-          win.webContents.send("lykn:mac-sync-changed", {
-            enabled: true,
-            syncAll: next.syncAll,
-            syncedFolders: next.syncedFolders,
-          });
-        }
-      } catch (_) {}
-    }
-    mergeWelcomeProfile({ macSync: { syncAll: next.syncAll, folders: next.syncedFolders } });
-    return { ok: true };
-  });
-
-  // ── Studio background — synced from the Mac ───────────────────────────────
-  // The user picks any image (or their current macOS wallpaper) and it becomes
-  // the Studio backdrop. Everything is normalized to a JPEG in userData via
-  // `sips` because macOS wallpapers are usually HEIC, which Chromium can't
-  // render. Renderers get data URLs; live changes broadcast to all windows.
-  const studioBgFile = () => path.join(app.getPath("userData"), "studio-background.jpg");
-  const bgDataUrl = (file) => {
-    try {
-      const buf = fsSync.readFileSync(file);
-      return buf.length ? "data:image/jpeg;base64," + buf.toString("base64") : "";
-    } catch {
-      return "";
-    }
-  };
-  // maxPx 0 converts without resampling — sips would otherwise upscale sources
-  // that are already smaller than the target.
-  const bgConvert = (src, dest, maxPx) =>
-    new Promise((resolve) => {
-      execFile(
-        "sips",
-        [
-          "-s", "format", "jpeg",
-          "-s", "formatOptions", "85",
-          ...(maxPx ? ["--resampleHeightWidthMax", String(maxPx)] : []),
-          src,
-          "--out", dest,
-        ],
-        { timeout: 15_000 },
-        (err) => resolve(!err)
-      );
-    });
-  const runBgOsa = (script) =>
-    new Promise((resolve) => {
-      execFile("osascript", ["-e", script], { timeout: 5000 }, (err, stdout) =>
-        resolve(err ? "" : String(stdout || "").trim())
-      );
-    });
-  const currentWallpaperPath = async () => {
-    // System Events first; Finder as fallback (dynamic wallpapers sometimes
-    // only answer through one of the two).
-    const scripts = [
-      'tell application "System Events" to get picture of current desktop',
-      'tell application "Finder" to get POSIX path of (desktop picture as alias)',
-    ];
-    for (const script of scripts) {
-      const out = await runBgOsa(script);
-      if (out && fsSync.existsSync(out)) {
-        try {
-          if (fsSync.statSync(out).isFile()) return out;
-        } catch (_) {}
-      }
-    }
-    return "";
-  };
-  const broadcastBackground = (dataUrl, srcPath = "", id = "") => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      try {
-        if (!win.isDestroyed()) {
-          win.webContents.send("lykn:background-changed", { dataUrl, path: srcPath, id });
-        }
-      } catch (_) {}
-    }
-  };
-  ipcMain.handle("lykn:background-get", () => {
-    // Which source produced it, so the wallpaper picker can mark its tile.
-    const profile = readWelcomeProfile();
-    return {
-      ok: true,
-      dataUrl: bgDataUrl(studioBgFile()),
-      path: profile.studioBackgroundPath || "",
-      id: profile.studioBackgroundId || "",
-    };
-  });
-
-  // ── The wallpapers macOS ships (System Settings › Wallpaper) ──────────────
-  // Apple keeps them in three places, so we read all three:
-  //   • full-size stills sitting in /System/Library/Desktop Pictures
-  //   • Solid Colors — tiny flat PNGs in a subfolder
-  //   • everything else (Big Sur, Catalina, Ventura, the hello set…), which
-  //     ships as a .madesktop stub whose only local image is a ~214px
-  //     thumbnail. Those masters live in Apple's MobileAsset catalog and are
-  //     fetched on demand, which is exactly what System Settings does when you
-  //     click one.
-  // Grid thumbnails always come from local files, so browsing needs no network.
-  const SYSTEM_WALLPAPER_ROOT = "/System/Library/Desktop Pictures";
-  const SYSTEM_THUMB_DIR = path.join(SYSTEM_WALLPAPER_ROOT, ".thumbnails");
-  const DESKTOP_ASSET_CATALOG =
-    "/System/Library/AssetsV2/com_apple_MobileAsset_DesktopPicture/com_apple_MobileAsset_DesktopPicture.xml";
-  const WALLPAPER_EXT_RE = /\.(heic|heif|jpe?g|png|tiff?)$/i;
-  const MIN_STILL_BYTES = 8 * 1024; // filters stub/preview art, not solid colors
-
-  const wallpaperLabel = (file) => file.replace(WALLPAPER_EXT_RE, "");
-  const wallpaperId = (name) =>
-    crypto.createHash("sha1").update(String(name)).digest("hex").slice(0, 16);
-  const wallpaperCacheFile = (id) =>
-    path.join(app.getPath("userData"), "wallpaper-cache", `${id}.jpg`);
-
-  /** id -> item, rebuilt by the list handler. The thumbnail and apply handlers
-   *  resolve an id through this, so the renderer never hands us a path to read
-   *  or a URL to fetch. */
-  let systemWallpapers = new Map();
-
-  const readWallpaperDir = async (dir, group, minBytes = MIN_STILL_BYTES) => {
-    let names = [];
-    try {
-      names = await fs.readdir(dir);
-    } catch {
-      return []; // folder doesn't exist on this macOS version
-    }
-    const items = [];
-    for (const name of names) {
-      if (name.startsWith(".") || !WALLPAPER_EXT_RE.test(name)) continue;
-      if (/thumbnail/i.test(name)) continue;
-      const full = path.join(dir, name);
-      try {
-        const stat = await fs.stat(full);
-        if (!stat.isFile() || stat.size < minBytes) continue;
-      } catch {
-        continue;
-      }
-      items.push({
-        name: wallpaperLabel(name),
-        group,
-        source: full,
-        thumbSource: full,
-        thumbMax: 480,
-      });
-    }
-    return items;
-  };
-
-  /* The catalog is an XML plist of flat dicts. plutil can't convert it to JSON
-   * (it holds <data> checksums), and a plist library isn't worth shipping for
-   * one file, so scan the Assets array directly. */
-  const parseAssetCatalog = (xml) => {
-    const keyed = xml.indexOf("<key>Assets</key>");
-    if (keyed < 0) return [];
-    const arrayStart = xml.indexOf("<array>", keyed);
-    const arrayEnd = xml.indexOf("</array>", arrayStart);
-    if (arrayStart < 0 || arrayEnd < 0) return [];
-    const assets = [];
-    for (const block of xml.slice(arrayStart, arrayEnd).matchAll(/<dict>([\s\S]*?)<\/dict>/g)) {
-      const fields = {};
-      const pair =
-        /<key>([^<]+)<\/key>\s*(?:<(string|integer|real|data)>([\s\S]*?)<\/\2>|<(true|false)\s*\/>)/g;
-      for (const m of block[1].matchAll(pair)) {
-        fields[m[1]] = m[4] ? m[4] === "true" : m[3].trim();
-      }
-      assets.push(fields);
-    }
-    return assets;
-  };
-
-  const readCatalogWallpapers = async () => {
-    let xml = "";
-    try {
-      xml = await fs.readFile(DESKTOP_ASSET_CATALOG, "utf8");
-    } catch {
-      return []; // no catalog: only the on-disk wallpapers are offered
-    }
-    const items = [];
-    for (const asset of parseAssetCatalog(xml)) {
-      const name = asset.DesktopPictureID || "";
-      const base = asset.__BaseURL || "";
-      const rel = asset.__RelativePath || "";
-      if (!name || !base || !rel) continue;
-      const thumbSource = path.join(SYSTEM_THUMB_DIR, `${name}.heic`);
-      items.push({
-        name,
-        group: "pictures",
-        url: `${base.replace(/\/+$/, "")}/${rel.replace(/^\/+/, "")}`,
-        sizeBytes: Number(asset._DownloadSize) || 0,
-        // Apple's SHA-1 of the zip, so a bad object can't become a wallpaper.
-        sha1:
-          asset._MeasurementAlgorithm === "SHA-1" && asset._Measurement
-            ? Buffer.from(asset._Measurement.replace(/\s+/g, ""), "base64").toString("hex")
-            : "",
-        thumbSource: fsSync.existsSync(thumbSource) ? thumbSource : "",
-      });
-    }
-    return items;
-  };
-
-  const buildSystemWallpapers = async () => {
-    // Solid colors are tiny by nature (a 128px flat PNG), hence the lower floor.
-    const [pictures, colors, remote] = await Promise.all([
-      readWallpaperDir(SYSTEM_WALLPAPER_ROOT, "pictures"),
-      readWallpaperDir(path.join(SYSTEM_WALLPAPER_ROOT, "Solid Colors"), "colors", 0),
-      readCatalogWallpapers(),
-    ]);
-
-    // Newer releases tuck a few full-size stills (e.g. Sonoma Horizon) inside
-    // the hidden .wallpapers bundle alongside the .mov versions.
-    const bundled = [];
-    const bundleRoot = path.join(SYSTEM_WALLPAPER_ROOT, ".wallpapers");
-    try {
-      for (const dir of await fs.readdir(bundleRoot)) {
-        bundled.push(
-          ...(await readWallpaperDir(path.join(bundleRoot, dir), "pictures", 512 * 1024)),
-        );
-      }
-    } catch {
-      /* no bundle on this macOS version */
-    }
-
-    // Local first: a wallpaper already on disk needs no download, and several
-    // (the iMac colors, Sonoma) appear in both places.
-    const byName = new Map();
-    for (const item of [...pictures, ...bundled, ...colors, ...remote]) {
-      if (!byName.has(item.name)) byName.set(item.name, item);
-    }
-    // Colors last, pictures alphabetical — one grid, like System Settings.
-    const ordered = [...byName.values()].sort((a, b) =>
-      a.group === b.group
-        ? a.name.localeCompare(b.name, undefined, { numeric: true })
-        : a.group === "colors"
-          ? 1
-          : -1,
-    );
-    systemWallpapers = new Map(
-      ordered.map((item) => [wallpaperId(item.name), { ...item, id: wallpaperId(item.name) }]),
-    );
-    return systemWallpapers;
-  };
-
-  const systemWallpaperById = async (id) => {
-    if (!systemWallpapers.size) await buildSystemWallpapers();
-    return systemWallpapers.get(String(id || "")) || null;
-  };
-
-  ipcMain.handle("lykn:background-system-list", async () => {
-    const map = await buildSystemWallpapers();
-    return {
-      ok: true,
-      items: [...map.values()]
-        // A wallpaper with neither a local file nor a thumbnail has nothing to
-        // show in the grid (light/dark variants of the dynamic sets).
-        .filter((item) => item.source || item.thumbSource)
-        .map((item) => ({
-          id: item.id,
-          name: item.name,
-          group: item.group,
-          needsDownload: !item.source && !fsSync.existsSync(wallpaperCacheFile(item.id)),
-          sizeBytes: item.sizeBytes || 0,
-        })),
-    };
-  });
-
-  // Grid-sized preview, cached in userData: HEIC needs a sips pass before
-  // Chromium can show it, and that pass is the slow part.
-  ipcMain.handle("lykn:background-system-thumb", async (_e, id) => {
-    const item = await systemWallpaperById(id);
-    const src = item?.thumbSource || "";
-    if (!src || !fsSync.existsSync(src)) return { ok: false, error: "no_thumbnail" };
-    const cacheDir = path.join(app.getPath("userData"), "wallpaper-thumbs");
-    const dest = path.join(cacheDir, `${item.id}.jpg`);
-    if (!fsSync.existsSync(dest)) {
-      try {
-        await fs.mkdir(cacheDir, { recursive: true });
-      } catch {
-        /* the convert below will fail and the tile stays a placeholder */
-      }
-      // Apple's own preview art is already tile-sized; only full-size stills
-      // need scaling down.
-      if (!(await bgConvert(src, dest, item.thumbMax || 0))) {
-        return { ok: false, error: "convert_failed" };
-      }
-    }
-    return { ok: true, dataUrl: bgDataUrl(dest) };
-  });
-
-  // Stream Apple's asset zip to disk, hashing as it lands.
-  const downloadWallpaperAsset = async (item, dest, onProgress) => {
-    let res;
-    try {
-      res = await electronNet.fetch(item.url, { redirect: "follow" });
-    } catch {
-      return { ok: false, error: "offline" };
-    }
-    if (!res.ok || !res.body) return { ok: false, error: `http_${res.status || 0}` };
-    const total = Number(res.headers.get("content-length")) || item.sizeBytes || 0;
-    const hash = crypto.createHash("sha1");
-    const handle = await fs.open(dest, "w");
-    let received = 0;
-    let lastTick = 0;
-    try {
-      const reader = res.body.getReader();
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        hash.update(value);
-        await handle.write(value);
-        received += value.byteLength;
-        const now = Date.now();
-        if (now - lastTick > 200) {
-          lastTick = now;
-          onProgress(received, total);
-        }
-      }
-    } finally {
-      await handle.close();
-    }
-    if (item.sha1 && hash.digest("hex") !== item.sha1) {
-      return { ok: false, error: "checksum_mismatch" };
-    }
-    return { ok: true };
-  };
-
-  /** Unpack the asset and return its largest image — the master still sits at
-   *  AssetData/<name>.heic, but the layout is Apple's to change. */
-  const extractWallpaperImage = async (zipFile, dir) => {
-    await new Promise((resolve) => {
-      // ditto, not unzip: it's the tool that understands Apple's archives.
-      execFile("ditto", ["-x", "-k", zipFile, dir], { timeout: 120_000 }, () => resolve());
-    });
-    let best = null;
-    const walk = async (current, depth) => {
-      if (depth > 3) return;
-      let entries = [];
-      try {
-        entries = await fs.readdir(current, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const entry of entries) {
-        const full = path.join(current, entry.name);
-        if (entry.isDirectory()) {
-          await walk(full, depth + 1);
-          continue;
-        }
-        if (!WALLPAPER_EXT_RE.test(entry.name)) continue;
-        try {
-          const stat = await fs.stat(full);
-          if (!best || stat.size > best.size) best = { path: full, size: stat.size };
-        } catch {
-          /* skip unreadable entries */
-        }
-      }
-    };
-    await walk(dir, 0);
-    return best?.path || "";
-  };
-
-  ipcMain.handle("lykn:background-system-apply", async (e, id) => {
-    const item = await systemWallpaperById(id);
-    if (!item) return { ok: false, error: "unknown_wallpaper" };
-    const send = (payload) => {
-      try {
-        if (!e.sender.isDestroyed()) {
-          e.sender.send("lykn:background-progress", { id: item.id, ...payload });
-        }
-      } catch (_) {}
-    };
-    let workDir = "";
-    try {
-      if (item.source) {
-        send({ phase: "applying" });
-        if (!(await bgConvert(item.source, studioBgFile(), 2560))) {
-          send({ phase: "error" });
-          return { ok: false, error: "convert_failed" };
-        }
-      } else {
-        // Downloaded masters are converted once and kept as a ready backdrop,
-        // so picking the same wallpaper again never re-downloads 30MB.
-        const cached = wallpaperCacheFile(item.id);
-        if (!fsSync.existsSync(cached)) {
-          workDir = path.join(app.getPath("temp"), `lykn-wallpaper-${item.id}`);
-          await fs.rm(workDir, { recursive: true, force: true });
-          await fs.mkdir(workDir, { recursive: true });
-          const zip = path.join(workDir, "asset.zip");
-          send({ phase: "downloading", received: 0, total: item.sizeBytes || 0 });
-          const got = await downloadWallpaperAsset(item, zip, (received, total) =>
-            send({ phase: "downloading", received, total }),
-          );
-          if (!got.ok) {
-            send({ phase: "error" });
-            return got;
-          }
-          send({ phase: "applying" });
-          const image = await extractWallpaperImage(zip, path.join(workDir, "asset"));
-          if (!image) {
-            send({ phase: "error" });
-            return { ok: false, error: "asset_empty" };
-          }
-          await fs.mkdir(path.dirname(cached), { recursive: true });
-          if (!(await bgConvert(image, cached, 2560))) {
-            send({ phase: "error" });
-            return { ok: false, error: "convert_failed" };
-          }
-        } else {
-          send({ phase: "applying" });
-        }
-        fsSync.copyFileSync(cached, studioBgFile());
-      }
-      const dataUrl = bgDataUrl(studioBgFile());
-      mergeWelcomeProfile({
-        studioBackground: "system",
-        studioBackgroundPath: item.source || "",
-        studioBackgroundId: item.id,
-      });
-      broadcastBackground(dataUrl, item.source || "", item.id);
-      send({ phase: "done" });
-      return { ok: true, dataUrl };
-    } catch (err) {
-      send({ phase: "error" });
-      return { ok: false, error: err?.message || "apply_failed" };
-    } finally {
-      if (workDir) fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
-    }
-  });
-  // Small preview of the user's current macOS wallpaper (welcome stage card).
-  ipcMain.handle("lykn:background-wallpaper-preview", async () => {
-    const src = await currentWallpaperPath();
-    if (!src) return { ok: false, error: "wallpaper_unavailable" };
-    const tmp = path.join(app.getPath("temp"), "lykn-bg-wallpaper-preview.jpg");
-    if (!(await bgConvert(src, tmp, 640))) return { ok: false, error: "convert_failed" };
-    return { ok: true, dataUrl: bgDataUrl(tmp) };
-  });
-  // Native image picker; returns the chosen path plus a small preview.
-  ipcMain.handle("lykn:background-pick-file", async (e) => {
-    const win = BrowserWindow.fromWebContents(e.sender);
-    const res = await dialog.showOpenDialog(win, {
-      title: "Choose a background image",
-      properties: ["openFile"],
-      filters: [
-        { name: "Images", extensions: ["png", "jpg", "jpeg", "heic", "heif", "webp", "tiff", "gif", "bmp"] },
-      ],
-    });
-    if (res.canceled || !res.filePaths?.length) return { ok: false, canceled: true };
-    const src = res.filePaths[0];
-    const tmp = path.join(app.getPath("temp"), "lykn-bg-pick-preview.jpg");
-    const preview = (await bgConvert(src, tmp, 640)) ? bgDataUrl(tmp) : "";
-    return { ok: true, path: src, dataUrl: preview };
-  });
-  // Persist: source is "wallpaper" or an explicit image path.
-  ipcMain.handle("lykn:background-set", async (_e, { source, path: srcPath } = {}) => {
-    const src =
-      source === "wallpaper" ? await currentWallpaperPath() : String(srcPath || "");
-    if (!src || !fsSync.existsSync(src)) return { ok: false, error: "source_missing" };
-    if (!(await bgConvert(src, studioBgFile(), 2560))) {
-      return { ok: false, error: "convert_failed" };
-    }
-    const dataUrl = bgDataUrl(studioBgFile());
-    mergeWelcomeProfile({
-      studioBackground: source === "wallpaper" ? "wallpaper" : "custom",
-      // Kept so the wallpaper picker can highlight the tile in use — the
-      // converted JPEG itself says nothing about where it came from.
-      studioBackgroundPath: src,
-      studioBackgroundId: "",
-    });
-    broadcastBackground(dataUrl, src);
-    return { ok: true, dataUrl };
-  });
-  ipcMain.handle("lykn:background-clear", () => {
-    try {
-      fsSync.unlinkSync(studioBgFile());
-    } catch (_) {}
-    mergeWelcomeProfile({
-      studioBackground: "",
-      studioBackgroundPath: "",
-      studioBackgroundId: "",
-    });
-    broadcastBackground("");
-    return { ok: true };
-  });
-
-  // Widgets stage: which widgets the Home desktop shows. The studio keeps
-  // widget state in its own settings, so the picks travel with a stamp — the
-  // renderer applies them once and later Settings edits stay put.
-  const readHomeWidgets = () => {
-    try {
-      const file = path.join(app.getPath("userData"), "welcome-profile.json");
-      const profile = JSON.parse(fsSync.readFileSync(file, "utf8"));
-      const widgets =
-        profile.homeWidgets && typeof profile.homeWidgets === "object"
-          ? profile.homeWidgets
-          : {};
-      return { ok: true, widgets, stamp: Number(profile.homeWidgetsStamp) || 0 };
-    } catch {
-      return { ok: true, widgets: {}, stamp: 0 };
-    }
-  };
-  ipcMain.handle("lykn:home-widgets-get", () => readHomeWidgets());
-  ipcMain.handle("lykn:welcome-widgets", (_e, widgets = {}) => {
-    const clean = {};
-    for (const [id, on] of Object.entries(widgets || {})) {
-      if (/^[a-zA-Z]{1,40}$/.test(id)) clean[id] = on === true;
-    }
-    const stamp = Date.now();
-    mergeWelcomeProfile({ homeWidgets: clean, homeWidgetsStamp: stamp });
-    for (const win of BrowserWindow.getAllWindows()) {
-      try {
-        if (!win.isDestroyed()) {
-          win.webContents.send("lykn:home-widgets-changed", { widgets: clean, stamp });
-        }
-      } catch (_) {}
-    }
-    return { ok: true };
-  });
-
-  // Apps stage: the user's favorite apps as ready-made hot links for the
-  // browser — { id, name, url, icon } each.
-  ipcMain.handle("lykn:welcome-apps", (_e, apps) => {
-    const clean = (Array.isArray(apps) ? apps : [])
-      .filter((a) => a && typeof a === "object")
-      .map((a) => ({
-        id: String(a.id || "").slice(0, 100),
-        name: String(a.name || "").slice(0, 80),
-        url: String(a.url || ""),
-        icon: String(a.icon || ""),
-      }))
-      .filter((a) => a.name && /^https:\/\//.test(a.url) && (!a.icon || /^https:\/\//.test(a.icon)))
-      .slice(0, 24);
-    mergeWelcomeProfile({ favoriteApps: clean, hotLinks: clean });
-    return { ok: true };
-  });
-
-  // Privacy stage: tracker blocking + content-data sharing choices.
-  ipcMain.handle("lykn:welcome-privacy", (_e, privacy = {}) => {
-    mergeWelcomeProfile({
-      blockTrackers: !!privacy.blockTrackers,
-      shareContentData: !!privacy.shareContentData,
-    });
-    return { ok: true };
-  });
-
-  // Make LYKN Yours: theme, response, and chat-color picks. IDs match
-  // Settings › Appearance / Assistant (`src/lib/appearance.js`).
-  const WELCOME_ACCENTS = new Set([
-    "snow", "sand", "sage", "mist", "ocean",
-    "periwinkle", "orchid", "clay", "graphite",
-  ]);
-  const WELCOME_INKS = new Set([
-    "default", "accent", "white", "ivory", "silver", "graphite", "charcoal",
-    "blue", "sky", "teal", "green", "yellow", "orange", "red", "pink", "purple",
-    "navy", "forest", "crimson", "rust", "plum",
-  ]);
-  const sanitizeWelcomeDesign = (prefs = {}) => {
-    const patch = {};
-    if (WELCOME_ACCENTS.has(prefs.accent)) patch.accent = prefs.accent;
-    // Older walkthroughs stored a hex swatch — keep it so a mid-upgrade
-    // profile still writes, but the renderer only applies named ids.
-    if (typeof prefs.accent === "string" && /^#[0-9a-f]{6}$/i.test(prefs.accent)) {
-      patch.accent = prefs.accent;
-    }
-    if (["dark", "light", "system", "auto"].includes(prefs.appearance)) {
-      patch.appearance = prefs.appearance === "auto" ? "system" : prefs.appearance;
-    }
-    if (["concise", "medium", "detailed"].includes(prefs.responseLength)) {
-      patch.responseLength = prefs.responseLength;
-    }
-    if (typeof prefs.userPrompt === "string") patch.userPrompt = prefs.userPrompt.slice(0, 1500);
-    if (WELCOME_INKS.has(prefs.chatUserTextColor)) patch.chatUserTextColor = prefs.chatUserTextColor;
-    if (WELCOME_INKS.has(prefs.chatBubbleColor)) patch.chatBubbleColor = prefs.chatBubbleColor;
-    if (WELCOME_INKS.has(prefs.chatAiTextColor)) patch.chatAiTextColor = prefs.chatAiTextColor;
-    if (["small", "default", "large", "xlarge"].includes(prefs.chatUserTextSize)) {
-      patch.chatUserTextSize = prefs.chatUserTextSize;
-    }
-    if (["small", "default", "large", "xlarge"].includes(prefs.chatAiTextSize)) {
-      patch.chatAiTextSize = prefs.chatAiTextSize;
-    }
-    if (["small", "default", "large", "xlarge"].includes(prefs.chatBarSize)) {
-      patch.chatBarSize = prefs.chatBarSize;
-    }
-    if (["tail", "round", "pill", "rectangle", "leaf"].includes(prefs.chatBubbleShape)) {
-      patch.chatBubbleShape = prefs.chatBubbleShape;
-    }
-    if (["soft", "rectangle", "slate", "leaf"].includes(prefs.chatBarShape)) {
-      patch.chatBarShape = prefs.chatBarShape;
-    }
-    if (["arrow", "arrowRight", "plane", "return", "chevron", "sparkle"].includes(prefs.chatSendIcon)) {
-      patch.chatSendIcon = prefs.chatSendIcon;
-    }
-    if (["default", "circle", "squircle", "rounded", "square"].includes(prefs.chatSendShape)) {
-      patch.chatSendShape = prefs.chatSendShape;
-    }
-    return patch;
-  };
-  const readWelcomeDesign = () => {
-    try {
-      const profile = readWelcomeProfile();
-      return {
-        ok: true,
-        stamp: Number(profile.welcomeDesignStamp) || 0,
-        prefs: {
-          accent: profile.accent,
-          appearance: profile.appearance,
-          responseLength: profile.responseLength,
-          userPrompt: profile.userPrompt,
-          chatUserTextColor: profile.chatUserTextColor,
-          chatBubbleColor: profile.chatBubbleColor,
-          chatAiTextColor: profile.chatAiTextColor,
-          chatUserTextSize: profile.chatUserTextSize,
-          chatAiTextSize: profile.chatAiTextSize,
-          chatBarSize: profile.chatBarSize,
-          chatBubbleShape: profile.chatBubbleShape,
-          chatBarShape: profile.chatBarShape,
-          chatSendIcon: profile.chatSendIcon,
-          chatSendShape: profile.chatSendShape,
-        },
-      };
-    } catch {
-      return { ok: true, stamp: 0, prefs: {} };
-    }
-  };
-  const broadcastWelcomeDesign = (payload) => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      try {
-        if (!win.isDestroyed()) {
-          win.webContents.send("lykn:welcome-design-changed", payload);
-        }
-      } catch (_) {}
-    }
-  };
-  ipcMain.handle("lykn:welcome-design-get", () => readWelcomeDesign());
-  ipcMain.handle("lykn:welcome-prefs", (_e, prefs = {}) => {
-    const patch = sanitizeWelcomeDesign(prefs);
-    const stamp = Date.now();
-    mergeWelcomeProfile({ ...patch, welcomeDesignStamp: stamp });
-    broadcastWelcomeDesign({ prefs: { ...readWelcomeDesign().prefs }, stamp });
-    return { ok: true };
-  });
-
-  // Done with the welcome stages. The studio has been loading hidden behind
-  // the walkthrough since launch (createMainWindow boots
-  // /studio?glass=1&walkthrough=1 and the walkthrough sign-in hands it the
-  // session live) — DON'T reload it here: a reload restarts the whole app
-  // boot and the reveal lands on the app's own loading screen. Just wait for
-  // the existing load to settle (20s worst case), keep the loader up for at
-  // least one full spinner cycle, then fade out — the closed handler reveals
-  // the already-rendered studio.
-  ipcMain.handle("lykn:welcome-finish", async () => {
-    // The finish-stage logo reveal (lyknReveal*) runs a 4.5s cycle — never
-    // fade out before one full pass, even if the studio is already ready.
-    const MIN_LOADER_MS = 4650;
-    const loaderShownAt = Date.now();
-    try {
-      const wc = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
-      if (wc && (wc.isLoading() || !wc.getURL())) {
-        await new Promise((resolve) => {
-          const timer = setTimeout(resolve, 20000);
-          wc.once("did-finish-load", () => {
-            clearTimeout(timer);
-            resolve();
-          });
-        });
-      }
-      if (wc) {
-        welcomeStudioPreloaded = true;
-        console.log("[welcome] finish: revealing", wc.getURL() || "(no url)");
-      }
-    } catch {
-      /* reveal whatever we have */
-    }
-    const hold = MIN_LOADER_MS - (Date.now() - loaderShownAt);
-    if (hold > 0) await new Promise((resolve) => setTimeout(resolve, hold));
-    if (welcomeWindow && !welcomeWindow.isDestroyed()) {
-      try {
-        await welcomeWindow.webContents.executeJavaScript(
-          'document.body.classList.add("leaving")',
-          true,
-        );
-      } catch {
-        /* fade is cosmetic */
-      }
-      setTimeout(() => {
-        if (welcomeWindow && !welcomeWindow.isDestroyed()) welcomeWindow.close();
-      }, 520);
-    }
-    return { ok: true };
-  });
-
-  ipcMain.on("lykn:welcome-open-privacy", () => {
-    void shell.openExternal(`${APP_ORIGIN}/privacy`);
-  });
-
-  ipcMain.on("lykn:welcome-open-terms", () => {
-    void shell.openExternal(`${APP_ORIGIN}/terms`);
-  });
-}
-
-function registerOnboardingIpc() {
-  // Signed-in check: the main window holds the Supabase session (localStorage),
-  // so a live token read is the source of truth.
-  ipcMain.handle("lykn:onboarding-auth-status", async () => {
-    const token = await getAuthToken();
-    return !!token;
-  });
-
-  ipcMain.on("lykn:onboarding-open-sign-in", () => {
-    if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
-    mainWindow.show();
-    mainWindow.focus();
-    // Keep the walkthrough visible next to the sign-in window so the user
-    // comes back to it naturally once the auth badge flips.
-    if (onboardingWindow && !onboardingWindow.isDestroyed()) {
-      onboardingWindow.showInactive();
-    }
-  });
-
-  ipcMain.handle("lykn:onboarding-mic-status", () => microphoneStatus());
-
-  ipcMain.handle("lykn:onboarding-request-mic", async () => {
-    try {
-      const status = microphoneStatus();
-      if (status === "granted") return true;
-      if (IS_MAC) {
-        if (status === "not-determined") {
-          return await withPermissionPrompt("microphone", () =>
-            systemPreferences.askForMediaAccess("microphone"),
-          );
-        }
-        openMicrophoneSettings();
-        return false;
-      }
-      // Windows: open Settings so the user can allow LYKN; getUserMedia also
-      // prompts the first time voice/dictation runs.
-      openMicrophoneSettings();
-      return microphoneStatus() === "granted";
-    } catch {
-      return false;
-    }
-  });
-
-  ipcMain.on("lykn:onboarding-open-mic-settings", () => {
-    openMicrophoneSettings();
-  });
-
-  ipcMain.handle("lykn:onboarding-screen-status", () => onboardingScreenStatus());
-
-  ipcMain.handle("lykn:onboarding-request-screen", async () => {
-    // Attempting a capture is what makes macOS show the Screen Recording prompt
-    // and register LYKN in the privacy list. On Windows it's a connectivity check.
-    if (IS_MAC) {
-      const access = await ensureScreenRecordingAccess();
-      return access.status;
-    }
-    try {
-      const dataUrl = await capturePrimaryScreen();
-      screenProbeCache = dataUrl ? "granted" : "denied";
-      return screenProbeCache;
-    } catch {
-      screenProbeCache = "denied";
-      return "denied";
-    }
-  });
-
-  ipcMain.on("lykn:onboarding-open-screen-settings", () => {
-    // Fire-and-forget: probe first so LYKN is in the TCC list, then open Settings.
-    void (async () => {
-      if (IS_MAC && screenCaptureStatus() !== "granted") {
-        await withPermissionPrompt("screen", () => probeScreenRecordingTcc());
-      }
-      await openScreenPrivacySettings({ afterTccRegister: true });
-    })();
-  });
-
-  ipcMain.on("lykn:onboarding-open-automation-settings", () => {
-    if (!IS_MAC) return;
-    shell.openExternal(
-      "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
-    );
-  });
-
-  ipcMain.handle("lykn:onboarding-accessibility-status", () => {
-    if (!IS_MAC) return "granted";
-    try {
-      return systemPreferences.isTrustedAccessibilityClient(false) ? "granted" : "denied";
-    } catch {
-      return "unknown";
-    }
-  });
-
-  ipcMain.handle("lykn:onboarding-request-accessibility", async () => {
-    if (!IS_MAC) return "granted";
-    try {
-      await withPermissionPrompt("accessibility", async () => {
-        systemPreferences.isTrustedAccessibilityClient(true);
-      });
-      return systemPreferences.isTrustedAccessibilityClient(false) ? "granted" : "denied";
-    } catch {
-      return "unknown";
-    }
-  });
-
-  ipcMain.on("lykn:onboarding-open-accessibility-settings", () => {
-    if (!IS_MAC) return;
-    shell.openExternal(
-      "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-    );
-  });
-
-  ipcMain.handle("lykn:onboarding-test-apple-events", async () => {
-    if (!IS_MAC) return { state: "granted", browser: null };
-    const target = await getActiveBrowserTarget();
-    if (!target) return { state: "no-browser" };
-    const text = await getBrowserPageText(target.appName);
-    if (text) return { state: "granted", browser: target.appName };
-    // We had a browser/URL but couldn't read the DOM — almost always the toggle.
-    return {
-      state: "denied",
-      browser: target.appName,
-      message: "Enable 'Allow JavaScript from Apple Events'",
-    };
-  });
-
-  ipcMain.on("lykn:onboarding-finish", async () => {
-    try {
-      await fs.writeFile(onboardingMarkerPath(), new Date().toISOString());
-    } catch {
-      /* non-fatal */
-    }
-    if (onboardingWindow && !onboardingWindow.isDestroyed()) onboardingWindow.close();
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show();
-      mainWindow.focus();
-    }
-  });
-}
-
-function registerExtensionInstallIpc() {
-  ipcMain.handle("lykn:open-extension-install", () => {
-    createExtensionInstallWindow();
-    return { ok: true };
-  });
-  ipcMain.handle("lykn:extension-install-mode", () => getExtensionInstallMode());
-  ipcMain.handle("lykn:install-extension-one-click", async (_e, { browser } = {}) => {
-    try {
-      return await installExtensionOneClick(
-        {
-          browser: browser || "chrome",
-          userDataPath: app.getPath("userData"),
-          packaged: app.isPackaged,
-          resourcesPath: process.resourcesPath,
-          appDir: __dirname,
-          shell,
-          clipboard,
-          dialog,
-          writeBridgeConfig: (dir) => extensionBridge?.writeBridgeConfigToExtensionDir?.(dir),
-        },
-      );
-    } catch (e) {
-      console.warn("[extension-install]", e?.message || e);
-      return { ok: false, error: String(e?.message || e) };
-    }
-  });
-  ipcMain.handle("lykn:reveal-extension-folder", async (_e, { reveal = true } = {}) => {
-    try {
-      const extPath = await prepareExtensionInstallDir({
-        userDataPath: app.getPath("userData"),
-        packaged: app.isPackaged,
-        resourcesPath: process.resourcesPath,
-        appDir: __dirname,
-        writeBridgeConfig: (dir) => extensionBridge?.writeBridgeConfigToExtensionDir?.(dir),
-      });
-      clipboard.writeText(extPath);
-      if (!reveal) {
-        return { ok: true, path: extPath, folderName: path.basename(extPath) };
-      }
-      const revealed = await revealExtensionInstallFolder(shell, extPath);
-      return {
-        ok: !!revealed?.ok,
-        path: extPath,
-        folderName: path.basename(extPath),
-        error: revealed?.error,
-      };
-    } catch (e) {
-      console.warn("[extension-install] reveal:", e?.message || e);
-      return { ok: false, error: String(e?.message || e) };
-    }
-  });
-  ipcMain.handle("lykn:extension-bridge-status", () => {
-    const connected = !!extensionBridge?.isConnected?.();
-    if (connected) liveWatchState.extensionConnected = true;
-    return {
-      ok: true,
-      connected,
-      live: !!extensionBridge?.isLive?.(),
-      port: extensionBridge?.port || 38471,
-      // Shown in install UI so store-installed extensions can be paired manually.
-      token: extensionBridge?.getToken?.() || "",
-    };
-  });
-  ipcMain.on("lykn:extension-install-close", () => {
-    if (extensionInstallWindow && !extensionInstallWindow.isDestroyed()) {
-      extensionInstallWindow.close();
-    }
-  });
-}
 
 // Synchronous version lookup for the preload bridge. `app.getVersion()` reads
 // the packaged app's Info.plist / package.json version — unlike
@@ -16217,6 +11965,516 @@ function initAutoUpdate() {
   }
 }
 
+const d = {
+  electron: {
+    app, BrowserWindow, WebContentsView, shell, globalShortcut, Menu, ipcMain,
+    desktopCapturer, screen, systemPreferences, dialog, nativeImage, clipboard,
+    Tray, session, Notification, powerMonitor, nativeTheme, protocol,
+    net: electronNet,
+  },
+  node: {
+    path,
+    url: require("node:url"),
+    fs,
+    fsSync,
+    crypto,
+    http,
+    childProcess: require("node:child_process"),
+  },
+  env: { IS_MAC, IS_WIN, GLASS_FALLBACK, APP_URL, APP_ORIGIN, API_BASE },
+  constants: overlayConstants,
+  safeFetchMain,
+  assertPublicHttpUrl,
+  openExternalSafe,
+};
+
+function bindShellContext() {
+  Object.defineProperty(d, "pendingAuthTokens", { enumerable: true, get: () => pendingAuthTokens, set: (v) => { pendingAuthTokens = v; } });
+  Object.defineProperty(d, "pendingDesktopAuthState", { enumerable: true, get: () => pendingDesktopAuthState, set: (v) => { pendingDesktopAuthState = v; } });
+  Object.defineProperty(d, "lastAcceptedAuthHandoff", { enumerable: true, get: () => lastAcceptedAuthHandoff, set: (v) => { lastAcceptedAuthHandoff = v; } });
+  Object.defineProperty(d, "authHandoffServer", { enumerable: true, get: () => authHandoffServer, set: (v) => { authHandoffServer = v; } });
+  Object.defineProperty(d, "authHandoffPort", { enumerable: true, get: () => authHandoffPort, set: (v) => { authHandoffPort = v; } });
+  Object.defineProperty(d, "mainWindow", { enumerable: true, get: () => mainWindow, set: (v) => { mainWindow = v; } });
+  Object.defineProperty(d, "studioWindow", { enumerable: true, get: () => studioWindow, set: (v) => { studioWindow = v; } });
+  Object.defineProperty(d, "overlayWindow", { enumerable: true, get: () => overlayWindow, set: (v) => { overlayWindow = v; } });
+  Object.defineProperty(d, "burstWindow", { enumerable: true, get: () => burstWindow, set: (v) => { burstWindow = v; } });
+  Object.defineProperty(d, "burstHideTimer", { enumerable: true, get: () => burstHideTimer, set: (v) => { burstHideTimer = v; } });
+  Object.defineProperty(d, "burstWindowWarmed", { enumerable: true, get: () => burstWindowWarmed, set: (v) => { burstWindowWarmed = v; } });
+  Object.defineProperty(d, "tray", { enumerable: true, get: () => tray, set: (v) => { tray = v; } });
+  Object.defineProperty(d, "allowQuit", { enumerable: true, get: () => allowQuit, set: (v) => { allowQuit = v; } });
+  Object.defineProperty(d, "pendingUpdate", { enumerable: true, get: () => pendingUpdate, set: (v) => { pendingUpdate = v; } });
+  Object.defineProperty(d, "installPendingUpdate", { enumerable: true, get: () => installPendingUpdate, set: (v) => { installPendingUpdate = v; } });
+  Object.defineProperty(d, "updatePromptOpen", { enumerable: true, get: () => updatePromptOpen, set: (v) => { updatePromptOpen = v; } });
+  Object.defineProperty(d, "lastUpdatePromptAt", { enumerable: true, get: () => lastUpdatePromptAt, set: (v) => { lastUpdatePromptAt = v; } });
+  Object.defineProperty(d, "updateNotifiedForVersion", { enumerable: true, get: () => updateNotifiedForVersion, set: (v) => { updateNotifiedForVersion = v; } });
+  Object.defineProperty(d, "agentFinishedPopup", { enumerable: true, get: () => agentFinishedPopup, set: (v) => { agentFinishedPopup = v; } });
+  Object.defineProperty(d, "agentFinishedPopupTimer", { enumerable: true, get: () => agentFinishedPopupTimer, set: (v) => { agentFinishedPopupTimer = v; } });
+  Object.defineProperty(d, "agentStageToastReserve", { enumerable: true, get: () => agentStageToastReserve, set: (v) => { agentStageToastReserve = v; } });
+  Object.defineProperty(d, "browserExecuteInFlight", { enumerable: true, get: () => browserExecuteInFlight, set: (v) => { browserExecuteInFlight = v; } });
+  Object.defineProperty(d, "onboardingWindow", { enumerable: true, get: () => onboardingWindow, set: (v) => { onboardingWindow = v; } });
+  Object.defineProperty(d, "extensionInstallWindow", { enumerable: true, get: () => extensionInstallWindow, set: (v) => { extensionInstallWindow = v; } });
+  Object.defineProperty(d, "welcomeWindow", { enumerable: true, get: () => welcomeWindow, set: (v) => { welcomeWindow = v; } });
+  Object.defineProperty(d, "welcomeGateActive", { enumerable: true, get: () => welcomeGateActive, set: (v) => { welcomeGateActive = v; } });
+  Object.defineProperty(d, "welcomeStudioPreloaded", { enumerable: true, get: () => welcomeStudioPreloaded, set: (v) => { welcomeStudioPreloaded = v; } });
+  Object.defineProperty(d, "overlayVisibleBeforeExtensionInstall", { enumerable: true, get: () => overlayVisibleBeforeExtensionInstall, set: (v) => { overlayVisibleBeforeExtensionInstall = v; } });
+  Object.defineProperty(d, "overlayUserPositioned", { enumerable: true, get: () => overlayUserPositioned, set: (v) => { overlayUserPositioned = v; } });
+  Object.defineProperty(d, "overlayAnchorLeft", { enumerable: true, get: () => overlayAnchorLeft, set: (v) => { overlayAnchorLeft = v; } });
+  Object.defineProperty(d, "overlayAnchorBottomY", { enumerable: true, get: () => overlayAnchorBottomY, set: (v) => { overlayAnchorBottomY = v; } });
+  Object.defineProperty(d, "overlayProgrammaticMove", { enumerable: true, get: () => overlayProgrammaticMove, set: (v) => { overlayProgrammaticMove = v; } });
+  Object.defineProperty(d, "mainWindowDeferred", { enumerable: true, get: () => mainWindowDeferred, set: (v) => { mainWindowDeferred = v; } });
+  Object.defineProperty(d, "overlayCollapsed", { enumerable: true, get: () => overlayCollapsed, set: (v) => { overlayCollapsed = v; } });
+  Object.defineProperty(d, "screenProbeCache", { enumerable: true, get: () => screenProbeCache, set: (v) => { screenProbeCache = v; } });
+  Object.defineProperty(d, "permissionPromptChain", { enumerable: true, get: () => permissionPromptChain, set: (v) => { permissionPromptChain = v; } });
+  Object.defineProperty(d, "snipWindow", { enumerable: true, get: () => snipWindow, set: (v) => { snipWindow = v; } });
+  Object.defineProperty(d, "snipResolver", { enumerable: true, get: () => snipResolver, set: (v) => { snipResolver = v; } });
+  Object.defineProperty(d, "menuWindow", { enumerable: true, get: () => menuWindow, set: (v) => { menuWindow = v; } });
+  Object.defineProperty(d, "menuHeight", { enumerable: true, get: () => menuHeight, set: (v) => { menuHeight = v; } });
+  Object.defineProperty(d, "pickerWindow", { enumerable: true, get: () => pickerWindow, set: (v) => { pickerWindow = v; } });
+  Object.defineProperty(d, "pickerHeight", { enumerable: true, get: () => pickerHeight, set: (v) => { pickerHeight = v; } });
+  Object.defineProperty(d, "langPickerWindow", { enumerable: true, get: () => langPickerWindow, set: (v) => { langPickerWindow = v; } });
+  Object.defineProperty(d, "langPickerHeight", { enumerable: true, get: () => langPickerHeight, set: (v) => { langPickerHeight = v; } });
+  Object.defineProperty(d, "langPickerAnchor", { enumerable: true, get: () => langPickerAnchor, set: (v) => { langPickerAnchor = v; } });
+  Object.defineProperty(d, "liveWindow", { enumerable: true, get: () => liveWindow, set: (v) => { liveWindow = v; } });
+  Object.defineProperty(d, "lastLiveState", { enumerable: true, get: () => lastLiveState, set: (v) => { lastLiveState = v; } });
+  Object.defineProperty(d, "liveCardOpen", { enumerable: true, get: () => liveCardOpen, set: (v) => { liveCardOpen = v; } });
+  Object.defineProperty(d, "panelWindow", { enumerable: true, get: () => panelWindow, set: (v) => { panelWindow = v; } });
+  Object.defineProperty(d, "panelWidth", { enumerable: true, get: () => panelWidth, set: (v) => { panelWidth = v; } });
+  Object.defineProperty(d, "panelHeight", { enumerable: true, get: () => panelHeight, set: (v) => { panelHeight = v; } });
+  Object.defineProperty(d, "lastPanelState", { enumerable: true, get: () => lastPanelState, set: (v) => { lastPanelState = v; } });
+  Object.defineProperty(d, "panelCardOpen", { enumerable: true, get: () => panelCardOpen, set: (v) => { panelCardOpen = v; } });
+  Object.defineProperty(d, "agentSidebarWindow", { enumerable: true, get: () => agentSidebarWindow, set: (v) => { agentSidebarWindow = v; } });
+  Object.defineProperty(d, "agentSidebarHeight", { enumerable: true, get: () => agentSidebarHeight, set: (v) => { agentSidebarHeight = v; } });
+  Object.defineProperty(d, "agentSidebarOpen", { enumerable: true, get: () => agentSidebarOpen, set: (v) => { agentSidebarOpen = v; } });
+  Object.defineProperty(d, "agentRuntime", { enumerable: true, get: () => agentRuntime, set: (v) => { agentRuntime = v; } });
+  Object.defineProperty(d, "openBrowserTaskChat", { enumerable: true, get: () => openBrowserTaskChat, set: (v) => { openBrowserTaskChat = v; } });
+  Object.defineProperty(d, "agentStageWindow", { enumerable: true, get: () => agentStageWindow, set: (v) => { agentStageWindow = v; } });
+  Object.defineProperty(d, "agentStageChromeHeight", { enumerable: true, get: () => agentStageChromeHeight, set: (v) => { agentStageChromeHeight = v; } });
+  Object.defineProperty(d, "agentStageActiveId", { enumerable: true, get: () => agentStageActiveId, set: (v) => { agentStageActiveId = v; } });
+  Object.defineProperty(d, "agentChatOpen", { enumerable: true, get: () => agentChatOpen, set: (v) => { agentChatOpen = v; } });
+  Object.defineProperty(d, "agentStageMenuOverlay", { enumerable: true, get: () => agentStageMenuOverlay, set: (v) => { agentStageMenuOverlay = v; } });
+  Object.defineProperty(d, "agentStagePendingOmniboxFocusId", { enumerable: true, get: () => agentStagePendingOmniboxFocusId, set: (v) => { agentStagePendingOmniboxFocusId = v; } });
+  Object.defineProperty(d, "agentStageIncognitoDefault", { enumerable: true, get: () => agentStageIncognitoDefault, set: (v) => { agentStageIncognitoDefault = v; } });
+  Object.defineProperty(d, "agentBrowserHistoryCache", { enumerable: true, get: () => agentBrowserHistoryCache, set: (v) => { agentBrowserHistoryCache = v; } });
+  Object.defineProperty(d, "studioStageChromeView", { enumerable: true, get: () => studioStageChromeView, set: (v) => { studioStageChromeView = v; } });
+  Object.defineProperty(d, "studioStageBounds", { enumerable: true, get: () => studioStageBounds, set: (v) => { studioStageBounds = v; } });
+  Object.defineProperty(d, "studioStageEmbedded", { enumerable: true, get: () => studioStageEmbedded, set: (v) => { studioStageEmbedded = v; } });
+  Object.defineProperty(d, "studioBrowserDisposing", { enumerable: true, get: () => studioBrowserDisposing, set: (v) => { studioBrowserDisposing = v; } });
+  Object.defineProperty(d, "studioStageRadius", { enumerable: true, get: () => studioStageRadius, set: (v) => { studioStageRadius = v; } });
+  Object.defineProperty(d, "agentStageStackKey", { enumerable: true, get: () => agentStageStackKey, set: (v) => { agentStageStackKey = v; } });
+  Object.defineProperty(d, "studioStageRevealed", { enumerable: true, get: () => studioStageRevealed, set: (v) => { studioStageRevealed = v; } });
+  Object.defineProperty(d, "studioStageRevealTimer", { enumerable: true, get: () => studioStageRevealTimer, set: (v) => { studioStageRevealTimer = v; } });
+  Object.defineProperty(d, "browsingHabitsContext", { enumerable: true, get: () => browsingHabitsContext, set: (v) => { browsingHabitsContext = v; } });
+  Object.defineProperty(d, "studioStageShotTimer", { enumerable: true, get: () => studioStageShotTimer, set: (v) => { studioStageShotTimer = v; } });
+  Object.defineProperty(d, "studioStageShotAt", { enumerable: true, get: () => studioStageShotAt, set: (v) => { studioStageShotAt = v; } });
+  Object.defineProperty(d, "agentRuntimeLoadPromise", { enumerable: true, get: () => agentRuntimeLoadPromise, set: (v) => { agentRuntimeLoadPromise = v; } });
+  Object.defineProperty(d, "lastOverlayReactArtifact", { enumerable: true, get: () => lastOverlayReactArtifact, set: (v) => { lastOverlayReactArtifact = v; } });
+  Object.defineProperty(d, "lastOverlayVaultImage", { enumerable: true, get: () => lastOverlayVaultImage, set: (v) => { lastOverlayVaultImage = v; } });
+  Object.defineProperty(d, "lastOverlayPageFingerprint", { enumerable: true, get: () => lastOverlayPageFingerprint, set: (v) => { lastOverlayPageFingerprint = v; } });
+  Object.defineProperty(d, "cachedAuthToken", { enumerable: true, get: () => cachedAuthToken, set: (v) => { cachedAuthToken = v; } });
+  Object.defineProperty(d, "cachedAuthTokenExpMs", { enumerable: true, get: () => cachedAuthTokenExpMs, set: (v) => { cachedAuthTokenExpMs = v; } });
+  Object.defineProperty(d, "hiddenAuthReadPromise", { enumerable: true, get: () => hiddenAuthReadPromise, set: (v) => { hiddenAuthReadPromise = v; } });
+  Object.defineProperty(d, "authKeeperWindow", { enumerable: true, get: () => authKeeperWindow, set: (v) => { authKeeperWindow = v; } });
+  Object.defineProperty(d, "liveWatchTimer", { enumerable: true, get: () => liveWatchTimer, set: (v) => { liveWatchTimer = v; } });
+  Object.defineProperty(d, "liveWatchCaptureInFlight", { enumerable: true, get: () => liveWatchCaptureInFlight, set: (v) => { liveWatchCaptureInFlight = v; } });
+  Object.defineProperty(d, "liveWatchVisionInFlight", { enumerable: true, get: () => liveWatchVisionInFlight, set: (v) => { liveWatchVisionInFlight = v; } });
+  Object.defineProperty(d, "liveWatchLastFingerprint", { enumerable: true, get: () => liveWatchLastFingerprint, set: (v) => { liveWatchLastFingerprint = v; } });
+  Object.defineProperty(d, "liveWatchLastFrameUrl", { enumerable: true, get: () => liveWatchLastFrameUrl, set: (v) => { liveWatchLastFrameUrl = v; } });
+  Object.defineProperty(d, "liveWatchLastVisionAt", { enumerable: true, get: () => liveWatchLastVisionAt, set: (v) => { liveWatchLastVisionAt = v; } });
+  Object.defineProperty(d, "liveWatchBurstUntil", { enumerable: true, get: () => liveWatchBurstUntil, set: (v) => { liveWatchBurstUntil = v; } });
+  Object.defineProperty(d, "liveWatchForceVision", { enumerable: true, get: () => liveWatchForceVision, set: (v) => { liveWatchForceVision = v; } });
+  Object.defineProperty(d, "liveWatchState", { enumerable: true, get: () => liveWatchState, set: (v) => { liveWatchState = v; } });
+  Object.defineProperty(d, "liveWatchTextInFlight", { enumerable: true, get: () => liveWatchTextInFlight, set: (v) => { liveWatchTextInFlight = v; } });
+  Object.defineProperty(d, "liveWatchForceTextPass", { enumerable: true, get: () => liveWatchForceTextPass, set: (v) => { liveWatchForceTextPass = v; } });
+  Object.defineProperty(d, "liveWatchPendingTextPass", { enumerable: true, get: () => liveWatchPendingTextPass, set: (v) => { liveWatchPendingTextPass = v; } });
+  Object.defineProperty(d, "liveWatchLastPageText", { enumerable: true, get: () => liveWatchLastPageText, set: (v) => { liveWatchLastPageText = v; } });
+  Object.defineProperty(d, "liveWatchLastPageSig", { enumerable: true, get: () => liveWatchLastPageSig, set: (v) => { liveWatchLastPageSig = v; } });
+  Object.defineProperty(d, "liveWatchLastPageUrl", { enumerable: true, get: () => liveWatchLastPageUrl, set: (v) => { liveWatchLastPageUrl = v; } });
+  Object.defineProperty(d, "liveWatchLastScrapeAt", { enumerable: true, get: () => liveWatchLastScrapeAt, set: (v) => { liveWatchLastScrapeAt = v; } });
+  Object.defineProperty(d, "extensionBridge", { enumerable: true, get: () => extensionBridge, set: (v) => { extensionBridge = v; } });
+  Object.defineProperty(d, "liveWatchLastRuleCheckAt", { enumerable: true, get: () => liveWatchLastRuleCheckAt, set: (v) => { liveWatchLastRuleCheckAt = v; } });
+  Object.defineProperty(d, "liveWatchSettleUntil", { enumerable: true, get: () => liveWatchSettleUntil, set: (v) => { liveWatchSettleUntil = v; } });
+  Object.defineProperty(d, "liveWatchPendingNavVision", { enumerable: true, get: () => liveWatchPendingNavVision, set: (v) => { liveWatchPendingNavVision = v; } });
+  Object.defineProperty(d, "liveWatchConsecutiveBurstFrames", { enumerable: true, get: () => liveWatchConsecutiveBurstFrames, set: (v) => { liveWatchConsecutiveBurstFrames = v; } });
+  Object.defineProperty(d, "overlayAskGeneration", { enumerable: true, get: () => overlayAskGeneration, set: (v) => { overlayAskGeneration = v; } });
+  Object.defineProperty(d, "overlayAskAbort", { enumerable: true, get: () => overlayAskAbort, set: (v) => { overlayAskAbort = v; } });
+  Object.defineProperty(d, "overlayActiveProjectId", { enumerable: true, get: () => overlayActiveProjectId, set: (v) => { overlayActiveProjectId = v; } });
+  Object.defineProperty(d, "lastOverlayPageUrl", { enumerable: true, get: () => lastOverlayPageUrl, set: (v) => { lastOverlayPageUrl = v; } });
+  Object.defineProperty(d, "lastOverlayPageTitle", { enumerable: true, get: () => lastOverlayPageTitle, set: (v) => { lastOverlayPageTitle = v; } });
+  Object.defineProperty(d, "welcomeSignupSecret", { enumerable: true, get: () => welcomeSignupSecret, set: (v) => { welcomeSignupSecret = v; } });
+  d.toolStatusLabel = toolStatusLabel;
+  d.notifyMainProjectsChanged = notifyMainProjectsChanged;
+  d.maybeNotifyProjectsChangedFromTool = maybeNotifyProjectsChangedFromTool;
+  d.isAuthNavigation = isAuthNavigation;
+  d.desktopAuthStatePath = desktopAuthStatePath;
+  d.persistDesktopAuthState = persistDesktopAuthState;
+  d.loadDesktopAuthState = loadDesktopAuthState;
+  d.clearDesktopAuthState = clearDesktopAuthState;
+  d.authHandoffAllowedOrigin = authHandoffAllowedOrigin;
+  d.isReplayOfLastAuthHandoff = isReplayOfLastAuthHandoff;
+  d.deliverAuthTokensToRenderer = deliverAuthTokensToRenderer;
+  d.acceptAuthHandoffPayload = acceptAuthHandoffPayload;
+  d.startAuthHandoffServer = startAuthHandoffServer;
+  d.mintDesktopAuthUrl = mintDesktopAuthUrl;
+  d.flushPendingAuthTokens = flushPendingAuthTokens;
+  d.handleAuthDeepLink = handleAuthDeepLink;
+  d.findLyknUrlInArgv = findLyknUrlInArgv;
+  d.findPackagedLyknApp = findPackagedLyknApp;
+  d.preferPackagedLyknUrlHandler = preferPackagedLyknUrlHandler;
+  d.claimLyknProtocol = claimLyknProtocol;
+  d.quitForReal = quitForReal;
+  d.ensureAppSurfacedForUpdate = ensureAppSurfacedForUpdate;
+  d.notifyUpdateReady = notifyUpdateReady;
+  d.showAgentFinishedPopup = showAgentFinishedPopup;
+  d.closeAgentFinishedPopup = closeAgentFinishedPopup;
+  d.notifyAgentFinished = notifyAgentFinished;
+  d.maybePromptPendingUpdate = maybePromptPendingUpdate;
+  d.updateDockVisibility = updateDockVisibility;
+  d.createMainWindow = createMainWindow;
+  d.createStudioWindow = createStudioWindow;
+  d.studioWindowRef = studioWindowRef;
+  d.studioFullscreenActive = studioFullscreenActive;
+  d.broadcastStudioFullscreen = broadcastStudioFullscreen;
+  d.showStudioWindow = showStudioWindow;
+  d.afterStudioFullscreenExit = afterStudioFullscreenExit;
+  d.hideStudioWindow = hideStudioWindow;
+  d.installPermissionHandler = installPermissionHandler;
+  d.setupSystemAudioCapture = setupSystemAudioCapture;
+  d.floatingGlassChrome = floatingGlassChrome;
+  d.roundedRectShape = roundedRectShape;
+  d.applyFloatingGlassShape = applyFloatingGlassShape;
+  d.hardenFloatingGlass = hardenFloatingGlass;
+  d.setFloatingBounds = setFloatingBounds;
+  d.overlayWorkArea = overlayWorkArea;
+  d.overlayPosition = overlayPosition;
+  d.overlayBoundsNeedHeal = overlayBoundsNeedHeal;
+  d.resetOverlayPositionToDefault = resetOverlayPositionToDefault;
+  d.healOverlayGeometry = healOverlayGeometry;
+  d.createOverlayWindow = createOverlayWindow;
+  d.setOverlayCollapsed = setOverlayCollapsed;
+  d.setOverlaySize = setOverlaySize;
+  d.hideOverlay = hideOverlay;
+  d.setOverlayClickThrough = setOverlayClickThrough;
+  d.focusOverlayForTyping = focusOverlayForTyping;
+  d.withOverlayHiddenForClick = withOverlayHiddenForClick;
+  d.withPermissionPrompt = withPermissionPrompt;
+  d.isAutomationDeniedError = isAutomationDeniedError;
+  d.screenCaptureStatus = screenCaptureStatus;
+  d.onboardingScreenStatus = onboardingScreenStatus;
+  d.microphoneStatus = microphoneStatus;
+  d.openMicrophoneSettings = openMicrophoneSettings;
+  d.openScreenPrivacySettings = openScreenPrivacySettings;
+  d.probeScreenRecordingTcc = probeScreenRecordingTcc;
+  d.ensureScreenRecordingAccess = ensureScreenRecordingAccess;
+  d.screenRecordingDeniedMessage = screenRecordingDeniedMessage;
+  d.closeSnipWindow = closeSnipWindow;
+  d.captureInteractiveSnip = captureInteractiveSnip;
+  d.getTargetCaptureDisplay = getTargetCaptureDisplay;
+  d.capturePrimaryScreen = capturePrimaryScreen;
+  d.captureBrowserScreenThumbnail = captureBrowserScreenThumbnail;
+  d.createBurstWindow = createBurstWindow;
+  d.playOverlayBurst = playOverlayBurst;
+  d.hideOverlayGlass = hideOverlayGlass;
+  d.createMenuWindow = createMenuWindow;
+  d.menuTargetBounds = menuTargetBounds;
+  d.positionMenuWindow = positionMenuWindow;
+  d.notifyMenuVisibility = notifyMenuVisibility;
+  d.showMenuWindow = showMenuWindow;
+  d.hideMenuWindow = hideMenuWindow;
+  d.createPickerWindow = createPickerWindow;
+  d.pickerTargetBounds = pickerTargetBounds;
+  d.positionPickerWindow = positionPickerWindow;
+  d.notifyPickerVisibility = notifyPickerVisibility;
+  d.showPickerWindow = showPickerWindow;
+  d.hidePickerWindow = hidePickerWindow;
+  d.createLangPickerWindow = createLangPickerWindow;
+  d.langPickerTargetBounds = langPickerTargetBounds;
+  d.positionLangPickerWindow = positionLangPickerWindow;
+  d.notifyLangPickerVisibility = notifyLangPickerVisibility;
+  d.showLangPickerWindow = showLangPickerWindow;
+  d.hideLangPickerWindow = hideLangPickerWindow;
+  d.createLiveWindow = createLiveWindow;
+  d.liveWindowVisible = liveWindowVisible;
+  d.liveTargetBounds = liveTargetBounds;
+  d.positionLiveWindow = positionLiveWindow;
+  d.sendLiveState = sendLiveState;
+  d.showLiveWindow = showLiveWindow;
+  d.hideLiveWindow = hideLiveWindow;
+  d.createPanelWindow = createPanelWindow;
+  d.panelWindowVisible = panelWindowVisible;
+  d.panelTargetBounds = panelTargetBounds;
+  d.positionPanelWindow = positionPanelWindow;
+  d.sendPanelState = sendPanelState;
+  d.showPanelWindow = showPanelWindow;
+  d.hidePanelWindow = hidePanelWindow;
+  d.emitAgentToUi = emitAgentToUi;
+  d.createAgentSidebarWindow = createAgentSidebarWindow;
+  d.agentSidebarWindowVisible = agentSidebarWindowVisible;
+  d.agentSidebarTargetBounds = agentSidebarTargetBounds;
+  d.positionAgentSidebarWindow = positionAgentSidebarWindow;
+  d.showAgentSidebarWindow = showAgentSidebarWindow;
+  d.hideAgentSidebarWindow = hideAgentSidebarWindow;
+  d.agentTabFamilyActive = agentTabFamilyActive;
+  d.agentBrowserMainTabCount = agentBrowserMainTabCount;
+  d.agentBrandIconFor = agentBrandIconFor;
+  d.agentFaviconFallback = agentFaviconFallback;
+  d.isAgentArtifactTabId = isAgentArtifactTabId;
+  d.agentBrowserHistoryFile = agentBrowserHistoryFile;
+  d.readAgentBrowserHistory = readAgentBrowserHistory;
+  d.persistAgentBrowserHistory = persistAgentBrowserHistory;
+  d.pushAgentBrowserHistory = pushAgentBrowserHistory;
+  d.snapshotAgentBrowserHistory = snapshotAgentBrowserHistory;
+  d.commitAgentBrowserHistory = commitAgentBrowserHistory;
+  d.isAgentIncognito = isAgentIncognito;
+  d.agentBrowserPartition = agentBrowserPartition;
+  d.isAgentBrowserHomeUrl = isAgentBrowserHomeUrl;
+  d.agentBrowserHomeSender = agentBrowserHomeSender;
+  d.sanitizeHomeAttachments = sanitizeHomeAttachments;
+  d.attachmentsFromPickedPaths = attachmentsFromPickedPaths;
+  d.isLegacyGoogleHomeUrl = isLegacyGoogleHomeUrl;
+  d.loadAgentBrowserHome = loadAgentBrowserHome;
+  d.chromeUserAgentOverride = chromeUserAgentOverride;
+  d.applyAgentTabEmulation = applyAgentTabEmulation;
+  d.omniboxToUrl = omniboxToUrl;
+  d.agentStageUrlAllowed = agentStageUrlAllowed;
+  d.looksLikeAgentAuthPopupUrl = looksLikeAgentAuthPopupUrl;
+  d.agentAuthPopupParentWindow = agentAuthPopupParentWindow;
+  d.presentAgentAuthPopup = presentAgentAuthPopup;
+  d.wireAgentPopupWindow = wireAgentPopupWindow;
+  d.agentStageVisible = agentStageVisible;
+  d.studioStageEmbedActive = studioStageEmbedActive;
+  d.attachViewToWindow = attachViewToWindow;
+  d.detachViewFromWindow = detachViewFromWindow;
+  d.setViewVisible = setViewVisible;
+  d.raiseAgentStageView = raiseAgentStageView;
+  d.setViewRadius = setViewRadius;
+  d.setDockedViewBounds = setDockedViewBounds;
+  d.ensureStudioStageChromeView = ensureStudioStageChromeView;
+  d.studioStageParkShift = studioStageParkShift;
+  d.cancelStudioStageReveal = cancelStudioStageReveal;
+  d.revealStudioStageViewsWhenSettled = revealStudioStageViewsWhenSettled;
+  d.parkStudioStageViewsOnStage = parkStudioStageViewsOnStage;
+  d.setStudioBrowserEmbed = setStudioBrowserEmbed;
+  d.focusAgentStageOmnibox = focusAgentStageOmnibox;
+  d.requestOmniboxFocusForTab = requestOmniboxFocusForTab;
+  d.openFreshStudioBrowserTab = openFreshStudioBrowserTab;
+  d.fillEmptyStudioBrowser = fillEmptyStudioBrowser;
+  d.warmStudioBrowser = warmStudioBrowser;
+  d.closeStudioBrowserSession = closeStudioBrowserSession;
+  d.openStudioBrowserTabWithUrl = openStudioBrowserTabWithUrl;
+  d.normalizeSyncUrl = normalizeSyncUrl;
+  d.openAgentBrowserTabWithUrl = openAgentBrowserTabWithUrl;
+  d.browsingContextFile = browsingContextFile;
+  d.loadBrowsingHabitsContext = loadBrowsingHabitsContext;
+  d.getBrowsingContext = getBrowsingContext;
+  d.setBrowsingContextFromHistory = setBrowsingContextFromHistory;
+  d.createAgentStageWindow = createAgentStageWindow;
+  d.ensureAgentStageWindow = ensureAgentStageWindow;
+  d.agentStageChromeH = agentStageChromeH;
+  d.viewShotDataUrl = viewShotDataUrl;
+  d.refreshStudioStageShot = refreshStudioStageShot;
+  d.scheduleStudioStageShot = scheduleStudioStageShot;
+  d.agentTabReferenceWidth = agentTabReferenceWidth;
+  d.agentTabZoomForWidth = agentTabZoomForWidth;
+  d.applyAgentTabZoom = applyAgentTabZoom;
+  d.fitAgentTabsToPane = fitAgentTabsToPane;
+  d.botShotParkBounds = botShotParkBounds;
+  d.botShotHostWindow = botShotHostWindow;
+  d.prepareBotShotSurface = prepareBotShotSurface;
+  d.agentBotShotView = agentBotShotView;
+  d.setBotShotAgents = setBotShotAgents;
+  d.layoutAgentStageViews = layoutAgentStageViews;
+  d.pushAgentStageState = pushAgentStageState;
+  d.wireAgentBrowserViewEvents = wireAgentBrowserViewEvents;
+  d.agentBrowserAllowsPermission = agentBrowserAllowsPermission;
+  d.wireAgentSessionPermissions = wireAgentSessionPermissions;
+  d.wireAgentSessionClientHints = wireAgentSessionClientHints;
+  d.wireAgentSessionDownloads = wireAgentSessionDownloads;
+  d.uniqueDownloadPath = uniqueDownloadPath;
+  d.saveHtmlToDownloads = saveHtmlToDownloads;
+  d.raiseAgentBrowserHost = raiseAgentBrowserHost;
+  d.ensureAgentBrowserWindow = ensureAgentBrowserWindow;
+  d.destroyAgentBrowserWindow = destroyAgentBrowserWindow;
+  d.showAgentBrowserWindow = showAgentBrowserWindow;
+  d.waitForWebContentsLoad = waitForWebContentsLoad;
+  d.toggleAgentIncognito = toggleAgentIncognito;
+  d.escapeHtmlForStage = escapeHtmlForStage;
+  d.wrapMediaAsStageHtml = wrapMediaAsStageHtml;
+  d.htmlToStageDataUrl = htmlToStageDataUrl;
+  d.resolveLyknArtifactHtml = resolveLyknArtifactHtml;
+  d.ensureAgentArtifactProtocolForPartition = ensureAgentArtifactProtocolForPartition;
+  d.ensureAgentArtifactSessionProtocol = ensureAgentArtifactSessionProtocol;
+  d.stageDeliverableSlot = stageDeliverableSlot;
+  d.openAgentStageArtifact = openAgentStageArtifact;
+  d.paintArtifactIntoAgentTab = paintArtifactIntoAgentTab;
+  d.destroyAgentOwnedArtifactTabs = destroyAgentOwnedArtifactTabs;
+  d.resolveToolResultStageUrl = resolveToolResultStageUrl;
+  d.maybeOpenAgentStageDeliverable = maybeOpenAgentStageDeliverable;
+  d.hideAgentBrowserWindow = hideAgentBrowserWindow;
+  d.notifyAgentBrowserVisibility = notifyAgentBrowserVisibility;
+  d.hideAllAgentBrowserWindows = hideAllAgentBrowserWindows;
+  d.agentBrowserWindowExists = agentBrowserWindowExists;
+  d.getAgentBrowserWebContents = getAgentBrowserWebContents;
+  d.getActiveAgentBrowserWebContents = getActiveAgentBrowserWebContents;
+  d.resolveAgentBrowseTargetId = resolveAgentBrowseTargetId;
+  d.openUrlPreferAgentBrowser = openUrlPreferAgentBrowser;
+  d.notifyStudioShowBrowser = notifyStudioShowBrowser;
+  d.planOwnedBrowserNext = planOwnedBrowserNext;
+  d.whenAgentRuntimeLoaded = whenAgentRuntimeLoaded;
+  d.initAgentRuntime = initAgentRuntime;
+  d.showOverlay = showOverlay;
+  d.toggleOverlay = toggleOverlay;
+  d.registerGlobalHotkey = registerGlobalHotkey;
+  d.refreshTrayUpdateAffordance = refreshTrayUpdateAffordance;
+  d.createTray = createTray;
+  d.stripHiddenTags = stripHiddenTags;
+  d.parseVaultAttachmentsFromContent = parseVaultAttachmentsFromContent;
+  d.stripVaultAttachmentsMarker = stripVaultAttachmentsMarker;
+  d.classifyVaultAttachmentForOverlay = classifyVaultAttachmentForOverlay;
+  d.cacheArtifactHtmlForOverlay = cacheArtifactHtmlForOverlay;
+  d.isOverlayFirstPartyHost = isOverlayFirstPartyHost;
+  d.fetchOverlayMedia = fetchOverlayMedia;
+  d.stageNativeShareFile = stageNativeShareFile;
+  d.mintStorageSignedUrl = mintStorageSignedUrl;
+  d.resolveVaultHtmlDisplayUrl = resolveVaultHtmlDisplayUrl;
+  d.resolveVaultAttachmentDisplayUrl = resolveVaultAttachmentDisplayUrl;
+  d.vaultOpenCardMarkdown = vaultOpenCardMarkdown;
+  d.overlayVaultMarkersFromToolResult = overlayVaultMarkersFromToolResult;
+  d.trimPartialControlTagTail = trimPartialControlTagTail;
+  d.parseJsonFromAiText = parseJsonFromAiText;
+  d.fetchAiStreamCompletion = fetchAiStreamCompletion;
+  d.jwtExpiryMs = jwtExpiryMs;
+  d.cacheAuthToken = cacheAuthToken;
+  d.readTokenFromWebContents = readTokenFromWebContents;
+  d.refreshTokenViaWebContents = refreshTokenViaWebContents;
+  d.tokenIsStale = tokenIsStale;
+  d.liveAuthWebContents = liveAuthWebContents;
+  d.ensureAuthKeeper = ensureAuthKeeper;
+  d.destroyAuthKeeper = destroyAuthKeeper;
+  d.readTokenFromLiveAuth = readTokenFromLiveAuth;
+  d.readTokenViaHiddenWindow = readTokenViaHiddenWindow;
+  d.getAuthToken = getAuthToken;
+  d.overlaySettingsPath = overlaySettingsPath;
+  d.readOverlaySettings = readOverlaySettings;
+  d.writeOverlaySettings = writeOverlaySettings;
+  d.isLoginItemEnabled = isLoginItemEnabled;
+  d.setLoginItemEnabled = setLoginItemEnabled;
+  d.setupLaunchAtLogin = setupLaunchAtLogin;
+  d.launchedAtLogin = launchedAtLogin;
+  d.isContentProtectionEnabled = isContentProtectionEnabled;
+  d.applyContentProtection = applyContentProtection;
+  d.parseWatchRuleIntent = parseWatchRuleIntent;
+  d.looksLikeClearWatchRules = looksLikeClearWatchRules;
+  d.addLiveWatchRule = addLiveWatchRule;
+  d.clearLiveWatchRules = clearLiveWatchRules;
+  d.parseLiveWatchResponse = parseLiveWatchResponse;
+  d.buildLiveWatchRulesSection = buildLiveWatchRulesSection;
+  d.isLiveWatchEnabled = isLiveWatchEnabled;
+  d.getLiveWatchStatus = getLiveWatchStatus;
+  d.getFreshLiveWatchSummary = getFreshLiveWatchSummary;
+  d.getLiveWatchContextSection = getLiveWatchContextSection;
+  d.notifyLiveWatchUpdate = notifyLiveWatchUpdate;
+  d.setLiveWatchCapturing = setLiveWatchCapturing;
+  d.setLiveWatchSummary = setLiveWatchSummary;
+  d.liveWatchIntervalMs = liveWatchIntervalMs;
+  d.captureForLiveWatch = captureForLiveWatch;
+  d.postAiStreamTextWithTimeout = postAiStreamTextWithTimeout;
+  d.scheduleLiveWatchTick = scheduleLiveWatchTick;
+  d.stopLiveWatch = stopLiveWatch;
+  d.startLiveWatch = startLiveWatch;
+  d.setLiveWatchEnabled = setLiveWatchEnabled;
+  d.getExtensionDir = getExtensionDir;
+  d.restoreOverlayAfterExtensionInstall = restoreOverlayAfterExtensionInstall;
+  d.createExtensionInstallWindow = createExtensionInstallWindow;
+  d.describeLiveWatchFrame = describeLiveWatchFrame;
+  d.describeLiveWatchPageText = describeLiveWatchPageText;
+  d.liveWatchTextPass = liveWatchTextPass;
+  d.tryLiveWatchBrowserScrape = tryLiveWatchBrowserScrape;
+  d.liveWatchPageTextTick = liveWatchPageTextTick;
+  d.liveWatchVisionPass = liveWatchVisionPass;
+  d.liveWatchTick = liveWatchTick;
+  d.overlaySessionsPath = overlaySessionsPath;
+  d.readOverlaySessionsStore = readOverlaySessionsStore;
+  d.writeOverlaySessionsStore = writeOverlaySessionsStore;
+  d.overlaySessionTitle = overlaySessionTitle;
+  d.overlaySessionPreview = overlaySessionPreview;
+  d.normalizeUrlForMatch = normalizeUrlForMatch;
+  d.buildPastPageConversationSection = buildPastPageConversationSection;
+  d.fetchAppChatsForOverlay = fetchAppChatsForOverlay;
+  d.pushOverlaySessionToApp = pushOverlaySessionToApp;
+  d.runOsascript = runOsascript;
+  d.listRunningBrowserApps = listRunningBrowserApps;
+  d.readBrowserFrontTabUrl = readBrowserFrontTabUrl;
+  d.readBrowserTabUrl = readBrowserTabUrl;
+  d.rankBrowserCandidates = rankBrowserCandidates;
+  d.pickBestBrowserTarget = pickBestBrowserTarget;
+  d.resolveOneBrowserHttpTarget = resolveOneBrowserHttpTarget;
+  d.listBrowserHttpTargets = listBrowserHttpTargets;
+  d.describeBrowserTabProblem = describeBrowserTabProblem;
+  d.getActiveBrowserTarget = getActiveBrowserTarget;
+  d.evalBrowserJs = evalBrowserJs;
+  d.getBrowserPageText = getBrowserPageText;
+  d.decodeBrowserJsPayload = decodeBrowserJsPayload;
+  d.readBrowserFullPageTextOnce = readBrowserFullPageTextOnce;
+  d.getBrowserFullPageText = getBrowserFullPageText;
+  d.navigateBrowserTab = navigateBrowserTab;
+  d.waitForBrowserUrl = waitForBrowserUrl;
+  d.resolveLinkedSitePage = resolveLinkedSitePage;
+  d.decodeHtmlEntities = decodeHtmlEntities;
+  d.scrapePageText = scrapePageText;
+  d.parseYouTubeId = parseYouTubeId;
+  d.getBrowserYouTubeTranscript = getBrowserYouTubeTranscript;
+  d.parseYouTubeCaptionBody = parseYouTubeCaptionBody;
+  d.overlayMessageWantsVideoTranscribe = overlayMessageWantsVideoTranscribe;
+  d.fetchYouTubeTranscriptViaApi = fetchYouTubeTranscriptViaApi;
+  d.fetchYouTubeTranscript = fetchYouTubeTranscript;
+  d.extractReactArtifactCodeFromHtml = extractReactArtifactCodeFromHtml;
+  d.extractReactArtifactCodeFromResult = extractReactArtifactCodeFromResult;
+  d.extractLyknProjectId = extractLyknProjectId;
+  d.isRetryableStreamError = isRetryableStreamError;
+  d.humanizeStreamError = humanizeStreamError;
+  d.errorFromAiResponse = errorFromAiResponse;
+  d.overlayUserWantsVaultSurface = overlayUserWantsVaultSurface;
+  d.readOverlayStreamResponse = readOverlayStreamResponse;
+  d.overlayMessageLooksScreenRelated = overlayMessageLooksScreenRelated;
+  d.overlayMessageWantsScreenTranslate = overlayMessageWantsScreenTranslate;
+  d.overlayMessageWantsVisualGuidance = overlayMessageWantsVisualGuidance;
+  d.overlayMessageLooksScreenDeictic = overlayMessageLooksScreenDeictic;
+  d.overlayPageFingerprint = overlayPageFingerprint;
+  d.overlayMessageIsPhatic = overlayMessageIsPhatic;
+  d.overlayMessageIsConversationFollowUp = overlayMessageIsConversationFollowUp;
+  d.overlayMessageWantsFullPage = overlayMessageWantsFullPage;
+  d.gatherOverlayPageContext = gatherOverlayPageContext;
+  d.streamScreenAnswer = streamScreenAnswer;
+  d.captureScreenDescription = captureScreenDescription;
+  d.saveBufferToVault = saveBufferToVault;
+  d.saveUrlToVault = saveUrlToVault;
+  d.pickArtifactUrl = pickArtifactUrl;
+  d.saveDiagnosticsReport = saveDiagnosticsReport;
+  d.buildAppMenu = buildAppMenu;
+  d.onboardingMarkerPath = onboardingMarkerPath;
+  d.onboardingComplete = onboardingComplete;
+  d.createOnboardingWindow = createOnboardingWindow;
+  d.welcomeMarkerPath = welcomeMarkerPath;
+  d.hasSeenWelcomeSplash = hasSeenWelcomeSplash;
+  d.showWelcomeSplash = showWelcomeSplash;
+  d.welcomeSupabaseAuthCreds = welcomeSupabaseAuthCreds;
+  d.signInWelcomeAccount = signInWelcomeAccount;
+  d.initAutoUpdate = initAutoUpdate;
+  d.IMAGE_MIME_BY_EXT = IMAGE_MIME_BY_EXT;
+  d.TEXT_FILE_RE = TEXT_FILE_RE;
+  d.BROWSER_APP_NAMES = BROWSER_APP_NAMES;
+  d.BROWSER_PICK_PRIORITY = BROWSER_PICK_PRIORITY;
+  d.DEPRIORITIZED_BROWSERS = DEPRIORITIZED_BROWSERS;
+  d.automationOk = automationOk;
+  d.agentRecentVisits = agentRecentVisits;
+  d.localStore = localStore;
+  d.macFiles = macFiles;
+  d.chromeSync = chromeSync;
+  d.localSystem = localSystem;
+  d.appDock = appDock;
+  d.localApprovals = localApprovals;
+  d.ownedBrowserAct = ownedBrowserAct;
+}
   app.whenReady().then(() => {
   // Serve vault HTML artifacts to Glass iframes from memory (see
   // resolveVaultHtmlDisplayUrl). Avoids localhost file-proxy iframe failures.
@@ -16283,10 +12541,15 @@ function initAutoUpdate() {
   installPermissionHandler();
   setupSystemAudioCapture();
   buildAppMenu();
-  registerOverlayIpc();
-  registerWelcomeIpc();
-  registerOnboardingIpc();
-  registerExtensionInstallIpc();
+  initializeElectronServices({
+    app,
+    session,
+    localStore,
+    localSystem,
+    macFiles,
+  });
+  bindShellContext();
+  registerAllIpc(d);
   extensionBridge = startExtensionBridge({
     userDataPath: app.getPath("userData"),
     onUpdate: () => {
