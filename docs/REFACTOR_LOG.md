@@ -100,3 +100,37 @@ None. Named icon imports have no side effects.
 
 ### Result
 `Vault.jsx`: 9,706 → 9,704 lines (−2).
+
+---
+
+## Batch 3 — 2026-08-25 — Extract VaultLoadMoreSkeleton component
+
+### Change
+Moved the inline `VaultLoadMoreSkeleton` component and its private
+`VAULT_SKELETON_HEIGHTS` constant (formerly `src/pages/Vault.jsx` lines
+428–481) into `src/components/vault/VaultLoadMoreSkeleton.jsx`
+(default export, matching the folder's existing convention). Added one
+import in `Vault.jsx`.
+
+### Reason
+Purely presentational loading-skeleton component: props only
+(`masonry`/`embedded`/`count`), zero external dependencies, two call sites,
+no page state. Safest first JSX extraction; establishes the pattern for
+moving larger Vault subcomponents.
+
+### Behavioral change
+None intended. Component + constant bodies verified byte-identical to the
+pre-extraction file (diff against `git show HEAD` range); both call sites
+and their props untouched.
+
+### References checked
+- Exactly one definition repo-wide after move.
+- `Vault.jsx` refs: 1 import + 2 call sites (lines ~7895/7902), unchanged
+  props (`masonry`, `embedded`, `count`).
+- `VAULT_SKELETON_HEIGHTS`: 0 references left in `Vault.jsx`.
+- ESLint on both files: 0 errors (warnings are pre-existing unused
+  eslint-disable directives).
+- `npm run build` (vite): success.
+
+### Result
+`Vault.jsx`: 9,704 → 9,649 lines (−55). New component file: 59 lines.
