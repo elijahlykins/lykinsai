@@ -436,3 +436,45 @@ None intended.
 
 ### Result
 `Studio.jsx`: 4,454 → 1,661 lines (−2,793). 9 new modules, 2,955 lines.
+
+---
+
+## Phase VIII — Global stylesheet decomposition
+
+Single architectural phase (one commit): decompose `src/index.css` from
+10,497 lines into a 30-line `@import` manifest plus domain stylesheets
+under `src/styles/`. Vite inlines the imports (postcss-import) before
+Tailwind runs, so `@layer` blocks in `foundation.css` still hoist to the
+`@tailwind` directives and cascade order matches the monolith.
+
+ORDER IS BEHAVIOR. The manifest sequence reproduces the original file.
+Do not reorder, and do not add styles above `foundation.css`, without
+auditing selector overlap.
+
+### What moved where
+
+- `src/styles/foundation.css` (831) — Tailwind directives, scrollbars,
+  root scaling, theme variables, `@layer` blocks.
+- `src/styles/glass-system.css` (222) — glass embeds, Settings glass,
+  Intel-Mac fallback.
+- `src/styles/chat-appearance.css` (354) — Appearance › AI chat tokens.
+- `src/styles/settings.css` (398)
+- `src/styles/studio-shell.css` (765) — Home desktop, glass chat page,
+  Studio Neutral, dock/drag.
+- `src/styles/editors.css` (195)
+- `src/styles/responsive.css` (150)
+- `src/styles/model-builder.css` (190)
+- `src/styles/animations.css` (444)
+- `src/styles/notes-editor.css` (212)
+- `src/styles/chat-effects.css` (174)
+- `src/styles/landing.css` (3,339) — marketing `.lkn-*` landing.
+- `src/styles/wake-onboarding.css` (3,011) — wake carousel / walkthrough.
+- `src/styles/bot-avatars.css` (283)
+
+### Behavior changes
+None intended. The esbuild CSS minify `Unexpected "{"` warning is
+pre-existing (also present on the monolith at HEAD).
+
+### Result
+`src/index.css`: 10,497 → 30 lines. 14 stylesheets, ~10,568 lines
+including file banners.

@@ -1,0 +1,3339 @@
+/* MARKETING LANDING PAGE — traditional scroll landing (.lkn-* prefix).
+   Black-canvas landing: header, hero, showcases, feature suite, problem/solution, cloud agents, pricing, FAQ, closing CTA, footer, recap.
+   Extracted verbatim from src/index.css (pre-split lines 3648-6981).
+   Imported via the @import manifest in src/index.css — the import sequence preserves the original cascade order. */
+
+/* =========================================================
+   LANDING PAGE (traditional scroll) — replaces the wake
+   carousel. Black canvas, sticky header, hero, real-UI
+   feature previews, closing CTA. Prefixed .lkn-* so it
+   never collides with the in-app .lykn-* walkthrough rules.
+   ========================================================= */
+.lkn-land {
+  position: relative;
+  background: #f6f8fc;
+  color: #0a0c12;
+  width: 100%;
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Demo video lives only inside the hero, ending at its bottom edge. The
+   app-preview card below sits on the black .lkn-land canvas (no video behind
+   it). The video + overlay are absolutely positioned within the hero, and the
+   hero content is lifted above them. */
+.lkn-bg-video,
+.lkn-bg-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.lkn-bg-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(0, 0, 0, 0.62) 0%,
+      rgba(0, 0, 0, 0.28) 32%,
+      rgba(0, 0, 0, 0.3) 62%,
+      rgba(11, 10, 10, 0.96) 100%
+    );
+}
+
+/* Scroll reveal: fade in only (no slide/movement). */
+.lkn-reveal {
+  opacity: 0;
+  transition: opacity 850ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.lkn-reveal.is-in {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lkn-reveal {
+    opacity: 1;
+    transition: none;
+  }
+}
+
+/* ── Header ─────────────────────────────────────────────── */
+/* Floating glass rectangle, identical on every marketing page: the outer
+   band stays transparent and the inner bar is a contained, rounded frosted
+   panel that doesn't span the screen. */
+.lkn-header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  padding: 14px clamp(0.9rem, 3vw, 1.5rem) 0;
+  background: transparent;
+  border-bottom: 1px solid transparent;
+  transition: background 220ms ease, border-color 220ms ease,
+    backdrop-filter 220ms ease;
+  /* Pin font smoothing AND the font stack so the shared header renders
+     identically on every landing page, regardless of what the page root
+     sets. Without these the nav text metrics changed subtly when switching
+     between roots (e.g. .glass-land sets Inter, .lkn-land doesn't), which
+     made the header links shift a little on navigation. */
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.lkn-header.is-scrolled {
+  background: transparent;
+  border-bottom: none;
+}
+
+.lkn-header-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  height: 56px;
+  padding: 0 clamp(1rem, 2.2vw, 1.6rem);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(20px) saturate(170%);
+  -webkit-backdrop-filter: blur(20px) saturate(170%);
+  box-shadow: 0 12px 32px -18px rgba(15, 23, 42, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.lkn-brand {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.lkn-brand-logo {
+  height: 40px;
+  width: auto;
+  display: block;
+}
+
+.lkn-nav {
+  display: flex;
+  align-items: center;
+  gap: clamp(1rem, 2.5vw, 1.85rem);
+}
+
+.lkn-nav-link {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.82);
+  text-decoration: none;
+  transition: color 160ms ease;
+}
+
+.lkn-nav-link:hover {
+  color: #ffffff;
+}
+
+.lkn-header.is-scrolled .lkn-nav-link {
+  color: rgba(15, 23, 42, 0.62);
+}
+
+.lkn-header.is-scrolled .lkn-nav-link:hover {
+  color: #0a0c12;
+}
+
+/* ── Product dropdown ───────────────────────────────────── */
+.lkn-prod {
+  position: relative;
+  display: flex;
+  align-items: center;
+  /* Bridge part of the hover gap between the trigger and the panel; the
+     close-grace timer in LandingHeader covers the rest of the travel. */
+  padding-bottom: 6px;
+  margin-bottom: -6px;
+}
+
+.lkn-prod-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+}
+
+.lkn-prod-chev {
+  width: 13px;
+  height: 13px;
+  transition: transform 180ms ease;
+}
+
+.lkn-prod-chev.is-open {
+  transform: rotate(180deg);
+}
+
+.lkn-prod-menu {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 300px;
+  padding: 0.5rem;
+  border-radius: 18px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 24px 60px -24px rgba(15, 23, 42, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  animation: lkn-prod-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  z-index: 60;
+}
+
+@keyframes lkn-prod-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* Each entry is text-only: bold name over a one-line description. */
+.lkn-prod-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: none;
+  border-radius: 13px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background 140ms ease;
+}
+
+.lkn-prod-item:hover {
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.lkn-prod-name {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: #0a0c12;
+  letter-spacing: -0.01em;
+}
+
+.lkn-prod-desc {
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: rgba(15, 23, 42, 0.55);
+}
+
+.lkn-nav-auth {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.lkn-nav-signup,
+.lkn-nav-signin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 5.25rem;
+  border-radius: 10px;
+  padding: 0.4rem 0.95rem;
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 600;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.lkn-nav-signup {
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  color: #ffffff;
+}
+
+.lkn-nav-signup:hover {
+  background: rgba(255, 255, 255, 0.26);
+  border-color: rgba(255, 255, 255, 0.7);
+}
+
+.lkn-nav-signin {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  color: #ffffff;
+}
+
+.lkn-header.is-scrolled .lkn-nav-signup {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #ffffff;
+}
+
+.lkn-header.is-scrolled .lkn-nav-signup:hover {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+}
+
+.lkn-header.is-scrolled .lkn-nav-signin {
+  background: #ffffff;
+  border-color: rgba(15, 23, 42, 0.16);
+  color: #0f172a;
+}
+
+.lkn-nav-signin:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.7);
+}
+
+.lkn-header.is-scrolled .lkn-nav-signin:hover {
+  background: rgba(15, 23, 42, 0.04);
+  border-color: rgba(15, 23, 42, 0.28);
+}
+
+/* Demo video lightbox — opened by the header's "Watch Demo" button. */
+.lkn-demo-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: clamp(1rem, 4vw, 3rem);
+  background: rgba(8, 12, 22, 0.78);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  animation: lkn-demo-fade 220ms ease both;
+}
+.lkn-demo-frame {
+  position: relative;
+  width: min(1100px, 100%);
+  animation: lkn-demo-pop 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.lkn-demo-frame video {
+  display: block;
+  width: 100%;
+  border-radius: 16px;
+  background: #000;
+  box-shadow: 0 40px 120px -30px rgba(0, 0, 0, 0.8);
+}
+.lkn-demo-close {
+  position: absolute;
+  top: -14px;
+  right: -14px;
+  z-index: 1;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  font-size: 0.85rem;
+  color: #0f172a;
+  background: #ffffff;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  transition: transform 0.15s ease;
+}
+.lkn-demo-close:hover {
+  transform: scale(1.08);
+}
+@keyframes lkn-demo-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes lkn-demo-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Docs dropdown — links to the real legal/docs pages. */
+.lkn-docs-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.lkn-docs-dropdown {
+  position: absolute;
+  top: calc(100% + 0.6rem);
+  right: 0;
+  min-width: 12rem;
+  display: flex;
+  flex-direction: column;
+  padding: 0.35rem;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.16);
+  z-index: 50;
+  animation: lkn-fade-up 180ms ease both;
+}
+
+.lkn-docs-item {
+  padding: 0.5rem 0.7rem;
+  border-radius: 8px;
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: rgba(15, 23, 42, 0.75);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.lkn-docs-item:hover {
+  background: rgba(15, 23, 42, 0.05);
+  color: #0a0c12;
+}
+
+/* ── Mobile header: hamburger + slide-down menu ─────────────── */
+/* The hamburger toggle. Hidden on desktop, where the inline nav shows. */
+.lkn-menu-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: #ffffff;
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+.lkn-menu-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.lkn-header.is-scrolled .lkn-menu-btn {
+  color: #0f172a;
+}
+.lkn-header.is-scrolled .lkn-menu-btn:hover {
+  background: rgba(15, 23, 42, 0.06);
+}
+.lkn-menu-btn svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* The slide-down panel under the header bar. Same frosted material as the
+   header, scrollable if it outgrows the viewport. */
+.lkn-mobile-menu {
+  display: none;
+  margin-top: 8px;
+  padding: 0.9rem 1rem 1.1rem;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(24px) saturate(170%);
+  -webkit-backdrop-filter: blur(24px) saturate(170%);
+  box-shadow: 0 24px 60px -24px rgba(15, 23, 42, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  max-height: calc(100vh - 96px);
+  max-height: calc(100dvh - 96px);
+  overflow-y: auto;
+  flex-direction: column;
+  gap: 1rem;
+  animation: lkn-mobile-menu-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes lkn-mobile-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.lkn-mobile-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lkn-mobile-group + .lkn-mobile-group {
+  padding-top: 0.9rem;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+}
+.lkn-mobile-label {
+  padding: 0 0.7rem 0.35rem;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(15, 23, 42, 0.45);
+}
+.lkn-mobile-link {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  width: 100%;
+  padding: 0.6rem 0.7rem;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background 140ms ease;
+}
+.lkn-mobile-link:hover,
+.lkn-mobile-link:active {
+  background: rgba(15, 23, 42, 0.06);
+}
+.lkn-mobile-link-name {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #0a0c12;
+  letter-spacing: -0.01em;
+}
+.lkn-mobile-link-desc {
+  font-size: 0.76rem;
+  line-height: 1.35;
+  color: rgba(15, 23, 42, 0.55);
+}
+/* The two CTAs, full-width. Colors pinned here: the shared button classes
+   invert with the header's scrolled state, but this panel is always light. */
+.lkn-mobile-ctas {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+}
+.lkn-mobile-ctas .lkn-nav-signin,
+.lkn-mobile-ctas .lkn-nav-signup {
+  width: 100%;
+  padding: 0.65rem 1rem;
+  font-size: 0.9rem;
+  border-radius: 12px;
+}
+.lkn-mobile-ctas .lkn-nav-signin {
+  background: #ffffff;
+  border-color: rgba(15, 23, 42, 0.16);
+  color: #0f172a;
+}
+.lkn-mobile-ctas .lkn-nav-signup {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #ffffff;
+}
+
+@media (max-width: 860px) {
+  /* Phones/small tablets: the inline nav can't fit — swap it for the
+     hamburger + slide-down menu. */
+  .lkn-nav {
+    display: none;
+  }
+  .lkn-menu-btn {
+    display: inline-flex;
+  }
+  .lkn-mobile-menu {
+    display: flex;
+  }
+  .lkn-docs-menu {
+    display: none;
+  }
+}
+
+/* ── Hero ───────────────────────────────────────────────── */
+.lkn-hero {
+  position: relative;
+  overflow: hidden;
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  text-align: center;
+  padding: clamp(7.5rem, 18vh, 12rem) clamp(1.25rem, 6vw, 5rem) 1.5rem;
+  background:
+    linear-gradient(180deg, #1d4ed8 0%, #2f6bf0 22%, #5b93f5 45%, #93bdfa 68%, #cfe0fc 86%, #f6f8fc 100%);
+}
+
+.lkn-hero-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: min(960px, 92vw);
+}
+
+.lkn-hero-headline {
+  margin: 0;
+  font-size: clamp(2.3rem, 4.8vw, 3.6rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  color: #ffffff;
+  white-space: nowrap;
+  animation: lkn-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (max-width: 600px) {
+  .lkn-hero-headline {
+    white-space: normal;
+  }
+}
+
+.lkn-hero-sub {
+  margin: clamp(1rem, 2.4vh, 1.5rem) 0 0;
+  max-width: 49rem;
+  font-size: clamp(1.2rem, 2vw, 1.42rem);
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.88);
+  animation: lkn-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 160ms both;
+}
+
+.lkn-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: clamp(1.75rem, 3.5vh, 2.5rem);
+  animation: lkn-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 320ms both;
+}
+
+.lkn-hero-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.65rem 1.35rem;
+  border-radius: 12px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: transform 200ms ease, background 200ms ease,
+    border-color 200ms ease, color 200ms ease;
+}
+
+.lkn-hero-btn:hover {
+  transform: translateY(-1px);
+}
+
+.lkn-hero-btn--light {
+  background: #ffffff;
+  color: #1d4ed8;
+  border: 1px solid #ffffff;
+}
+
+.lkn-hero-btn--light:hover {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(255, 255, 255, 0.9);
+}
+
+.lkn-hero-btn--dark {
+  background: transparent;
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+}
+
+.lkn-hero-btn--dark:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.8);
+}
+
+/* Blue variants for use over LIGHT/white backgrounds (e.g. the closing CTA),
+   where the white-fill / transparent hero buttons would be invisible. */
+.lkn-hero-btn--blue {
+  background: #1d4ed8;
+  color: #ffffff;
+  border: 1px solid #1d4ed8;
+}
+
+.lkn-hero-btn--blue:hover {
+  background: #1e40af;
+  border-color: #1e40af;
+}
+
+.lkn-hero-btn--blue-outline {
+  background: transparent;
+  color: #1d4ed8;
+  border: 1px solid rgba(29, 78, 216, 0.45);
+}
+
+.lkn-hero-btn--blue-outline:hover {
+  background: rgba(29, 78, 216, 0.08);
+  border-color: rgba(29, 78, 216, 0.7);
+}
+
+/* The Get started buttons reuse the app-wide .lykn-primary-btn look
+   (dark blue fill, light blue edge + text). .lkn-cta only layers on the
+   hero entrance animation and spacing. */
+.lkn-cta {
+  margin-top: clamp(1.5rem, 3vh, 2.25rem);
+  animation: lkn-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 320ms both;
+}
+
+.lkn-cta-icon {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+@keyframes lkn-fade-up {
+  from { opacity: 0; transform: translateY(18px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Section intros ─────────────────────────────────────── */
+.lkn-product-intro {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: clamp(4rem, 10vh, 7rem) clamp(1rem, 5vw, 2rem) clamp(1.5rem, 4vh, 2.5rem);
+  text-align: center;
+}
+
+.lkn-section-headline {
+  margin: 0.5rem 0 0;
+  font-size: clamp(1.8rem, 4.5vw, 2.85rem);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.12;
+  color: #0a0c12;
+}
+
+.lkn-section-sub {
+  margin: 1rem auto 0;
+  max-width: 34rem;
+  font-size: clamp(0.98rem, 1.9vw, 1.12rem);
+  line-height: 1.6;
+  color: rgba(15, 23, 42, 0.6);
+}
+
+/* ── Two-card showcase (chat + intelligence layer) ──────── */
+.lkn-duo {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: clamp(3rem, 8vh, 5.5rem) clamp(1rem, 4vw, 2rem) clamp(2rem, 5vh, 3.5rem);
+}
+
+.lkn-duo-headline {
+  text-align: center;
+  margin: 0 0 clamp(2rem, 5vh, 3rem);
+  font-size: clamp(1.8rem, 4.5vw, 2.85rem);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.12;
+  color: #0a0c12;
+}
+
+.lkn-duo-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: clamp(1rem, 2.2vw, 1.75rem);
+}
+
+.lkn-duo-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-radius: 26px;
+  padding: clamp(1.5rem, 3vw, 2.25rem);
+  overflow: hidden;
+}
+
+.lkn-duo-card--blue {
+  background: linear-gradient(165deg, #5b93f5 0%, #2f6bf0 55%, #1d4ed8 100%);
+}
+
+.lkn-duo-card--light {
+  background: #eceff5;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.lkn-duo-card-title {
+  margin: 0;
+  font-size: clamp(1.15rem, 2vw, 1.5rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.lkn-duo-card--blue .lkn-duo-card-title {
+  color: #ffffff;
+}
+
+.lkn-duo-card--light .lkn-duo-card-title {
+  color: #0a0c12;
+}
+
+.lkn-duo-card-sub {
+  margin: 0.6rem 0 0;
+  font-size: clamp(0.92rem, 1.5vw, 1.02rem);
+  line-height: 1.5;
+}
+
+.lkn-duo-card--blue .lkn-duo-card-sub {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.lkn-duo-card--light .lkn-duo-card-sub {
+  color: rgba(15, 23, 42, 0.62);
+}
+
+.lkn-duo-card-demo {
+  position: relative;
+  margin-top: clamp(1.25rem, 3vh, 1.75rem);
+  height: clamp(320px, 44vh, 480px);
+  overflow: hidden;
+}
+
+/* Render the preview larger than the box, then scale it down so the whole
+   UI (chrome + content) is visible inside the shorter card — a zoom-out. */
+.lkn-duo-card-demo .lykn-wake-subwindow {
+  width: 143%;
+  height: 143%;
+  transform: scale(0.7);
+  transform-origin: top left;
+}
+
+@media (max-width: 860px) {
+  .lkn-duo-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Intelligence-layer centered showcase ───────────────── */
+.lkn-layer {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: clamp(2rem, 5vh, 3.5rem) clamp(1rem, 4vw, 2rem) clamp(3rem, 8vh, 5.5rem);
+  text-align: center;
+}
+
+.lkn-layer-head {
+  margin: 0 auto clamp(2rem, 5vh, 3rem);
+}
+
+.lkn-layer-stage {
+  position: relative;
+  border-radius: 28px;
+  padding: clamp(1.25rem, 3vw, 2.5rem);
+  overflow: hidden;
+  background: linear-gradient(180deg, #e8eefb 0%, #dbe5f8 100%);
+}
+
+.lkn-layer-demo {
+  position: relative;
+  height: clamp(420px, 60vh, 640px);
+}
+
+.lkn-layer-demo .lykn-wake-subwindow {
+  height: 100%;
+  width: 100%;
+}
+
+/* ── "What LYKN knows about you" stat showcase ──────────── */
+.lkn-knows {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: clamp(2rem, 5vh, 3.5rem) clamp(1rem, 4vw, 2rem) clamp(3rem, 8vh, 5.5rem);
+}
+
+.lkn-knows-inner {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: clamp(2rem, 5vw, 4.5rem);
+  align-items: center;
+}
+
+/* Left preview — memory snapshot card floating on a soft blue panel. */
+.lkn-knows-stage {
+  display: flex;
+  justify-content: center;
+  border-radius: 28px;
+  padding: clamp(1.75rem, 4vw, 3rem);
+  background: linear-gradient(180deg, #e8eefb 0%, #dbe5f8 100%);
+}
+
+.lkn-knows-doc {
+  width: 100%;
+  max-width: 320px;
+  padding: 16px 16px 18px;
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  background: #ffffff;
+  box-shadow: 0 24px 50px -24px rgba(30, 58, 138, 0.35);
+  text-align: left;
+}
+
+.lkn-knows-doc-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 11px;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: rgba(15, 23, 42, 0.55);
+}
+
+.lkn-knows-doc-mark {
+  width: 13px;
+  height: 13px;
+  object-fit: contain;
+}
+
+.lkn-knows-doc-live {
+  margin-left: auto;
+  font-weight: 500;
+  color: rgba(15, 23, 42, 0.38);
+}
+
+.lkn-knows-doc-title {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: #0a0c12;
+}
+
+.lkn-knows-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.lkn-knows-tab {
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 600;
+  color: rgba(15, 23, 42, 0.5);
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.lkn-knows-tab.is-active {
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.1);
+}
+
+.lkn-knows-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0;
+  border-top: 1px solid rgba(15, 23, 42, 0.05);
+}
+
+.lkn-knows-line:first-of-type {
+  border-top: 0;
+}
+
+.lkn-knows-cat {
+  flex-shrink: 0;
+  width: 48px;
+  text-align: center;
+  padding: 3px 0;
+  border-radius: 999px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.lkn-knows-text {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.3;
+  color: rgba(15, 23, 42, 0.72);
+}
+
+/* Right copy — headline + divided stat rows. */
+.lkn-knows-headline {
+  margin: 0 0 clamp(1.25rem, 3.5vh, 2rem);
+  font-size: clamp(1.6rem, 3.4vw, 2.35rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.12;
+  color: #0a0c12;
+}
+
+.lkn-knows-stats {
+  display: flex;
+  flex-direction: column;
+}
+
+.lkn-knows-stat {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: clamp(1rem, 2vw, 1.75rem);
+  align-items: start;
+  padding: clamp(1rem, 2.5vh, 1.5rem) 0;
+  border-top: 1px solid rgba(15, 23, 42, 0.1);
+}
+
+.lkn-knows-stat:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.lkn-knows-num {
+  font-size: clamp(1.9rem, 3.6vw, 2.6rem);
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  color: #0a0c12;
+  white-space: nowrap;
+}
+
+.lkn-knows-num small {
+  font-size: 0.42em;
+  font-weight: 600;
+  margin-left: 1px;
+}
+
+.lkn-knows-stat-title {
+  margin: 0 0 4px;
+  font-size: clamp(1.05rem, 1.8vw, 1.25rem);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #0a0c12;
+}
+
+.lkn-knows-stat-desc {
+  margin: 0;
+  font-size: clamp(0.85rem, 1.4vw, 0.95rem);
+  line-height: 1.5;
+  color: rgba(15, 23, 42, 0.55);
+}
+
+@media (max-width: 860px) {
+  .lkn-knows-inner {
+    grid-template-columns: 1fr;
+    gap: 2.5rem;
+  }
+}
+
+/* ── Three-card feature suite ───────────────────────────── */
+.lkn-suite {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: clamp(2rem, 5vh, 3.5rem) clamp(1rem, 3vw, 1.75rem) clamp(3rem, 8vh, 5.5rem);
+  text-align: center;
+}
+
+.lkn-suite-head {
+  margin: 0 auto clamp(2rem, 5vh, 3rem);
+}
+
+.lkn-suite-headline {
+  margin: 0;
+  font-size: clamp(1.8rem, 4.5vw, 2.85rem);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.12;
+  color: #0a0c12;
+}
+
+.lkn-suite-headline-muted {
+  color: rgba(15, 23, 42, 0.4);
+  font-weight: 500;
+}
+
+.lkn-suite-sub {
+  margin: 1rem auto 0;
+  max-width: 34rem;
+  font-size: clamp(0.95rem, 1.7vw, 1.08rem);
+  line-height: 1.55;
+  color: rgba(15, 23, 42, 0.55);
+}
+
+.lkn-suite-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: clamp(1rem, 2.2vw, 1.75rem);
+  text-align: left;
+}
+
+.lkn-suite-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.lkn-suite-demo {
+  position: relative;
+  height: clamp(340px, 46vh, 480px);
+  border-radius: 24px;
+  overflow: hidden;
+  padding: clamp(1rem, 1.8vw, 1.5rem);
+  background: linear-gradient(165deg, #eef2fb 0%, #dde6f6 100%);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+/* White mini-UI surface that hosts each animated mock. */
+.lkn-mock {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  padding: clamp(0.9rem, 1.6vw, 1.25rem);
+  gap: 0.7rem;
+  border-radius: 16px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  box-shadow: 0 18px 44px -22px rgba(15, 23, 42, 0.45);
+  text-align: left;
+  color: #0a0c12;
+  overflow: hidden;
+}
+
+.lkn-mock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+}
+
+.lkn-mock-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #0a0c12;
+}
+
+.lkn-mock-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.16rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 600;
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.1);
+}
+
+.lkn-mock-badge--soft {
+  color: rgba(15, 23, 42, 0.55);
+  background: rgba(15, 23, 42, 0.06);
+}
+
+/* ── Card 1: Projects ───────────────────────────────────── */
+.lkn-proj-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  flex: 1;
+  justify-content: center;
+}
+
+.lkn-proj-card {
+  display: flex;
+  gap: 0.7rem;
+  padding: 0.7rem;
+  border-radius: 13px;
+  background: #f6f8fc;
+  border: 1px solid rgba(15, 23, 42, 0.05);
+  animation: lkn-proj-in 0.6s ease both;
+}
+
+.lkn-proj-icon {
+  flex: 0 0 auto;
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: 10px;
+  box-shadow: 0 4px 12px -4px rgba(37, 99, 235, 0.5);
+}
+
+.lkn-proj-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+}
+
+.lkn-proj-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.lkn-proj-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #0a0c12;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lkn-proj-active {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex: 0 0 auto;
+  font-size: 0.66rem;
+  font-weight: 600;
+  color: #059669;
+}
+
+.lkn-proj-dot {
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 999px;
+  background: #10b981;
+  animation: lkn-proj-pulse 1.8s ease-in-out infinite;
+}
+
+.lkn-proj-sub {
+  font-size: 0.7rem;
+  color: rgba(15, 23, 42, 0.5);
+}
+
+.lkn-proj-track {
+  position: relative;
+  height: 0.32rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+}
+
+.lkn-proj-fill {
+  position: absolute;
+  inset: 0;
+  width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #60a5fa, #2563eb);
+  animation: lkn-proj-fill 4.5s ease-in-out infinite;
+}
+
+@keyframes lkn-proj-fill {
+  0% { width: 0; }
+  35%, 80% { width: var(--w, 60%); }
+  100% { width: 0; }
+}
+
+@keyframes lkn-proj-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45); }
+  50% { opacity: 0.7; transform: scale(1.25); box-shadow: 0 0 0 4px rgba(16, 185, 129, 0); }
+}
+
+@keyframes lkn-proj-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Card 2: Vault upload ───────────────────────────────── */
+.lkn-vault-drop {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lkn-vault-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  height: 100%;
+  border-radius: 14px;
+  border: 2px dashed rgba(37, 99, 235, 0.3);
+  background: rgba(37, 99, 235, 0.04);
+  color: rgba(37, 99, 235, 0.75);
+  font-size: 0.78rem;
+  font-weight: 600;
+  align-items: center;
+  justify-content: center;
+  animation: lkn-vault-zone 3.4s ease-in-out infinite;
+}
+
+.lkn-vault-falling {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 10px 24px -8px rgba(15, 23, 42, 0.4);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #0a0c12;
+  white-space: nowrap;
+  animation: lkn-vault-fall 3.4s cubic-bezier(0.45, 0, 0.3, 1) infinite;
+}
+
+.lkn-vault-falling-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 7px;
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+}
+
+.lkn-vault-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+}
+
+.lkn-vault-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 10px;
+  background: #f6f8fc;
+  border: 1px solid rgba(15, 23, 42, 0.05);
+}
+
+.lkn-vault-row--new {
+  animation: lkn-vault-rowin 3.4s ease-in-out infinite;
+}
+
+.lkn-vault-row-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 6px;
+  flex: 0 0 auto;
+}
+
+.lkn-vault-row-ico--red { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
+.lkn-vault-row-ico--blue { background: rgba(37, 99, 235, 0.12); color: #2563eb; }
+.lkn-vault-row-ico--green { background: rgba(16, 185, 129, 0.14); color: #059669; }
+
+.lkn-vault-row-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.76rem;
+  font-weight: 500;
+  color: #0a0c12;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lkn-vault-row-done {
+  font-size: 0.64rem;
+  font-weight: 600;
+  color: rgba(15, 23, 42, 0.4);
+}
+
+.lkn-vault-progress {
+  width: 3rem;
+  height: 0.3rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.1);
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+.lkn-vault-progress span {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: #2563eb;
+  animation: lkn-vault-progress 3.4s ease-in-out infinite;
+}
+
+@keyframes lkn-vault-fall {
+  0% { transform: translate(-50%, 6%) scale(0.9); opacity: 0; }
+  12% { opacity: 1; }
+  45% { transform: translate(-50%, 120%) scale(1); opacity: 1; }
+  60% { transform: translate(-50%, 150%) scale(0.6); opacity: 0; }
+  100% { transform: translate(-50%, 150%) scale(0.6); opacity: 0; }
+}
+
+@keyframes lkn-vault-zone {
+  0%, 45% { border-color: rgba(37, 99, 235, 0.3); background: rgba(37, 99, 235, 0.04); }
+  58% { border-color: rgba(37, 99, 235, 0.65); background: rgba(37, 99, 235, 0.1); }
+  75%, 100% { border-color: rgba(37, 99, 235, 0.3); background: rgba(37, 99, 235, 0.04); }
+}
+
+@keyframes lkn-vault-rowin {
+  0%, 55% { opacity: 0; transform: translateY(6px); }
+  68%, 100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes lkn-vault-progress {
+  0%, 60% { width: 0; }
+  90%, 100% { width: 100%; }
+}
+
+/* ── Card 3: Calendar + to-dos ──────────────────────────── */
+.lkn-plan {
+  gap: 0.85rem;
+}
+
+.lkn-plan-cal,
+.lkn-plan-todo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.lkn-plan-week {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 0.3rem;
+}
+
+.lkn-plan-day {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.4rem 0;
+  border-radius: 9px;
+  background: #f6f8fc;
+  border: 1px solid rgba(15, 23, 42, 0.04);
+}
+
+.lkn-plan-day.is-today {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+
+.lkn-plan-dow {
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgba(15, 23, 42, 0.4);
+}
+
+.lkn-plan-num {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #0a0c12;
+}
+
+.lkn-plan-day.is-today .lkn-plan-dow { color: rgba(255, 255, 255, 0.75); }
+.lkn-plan-day.is-today .lkn-plan-num { color: #ffffff; }
+
+.lkn-plan-event {
+  position: absolute;
+  bottom: 0.28rem;
+  width: 0.85rem;
+  height: 0.2rem;
+  border-radius: 999px;
+  background: #ffffff;
+  transform: scaleX(0);
+  transform-origin: center;
+  animation: lkn-plan-event 4s ease-in-out infinite;
+}
+
+.lkn-plan-event--alt {
+  background: #f59e0b;
+  animation-delay: 1.1s;
+}
+
+.lkn-plan-todo {
+  flex: 1;
+  min-height: 0;
+}
+
+.lkn-plan-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.lkn-plan-task {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 10px;
+  background: #f6f8fc;
+  border: 1px solid rgba(15, 23, 42, 0.05);
+}
+
+.lkn-plan-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 6px;
+  border: 1.5px solid rgba(15, 23, 42, 0.25);
+  color: #ffffff;
+  flex: 0 0 auto;
+}
+
+.lkn-plan-check > svg { opacity: 0; }
+
+.lkn-plan-task-label {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: #0a0c12;
+}
+
+/* The first task checks itself off on a loop. */
+.lkn-plan-task--checking .lkn-plan-check {
+  animation: lkn-plan-checkbox 4s ease-in-out infinite;
+}
+.lkn-plan-task--checking .lkn-plan-check > svg {
+  animation: lkn-plan-checkmark 4s ease-in-out infinite;
+}
+.lkn-plan-task--checking .lkn-plan-task-label {
+  animation: lkn-plan-strike 4s ease-in-out infinite;
+}
+
+/* The last task slides in like it was just added. */
+.lkn-plan-task--adding {
+  animation: lkn-plan-add 4s ease-in-out infinite;
+}
+
+@keyframes lkn-plan-event {
+  0%, 25% { transform: scaleX(0); opacity: 0; }
+  40%, 85% { transform: scaleX(1); opacity: 1; }
+  100% { transform: scaleX(0); opacity: 0; }
+}
+
+@keyframes lkn-plan-checkbox {
+  0%, 30% { background: transparent; border-color: rgba(15, 23, 42, 0.25); }
+  45%, 100% { background: #10b981; border-color: #10b981; }
+}
+
+@keyframes lkn-plan-checkmark {
+  0%, 35% { opacity: 0; transform: scale(0.5); }
+  50%, 100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes lkn-plan-strike {
+  0%, 35% { color: #0a0c12; text-decoration: none; opacity: 1; }
+  55%, 100% { color: rgba(15, 23, 42, 0.4); text-decoration: line-through; opacity: 0.7; }
+}
+
+@keyframes lkn-plan-add {
+  0%, 50% { opacity: 0; transform: translateY(10px); max-height: 0; }
+  65%, 100% { opacity: 1; transform: translateY(0); max-height: 3rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lkn-proj-card,
+  .lkn-proj-fill,
+  .lkn-proj-dot,
+  .lkn-vault-falling,
+  .lkn-vault-zone,
+  .lkn-vault-row--new,
+  .lkn-vault-progress span,
+  .lkn-plan-event,
+  .lkn-plan-task--checking .lkn-plan-check,
+  .lkn-plan-task--checking .lkn-plan-check > svg,
+  .lkn-plan-task--checking .lkn-plan-task-label,
+  .lkn-plan-task--adding {
+    animation: none;
+  }
+  .lkn-plan-task--checking .lkn-plan-check { background: #10b981; border-color: #10b981; }
+  .lkn-plan-task--checking .lkn-plan-check > svg { opacity: 1; }
+  .lkn-vault-falling { opacity: 0; }
+}
+
+.lkn-suite-caption {
+  margin: clamp(0.95rem, 1.6vh, 1.2rem) 0 0;
+  padding: 0 0.15rem;
+  font-size: clamp(0.92rem, 1.4vw, 1rem);
+  line-height: 1.55;
+  color: rgba(15, 23, 42, 0.58);
+}
+
+.lkn-suite-caption-lead {
+  color: #0a0c12;
+  font-weight: 600;
+}
+
+.lkn-suite-tools {
+  margin-top: clamp(2.25rem, 5vh, 3.25rem);
+}
+
+.lkn-suite-tools-label {
+  margin: 0 0 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: rgba(15, 23, 42, 0.4);
+}
+
+.lkn-suite-tools-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: clamp(0.85rem, 2vw, 1.75rem);
+}
+
+.lkn-suite-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: clamp(0.85rem, 1.3vw, 0.95rem);
+  font-weight: 500;
+  color: rgba(15, 23, 42, 0.7);
+}
+
+.lkn-suite-tool-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.08),
+    0 0 0 1px rgba(15, 23, 42, 0.06);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.lkn-suite-tool-img {
+  width: 1.35rem;
+  height: 1.35rem;
+  object-fit: contain;
+}
+
+.lkn-suite-tool-fallback {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: rgba(15, 23, 42, 0.6);
+}
+
+@media (max-width: 860px) {
+  .lkn-suite-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Full-app load-in showcase ──────────────────────────── */
+.lkn-showcase {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 clamp(1rem, 4vw, 2rem) clamp(3rem, 8vh, 5rem);
+}
+
+/* Peeking variant: the hero fills the full viewport and the laptop is pulled up
+   so roughly two-thirds of it overlaps the bottom of the hero (sitting in front
+   of the video) with a soft glow behind it. */
+.lkn-showcase--peek {
+  position: relative;
+  z-index: 2;
+  margin-top: clamp(-50vh, -43vh, -32vh);
+  padding-bottom: clamp(4rem, 12vh, 7rem);
+}
+
+/* Soft, faintly colorful wallpaper-style backdrop behind the laptop so it
+   reads as sitting on a surface rather than floating on flat black. */
+.lkn-showcase--peek::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 6%;
+  width: min(130%, 1600px);
+  height: 94%;
+  transform: translateX(-50%);
+  background:
+    radial-gradient(ellipse at 72% 22%, rgba(37, 99, 235, 0.12) 0%, rgba(0, 0, 0, 0) 52%),
+    radial-gradient(ellipse at 22% 30%, rgba(96, 165, 250, 0.1) 0%, rgba(0, 0, 0, 0) 50%),
+    radial-gradient(ellipse at 55% 90%, rgba(37, 99, 235, 0.08) 0%, rgba(0, 0, 0, 0) 55%);
+  filter: blur(8px);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* ── Laptop mockup wrapping the live app preview ────────── */
+.lkn-laptop {
+  position: relative;
+  width: 100%;
+  max-width: 1040px;
+  margin: 0 auto;
+}
+
+/* The screen: dark bezel around the display, rounded top, slim bottom. */
+.lkn-laptop-screen {
+  position: relative;
+  border-radius: 18px 18px 6px 6px;
+  padding: 0.7rem 0.7rem 0.8rem;
+  background: linear-gradient(180deg, #1c1c1f 0%, #0c0c0e 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 40px 90px -30px rgba(0, 0, 0, 0.8),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* Webcam dot centered in the top bezel. */
+.lkn-laptop-cam {
+  position: absolute;
+  top: 0.32rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.lkn-laptop-display {
+  position: relative;
+  overflow: hidden;
+  border-radius: 10px;
+  aspect-ratio: 16 / 10;
+  background:
+    radial-gradient(120% 85% at 72% 14%, rgba(59, 130, 246, 0.38) 0%, rgba(59, 130, 246, 0) 55%),
+    radial-gradient(110% 95% at 18% 92%, rgba(96, 165, 250, 0.22) 0%, rgba(96, 165, 250, 0) 60%),
+    linear-gradient(158deg, #1e2840 0%, #18203a 55%, #131a2e 100%);
+}
+
+/* The base/hinge: a slightly wider bar under the screen with a centered notch
+   so it reads as a closed-laptop deck the screen sits on. */
+.lkn-laptop-base {
+  position: relative;
+  width: calc(100% + 5%);
+  margin: 0 auto;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 0.85rem;
+  border-radius: 0 0 12px 12px;
+  background: linear-gradient(180deg, #3a3a3e 0%, #1a1a1d 100%);
+  box-shadow: 0 16px 28px -16px rgba(0, 0, 0, 0.7);
+}
+
+.lkn-laptop-notch {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: clamp(80px, 12%, 140px);
+  height: 0.34rem;
+  border-radius: 0 0 8px 8px;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+/* Phone mockup overlapping the laptop's lower-left, running the voice agent. */
+.lkn-phone {
+  position: absolute;
+  left: -1.5%;
+  bottom: 4%;
+  width: clamp(116px, 16.5%, 188px);
+  z-index: 3;
+}
+
+.lkn-phone-screen {
+  position: relative;
+  aspect-ratio: 9 / 19;
+  border-radius: clamp(18px, 2.4vw, 30px);
+  padding: clamp(4px, 0.7%, 7px);
+  background: linear-gradient(155deg, #2c2c30 0%, #0c0c0e 100%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 44px 70px -24px rgba(0, 0, 0, 0.85),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.lkn-phone-display {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: clamp(13px, 2vw, 24px);
+  overflow: hidden;
+  background: #0a0a0c;
+}
+
+.lkn-phone-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.lkn-phone-island {
+  position: absolute;
+  top: clamp(5px, 1%, 9px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 34%;
+  height: clamp(8px, 1.4%, 13px);
+  border-radius: 999px;
+  background: #000000;
+  z-index: 4;
+}
+
+@media (max-width: 767px) {
+  /* Lower the device cluster so it sits below the hero copy instead of being
+     pulled up over it, and keep the laptop within the viewport width. */
+  .lkn-showcase--peek {
+    margin-top: clamp(-22vh, -15vh, -8vh);
+    padding-bottom: clamp(2.5rem, 8vh, 4rem);
+  }
+
+  .lkn-laptop {
+    max-width: 92vw;
+  }
+
+  /* The phone overlaps the laptop's bottom-left; scale it up relative to the
+     now-smaller laptop and drop it lower so it reads clearly and isn't clipped
+     off the left edge. */
+  .lkn-phone {
+    left: 1%;
+    bottom: -4%;
+    width: clamp(84px, 23%, 132px);
+  }
+}
+
+@media (max-width: 480px) {
+  .lkn-showcase--peek {
+    margin-top: clamp(-16vh, -10vh, -4vh);
+  }
+
+  .lkn-phone {
+    width: clamp(80px, 26%, 120px);
+    bottom: -6%;
+  }
+}
+
+/* ── App-shell preview (collapsed sidebar rail + live chat) ── */
+.lkn-shell-preview {
+  display: flex;
+  height: 100%;
+  width: 100%;
+  background: hsl(0 0% 12%);
+  color: #ffffff;
+}
+
+.lkn-shell-rail {
+  flex: 0 0 56px;
+  width: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 0 12px;
+  background: hsl(0 0% 16%);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.lkn-shell-rail-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-bottom: 6px;
+}
+
+.lkn-shell-rail-icon {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
+.lkn-shell-rail-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.lkn-shell-rail-item {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.lkn-shell-rail-item.is-active {
+  background: rgba(59, 130, 246, 0.16);
+  color: #60a5fa;
+}
+
+.lkn-shell-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.lkn-shell-rail-spacer {
+  flex: 1;
+}
+
+.lkn-shell-rail-account {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-top: 8px;
+  width: 36px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.lkn-shell-avatar {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.lkn-shell-main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+.lkn-showcase-noninteractive {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Hard-lock the showcase: the embedded chat sets pointer-events:auto on its own
+   shell/inputs, so force every descendant off so the preview is a screenshot —
+   no clicking, typing, or selecting. */
+.lkn-showcase-noninteractive,
+.lkn-showcase-noninteractive * {
+  pointer-events: none !important;
+  user-select: none !important;
+}
+
+/* Inside the laptop, float the app as a rounded window on the colorful
+   wallpaper so the screen background (wallpaper) shows around it. */
+.lkn-laptop-display .lkn-showcase-noninteractive {
+  inset: 2.5% 2%;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow:
+    0 24px 60px -24px rgba(0, 0, 0, 0.7),
+    0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+/* ── The Problem (problem / solution pairs) ─────────────── */
+.lkn-problems {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: clamp(3rem, 8vh, 5.5rem) clamp(1rem, 4vw, 2rem) clamp(2rem, 5vh, 3.5rem);
+}
+
+.lkn-problems-head {
+  text-align: center;
+  margin-bottom: clamp(2rem, 5vh, 3.5rem);
+}
+
+/* Two columns — "The old way" and "The new way" — each a cascade of small
+   chat bubbles that stagger in as you scroll, with a labeled header pill. */
+.lkn-problems-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: clamp(1.5rem, 5vw, 4rem);
+  max-width: 880px;
+  margin: 0 auto;
+  align-items: start;
+}
+
+.lkn-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.lkn-col-pill {
+  align-self: center;
+  margin-bottom: 1.5rem;
+  padding: 0.5rem 1.4rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #0f172a;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+}
+
+.lkn-col-pill--old {
+  background: rgba(229, 72, 77, 0.12);
+  border-color: rgba(229, 72, 77, 0.4);
+  color: #b42318;
+  box-shadow:
+    0 10px 30px -16px rgba(229, 72, 77, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.lkn-col-pill--new {
+  background: rgba(37, 99, 235, 0.12);
+  border-color: rgba(37, 99, 235, 0.4);
+  color: #1d4ed8;
+  box-shadow:
+    0 10px 30px -16px rgba(37, 99, 235, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.lkn-col-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  width: 100%;
+}
+
+/* Small chat bubble, frosted glass. Old way = smoked dark glass, new way =
+   bright frosted glass — both translucent with blur, a hairline border, and an
+   inner top highlight so they read as glass panes over the page. */
+.lkn-chip {
+  width: fit-content;
+  max-width: 90%;
+  padding: 0.5rem 0.85rem;
+  border-radius: 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  box-shadow:
+    0 12px 28px -18px rgba(15, 23, 42, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  opacity: 0;
+  transition: opacity 600ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.lkn-col.is-in .lkn-chip {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lkn-chip {
+    opacity: 1;
+    transition: none;
+  }
+}
+
+.lkn-col--old .lkn-chip {
+  background: #2a2a2c;
+  color: #ffffff;
+  border-color: rgba(0, 0, 0, 0.2);
+  border-bottom-left-radius: 5px;
+}
+
+.lkn-col--new .lkn-chip {
+  background: #ffffff;
+  color: #0f172a;
+  border-color: rgba(15, 23, 42, 0.1);
+  border-bottom-right-radius: 5px;
+}
+
+/* Stagger the bubbles horizontally so the column cascades. */
+.lkn-chip:nth-child(odd) {
+  align-self: flex-start;
+}
+
+.lkn-chip:nth-child(even) {
+  align-self: flex-end;
+}
+
+.lkn-chip:nth-child(3n) {
+  margin-left: 8%;
+}
+
+.lkn-chip:nth-child(4n) {
+  margin-right: 6%;
+}
+
+@media (max-width: 720px) {
+  .lkn-problems-columns {
+    grid-template-columns: 1fr;
+    gap: 2.5rem;
+  }
+  .lkn-chip {
+    max-width: 88%;
+  }
+}
+
+/* ── Trio of core surface previews (raw UI segments) ────── */
+.lkn-trio {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: clamp(1.5rem, 4vh, 2.5rem) clamp(1rem, 4vw, 2rem) clamp(4rem, 10vh, 6rem);
+}
+
+.lkn-trio-row {
+  display: grid;
+  grid-template-columns: 1fr 1px 1fr 1px 1fr;
+  align-items: stretch;
+  gap: clamp(1rem, 2.5vw, 2rem);
+  height: clamp(380px, 58vh, 580px);
+}
+
+.lkn-trio-cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.lkn-trio-label {
+  margin-bottom: 0.9rem;
+  text-align: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.lkn-trio-preview {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: #000;
+  user-select: none;
+}
+
+/* Read-only screenshot behaviour: force every descendant to ignore pointer
+   input. The embedded windows set pointer-events:auto on themselves, so we
+   override with !important to make sure nothing inside is clickable. */
+.lkn-trio-preview,
+.lkn-trio-preview * {
+  pointer-events: none !important;
+}
+
+/* Force the embedded surfaces onto pure black so only their UI elements show
+   (their own dark-gray "app" backgrounds are overridden here). The vault
+   preview root is already transparent; the synthesis 3D canvas renders with
+   alpha, so the black container shows through behind the neurons. */
+.lkn-trio-preview .lykn-wake-synth-preview,
+.lkn-trio-preview .lykn-wake-synth-preview-loading,
+.lkn-trio-preview .lykn-wake-chat-preview {
+  background: #000;
+}
+
+/* Synthesis card: show only the nodes — strip the + button, title, and stats. */
+.lkn-trio-preview .lykn-wake-synth-preview-add,
+.lkn-trio-preview .lykn-wake-synth-preview-header,
+.lkn-trio-preview .lykn-wake-synth-preview-stats {
+  display: none;
+}
+
+/* Keep the synthesis preview a plain black canvas here: drop the grey dot grid
+   and the bluish spotlight glow that otherwise wash over the black base. */
+.lkn-trio-preview .lykn-wake-synth-preview,
+.lkn-trio-preview .lykn-wake-synth-preview-scene,
+.lkn-trio-preview .lykn-wake-synth-preview-loading {
+  background: #000;
+}
+
+.lkn-trio-preview .lykn-wake-synth-preview-grid,
+.lkn-trio-preview .lykn-wake-synth-preview-spotlight {
+  display: none;
+}
+
+/* Middle card: custom neurons (beliefs / concepts / projects) as a stack of
+   gently floating glass cards in the app's neuron-type colors. */
+.lkn-neuro {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: clamp(0.7rem, 1.6vh, 1rem);
+  padding: clamp(1rem, 3vw, 1.75rem);
+}
+
+.lkn-neuro-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 0.85rem 1rem 0.9rem 1.1rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.lkn-neuro-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--neuro-color, #3b82f6);
+}
+
+.lkn-neuro-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.lkn-neuro-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--neuro-color, #3b82f6);
+  box-shadow: 0 0 10px var(--neuro-color, #3b82f6);
+}
+
+.lkn-neuro-type {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.lkn-neuro-text {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.lkn-neuro-meta {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* Right card: build your model — if-then governance rules as floating glass
+   cards. Same language as the neuron stack, in the app's model-blue. */
+.lkn-model {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: clamp(0.7rem, 1.6vh, 1rem);
+  padding: clamp(1rem, 3vw, 1.75rem);
+}
+
+.lkn-model-card {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 0.9rem 1rem 0.95rem 1.1rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.lkn-model-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: #3b82f6;
+}
+
+.lkn-model-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.lkn-model-tag {
+  flex: none;
+  min-width: 2.7rem;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 0.18rem 0.45rem;
+  border-radius: 6px;
+  text-align: center;
+}
+
+.lkn-model-tag--if {
+  color: rgba(147, 197, 253, 0.95);
+  background: rgba(59, 130, 246, 0.16);
+  border: 1px solid rgba(59, 130, 246, 0.32);
+}
+
+.lkn-model-tag--then {
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.lkn-model-text {
+  font-size: 0.9rem;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.9);
+  font-weight: 500;
+}
+
+/* Projects showcase — mirrors the in-app ProjectPanel: a project header
+   (folder + name + status) over a short stack of client-tagged updates. */
+.lkn-proj {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: clamp(0.7rem, 1.6vh, 1rem);
+  padding: clamp(1rem, 3vw, 1.75rem);
+}
+
+.lkn-proj-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 0.9rem 1rem 0.95rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.lkn-proj-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.lkn-proj-icon {
+  width: 0.85rem;
+  height: 0.85rem;
+  color: rgba(255, 255, 255, 0.55);
+  flex: none;
+}
+
+.lkn-proj-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.lkn-proj-status {
+  flex: none;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 0.16rem 0.45rem;
+  border-radius: 6px;
+  color: rgba(134, 239, 172, 0.95);
+  background: rgba(34, 197, 94, 0.14);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.lkn-proj-updates {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.lkn-proj-update {
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.025);
+  padding: 0.5rem 0.6rem 0.55rem;
+}
+
+.lkn-proj-update-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.lkn-proj-key {
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.lkn-proj-via {
+  flex: none;
+  font-size: 0.5rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.lkn-proj-value {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.lkn-trio-divider {
+  align-self: stretch;
+  width: 1px;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    rgba(255, 255, 255, 0.12),
+    transparent
+  );
+}
+
+@media (max-width: 860px) {
+  .lkn-trio-row {
+    grid-template-columns: 1fr;
+    height: auto;
+    gap: 2.5rem;
+  }
+  .lkn-trio-divider {
+    display: none;
+  }
+  .lkn-trio-preview {
+    height: clamp(320px, 60vh, 440px);
+  }
+}
+
+/* ── Cloud agents capabilities ──────────────────────────── */
+.lkn-agents {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: clamp(2rem, 5vh, 3.5rem) clamp(1rem, 4vw, 2rem) clamp(3rem, 8vh, 5rem);
+}
+
+.lkn-agents-head {
+  text-align: center;
+  margin-bottom: clamp(2rem, 5vh, 3rem);
+}
+
+/* Editorial two-column list — no cards, no icons. Title on the left,
+   description on the right, separated by hairline rules. */
+.lkn-agents-list {
+  list-style: none;
+  margin: 0 auto;
+  padding: 0;
+  max-width: 820px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.lkn-agent-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+  gap: clamp(1rem, 5vw, 3.5rem);
+  align-items: baseline;
+  padding: clamp(1rem, 2.6vh, 1.5rem) 0.25rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.lkn-agent-row-title {
+  font-size: clamp(1.05rem, 2vw, 1.4rem);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: #ffffff;
+}
+
+.lkn-agent-row-body {
+  font-size: clamp(0.85rem, 1.4vw, 0.98rem);
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+@media (max-width: 640px) {
+  .lkn-agent-row {
+    grid-template-columns: 1fr;
+    gap: 0.35rem;
+  }
+}
+
+/* ── Feature sections ───────────────────────────────────── */
+.lkn-feature {
+  max-width: none;
+  margin: 0 auto;
+  padding: clamp(3.5rem, 9vh, 6rem) clamp(0.75rem, 1.5vw, 1.25rem);
+}
+
+.lkn-feature-grid {
+  display: grid;
+  /* Demo column is wider than the copy so the preview cards read large. */
+  grid-template-columns: 0.85fr 1.15fr;
+  align-items: center;
+  gap: clamp(2rem, 5vw, 4rem);
+}
+
+/* On reversed rows the demo sits in column 1, so widen column 1 instead to
+   keep the preview card the larger of the two on either side. */
+.lkn-feature-grid--reversed {
+  grid-template-columns: 1.15fr 0.85fr;
+}
+
+.lkn-feature-grid--reversed .lkn-feature-copy {
+  order: 2;
+}
+
+.lkn-feature-grid--reversed .lkn-feature-demo {
+  order: 1;
+}
+
+.lkn-feature-kicker {
+  margin: 0 0 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #60a5fa;
+}
+
+.lkn-feature-title {
+  margin: 0;
+  font-size: clamp(1.7rem, 3.4vw, 2.5rem);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.12;
+  color: #0a0c12;
+}
+
+.lkn-feature-body {
+  margin: 1rem 0 0;
+  font-size: clamp(0.98rem, 1.7vw, 1.1rem);
+  line-height: 1.65;
+  color: rgba(15, 23, 42, 0.62);
+}
+
+.lkn-feature-list {
+  list-style: none;
+  margin: 1.4rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.lkn-feature-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: rgba(15, 23, 42, 0.78);
+}
+
+.lkn-feature-dot {
+  flex: 0 0 auto;
+  width: 0.4rem;
+  height: 0.4rem;
+  margin-top: 0.5rem;
+  border-radius: 999px;
+  background: #2563eb;
+  box-shadow: 0 0 8px rgba(37, 99, 235, 0.5);
+}
+
+.lkn-feature-demo {
+  position: relative;
+  height: clamp(480px, 74vh, 860px);
+  min-width: 0;
+}
+
+/* Static (non-interactive) preview: behaves like a screenshot. The embedded
+   windows set pointer-events:auto on themselves, so we force every descendant
+   back to none with !important — nothing inside is clickable or typeable. */
+.lkn-feature-demo--static {
+  user-select: none;
+}
+
+.lkn-feature-demo--static,
+.lkn-feature-demo--static * {
+  pointer-events: none !important;
+}
+
+.lkn-feature-demo .lykn-wake-subwindow {
+  height: 100%;
+  width: 100%;
+}
+
+/* The synthesis preview's add button pulses a ring to invite a click. In the
+   static landing previews there's nothing to click, so drop the animation. */
+.lkn-land .lykn-wake-synth-preview-add-ring {
+  display: none;
+}
+
+/* Drop the indigo halo glow around preview windows on the landing page; keep
+   the drop shadow and inset edge. The glow reads as a heavy bloom on bright /
+   high-gamut displays. */
+.lkn-land .lykn-wake-subwindow {
+  box-shadow:
+    0 30px 80px -24px rgba(15, 23, 42, 0.35),
+    0 0 0 1px rgba(15, 23, 42, 0.06);
+}
+
+@media (max-width: 860px) {
+  .lkn-feature-grid {
+    grid-template-columns: 1fr;
+    gap: 1.75rem;
+  }
+  .lkn-feature-grid--reversed .lkn-feature-copy {
+    order: 1;
+  }
+  .lkn-feature-grid--reversed .lkn-feature-demo {
+    order: 2;
+  }
+}
+
+/* ── Closing CTA ────────────────────────────────────────── */
+.lkn-final {
+  position: relative;
+  overflow: hidden;
+  padding: clamp(4rem, 11vh, 7rem) clamp(1rem, 5vw, 2rem) clamp(3rem, 8vh, 5.5rem);
+  /* Start at the page background color (#f6f8fc) so the top matches the
+     sections above, then deepen into a light grey toward the footer. */
+  background: linear-gradient(180deg, #f6f8fc 0%, #e9edf4 55%, #dde3ee 100%);
+}
+
+.lkn-final-inner {
+  position: relative;
+  max-width: 1180px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.lkn-final-copy {
+  position: relative;
+  z-index: 2;
+  max-width: 40rem;
+}
+
+.lkn-final-headline {
+  margin: 0;
+  font-size: clamp(1.7rem, 3.6vw, 2.6rem);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.16;
+  color: #0a0c12;
+}
+
+.lkn-final-headline-sub {
+  display: block;
+  font-weight: 700;
+  color: rgba(15, 23, 42, 0.38);
+}
+
+.lkn-final-cta {
+  margin-top: clamp(1.25rem, 3vh, 1.75rem);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.72rem 1.5rem;
+  border: none;
+  border-radius: 12px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: #ffffff;
+  background: linear-gradient(180deg, #6ea8ff 0%, #2563eb 100%);
+  box-shadow:
+    0 12px 26px -10px rgba(37, 99, 235, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  cursor: pointer;
+  transition: transform 200ms ease, box-shadow 200ms ease, filter 200ms ease;
+}
+
+.lkn-final-cta:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.03);
+  box-shadow:
+    0 16px 32px -10px rgba(37, 99, 235, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+/* Decorative neuron-graph constellation on the right of the closing CTA —
+   a lightweight SVG echo of the synthesis layer (glowing nodes + a wired web)
+   that gently drifts and pulses. */
+.lkn-final-graph {
+  position: absolute;
+  top: 50%;
+  right: clamp(0rem, 3vw, 2.5rem);
+  transform: translateY(-50%);
+  width: clamp(280px, 36vw, 460px);
+  z-index: 1;
+  pointer-events: none;
+}
+
+.lkn-graph-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  animation: lkn-graph-float 10s ease-in-out infinite;
+  will-change: transform;
+}
+
+.lkn-graph-edges line {
+  stroke: rgba(37, 99, 235, 0.3);
+  stroke-width: 1.1;
+}
+
+.lkn-graph-halos circle {
+  opacity: 0.16;
+}
+
+.lkn-graph-nodes circle {
+  animation: lkn-node-pulse 3.4s ease-in-out infinite;
+}
+
+@keyframes lkn-graph-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-12px); }
+}
+
+@keyframes lkn-node-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+@media (max-width: 720px) {
+  .lkn-final-graph {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lkn-graph-svg,
+  .lkn-graph-nodes circle {
+    animation: none;
+  }
+}
+
+/* ── Footer ─────────────────────────────────────────────── */
+/* Continues the light grey from the bottom of the closing CTA section above
+   (which ombres from the page background down into this grey). */
+.lkn-footer {
+  background: #dde3ee;
+  padding: clamp(1rem, 2vh, 1.5rem) clamp(1rem, 5vw, 2rem) clamp(1.75rem, 3vh, 2.25rem);
+}
+
+.lkn-footer-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+/* Simple marketing footer (landing / pricing / mobile): logo, a single row of
+   links, and the copyright — laid out on one line, stacking on small screens. */
+.lkn-footer-simple {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: clamp(1rem, 3vw, 2rem);
+  flex-wrap: wrap;
+  padding-top: clamp(0.5rem, 2vh, 1rem);
+}
+
+.lkn-footer-nav {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: clamp(1rem, 2.5vw, 1.75rem);
+}
+
+.lkn-footer-nav a,
+.lkn-footer-nav button {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 0.85rem;
+  color: rgba(15, 23, 42, 0.55);
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 160ms ease;
+}
+
+.lkn-footer-nav a:hover,
+.lkn-footer-nav button:hover {
+  color: #0a0c12;
+}
+
+@media (max-width: 640px) {
+  .lkn-footer-simple {
+    flex-direction: column;
+    text-align: center;
+  }
+}
+
+.lkn-footer-top {
+  display: flex;
+  justify-content: space-between;
+  gap: clamp(2rem, 6vw, 4rem);
+  flex-wrap: wrap;
+  padding-top: clamp(1.5rem, 4vh, 2.5rem);
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.lkn-footer-brand {
+  flex: 0 0 auto;
+}
+
+.lkn-footer-logo {
+  height: 44px;
+  width: auto;
+  /* No dedicated navy asset exists (only royal-blue / black / white), so
+     deepen the royal-blue logo toward the brand dark blue (#1d4ed8). */
+  filter: brightness(0.78) saturate(1.12);
+}
+
+.lkn-footer-cols {
+  display: flex;
+  gap: clamp(2rem, 6vw, 5rem);
+  flex-wrap: wrap;
+}
+
+.lkn-footer-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.lkn-footer-col h4 {
+  margin: 0 0 0.25rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #0a0c12;
+}
+
+.lkn-footer-col a {
+  font-size: 0.84rem;
+  color: rgba(15, 23, 42, 0.55);
+  text-decoration: none;
+  transition: color 160ms ease;
+}
+
+.lkn-footer-col a:hover {
+  color: #0a0c12;
+}
+
+.lkn-footer-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: clamp(2rem, 5vh, 3rem);
+  padding-top: 1.25rem;
+  border-top: 1px solid rgba(15, 23, 42, 0.07);
+}
+
+.lkn-footer-copy {
+  margin: 0;
+  font-size: 0.8rem;
+  color: rgba(15, 23, 42, 0.45);
+}
+
+.lkn-footer-socials {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+}
+
+.lkn-footer-socials a {
+  display: inline-flex;
+  color: rgba(15, 23, 42, 0.5);
+  transition: color 160ms ease, transform 160ms ease;
+}
+
+.lkn-footer-socials a:hover {
+  color: #0a0c12;
+  transform: translateY(-1px);
+}
+
+.lkn-footer-socials svg {
+  width: 18px;
+  height: 18px;
+}
+
+@media (max-width: 720px) {
+  .lkn-footer-top {
+    flex-direction: column;
+    gap: 2rem;
+  }
+}
+
+/* ── Standalone pricing page ────────────────────────────── */
+/* The pricing page rides the Glass backdrop (drifting blue orb + frosted
+   panels, rendered fixed at z-index 0 by GlassBackdrop): the page surface
+   goes transparent so the backdrop shows through, content lifts above it,
+   and the footer lets the glow parked at the page bottom read through. */
+.lkn-land.lkn-pricing {
+  background: transparent;
+}
+.lkn-pricing .lkn-pricing-main,
+.lkn-pricing .lkn-footer {
+  position: relative;
+  z-index: 1;
+}
+.lkn-pricing .lkn-footer {
+  background: transparent;
+}
+
+.lkn-pricing-main {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: clamp(6rem, 14vh, 9rem) clamp(1rem, 4vw, 2rem) clamp(3rem, 8vh, 5rem);
+}
+
+.lkn-pricing-intro {
+  text-align: center;
+  margin: 0 auto clamp(2.5rem, 6vh, 4rem);
+}
+
+.lkn-pricing-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: clamp(1.5rem, 4vh, 2.25rem);
+  padding: 0.3rem;
+  border-radius: 999px;
+  /* Frosted glass instead of a flat dark tint: over plain white it reads the
+     same, but when the blue orb drifts behind it the pill frosts up blue,
+     visibly reacting to the glow like the backdrop panels do. */
+  background: rgba(255, 255, 255, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(14px) saturate(160%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+}
+
+.lkn-pricing-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 1.1rem;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: rgba(15, 23, 42, 0.55);
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.lkn-pricing-toggle-btn.is-active {
+  background: #ffffff;
+  /* !important so this beats the GlassBackdrop's inline color blend: the
+     active tab sits on its own opaque white pill and must stay dark even
+     when the orb is behind the toggle. */
+  color: #0a0c12 !important;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
+}
+
+.lkn-pricing-toggle-save {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #059669;
+  background: rgba(16, 185, 129, 0.12);
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+}
+
+/* ── Plan cards ─────────────────────────────────────────── */
+.lkn-pricing-plans {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: clamp(1rem, 2.2vw, 1.75rem);
+  align-items: start;
+}
+
+.lkn-plan-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: clamp(1.5rem, 2.5vw, 2rem);
+  border-radius: 22px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 18px 44px -28px rgba(15, 23, 42, 0.4);
+}
+
+.lkn-plan-card.is-highlighted {
+  border-color: rgba(37, 99, 235, 0.5);
+  box-shadow:
+    0 24px 60px -26px rgba(37, 99, 235, 0.45),
+    0 0 0 1px rgba(37, 99, 235, 0.25);
+}
+
+.lkn-plan-badge {
+  position: absolute;
+  top: 1.25rem;
+  right: 1.25rem;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.1);
+  padding: 0.22rem 0.6rem;
+  border-radius: 999px;
+}
+
+.lkn-plan-name {
+  margin: 0;
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #0a0c12;
+}
+
+.lkn-plan-tagline {
+  margin: 0.5rem 0 0;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: rgba(15, 23, 42, 0.58);
+  min-height: 2.5rem;
+}
+
+.lkn-plan-price {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  margin-top: 1.25rem;
+}
+
+.lkn-plan-price-amount {
+  font-size: clamp(2.1rem, 4vw, 2.6rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: #0a0c12;
+}
+
+.lkn-plan-price-unit {
+  font-size: 1rem;
+  font-weight: 600;
+  color: rgba(15, 23, 42, 0.5);
+}
+
+.lkn-plan-price-soon {
+  font-size: clamp(1.4rem, 3vw, 1.8rem);
+  font-weight: 700;
+  color: rgba(15, 23, 42, 0.45);
+}
+
+.lkn-plan-price-note {
+  margin: 0.4rem 0 0;
+  font-size: 0.78rem;
+  color: rgba(15, 23, 42, 0.5);
+}
+
+.lkn-plan-cta {
+  margin: 1.4rem 0 0;
+  padding: 0.7rem 1rem;
+  border-radius: 12px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 140ms ease, background 160ms ease, box-shadow 160ms ease;
+  border: 1px solid transparent;
+}
+
+.lkn-plan-cta:hover {
+  transform: translateY(-1px);
+}
+
+.lkn-plan-cta--primary {
+  background: linear-gradient(165deg, #3b82f6 0%, #2563eb 60%, #1d4ed8 100%);
+  color: #ffffff;
+  box-shadow: 0 12px 28px -12px rgba(37, 99, 235, 0.6);
+}
+
+.lkn-plan-cta--outline {
+  background: #ffffff;
+  border-color: rgba(15, 23, 42, 0.16);
+  color: #0a0c12;
+}
+
+.lkn-plan-cta--outline:hover {
+  border-color: rgba(15, 23, 42, 0.3);
+}
+
+.lkn-plan-cta--ghost {
+  background: rgba(15, 23, 42, 0.05);
+  color: rgba(15, 23, 42, 0.45);
+  cursor: not-allowed;
+}
+
+.lkn-plan-cta--ghost:hover {
+  transform: none;
+}
+
+.lkn-plan-features {
+  list-style: none;
+  margin: 1.5rem 0 0;
+  padding: 1.5rem 0 0;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.lkn-plan-features li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  font-size: 0.88rem;
+  line-height: 1.4;
+  color: rgba(15, 23, 42, 0.72);
+}
+
+.lkn-plan-feat-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  margin-top: 0.1rem;
+  background: rgba(16, 185, 129, 0.14);
+  color: #059669;
+}
+
+.lkn-plan-features li.is-accent .lkn-plan-feat-ico {
+  background: rgba(37, 99, 235, 0.14);
+  color: #2563eb;
+}
+
+/* Pro (highlighted) card: every checkmark is blue, accent or not. */
+.lkn-plan-card.is-highlighted .lkn-plan-feat-ico {
+  background: rgba(37, 99, 235, 0.14);
+  color: #2563eb;
+}
+
+.lkn-plan-feat-note {
+  color: rgba(15, 23, 42, 0.45);
+  font-size: 0.8rem;
+}
+
+/* ── FAQ ────────────────────────────────────────────────── */
+.lkn-faq {
+  max-width: 820px;
+  margin: clamp(3.5rem, 9vh, 6rem) auto 0;
+}
+
+.lkn-faq-headline {
+  text-align: center;
+  margin-bottom: clamp(1.75rem, 4vh, 2.5rem);
+}
+
+.lkn-faq-list {
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 14px;
+  background: #ffffff;
+  overflow: hidden;
+  box-shadow: 0 12px 32px -22px rgba(15, 23, 42, 0.2);
+}
+
+/* Connected list — items are divided only by a hairline, with no gaps or
+   per-item card borders. */
+.lkn-faq-item {
+  border-bottom: 1px solid rgba(15, 23, 42, 0.1);
+  background: #ffffff;
+  transition: background 160ms ease;
+}
+
+.lkn-faq-item:last-child {
+  border-bottom: none;
+}
+
+.lkn-faq-item.is-open {
+  background: #fafbfe;
+}
+
+.lkn-faq-question {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.05rem 1.25rem;
+  background: transparent;
+  border: none;
+  text-align: left;
+  font-size: 0.98rem;
+  font-weight: 600;
+  color: #0a0c12;
+  cursor: pointer;
+}
+
+.lkn-faq-chevron {
+  flex: 0 0 auto;
+  color: rgba(15, 23, 42, 0.45);
+  transition: transform 200ms ease;
+}
+
+.lkn-faq-item.is-open .lkn-faq-chevron {
+  transform: rotate(180deg);
+}
+
+.lkn-faq-answer {
+  padding: 0 1.25rem 1.15rem;
+}
+
+.lkn-faq-answer p {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: rgba(15, 23, 42, 0.62);
+}
+
+/* ── Pricing closing CTA ────────────────────────────────── */
+.lkn-pricing-cta {
+  text-align: center;
+  margin-top: clamp(3.5rem, 9vh, 6rem);
+}
+
+.lkn-pricing-cta-title {
+  margin: 0 0 1.5rem;
+  font-size: clamp(1.5rem, 3.5vw, 2.2rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: #0a0c12;
+}
+
+.lkn-pricing-cta .lkn-plan-cta {
+  display: inline-block;
+  padding: 0.8rem 1.75rem;
+  font-size: 1rem;
+}
+
+@media (max-width: 860px) {
+  .lkn-pricing-plans {
+    grid-template-columns: 1fr;
+    max-width: 30rem;
+    margin: 0 auto;
+  }
+}
+
+/* ── Closing recap (wrap-up of everything LYKN) ─────────────────── */
+.lkn-recap {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: clamp(3.5rem, 9vh, 6rem) clamp(1.25rem, 5vw, 2rem) clamp(1rem, 3vh, 2rem);
+}
+
+.lkn-recap-head {
+  text-align: center;
+  max-width: 46rem;
+  margin: 0 auto clamp(2.5rem, 6vh, 3.5rem);
+}
+
+.lkn-recap-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: clamp(0.85rem, 1.6vw, 1.25rem);
+}
+
+.lkn-recap-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: clamp(1.25rem, 2vw, 1.6rem);
+  border-radius: 18px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  box-shadow: 0 12px 30px -26px rgba(15, 23, 42, 0.4);
+}
+
+.lkn-recap-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.8rem;
+  background: rgba(59, 130, 246, 0.1);
+  color: #2563eb;
+  margin-bottom: 0.85rem;
+}
+
+.lkn-recap-card-title {
+  margin: 0 0 0.4rem;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #0a0c12;
+}
+
+.lkn-recap-card-desc {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: rgba(15, 23, 42, 0.6);
+}
+
+@media (max-width: 980px) {
+  .lkn-recap-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .lkn-recap-grid {
+    grid-template-columns: 1fr;
+    max-width: 30rem;
+    margin-inline: auto;
+  }
+}
+

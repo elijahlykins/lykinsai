@@ -1,0 +1,765 @@
+/* STUDIO SHELL — Home desktop, glass chat page, app motion, Studio Neutral, sidebar shift, desktop drag.
+   Studio desktop/dock motion, full-bleed Home chat, voice mode card, artifact popup, Studio light (Neutral) remaps, app sidebar layout shift, embedded vault pullout, and the Home-desktop drag engine (drag ghost, marquee, drop ring).
+   Extracted verbatim from src/index.css (pre-split lines 1247-1838, 2006-2084, 8481-8569).
+   Imported via the @import manifest in src/index.css — the import sequence preserves the original cascade order. */
+
+/* ── Glass chat page ──
+   The embedded chat stage was forced to solid black (embedded-vault-mode);
+   in the dark-glass Studio it should show the same frost as the dashboard,
+   so let the Studio panel shine through. Neutral undoes the forced-black
+   stage and paints the regular light background instead. */
+html.lykn-glass-embed.dark .lykn-chat-grid-bg,
+html.lykn-glass-embed.dark body.embedded-vault-mode .lykn-chat-grid-bg {
+  background: transparent !important;
+}
+html.lykn-glass-embed:not(.dark) body.embedded-vault-mode .lykn-chat-grid-bg {
+  background: var(--app-background) !important;
+}
+
+/* ── Home-desktop chat ──
+   The Studio Home tab hosts the chat surface right on the wallpaper, with
+   its own rounded pill bar as the composer. Hide the page's built-in
+   composer (and Imagine's prompt bar) while hosted there; the desktop
+   widgets stay visible behind the transparent chat page. */
+
+/* Studio app motion — light pop from the dock when a surface opens, shrink
+   away when it closes. Used by stage apps (Projects / Vault / Files), Home
+   chat, dock popovers, and (via JS) floating windows. */
+.lykn-app-pop {
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transform: translateZ(0) translateY(16px) scale(0.9);
+  transition:
+    transform 180ms cubic-bezier(0.4, 0, 1, 1),
+    opacity 150ms cubic-bezier(0.4, 0, 1, 1),
+    visibility 0s linear 180ms;
+}
+.lykn-app-pop.is-open {
+  visibility: visible;
+  opacity: 1;
+  transform: translateZ(0) translateY(0) scale(1);
+  transition:
+    transform 300ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 0s;
+}
+/* A pop is click-through while it animates, so a surface on its way out can't
+   swallow input aimed at whatever is behind it. `hit` — the default in
+   StudioPop — hands interaction back once it has settled open. Without this
+   the dock popovers render perfectly and ignore every click and scroll. */
+.lykn-app-pop.lykn-app-pop-hit.is-open {
+  pointer-events: auto;
+}
+.lykn-zoom-tile-menu {
+  background: var(--lg-menu-tint, rgba(28, 28, 30, 0.86));
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--lg-hairline, rgba(255, 255, 255, 0.12));
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+  color: var(--lg-text, rgba(255, 255, 255, 0.9));
+}
+.lykn-zoom-tile-item {
+  display: block;
+  width: 100%;
+  padding: 0.45rem 0.75rem;
+  border: none;
+  background: transparent;
+  text-align: left;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: inherit;
+  cursor: default;
+}
+.lykn-zoom-tile-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+html:not(.dark) .lykn-zoom-tile-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.lykn-studio-split {
+  box-sizing: border-box;
+}
+.lykn-studio-split > div {
+  height: 100%;
+  min-height: 0;
+}
+.lykn-split-divider::after {
+  content: "";
+  position: absolute;
+  top: 18%;
+  bottom: 18%;
+  left: 50%;
+  width: 3px;
+  margin-left: -1.5px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.28);
+  opacity: 0.35;
+  transition: opacity 160ms ease, background 160ms ease;
+}
+.lykn-split-divider:hover::after,
+.lykn-split-divider-active::after {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.7);
+}
+html:not(.dark) .lykn-split-divider::after {
+  background: rgba(0, 0, 0, 0.2);
+}
+html:not(.dark) .lykn-split-divider:hover::after,
+html:not(.dark) .lykn-split-divider-active::after {
+  background: rgba(0, 0, 0, 0.45);
+}
+.lykn-split-divider-h::after {
+  top: 50%;
+  bottom: auto;
+  left: 18%;
+  right: 18%;
+  width: auto;
+  height: 3px;
+  margin-left: 0;
+  margin-top: -1.5px;
+}
+.lykn-split-quad-btn {
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+.lykn-split-quad-btn:hover {
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.5);
+}
+html:not(.dark) .lykn-split-quad-btn {
+  color: rgba(0, 0, 0, 0.45);
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(0, 0, 0, 0.12);
+}
+html:not(.dark) .lykn-split-quad-btn:hover {
+  color: rgba(0, 0, 0, 0.8);
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.lykn-split-snap {
+  pointer-events: none;
+  position: absolute;
+  z-index: 24;
+  top: 8px;
+  bottom: 8px;
+  border-radius: 1.25rem;
+  border: 1.5px solid rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.lykn-split-snap-left {
+  left: 8px;
+  width: calc(50% - 12px);
+}
+.lykn-split-snap-right {
+  right: 8px;
+  width: calc(50% - 12px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lykn-split-divider::after {
+    transition: none;
+  }
+}
+
+/* Full-bleed Home chat: a smaller pop so the whole desktop doesn't shrink. */
+.lykn-app-pop.lykn-home-chat-host {
+  transform: translateZ(0) translateY(12px) scale(0.97);
+}
+.lykn-app-pop.lykn-home-chat-host.is-open {
+  transform: translateZ(0) translateY(0) scale(1);
+}
+
+/* Inner pages inside a popped stage card — fade only, the card already pops. */
+.lykn-studio-page {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 180ms ease,
+    visibility 0s linear 180ms;
+}
+.lykn-studio-page.is-active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity 200ms ease,
+    visibility 0s linear 0s;
+}
+
+/* Desktop icon sizing. Home overwrites these from the desktop's measured size
+   (see desktopGrid) so icons stay proportionate to whichever display the
+   window is on; the 1x values here are what everything else in the app —
+   and Home before it has measured — draws at. */
+:root {
+  --desk-tile: 96px;
+  --desk-art: 64px;
+  --desk-label: 0.72rem;
+}
+
+/* Desktop widgets stay mounted under stage apps so closing reveals them. */
+.lykn-studio-desktop {
+  transition: opacity 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+}
+.lykn-studio-desktop.is-dimmed {
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lykn-app-pop,
+  .lykn-app-pop.is-open,
+  .lykn-app-pop.lykn-home-chat-host,
+  .lykn-app-pop.lykn-home-chat-host.is-open {
+    transform: none;
+    transition: opacity 80ms ease, visibility 0s;
+  }
+  .lykn-studio-page,
+  .lykn-studio-page.is-active,
+  .lykn-studio-desktop {
+    transition: none;
+  }
+}
+
+/* Click-through: the chat layer covers the whole desktop, but only its
+   CONTENT should take clicks — everywhere else (wallpaper, widgets, folder
+   icons, right-click menu) must stay live underneath. The host + page root
+   go pointer-events:none, then real chat UI re-enables itself below. */
+.lykn-home-chat-host,
+.lykn-home-chat-host .lykn-chat-grid-bg {
+  pointer-events: none;
+}
+/* Every direct child of the page root is real UI (pill, overlays, dialogs,
+   drop zones) — except pieces that already manage their own click-through
+   (Tailwind pointer-events-none wrappers keep their manners). */
+.lykn-home-chat-host .lykn-chat-grid-bg > :not(.pointer-events-none) {
+  pointer-events: auto;
+}
+/* …but the thread band and the empty-state stage span the full window with
+   big empty gutters. Keep the gutters click-through and re-enable only
+   their content (the centered max-w-2xl column, side rails, panels). */
+.lykn-home-chat-host .lykn-chat-grid-bg > .lykn-chat-empty-state,
+.lykn-home-chat-host .lykn-chat-grid-bg > .lykn-chat-thread-stage,
+.lykn-home-chat-host .lykn-chat-grid-bg > .lykn-imagine-root {
+  pointer-events: none;
+}
+.lykn-home-chat-host .lykn-chat-empty-state > *,
+.lykn-home-chat-host .lykn-chat-thread-stage > * {
+  pointer-events: auto;
+}
+
+/* On Home the bar floats OVER the conversation instead of sitting in its
+   flow, so the thread has to stop above it. Docked, the bar hangs off a fixed
+   bottom edge and a taller shape grows entirely upward, so the whole extra
+   height comes out of the thread — hence the doubled half-height.
+   This lifts only the thread: --mobile-tabbar-clear is also the bottom of the
+   empty state, and moving THAT would drag the welcome column and the
+   quick-start chips pinned inside it up along with the bar. `bottom` is an
+   inline style on the stage, so this has to shout to be heard. */
+.lykn-home-chat-host .lykn-chat-thread-stage {
+  bottom: calc(
+    var(--mobile-tabbar-clear, 0px) + 2 * var(--lykn-home-bar-grow)
+  ) !important;
+}
+
+.lykn-home-chat-host .lykn-chat-neu-chat-shell,
+/* Voice Mode moved into the desktop's rounded bar — hide the page's
+   top-right voice toggle when hosted on Home. */
+.lykn-home-chat-host .lykn-voice-toolbar {
+  display: none !important;
+}
+/* Imagine shares the desktop rounded bar. Its leftover docked prompt
+   (standalone Imagine only) still clears the Studio dock. */
+.lykn-home-chat-host .lykn-imagine-dock {
+  bottom: 4.25rem !important;
+}
+/* Fresh mode pages: every mode reads the same on the desktop — headline
+   comfortably above the center-screen bar, extras (chips / showcase tiles)
+   right below it. Centering-with-padding drifted with column height, so pin
+   the welcome column outright: its bottom lands just above the bar.
+   (The container ends 8.75rem above the window bottom, so 50% − 2rem of
+   it ≈ the column bottom at window-center − 2rem.) */
+.lykn-home-chat-host .lykn-chat-empty-state > div {
+  position: absolute;
+  left: 50%;
+  bottom: calc(50% - 3rem + var(--lykn-home-bar-grow));
+  transform: translateX(-50%);
+  margin: 0;
+}
+/* Build / Research quick-start chips: pulled out of the welcome column and
+   pinned just below the bar — the same spot Imagine's showcase tiles sit.
+   Anchored off the pinned column above: its bottom edge sits ~2rem above
+   window center, so +5.25rem below it ≈ 3.25rem under the bar.
+   The grow term is doubled here: the column these hang from has already moved
+   up by one of them, so clearing a taller bar's bottom edge costs two. */
+.lykn-home-chat-host .lykn-chat-empty-state .lykn-studio-chips {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 4rem + 2 * var(--lykn-home-bar-grow));
+  transform: translateX(-50%);
+  margin: 0;
+  width: max-content;
+  max-width: min(90vw, 40rem);
+  justify-content: center;
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
+/* A taller attachment tray covers this pinned strip — hide it rather than
+   trying to keep the gap. Same for post-report follow-up pills. */
+html[data-home-bar-attached] .lykn-home-chat-host .lykn-studio-chips,
+html[data-home-bar-attached] .lykn-home-chat-host .lykn-studio-suggestions {
+  display: none !important;
+}
+/* Imagine's empty page on Home: the desktop rounded bar steps aside, so this
+   prompt bar has to occupy that exact center slot (top 50% / translateY -50%)
+   rather than riding in a headline+bar column. Splitting the stack lets the
+   headline and showcase pin around the bar the same way Chat / Build do. */
+.lykn-home-chat-host .lykn-imagine-stack {
+  position: absolute;
+  inset: 0;
+  display: block;
+  margin: 0;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  pointer-events: none;
+}
+.lykn-home-chat-host .lykn-imagine-hero {
+  position: absolute;
+  left: 50%;
+  top: calc(50% - 1.375rem - 2.875rem - var(--lykn-home-bar-grow));
+  transform: translate(-50%, -100%);
+  width: 100%;
+  max-width: 42rem;
+  margin: 0;
+  padding: 0 2rem;
+}
+.lykn-home-chat-host .lykn-imagine-empty-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  margin: 0;
+  padding: 0 2rem;
+  pointer-events: none;
+}
+/* Imagine's empty-page showcase collage: sit right below the center-screen
+   bar, matching Build / Research chips. */
+.lykn-home-chat-host .lykn-imagine-showcase {
+  position: absolute;
+  left: 50%;
+  top: calc(50% + 3.25rem + var(--lykn-home-bar-grow));
+  bottom: auto;
+  transform: translateX(-50%);
+  margin-bottom: 0 !important;
+}
+/* No page frame on Home — the chat sits straight on the wallpaper. The
+   selectors repeat the themed grid-bg rules above with the host class so
+   they win on specificity in every theme/embed combination. */
+.lykn-home-chat-host .lykn-chat-grid-bg,
+html.lykn-glass-embed .lykn-home-chat-host .lykn-chat-grid-bg,
+html.lykn-glass-embed.dark .lykn-home-chat-host .lykn-chat-grid-bg,
+html.lykn-glass-embed:not(.dark) .lykn-home-chat-host .lykn-chat-grid-bg,
+body.embedded-vault-mode .lykn-home-chat-host .lykn-chat-grid-bg,
+html.lykn-glass-embed.dark body.embedded-vault-mode .lykn-home-chat-host .lykn-chat-grid-bg,
+html.lykn-glass-embed:not(.dark) body.embedded-vault-mode .lykn-home-chat-host .lykn-chat-grid-bg {
+  background: transparent !important;
+  background-image: none !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+/* The chat composer wears the LYKN Glass bar look (electron/overlay.html
+   #wrap) in Glass (dark) only: faint ink tint, white hairline, 16px radius,
+   white text. Neutral keeps the app's regular composer styling. */
+html.lykn-glass-embed.dark .lykn-chat-neu-chat-shell {
+  background: rgba(16, 18, 24, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(28px) saturate(1.4);
+  -webkit-backdrop-filter: blur(28px) saturate(1.4);
+}
+html.lykn-glass-embed.dark .lykn-chat-neu-chat-shell textarea,
+html.lykn-glass-embed.dark textarea.lykn-chat-neu-chat-field {
+  color: #f4f6fb !important;
+}
+html.lykn-glass-embed.dark .lykn-chat-neu-chat-shell textarea::placeholder,
+html.lykn-glass-embed.dark textarea.lykn-chat-neu-chat-field::placeholder {
+  color: rgba(244, 246, 251, 0.5) !important;
+}
+html.lykn-glass-embed.dark .lykn-chat-neu-chat-toolbar-select-trigger {
+  color: rgba(255, 255, 255, 0.78) !important;
+}
+html.lykn-glass-embed.dark .lykn-chat-neu-chat-icon-plain,
+html.lykn-glass-embed.dark .lykn-chat-neu-chat-icon-plain svg {
+  color: rgba(255, 255, 255, 0.75);
+}
+html.lykn-glass-embed.dark .lykn-chat-neu-chat-icon-plain:hover:not(:disabled) {
+  background-color: rgba(255, 255, 255, 0.1);
+  box-shadow: none;
+}
+html.lykn-glass-embed.dark .lykn-chat-neu-chat-icon-plain:active:not(:disabled) {
+  background-color: rgba(255, 255, 255, 0.14);
+}
+html.lykn-glass-embed.dark .lykn-chat-neu-chat-send-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: none;
+}
+html.lykn-glass-embed.dark .lykn-chat-neu-chat-send-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.24);
+  box-shadow: none;
+}
+html.lykn-glass-embed.dark .lykn-chat-neu-chat-send-btn:active:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* Pages that paint their own opaque dark stage go transparent in the
+   dark-glass Studio so the shared frost shows through. */
+html.lykn-glass-embed.dark .lykn-projects-page,
+html.lykn-glass-embed.dark .lykn-calendar-page,
+html.lykn-glass-embed.dark .lykn-todos-page {
+  background-color: transparent !important;
+}
+
+/* Projects card rail: hide scrollbars entirely (paging is via the glass arrow). */
+.lykn-projects-rail,
+.lykn-projects-page {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.lykn-projects-rail::-webkit-scrollbar,
+.lykn-projects-page::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+  background: transparent;
+}
+
+/* Projects header sits over the card rail below it: the title's "Y" lands on
+   the first card's left edge (same inset as the rail's padding), and
+   new-project clears the right edge. */
+.lykn-projects-title {
+  transform: translateX(0.35rem);
+}
+.lykn-projects-new {
+  transform: translateX(0.75rem);
+}
+
+/* Voice Mode: compact glass card, bottom-right. Material comes from
+   `lg-window` (same wash as dialogs). Lifted above the Studio dock. */
+.lykn-voice-overlay {
+  position: fixed;
+  z-index: 68;
+  right: 1.25rem;
+  bottom: calc(1.25rem + var(--mobile-tabbar-clear, 0px));
+  width: min(17.75rem, calc(100vw - 2.5rem));
+  padding: 0.7rem 0.85rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: auto;
+}
+/* Sit above the Studio dock without stacking on the mobile tab bar. */
+html.lykn-glass-embed .lykn-voice-overlay,
+html.lykn-studio-mode .lykn-voice-overlay {
+  bottom: max(5.75rem, calc(1.25rem + var(--mobile-tabbar-clear, 0px)));
+}
+.lykn-voice-popup-chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-bottom: 0.15rem;
+}
+.lykn-voice-popup-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--lg-text-dim, rgba(255, 255, 255, 0.46));
+}
+.lykn-voice-popup-close {
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  color: var(--lg-text-dim, rgba(255, 255, 255, 0.46));
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.lykn-voice-popup-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--lg-text, rgba(255, 255, 255, 0.92));
+}
+html:not(.dark) .lykn-voice-popup-close:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+/* Artifact popup: the window itself is `lg-window` glass (same as dialogs
+   and desktop chrome). Keep the preview/code body opaque so the build
+   doesn't wash over the chat — only the top bar reads as frost. */
+.lykn-artifact-panel .lykn-artifact-body {
+  background: #fff;
+}
+html.dark .lykn-artifact-panel .lykn-artifact-body {
+  background: #1c1c1e;
+}
+
+/* Sent user prompts are the one black-text element in the dark Studio: a
+   bright bubble with dark ink, floating over the dark glass. (Neutral keeps
+   the standard light-theme bubble.) This is the shipped look, so it steps
+   aside the moment Appearance names a bubble or user ink of its own. */
+html.lykn-glass-embed.dark:not([data-chat-bubble='on']) .lykn-user-prompt-bubble {
+  background: rgba(255, 255, 255, 0.92) !important;
+  border-color: rgba(255, 255, 255, 0.55) !important;
+}
+
+html.lykn-glass-embed.dark:not([data-chat-bubble='on']):not([data-chat-ink-user='on'])
+  .lykn-user-prompt-bubble {
+  color: rgba(0, 0, 0, 0.9) !important;
+}
+
+/* =========================================================
+   STUDIO NEUTRAL — the Studio shell in light ("Neutral") mode
+   The Studio chrome was authored as dark glass with hardcoded white/NN
+   utilities (white ink, white glints, white hairlines on smoked frost).
+   Rather than fork every class in Studio.jsx, remap those utilities to
+   their dark-ink equivalents whenever the Studio document isn't dark.
+   Plain `text-white` / `bg-white` (solid pills, colored app tiles) are
+   deliberately NOT remapped — those read fine on the light frost.
+   ========================================================= */
+html.lykn-studio-mode:not(.dark) .text-white\/95 { color: rgba(0, 0, 0, 0.92); }
+html.lykn-studio-mode:not(.dark) .text-white\/90 { color: rgba(0, 0, 0, 0.88); }
+html.lykn-studio-mode:not(.dark) .text-white\/85 { color: rgba(0, 0, 0, 0.82); }
+html.lykn-studio-mode:not(.dark) .text-white\/80 { color: rgba(0, 0, 0, 0.78); }
+html.lykn-studio-mode:not(.dark) .text-white\/75 { color: rgba(0, 0, 0, 0.72); }
+html.lykn-studio-mode:not(.dark) .text-white\/70 { color: rgba(0, 0, 0, 0.68); }
+html.lykn-studio-mode:not(.dark) .text-white\/65 { color: rgba(0, 0, 0, 0.62); }
+html.lykn-studio-mode:not(.dark) .text-white\/60 { color: rgba(0, 0, 0, 0.58); }
+html.lykn-studio-mode:not(.dark) .text-white\/55 { color: rgba(0, 0, 0, 0.54); }
+html.lykn-studio-mode:not(.dark) .text-white\/50 { color: rgba(0, 0, 0, 0.5); }
+html.lykn-studio-mode:not(.dark) .text-white\/45 { color: rgba(0, 0, 0, 0.46); }
+html.lykn-studio-mode:not(.dark) .text-white\/40 { color: rgba(0, 0, 0, 0.42); }
+html.lykn-studio-mode:not(.dark) .text-white\/35 { color: rgba(0, 0, 0, 0.38); }
+html.lykn-studio-mode:not(.dark) .text-white\/30 { color: rgba(0, 0, 0, 0.34); }
+html.lykn-studio-mode:not(.dark) .hover\:text-white:hover { color: rgba(0, 0, 0, 0.92); }
+/* Tailwind's important modifier (!text-white/NN) needs !important to beat. */
+html.lykn-studio-mode:not(.dark) .\!text-white\/35 { color: rgba(0, 0, 0, 0.38) !important; }
+html.lykn-studio-mode:not(.dark) .\!text-white\/70 { color: rgba(0, 0, 0, 0.68) !important; }
+html.lykn-studio-mode:not(.dark) .placeholder\:text-white\/35::placeholder { color: rgba(0, 0, 0, 0.4); }
+html.lykn-studio-mode:not(.dark) .placeholder\:text-white\/40::placeholder { color: rgba(0, 0, 0, 0.44); }
+
+html.lykn-studio-mode:not(.dark) .bg-white\/\[0\.07\] { background-color: rgba(0, 0, 0, 0.05); }
+html.lykn-studio-mode:not(.dark) .bg-white\/\[0\.08\] { background-color: rgba(0, 0, 0, 0.05); }
+html.lykn-studio-mode:not(.dark) .bg-white\/10 { background-color: rgba(0, 0, 0, 0.06); }
+html.lykn-studio-mode:not(.dark) .bg-white\/\[0\.12\] { background-color: rgba(0, 0, 0, 0.07); }
+html.lykn-studio-mode:not(.dark) .bg-white\/\[0\.14\] { background-color: rgba(0, 0, 0, 0.08); }
+html.lykn-studio-mode:not(.dark) .bg-white\/15 { background-color: rgba(0, 0, 0, 0.08); }
+html.lykn-studio-mode:not(.dark) .bg-white\/25 { background-color: rgba(0, 0, 0, 0.12); }
+html.lykn-studio-mode:not(.dark) .hover\:bg-white\/\[0\.08\]:hover { background-color: rgba(0, 0, 0, 0.06); }
+html.lykn-studio-mode:not(.dark) .hover\:bg-white\/10:hover { background-color: rgba(0, 0, 0, 0.07); }
+html.lykn-studio-mode:not(.dark) .hover\:bg-white\/\[0\.12\]:hover { background-color: rgba(0, 0, 0, 0.08); }
+html.lykn-studio-mode:not(.dark) .hover\:bg-white\/15:hover { background-color: rgba(0, 0, 0, 0.09); }
+
+html.lykn-studio-mode:not(.dark) .border-white\/\[0\.06\] { border-color: rgba(0, 0, 0, 0.06); }
+html.lykn-studio-mode:not(.dark) .border-white\/10 { border-color: rgba(0, 0, 0, 0.08); }
+html.lykn-studio-mode:not(.dark) .border-white\/15 { border-color: rgba(0, 0, 0, 0.1); }
+html.lykn-studio-mode:not(.dark) .border-white\/20 { border-color: rgba(0, 0, 0, 0.13); }
+html.lykn-studio-mode:not(.dark) .border-white\/25 { border-color: rgba(0, 0, 0, 0.16); }
+html.lykn-studio-mode:not(.dark) .border-white\/30 { border-color: rgba(0, 0, 0, 0.18); }
+html.lykn-studio-mode:not(.dark) .ring-white\/30 { --tw-ring-color: rgba(0, 0, 0, 0.2); }
+html.lykn-studio-mode:not(.dark) .bg-white\/\[0\.06\] { background-color: rgba(0, 0, 0, 0.04); }
+
+/* Agent-rail markdown (.lykn-rail-md) — the components are authored for the
+   dark glass rail; remap the pieces the generic utilities above don't cover
+   so Neutral renders dark ink on the light frost. */
+html.lykn-studio-mode:not(.dark) .lykn-rail-md .text-white { color: rgba(0, 0, 0, 0.92); }
+html.lykn-studio-mode:not(.dark) .lykn-rail-md .text-white\/90 { color: rgba(0, 0, 0, 0.88); }
+html.lykn-studio-mode:not(.dark) .lykn-rail-md .text-sky-300 { color: #0369a1; }
+html.lykn-studio-mode:not(.dark) .lykn-rail-md .hover\:text-sky-200:hover { color: #075985; }
+html.lykn-studio-mode:not(.dark) .lykn-rail-md pre { background-color: rgba(0, 0, 0, 0.06); }
+html.lykn-studio-mode:not(.dark) .lykn-rail-md code { background-color: rgba(0, 0, 0, 0.06); color: rgba(0, 0, 0, 0.85); }
+html.lykn-studio-mode:not(.dark) .lykn-rail-md pre > code { background-color: transparent; }
+
+
+
+/* Sidebar layout shift */
+body {
+  --sidebar-offset: 0px;
+  --sidebar-width: 0px;
+  /* Extra bottom clearance applied when the mobile tab bar is mounted, so any
+     fixed bottom-anchored UI (toasts, guest sign-in prompt, focused chat input)
+     sits above it without manual per-component math. */
+  --mobile-tabbar-clear: 0px;
+}
+
+body.has-mobile-tabbar {
+  --mobile-tabbar-clear: calc(4.25rem + env(safe-area-inset-bottom, 0px));
+}
+
+body.sidebar-push {
+  --sidebar-offset: 12rem;
+  --sidebar-width: 12rem;
+}
+
+.app-content {
+  transition: padding-left 200ms ease;
+}
+
+body.sidebar-push .app-content {
+  padding-left: 12rem;
+}
+
+/* Sidebar collapsed: the icon rail (w-14 = 3.5rem) stays pinned to the left
+   edge, so reserve its width to keep content from being covered by it. */
+body.sidebar-collapsed {
+  --sidebar-offset: 3.5rem;
+  --sidebar-width: 3.5rem;
+}
+
+body.sidebar-collapsed .app-content {
+  padding-left: 3.5rem;
+}
+
+/* Background gradient behind sidebar handled by body background; no margin-left
+   shift on the grid container — let padding-left on .app-content push content. */
+
+/* Embedded vault pullout: make iframe document transparent */
+html.embedded-vault-mode,
+html.embedded-vault-mode body,
+body.embedded-vault-mode {
+  background: transparent !important;
+  background-image: none !important;
+}
+
+body.embedded-vault-mode .app-content {
+  background: transparent !important;
+  padding-left: 0 !important;
+}
+
+body.embedded-vault-mode .lykn-chat-grid-bg {
+  background: #000 !important;
+}
+
+body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] {
+  position: absolute !important;
+  inset: 0 !important;
+  padding: 0.5rem !important;
+}
+
+body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .max-w-2xl {
+  max-width: 100% !important;
+}
+
+body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] p {
+  font-size: 0.85rem !important;
+  line-height: 1.35 !important;
+  margin-bottom: 0.5rem !important;
+}
+
+body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
+  gap: 0.5rem !important;
+}
+
+/* Dragging a file over the wallpaper. Deliberately quiet — an inset ring
+   rather than a filled overlay, so the icons and widgets underneath stay
+   readable while you aim at a spot to drop on. */
+.lykn-studio-desktop.lykn-desktop-drop::after {
+  content: "";
+  position: absolute;
+  inset: 12px;
+  border-radius: 18px;
+  border: 2px dashed rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.05);
+  pointer-events: none;
+}
+
+/* Finder-style rubber-band on the Home wallpaper. */
+.lykn-desktop-marquee {
+  border: 1px solid rgba(59, 130, 246, 0.85);
+  background: rgba(59, 130, 246, 0.18);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12) inset;
+}
+
+/* Dragging a file or an icon (see src/lib/drag/dragEngine.js). Nothing here
+   knows what's being dragged — the engine only marks what was picked up and
+   parents the thing following the cursor. */
+body.lykn-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+/* What was picked up stays visible where it was, faded, the way Finder leaves
+   the original behind. It also stops taking hits, so the drop target under the
+   cursor is never the thing in your hand. */
+[data-drag-source] {
+  opacity: 0.32 !important;
+  pointer-events: none !important;
+}
+
+.lykn-drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 2147483000;
+  pointer-events: none;
+  opacity: 0.92;
+  transform-origin: top left;
+  filter: drop-shadow(0 12px 26px rgba(0, 0, 0, 0.4));
+}
+
+.lykn-drag-ghost * {
+  pointer-events: none !important;
+  animation: none !important;
+  transition: none !important;
+}
+
+/* How many are coming, when it's more than the three the stack shows. */
+.lykn-drag-ghost-count,
+.lykn-drag-ghost-copy {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.3rem;
+  border-radius: 9999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1;
+  color: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.lykn-drag-ghost-count {
+  top: -0.35rem;
+  right: -0.35rem;
+  background: #ef4444;
+}
+
+/* Option-drag copies instead of moving, and says so the way macOS does. */
+.lykn-drag-ghost-copy {
+  display: none;
+  bottom: -0.35rem;
+  left: -0.35rem;
+  background: #22c55e;
+}
+
+.lykn-drag-ghost.is-copy .lykn-drag-ghost-copy {
+  display: flex;
+}
+

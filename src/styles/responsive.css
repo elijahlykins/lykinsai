@@ -1,0 +1,150 @@
+/* RESPONSIVE OPTIMIZATIONS — mobile, tablet, laptop and ultra-wide adjustments.
+   Touch-friendly targets, phone/tablet layout overrides, compact-screen and large-screen container tuning.
+   Extracted verbatim from src/index.css (pre-split lines 2646-2790).
+   Imported via the @import manifest in src/index.css — the import sequence preserves the original cascade order. */
+
+/* =========================================================
+   RESPONSIVE DESIGN - Mobile & Tablet Optimizations
+   ========================================================= */
+
+/* Touch-friendly buttons on mobile */
+@media (max-width: 768px) {
+  /* Slightly smaller root font on phones so rem-based widths fit a 360–414px viewport. */
+  html {
+    font-size: clamp(15px, 14px + 0.4vw, 17px);
+  }
+
+  /* Sidebar must NOT push content on phones — content stays full-width and the
+     desktop sidebar (when mounted at all) becomes a slide-over drawer instead. */
+  body.sidebar-push {
+    --sidebar-offset: 0px;
+    --sidebar-width: 0px;
+  }
+  body.sidebar-push .app-content {
+    padding-left: 0;
+  }
+  body.sidebar-collapsed .app-content {
+    padding-left: 0;
+  }
+
+  /* iOS Safari address-bar safe area for any bottom-anchored chrome (tab bar,
+     chat composer). Components opt in by adding the `pb-safe` utility. */
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .mb-safe {
+    margin-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  /* Reserve space at the bottom of scrollable areas so the mobile tab bar
+     never overlaps the last item. */
+  body.has-mobile-tabbar .app-content {
+    padding-bottom: calc(4.25rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* iOS-style bouncy momentum scrolling */
+  * {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  button {
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+
+  /* Prevent zoom on iOS when focusing form inputs (any value <16px triggers it). */
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="url"],
+  input[type="number"],
+  textarea,
+  select {
+    font-size: 16px;
+  }
+
+  /* Tailwind utilities like `text-xs` win against the bare `textarea`
+     selector above, so iOS still auto-zooms when the chat composer is
+     focused on phones. Boost specificity for the chat textarea(s) to
+     guarantee the 16px floor and stop the focus zoom. A chat bar size
+     chosen in Appearance rides on top of that floor — it can grow the
+     field on a phone, never shrink it back into the zoom. */
+  textarea.lykn-chat-neu-chat-field,
+  textarea.lykn-chat-neu-chat-field.text-xs,
+  .lykn-chat-neu-chat-shell textarea {
+    font-size: max(16px, var(--lykn-chat-bar-font, 16px)) !important;
+    line-height: 1.35 !important;
+  }
+
+  /* Stop chrome that's anchored with `var(--sidebar-offset)` from leaving a
+     dead pixel column when the offset variable is unexpectedly set. */
+  [data-sidebar-anchored] {
+    left: 0 !important;
+  }
+}
+
+/* Phone-only layout overrides (no canvas grid). */
+@media (max-width: 768px) {
+  /* Hide elements explicitly marked for desktop only. */
+  .desktop-only { display: none !important; }
+}
+
+/* Tablet optimizations */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .clay-card {
+    padding: 1.25rem;
+  }
+}
+
+/* Small laptop / compact screens (13" Dell, HP, low-res Windows laptops) */
+@media (min-width: 1025px) and (max-width: 1366px) {
+  :root {
+    --header-height: 4.2rem;
+    --header-height-sm: 3.6rem;
+  }
+
+  .clay-card {
+    padding: calc(1rem * var(--layout-density, 1));
+  }
+
+  body.sidebar-push {
+    --sidebar-offset: 10rem;
+    --sidebar-width: 10rem;
+  }
+
+  body.sidebar-push .app-content {
+    padding-left: 10rem;
+  }
+}
+
+/* Laptop / small-desktop optimizations (most MacBooks, 14-15" Windows laptops) */
+@media (min-width: 1367px) and (max-width: 1600px) {
+  .clay-card {
+    padding: calc(1.25rem * var(--layout-density, 1));
+  }
+
+  body.sidebar-push {
+    --sidebar-offset: 11rem;
+    --sidebar-width: 11rem;
+  }
+
+  body.sidebar-push .app-content {
+    padding-left: 11rem;
+  }
+}
+
+/* Large / ultra-wide screens — prevent content from floating in whitespace */
+@media (min-width: 2200px) {
+  .app-content {
+    max-width: 120rem;
+    margin-left: auto;
+    margin-right: auto;
+  }
+}
+
+/* Touch manipulation for better performance */
+.touch-manipulation {
+  touch-action: manipulation;
+}
+

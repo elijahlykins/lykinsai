@@ -1,0 +1,831 @@
+/* FOUNDATION — Tailwind directives, scrollbar suppression, root scaling, theme
+   variables, @layer components / @layer utilities blocks, pastel utilities.
+   The @layer blocks must stay in this file with the @tailwind directives
+   (Tailwind v3 hoists their contents to the directive positions, so their
+   physical position here does not affect cascade order).
+   Extracted verbatim from src/index.css (pre-split lines 2-287, 1839-2005, 2085-2455).
+   Imported first from src/index.css — the manifest order preserves the original cascade. */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =========================================================
+   SCROLLBARS — never drawn, anywhere in LYKN
+   Every pane still scrolls (wheel, trackpad, keyboard, drag, programmatic);
+   only the gutter is gone. A native scrollbar is the one control we can't
+   restyle into the glass, so it's suppressed app-wide here instead of being
+   opted out pane by pane. !important because these lose to any class-level
+   rule otherwise, and this is meant to be unconditional — a pane that needs
+   a visible affordance should show its own (a fade, an arrow, a taller cap),
+   not a system scrollbar.
+   ========================================================= */
+* {
+  scrollbar-width: none !important; /* Firefox */
+  -ms-overflow-style: none !important; /* legacy Edge/IE */
+}
+*::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+
+/* =========================================================
+   RESPONSIVE SCALING — Fluid root font-size for cross-monitor consistency
+   Scales all rem-based values (spacing, font sizes, widths) proportionally.
+   At 1280px → ~15.9px, at 1440px → ~16.2px, at 1920px → ~16.9px, at 2560px → ~17.8px
+   ========================================================= */
+html {
+  --font-scale: 1;
+  font-size: calc(clamp(16.5px, 15px + 0.2vw, 21px) * var(--font-scale));
+}
+
+/* =========================================================
+   THEME VARIABLES — Full Control Over All UI Elements
+   ========================================================= */
+@layer base {
+  :root {
+    /* Base Theme — soft gray stage matching the Projects page (#ececeb). */
+    --background: 60 3% 92.5%;
+    --foreground: 0 0% 3.9%;
+
+    /* Shared chrome surface for sidebar, menus, modals, popovers, sheets.
+       Secondary to the #ececeb stage - same muted gray as project cards. */
+    --panel: 60 3% 89.4%;
+    --sidebar-surface: 60 3% 89.4%;
+
+    /* Responsive header height — used by fixed chrome offsets */
+    --header-height: 4.9rem;
+    --header-height-sm: 4.2rem;
+
+    /* App background (customizable) */
+    --app-background: #ececeb;
+
+    /* Layout density multiplier */
+    --layout-density: 1;
+
+    /* What `text-black` / `text-white` resolve to (tailwind.config.js). Plain
+       black and white app-wide; chat surfaces re-point them at the ink picked
+       in Settings › Appearance › Chat text. */
+    --lykn-ink-on-light: 0 0% 0%;
+    --lykn-ink-on-dark: 0 0% 100%;
+
+    --border: 0 0% 89.8%;
+    --input: 0 0% 89.8%;
+    --ring: 0 0% 3.9%;
+
+    --card-bg: 0 0% 100%;
+    --card-fg: 0 0% 3.9%;
+    --card-glass-opacity: 0.32;
+
+    --popover: 0 0% 95.3%;
+    --popover-foreground: 0 0% 3.9%;
+
+    --primary: 0 0% 9%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 0 0% 96.1%;
+    --secondary-foreground: 0 0% 9%;
+
+    --muted: 0 0% 96.1%;
+    --muted-foreground: 0 0% 45.1%;
+
+    --accent: 0 0% 96.1%;
+    --accent-foreground: 0 0% 9%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+
+    /* Sidebar */
+    --sidebar-bg: 0 0% 100% / 0;
+    --sidebar-fg: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-fg: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-fg: 240 5.9% 10%;
+    --sidebar-border: 0 0% 0% / 0;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+
+    /* Glass */
+    --glass-bg: 0 0% 100%;
+    --glass-dark-bg: 0 0% 100%;
+    --glass-opacity: 0.30;
+
+    /* Flow background accents (reserved for future use) */
+    --bg-flow-1: transparent;
+    --bg-flow-2: transparent;
+    --bg-flow-3: transparent;
+    --bg-flow-4: transparent;
+
+    /* Clay */
+    --clay-bg: 0 0% 100%;
+    --clay-fg: 0 0% 3.9%;
+    --clay-border: 0 0% 85%;
+
+    /* Inputs */
+    --input-bg: 0 0% 98%;
+    --input-border: 0 0% 85%;
+    --input-focus: 217 91% 60%;
+
+    /* Pastel theme colors */
+    --lavender: 260 30% 75%;
+    --mint: 150 35% 70%;
+    --blue: 210 35% 70%;
+    --peach: 25 40% 75%;
+
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 0 0% 12%;
+    --foreground: 0 0% 98%;
+
+    /* App background (customizable) */
+    --app-background: hsl(var(--background));
+
+    /* Same chrome family as light — one solid dark panel everywhere. */
+    --panel: 0 0% 16%;
+    --sidebar-surface: 0 0% 16%;
+
+    --border: 0 0% 20%;
+    --input: 0 0% 20%;
+    --ring: 0 0% 83.1%;
+
+    --card-bg: 0 0% 12%;
+    --card-fg: 0 0% 98%;
+    --card-glass-opacity: 0.24;
+
+    --popover: 0 0% 16%;
+    --popover-foreground: 0 0% 98%;
+
+    --primary: 0 0% 98%;
+    --primary-foreground: 0 0% 9%;
+    --secondary: 0 0% 18%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 18%;
+    --muted-foreground: 0 0% 63.9%;
+    --accent: 0 0% 18%;
+    --accent-foreground: 0 0% 98%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+
+    /* Sidebar dark */
+    --sidebar-bg: 0 0% 0% / 0;
+    --sidebar-fg: 0 0% 96%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-fg: 0 0% 100%;
+    --sidebar-accent: 0 0% 18%;
+    --sidebar-accent-fg: 0 0% 96%;
+    --sidebar-border: 0 0% 0% / 0;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+
+    /* Glass */
+    --glass-bg: 0 0% 18%;
+    --glass-dark-bg: 0 0% 18%;
+    --glass-opacity: 0.28;
+
+    /* Flow background accents (reserved for future use) */
+    --bg-flow-1: transparent;
+    --bg-flow-2: transparent;
+    --bg-flow-3: transparent;
+    --bg-flow-4: transparent;
+
+    /* Clay */
+    --clay-bg: 0 0% 15%;
+    --clay-fg: 0 0% 98%;
+    --clay-border: 0 0% 22%;
+
+    /* Inputs */
+    --input-bg: 0 0% 18%;
+    --input-border: 0 0% 27%;
+    --input-focus: 217 91% 65%;
+  }
+}
+
+/* Base Reset */
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply text-foreground;
+    background-color: var(--app-background);
+    /* Settings › Appearance › Typeface. */
+    font-family: var(--lykn-font-body, 'Inter', ui-sans-serif, system-ui, sans-serif);
+    min-height: 100vh;
+  }
+}
+
+/* Embedded mode: force transparent background on everything */
+html.embedded-transparent,
+html.embedded-transparent body,
+html.embedded-transparent #root {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+}
+
+/* LYKN Studio (liquid-glass workspace window): the page must stay fully
+   transparent so the Electron window's native vibrancy shows through the
+   glass panels. */
+html.lykn-studio-mode,
+html.lykn-studio-mode body,
+html.lykn-studio-mode #root {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+}
+
+/* Frosted hover description boxes (StudioHoverTips + Electron hover-tips.js) */
+.lykn-hover-tip {
+  position: fixed;
+  z-index: 2147483000;
+  pointer-events: none;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, 0.94);
+  color: rgba(0, 0, 0, 0.8);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  animation: lykn-hover-tip-in 120ms ease-out;
+  white-space: normal;
+  word-break: break-word;
+}
+html.dark .lykn-hover-tip,
+html.lykn-studio-mode.dark .lykn-hover-tip,
+:is(html.lykn-overlay, html.lykn-agent-stage, body.lykn-electron-chrome) .lykn-hover-tip {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(20, 22, 28, 0.88);
+  color: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+@keyframes lykn-hover-tip-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.lykn-hover-tip[data-side="top"] {
+  animation-name: lykn-hover-tip-in-top;
+}
+@keyframes lykn-hover-tip-in-top {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* =========================================================
+   COMPONENTS — Fully Variable-Driven
+   ========================================================= */
+@layer components {
+
+  /* --- Glass Surfaces --- */
+  .bg-glass {
+    background: hsl(var(--glass-bg) / var(--glass-opacity));
+    color: hsl(var(--foreground));
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 14px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+  }
+
+  .bg-glass-sidebar {
+    background: transparent;
+    color: hsl(var(--sidebar-fg));
+    border-right: none;
+    box-shadow: none;
+  }
+
+  .bg-glass-card {
+    background:
+      linear-gradient(135deg, rgba(255,255,255,0.10), rgba(255,255,255,0.03)),
+      hsl(var(--card-bg) / var(--card-glass-opacity));
+    color: hsl(var(--card-fg));
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 16px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+  }
+
+  /* Block surfaces: slightly greyer/less clear, with a reflective edge highlight (brick-shaped) */
+  :is(.glass-block, .glass-text-card) {
+    background:
+      linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02)),
+      rgba(120, 120, 120, 0.05);
+    color: hsl(var(--foreground));
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-top-color: rgba(255,255,255,0.22);
+    border-radius: 6px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+  }
+
+  .dark :is(.glass-block, .glass-text-card) {
+    background:
+      linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)),
+      rgba(255,255,255,0.02);
+    border-color: rgba(255,255,255,0.08);
+    border-top-color: rgba(255,255,255,0.12);
+    box-shadow: 0 2px 10px rgba(0,0,0,0.16);
+  }
+
+  /* --- Clay Components --- */
+  .clay-card {
+    background:
+      linear-gradient(135deg, rgba(255,255,255,0.10), rgba(255,255,255,0.03)),
+      hsl(var(--card-bg) / var(--card-glass-opacity));
+    color: hsl(var(--foreground));
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 16px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+    padding: calc(1rem * var(--layout-density));
+  }
+
+  .clay-input {
+    background:
+      linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02)),
+      hsl(var(--input-bg) / 0.22);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 12px;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    transition: all 0.2s ease;
+  }
+
+  .clay-input:focus {
+    border-color: hsl(var(--input-focus));
+    box-shadow: 0 0 0 2px hsl(var(--input-focus) / 0.5);
+  }
+
+  /* --- Buttons --- */
+  .glass-button {
+    background: hsl(var(--button-bg, var(--glass-bg)) / var(--glass-opacity));
+    color: hsl(var(--primary-foreground));
+    border: 1px solid hsl(var(--button-border, var(--border)) / 0.25);
+    border-radius: 0.75rem;
+    backdrop-filter: blur(8px);
+    transition: all 0.25s ease;
+  }
+
+  .glass-button:hover {
+    background: hsl(var(--button-hover, var(--glass-bg)) / var(--glass-opacity));
+  }
+
+  /* --- BrickEditor Todo (check) list --- */
+  .brick-todo-checkbox {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 1.5px solid rgba(0, 0, 0, 0.35);
+    background: transparent;
+    display: inline-block;
+    vertical-align: middle;
+    margin-right: 6px;
+    cursor: pointer;
+  }
+
+  .dark .brick-todo-checkbox {
+    border-color: rgba(255, 255, 255, 0.35);
+  }
+
+  .brick-todo-checkbox:checked {
+    background: rgba(75, 85, 99, 0.95); /* dark grey fill */
+    border-color: rgba(75, 85, 99, 0.95);
+  }
+
+  /* Optional: dim completed todo rows */
+  .brick-todo-done {
+    opacity: 0.65;
+  }
+
+  /* --- BrickEditor ListBlock layout --- */
+  .brick-list-row {
+    min-height: 24px;
+  }
+
+  .brick-list-marker {
+    width: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .brick-number-label,
+  .brick-bullet-label {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.9;
+  }
+
+  .dark .brick-todo-checkbox:checked {
+    background: rgba(75, 85, 99, 0.95); /* keep dark grey in dark mode too */
+    border-color: rgba(75, 85, 99, 0.95);
+  }
+
+  .brick-todo-checkbox:focus-visible {
+    outline: 2px solid hsl(var(--ring) / 0.65);
+    outline-offset: 2px;
+  }
+
+  /* Invisible caret anchor right after checkbox */
+  .brick-todo-spacer {
+    display: inline-block;
+    width: 0;
+    overflow: hidden;
+  }
+
+}
+/* =========================================================
+   UTILITIES — reflective glass controls (same style as text boxes)
+   ========================================================= */
+@layer utilities {
+  /* Shared chrome panel fill (sidebar / menus / modals / popovers). */
+  .lykn-panel {
+    background-color: hsl(var(--panel));
+  }
+
+  /* Same reflective/grey glass, but radius-agnostic for pills, buttons, etc.
+     Floating chrome that used glass-control as a "panel" should prefer
+     `bg-panel` / `.lykn-panel` so light/dark surfaces stay one color. */
+  .glass-control {
+    background:
+      linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.04)),
+      rgba(140, 140, 140, 0.08);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.16);
+    border-top-color: rgba(255,255,255,0.24);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  }
+
+  .dark .glass-control {
+    background:
+      linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)),
+      rgba(60, 60, 60, 0.14);
+    border-color: rgba(255,255,255,0.10);
+    border-top-color: rgba(255,255,255,0.14);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.10);
+  }
+
+  /* ── Apple Liquid Glass ── */
+  .liquid-glass {
+    --lg-blur: 16px;
+    background: rgba(238, 238, 240, 0.65);
+    backdrop-filter: blur(var(--lg-blur)) saturate(1.15);
+    -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(1.15);
+    border: 1px solid rgba(255,255,255,0.25);
+    border-top-color: rgba(255,255,255,0.35);
+    border-bottom-color: rgba(0,0,0,0.03);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.05);
+  }
+
+  .dark .liquid-glass {
+    background: rgba(38, 38, 38, 0.60);
+    backdrop-filter: blur(var(--lg-blur)) saturate(1.1);
+    -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(1.1);
+    border-color: rgba(255,255,255,0.08);
+    border-top-color: rgba(255,255,255,0.12);
+    border-bottom-color: rgba(0,0,0,0.12);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+  }
+
+  .liquid-glass-specular::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background:
+      radial-gradient(
+        ellipse 80% 35% at 50% -5%,
+        rgba(255,255,255,0.18) 0%,
+        transparent 70%
+      );
+    z-index: 1;
+  }
+
+  .dark .liquid-glass-specular::before {
+    background:
+      radial-gradient(
+        ellipse 80% 35% at 50% -5%,
+        rgba(255,255,255,0.06) 0%,
+        transparent 70%
+      );
+  }
+
+  .liquid-glass-bubble {
+    background:
+      linear-gradient(
+        160deg,
+        rgba(255,255,255,0.22) 0%,
+        rgba(255,255,255,0.08) 100%
+      );
+    backdrop-filter: blur(10px) saturate(1.1);
+    -webkit-backdrop-filter: blur(10px) saturate(1.1);
+    border: 1px solid rgba(255,255,255,0.18);
+    border-top-color: rgba(255,255,255,0.28);
+    border-bottom-color: rgba(255,255,255,0.08);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  }
+
+  .dark .liquid-glass-bubble {
+    background:
+      linear-gradient(
+        160deg,
+        rgba(255,255,255,0.06) 0%,
+        rgba(255,255,255,0.02) 100%
+      );
+    border-color: rgba(255,255,255,0.08);
+    border-top-color: rgba(255,255,255,0.12);
+    border-bottom-color: rgba(255,255,255,0.03);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+  }
+
+  .liquid-glass-input {
+    background:
+      linear-gradient(
+        160deg,
+        rgba(255,255,255,0.14) 0%,
+        rgba(255,255,255,0.05) 100%
+      );
+    backdrop-filter: blur(8px) saturate(1.1);
+    -webkit-backdrop-filter: blur(8px) saturate(1.1);
+    border: 1px solid rgba(255,255,255,0.18) !important;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.03);
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  .liquid-glass-input:focus {
+    border-color: rgba(120,160,255,0.35) !important;
+    box-shadow:
+      inset 0 1px 2px rgba(0,0,0,0.03),
+      0 0 0 2px rgba(120,160,255,0.12);
+  }
+
+  .dark .liquid-glass-input {
+    background:
+      linear-gradient(
+        160deg,
+        rgba(255,255,255,0.05) 0%,
+        rgba(255,255,255,0.02) 100%
+      );
+    border-color: rgba(255,255,255,0.08) !important;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.10);
+  }
+
+  .dark .liquid-glass-input:focus {
+    border-color: rgba(120,160,255,0.28) !important;
+    box-shadow:
+      inset 0 1px 2px rgba(0,0,0,0.10),
+      0 0 0 2px rgba(120,160,255,0.10);
+  }
+
+  /* Omnia Grid page — transparent so the body's standard bloom background shows through */
+  .lykn-chat-grid-bg {
+    background: transparent;
+  }
+
+  /* Omnia Grid — neumorphic chat composer (raised shell; input co-planar, not inset) */
+  .lykn-chat-neu-chat-shell {
+    background: linear-gradient(145deg, #f6f6f6, #f0f0f0);
+    border-radius: 14px;
+    border: 1px solid rgba(0, 0, 0, 0.04);
+    box-shadow:
+      0 6px 20px rgba(0, 0, 0, 0.12),
+      0 2px 6px rgba(0, 0, 0, 0.07),
+      inset 0 1px 0 rgba(255, 255, 255, 0.60);
+  }
+
+  .dark .lykn-chat-neu-chat-shell {
+    background: linear-gradient(145deg, #343840, #282c32);
+    border-color: rgba(255, 255, 255, 0.05);
+    box-shadow:
+      0 4px 16px rgba(0, 0, 0, 0.45),
+      0 1.5px 4px rgba(0, 0, 0, 0.25),
+      inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  }
+
+  /* Flush with shell: no inner box — same surface as the card */
+  .lykn-chat-neu-chat-field {
+    border-radius: 0;
+    background: transparent;
+    color: #16161a;
+    border: none;
+    box-shadow: none;
+  }
+
+  .dark .lykn-chat-neu-chat-field {
+    background: transparent;
+    color: rgba(255, 255, 255, 0.92);
+    border: none;
+    box-shadow: none;
+  }
+
+  /* Chat toolbar: icon-only controls (no raised block) */
+  .lykn-chat-neu-chat-icon-plain {
+    border-radius: 10px;
+    flex-shrink: 0;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    transition:
+      background-color 0.18s ease,
+      box-shadow 0.18s ease,
+      color 0.18s ease;
+  }
+
+  .lykn-chat-neu-chat-icon-plain:hover:not(:disabled) {
+    background-color: rgba(59, 130, 246, 0.1);
+    box-shadow: 0 0 12px rgba(59, 130, 246, 0.14);
+  }
+
+  .lykn-chat-neu-chat-icon-plain:active:not(:disabled) {
+    background-color: rgba(59, 130, 246, 0.06);
+  }
+
+  .dark .lykn-chat-neu-chat-icon-plain:hover:not(:disabled) {
+    background-color: rgba(59, 130, 246, 0.14);
+    box-shadow: 0 0 14px rgba(59, 130, 246, 0.16);
+  }
+
+  .dark .lykn-chat-neu-chat-icon-plain:active:not(:disabled) {
+    background-color: rgba(59, 130, 246, 0.1);
+  }
+
+  /* Send only — neumorphic block */
+  .lykn-chat-neu-chat-send-btn {
+    border-radius: 10px;
+    flex-shrink: 0;
+    background: linear-gradient(145deg, #fafafa, #f0f0f2);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    box-shadow:
+      4px 4px 9px rgba(0, 0, 0, 0.05),
+      -2px -2px 6px rgba(255, 255, 255, 0.90);
+    transition:
+      box-shadow 0.18s ease,
+      transform 0.15s ease,
+      background 0.18s ease,
+      border-color 0.18s ease;
+  }
+
+  .lykn-chat-neu-chat-send-btn:hover:not(:disabled) {
+    background: linear-gradient(145deg, #e8f1fc, #dceaf8);
+    border-color: rgba(59, 130, 246, 0.28);
+    box-shadow:
+      3px 3px 8px rgba(0, 0, 0, 0.06),
+      -2px -2px 6px rgba(255, 255, 255, 0.82),
+      0 0 14px rgba(59, 130, 246, 0.14);
+  }
+
+  .lykn-chat-neu-chat-send-btn:active:not(:disabled) {
+    box-shadow:
+      inset 2px 2px 5px rgba(0, 0, 0, 0.1),
+      inset -1px -1px 4px rgba(255, 255, 255, 0.5),
+      0 0 0 1px rgba(59, 130, 246, 0.12);
+  }
+
+  .dark .lykn-chat-neu-chat-send-btn {
+    background: linear-gradient(145deg, #383c44, #2a2e35);
+    border-color: rgba(255, 255, 255, 0.06);
+    box-shadow:
+      3px 3px 8px rgba(0, 0, 0, 0.45),
+      -2px -2px 6px rgba(255, 255, 255, 0.02);
+  }
+
+  .dark .lykn-chat-neu-chat-send-btn:hover:not(:disabled) {
+    background: linear-gradient(145deg, #2e3848, #283040);
+    border-color: rgba(96, 165, 250, 0.32);
+    box-shadow:
+      3px 3px 8px rgba(0, 0, 0, 0.4),
+      -1px -1px 5px rgba(255, 255, 255, 0.03),
+      0 0 16px rgba(59, 130, 246, 0.16);
+  }
+
+  .dark .lykn-chat-neu-chat-send-btn:active:not(:disabled) {
+    box-shadow:
+      inset 2px 2px 6px rgba(0, 0, 0, 0.45),
+      inset -1px -1px 4px rgba(255, 255, 255, 0.03),
+      0 0 0 1px rgba(96, 165, 250, 0.15);
+  }
+
+  /* Model dropdown — same “icon only” feel as plain buttons */
+  .lykn-chat-neu-chat-toolbar-select-trigger {
+    transition: background-color 0.18s ease, box-shadow 0.18s ease;
+  }
+
+  .lykn-chat-neu-chat-toolbar-select-trigger:focus,
+  .lykn-chat-neu-chat-toolbar-select-trigger:focus-visible {
+    outline: none;
+  }
+
+  .lykn-chat-neu-chat-toolbar-select-trigger:focus:not(:hover):not([data-state="open"]) {
+    background-color: transparent;
+    box-shadow: none;
+  }
+
+  .lykn-chat-neu-chat-toolbar-select-trigger[data-state="closed"]:not(:hover) {
+    background-color: transparent;
+    box-shadow: none;
+  }
+
+  .lykn-chat-neu-chat-toolbar-select-trigger:hover {
+    background-color: rgba(59, 130, 246, 0.1);
+    box-shadow: 0 0 12px rgba(59, 130, 246, 0.12);
+  }
+
+  .dark .lykn-chat-neu-chat-toolbar-select-trigger:hover {
+    background-color: rgba(59, 130, 246, 0.12);
+    box-shadow: 0 0 14px rgba(59, 130, 246, 0.14);
+  }
+
+  /* Action buttons revealed on hover for mouse users, but always visible
+     (dimmed) on touch devices — `opacity-0 group-hover:opacity-100` alone
+     made delete/edit affordances unreachable on phones and tablets. */
+  .hover-reveal {
+    opacity: 0.55;
+    transition: opacity 0.15s ease;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .hover-reveal {
+      opacity: 0;
+    }
+    .group:hover .hover-reveal,
+    .hover-reveal:focus-within,
+    .hover-reveal:focus-visible {
+      opacity: 1;
+    }
+  }
+
+  /* Hide scrollbars but keep scrolling (Windows/Chrome friendly) */
+  .scrollbar-hide {
+    -ms-overflow-style: none; /* IE/Edge Legacy */
+    scrollbar-width: none; /* Firefox */
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none; /* Safari/Chrome */
+  }
+
+  /* =========================================================
+     Omnia Grid — selected block treatment (sleek "lit glass")
+     ========================================================= */
+  .lykn-chat-selected-glass {
+    box-shadow:
+      0 2px 10px rgba(0,0,0,0.06),
+      inset 0 0 16px rgba(110, 200, 255, 0.12),
+      inset 0 0 6px rgba(110, 200, 255, 0.06);
+    transition: box-shadow 140ms ease, border-color 140ms ease;
+  }
+
+  .dark .lykn-chat-selected-glass {
+    box-shadow:
+      0 2px 10px rgba(0,0,0,0.16),
+      inset 0 0 16px rgba(110, 200, 255, 0.08),
+      inset 0 0 6px rgba(110, 200, 255, 0.05);
+  }
+
+}
+
+/* =========================================================
+   Pastel Utility Classes (unchanged)
+   ========================================================= */
+
+.text-lavender { color: hsl(var(--lavender)); }
+.text-mint     { color: hsl(var(--mint)); }
+.text-blue     { color: hsl(var(--blue)); }
+.text-peach    { color: hsl(var(--peach)); }
+
+.bg-lavender\/10 { background: hsl(var(--lavender) / 0.1); }
+.bg-mint\/10     { background: hsl(var(--mint) / 0.1); }
+.bg-blue\/10     { background: hsl(var(--blue) / 0.1); }
+.bg-peach\/10    { background: hsl(var(--peach) / 0.1); }
+
+.border-lavender\/20 { border-color: hsl(var(--lavender) / 0.2); }
+.border-mint\/20     { border-color: hsl(var(--mint) / 0.2); }
+.border-blue\/20     { border-color: hsl(var(--blue) / 0.2); }
+.border-peach\/20    { border-color: hsl(var(--peach) / 0.2); }
+

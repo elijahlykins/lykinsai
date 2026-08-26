@@ -1,0 +1,174 @@
+/* CHAT EFFECTS — border running light, animated thinking text, marquee select.
+   @property for the chat border trace (root scope), looping blue border light, thinking text shimmer, drag-select rectangle.
+   Extracted verbatim from src/index.css (pre-split lines 3465-3633).
+   Imported via the @import manifest in src/index.css — the import sequence preserves the original cascade order. */
+
+/* ==========================================================
+   Chat border running light — @property must live at root scope
+   ========================================================== */
+@property --lykn-chat-border-trace {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.lykn-chat-neu-chat-shell.lykn-chat-chat-border-run-once {
+  position: relative;
+  overflow: visible;
+}
+
+.lykn-chat-neu-chat-shell.lykn-chat-chat-border-run-once::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 16px;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--lykn-chat-border-trace) at 50% 50%,
+    transparent 0deg,
+    transparent 300deg,
+    rgba(59, 130, 246, 0.15) 320deg,
+    rgba(96, 165, 250, 0.55) 338deg,
+    rgba(147, 197, 253, 1) 348deg,
+    rgba(96, 165, 250, 0.55) 352deg,
+    rgba(59, 130, 246, 0.15) 358deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 1;
+  --lykn-chat-border-trace: 0deg;
+  animation: lykn-chat-border-trace 2.6s cubic-bezier(0.35, 0, 0.15, 1) forwards;
+}
+
+.lykn-chat-neu-chat-shell.lykn-chat-chat-border-run-once > * {
+  position: relative;
+  z-index: 2;
+}
+
+@keyframes lykn-chat-border-trace {
+  0% {
+    --lykn-chat-border-trace: 0deg;
+    opacity: 1;
+  }
+  75% {
+    opacity: 1;
+  }
+  100% {
+    --lykn-chat-border-trace: 360deg;
+    opacity: 0;
+  }
+}
+
+/* Looping blue border light for AI thinking indicator */
+.lykn-chat-ai-thinking-glow {
+  position: relative;
+  overflow: visible;
+}
+
+.lykn-chat-ai-thinking-glow::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--lykn-chat-border-trace) at 50% 50%,
+    transparent 0deg,
+    transparent 300deg,
+    rgba(59, 130, 246, 0.12) 320deg,
+    rgba(96, 165, 250, 0.45) 338deg,
+    rgba(147, 197, 253, 0.85) 348deg,
+    rgba(96, 165, 250, 0.45) 352deg,
+    rgba(59, 130, 246, 0.12) 358deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 0;
+  --lykn-chat-border-trace: 0deg;
+  animation: lykn-chat-border-trace-loop 2.4s linear infinite;
+}
+
+.lykn-chat-ai-thinking-glow > * {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes lykn-chat-border-trace-loop {
+  0%   { --lykn-chat-border-trace: 0deg; }
+  100% { --lykn-chat-border-trace: 360deg; }
+}
+
+/* ── Animated "thinking" text ───────────────────────────────────────────
+   A subtle monochrome shimmer (a slightly brighter band of the SAME text
+   color) glides across the status word so a long wait feels alive without
+   being loud. No color tint, no fade in/out — the phrase swaps in place. */
+.lykn-chat-thinking-text {
+  display: inline-block;
+  --lykn-chat-thinking-dim: rgba(0, 0, 0, 0.42);
+  --lykn-chat-thinking-bright: rgba(0, 0, 0, 0.82);
+  background: linear-gradient(
+    100deg,
+    var(--lykn-chat-thinking-dim) 0%,
+    var(--lykn-chat-thinking-dim) 42%,
+    var(--lykn-chat-thinking-bright) 50%,
+    var(--lykn-chat-thinking-dim) 58%,
+    var(--lykn-chat-thinking-dim) 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: lykn-chat-thinking-shimmer 2.4s linear infinite;
+  will-change: background-position;
+}
+
+.dark .lykn-chat-thinking-text {
+  --lykn-chat-thinking-dim: rgba(255, 255, 255, 0.40);
+  --lykn-chat-thinking-bright: rgba(255, 255, 255, 0.90);
+}
+
+@keyframes lykn-chat-thinking-shimmer {
+  0%   { background-position: 130% 0; }
+  100% { background-position: -130% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lykn-chat-thinking-text {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: var(--lykn-chat-thinking-bright);
+    color: var(--lykn-chat-thinking-bright);
+  }
+}
+
+/* ── Marquee drag-select rectangle ─────────────────────────────────── */
+.lykn-chat-marquee-select {
+  border: 1.5px solid rgba(59, 130, 246, 0.7);
+  background: rgba(59, 130, 246, 0.08);
+  border-radius: 3px;
+  backdrop-filter: blur(1px);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.15);
+}
+.dark .lykn-chat-marquee-select {
+  border-color: rgba(96, 165, 250, 0.65);
+  background: rgba(96, 165, 250, 0.1);
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.18);
+}
+

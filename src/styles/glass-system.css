@@ -1,0 +1,222 @@
+/* GLASS SYSTEM — embedded glass surfaces, liquid-glass Settings window, Intel-Mac glass fallback.
+   Pages loaded inside LYKN Studio (?embedded=1&glass=1), the macOS-style Settings layout, and the backdrop-filter compositor-bug fallback.
+   Extracted verbatim from src/index.css (pre-split lines 288-504).
+   Imported via the @import manifest in src/index.css — the import sequence preserves the original cascade order. */
+
+/* =========================================================
+   GLASS EMBEDS — pages loaded inside LYKN Studio (?embedded=1&glass=1)
+   Every product surface gets a "glass version": the opaque stage and
+   chrome variables go translucent so the Studio's frosted panel (and the
+   desktop blur behind it) shows through. Tailwind maps these variables
+   as hsl(var(--x)), so alpha baked into the value applies everywhere.
+   Placed after the transparency blocks above so it wins the cascade
+   (applyTheme also sets --app-background inline, hence !important).
+   ========================================================= */
+html.lykn-glass-embed {
+  /* Neutral (light): the full REGULAR light UI — opaque stage, standard
+     theme variables, zero translucency. Only the .dark block below wears
+     the glass skin. */
+  background: var(--app-background) !important;
+}
+
+html.lykn-glass-embed.dark {
+  /* Fully transparent stage: pages sit directly on the Studio's frost
+     panel, so every page background matches the home dashboard exactly. */
+  --app-background: transparent !important;
+  /* bg-background surfaces go translucent instead of opaque near-black. */
+  --background: 220 9% 12% / 0.35;
+  --panel: 220 8% 12% / 0.55;
+  --sidebar-surface: 220 8% 12% / 0.5;
+  --popover: 220 8% 12% / 0.6;
+  --secondary: 0 0% 100% / 0.08;
+  --muted: 0 0% 100% / 0.07;
+  --accent: 0 0% 100% / 0.08;
+  --border: 0 0% 100% / 0.12;
+  --input: 0 0% 100% / 0.12;
+  --input-border: 0 0% 100% / 0.16;
+  --clay-bg: 0 0% 100% / 0.06;
+  --clay-border: 0 0% 100% / 0.12;
+}
+
+/* The stage: transparent in dark glass, opaque regular light in Neutral.
+   The body.embedded-vault-mode variant is listed explicitly so this beats
+   the later embedded-vault transparency/black-stage rules on specificity. */
+html.lykn-glass-embed body,
+html.lykn-glass-embed body.embedded-vault-mode {
+  background: var(--app-background) !important;
+}
+html.lykn-glass-embed #root {
+  background: transparent !important;
+  background-image: none !important;
+}
+
+/* Studio Glass theme: denser panel tokens — frosted, not see-through. */
+html.lykn-studio-mode.dark {
+  --panel: 220 8% 10% / 0.82;
+  --popover: 220 8% 10% / 0.82;
+  --sidebar-surface: 220 8% 10% / 0.78;
+}
+
+/*
+  Static panel surfaces (sidebars, cards, rails) in Glass mode. Floating
+  surfaces are NOT listed here — menus, popovers and dialogs all resolve
+  through the shared liquid-glass layer further down this file, which is what
+  keeps them matching the settings window. Do NOT filter-blur `#root` (that
+  hid the Studio).
+*/
+html.lykn-glass-embed.dark .lykn-panel,
+html.lykn-studio-mode.dark .lykn-panel,
+html.lykn-glass-embed.dark .bg-panel,
+html.lykn-studio-mode.dark .bg-panel,
+html.lykn-glass-embed.dark [class*="bg-popover"],
+html.lykn-studio-mode.dark [class*="bg-popover"] {
+  background-color: var(--lg-menu-tint) !important;
+  border-color: var(--lg-hairline) !important;
+  backdrop-filter: blur(var(--lg-blur-menu)) saturate(var(--lg-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--lg-blur-menu)) saturate(var(--lg-saturate)) !important;
+  box-shadow: inset 0 1px 0 var(--lg-sheen) !important;
+}
+
+/* Dialogs / sheets — thicker glass, same material. */
+html.lykn-glass-embed.dark [role="dialog"],
+html.lykn-studio-mode.dark [role="dialog"],
+html.lykn-glass-embed.dark [data-radix-dialog-content],
+html.lykn-studio-mode.dark [data-radix-dialog-content] {
+  background:
+    linear-gradient(155deg, var(--lg-tint-strong) 0%, var(--lg-tint) 55%, var(--lg-tint-strong) 100%) !important;
+  border-color: var(--lg-hairline) !important;
+  backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate)) !important;
+  box-shadow:
+    var(--lg-shadow-window),
+    inset 0 1px 0 var(--lg-sheen),
+    inset 0 -1px 0 var(--lg-edge) !important;
+}
+
+/* Soft dim over Studio frost — heavy black wash kills the glass read. */
+html.lykn-glass-embed.dark .lykn-dialog-overlay,
+html.lykn-studio-mode.dark .lykn-dialog-overlay {
+  background-color: rgba(6, 8, 12, 0.42) !important;
+  backdrop-filter: blur(10px) saturate(1.2);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+}
+
+/* Neutral Studio: light frost dialogs over the opaque stage. */
+html.lykn-glass-embed:not(.dark) [role="dialog"],
+html.lykn-studio-mode:not(.dark) [role="dialog"],
+html.lykn-glass-embed:not(.dark) [data-radix-dialog-content],
+html.lykn-studio-mode:not(.dark) [data-radix-dialog-content] {
+  background:
+    linear-gradient(155deg, var(--lg-tint-strong) 0%, var(--lg-tint) 55%, var(--lg-tint-strong) 100%) !important;
+  border-color: var(--lg-hairline) !important;
+  backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate)) !important;
+  box-shadow:
+    var(--lg-shadow-window),
+    inset 0 1px 0 var(--lg-sheen),
+    inset 0 -1px 0 var(--lg-edge) !important;
+}
+html.lykn-glass-embed:not(.dark) .lykn-dialog-overlay,
+html.lykn-studio-mode:not(.dark) .lykn-dialog-overlay {
+  background-color: rgba(20, 22, 28, 0.28) !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* =========================================================
+   LIQUID GLASS SETTINGS — macOS System Settings layout (split sidebar +
+   grouped inset lists) rendered on the shared window glass, with no tint or
+   bloom of its own: the settings window must read as the same material as
+   every other floating surface. Every layer reads --lg-* so the accessibility
+   toggles (high contrast) can retune the whole pane from one place.
+   ========================================================= */
+:root {
+  /* One wash for every floating surface. The tint/tint-strong and menu-tint
+     pairs are held equal so the gradients they feed resolve flat — the app is
+     deliberately a single flat material, not a graded one. Retune the surface
+     for the whole app by editing these two values (plus the dark pair). */
+  --lg-tint: rgba(255, 255, 255, 0.7);
+  --lg-tint-strong: rgba(255, 255, 255, 0.7);
+  --lg-hairline: rgba(0, 0, 0, 0.1);
+  /* No specular sheen or grounding edge: the material is a plain wash over a
+     deep blur, so the inset highlights that used to sell "thick glass" would
+     read as a seam. High contrast reinstates the edge below. */
+  --lg-edge: transparent;
+  --lg-sheen: transparent;
+  --lg-text: rgba(0, 0, 0, 0.88);
+  --lg-text-dim: rgba(0, 0, 0, 0.46);
+  --lg-fill: rgba(255, 255, 255, 0.5);
+  --lg-fill-hover: rgba(255, 255, 255, 0.7);
+  --lg-inset: rgba(0, 0, 0, 0.06);
+  /* Flat recess for a sidebar sitting inside a glass window — a gradient here
+     reads as a second material stacked on the first. */
+  --lg-recess: rgba(255, 255, 255, 0.16);
+
+  /* Menus used to carry a denser tint than a window body. They no longer do —
+     a menu, a dialog and a tooltip are the same wash, and only radius tells
+     them apart — but the names stay so existing call sites keep resolving. */
+  --lg-menu-tint: rgba(255, 255, 255, 0.7);
+  --lg-menu-tint-strong: rgba(255, 255, 255, 0.7);
+
+  /* Geometry + depth for every floating surface, so the whole app retunes here.
+     One blur and one shadow across the roles; only radius varies, so a tooltip
+     doesn't get a window's corner. */
+  --lg-blur-tip: 40px;
+  --lg-blur-menu: 40px;
+  --lg-blur-window: 40px;
+  --lg-saturate: 1;
+  --lg-radius-tip: 10px;
+  --lg-radius-menu: 14px;
+  --lg-radius-window: 26px;
+  --lg-shadow-tip: 0 12px 40px rgba(0, 0, 0, 0.2);
+  --lg-shadow-menu: 0 12px 40px rgba(0, 0, 0, 0.2);
+  --lg-shadow-window: 0 12px 40px rgba(0, 0, 0, 0.2);
+}
+html.dark {
+  --lg-tint: rgba(0, 0, 0, 0.4);
+  --lg-tint-strong: rgba(0, 0, 0, 0.4);
+  --lg-hairline: rgba(255, 255, 255, 0.15);
+  --lg-edge: transparent;
+  --lg-sheen: transparent;
+  --lg-text: rgba(255, 255, 255, 0.92);
+  --lg-text-dim: rgba(255, 255, 255, 0.46);
+  --lg-fill: rgba(255, 255, 255, 0.08);
+  --lg-fill-hover: rgba(255, 255, 255, 0.13);
+  --lg-inset: rgba(0, 0, 0, 0.28);
+  --lg-recess: rgba(255, 255, 255, 0.045);
+  --lg-menu-tint: rgba(0, 0, 0, 0.4);
+  --lg-menu-tint-strong: rgba(0, 0, 0, 0.4);
+}
+
+/* =========================================================
+   GLASS FALLBACK — Intel-Mac GPUs hit a Chromium compositor bug where
+   backdrop-filter renders as fully transparent holes instead of blur. The
+   desktop shell flags those machines (preload `glassFallback` → main.jsx adds
+   this class before first paint) and the material trades its deep blur for a
+   near-opaque tint. Hairlines, radii, shadows and text tokens are untouched,
+   so the app reads as frosted panels — the same posture as macOS's own
+   "Reduce transparency" — instead of see-through holes. Everything routed
+   through --lg-* retunes from this one block.
+   ========================================================= */
+html.lykn-glass-fallback {
+  --lg-tint: rgba(255, 255, 255, 0.95);
+  --lg-tint-strong: rgba(255, 255, 255, 0.95);
+  --lg-menu-tint: rgba(255, 255, 255, 0.95);
+  --lg-menu-tint-strong: rgba(255, 255, 255, 0.95);
+}
+html.lykn-glass-fallback.dark {
+  --lg-tint: rgba(28, 28, 30, 0.95);
+  --lg-tint-strong: rgba(28, 28, 30, 0.95);
+  --lg-menu-tint: rgba(28, 28, 30, 0.95);
+  --lg-menu-tint-strong: rgba(28, 28, 30, 0.95);
+}
+/* The bug corrupts the whole filtered region, so the filter itself must go —
+   including ad-hoc Tailwind backdrop-blur-* surfaces, which keep their own
+   background color and stay readable without the blur. */
+html.lykn-glass-fallback *,
+html.lykn-glass-fallback *::before,
+html.lykn-glass-fallback *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+

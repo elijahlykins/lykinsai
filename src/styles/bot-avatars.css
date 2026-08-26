@@ -1,0 +1,283 @@
+/* LYKN BOTFACE — living bot avatars (see BotAvatar.jsx).
+   Idle bob/blink/glance/quirk, spin, working scan, waiting halo — per-face phase offsets via --bf-* variables.
+   Extracted verbatim from src/index.css (pre-split lines 10220-10497).
+   Imported via the @import manifest in src/index.css — the import sequence preserves the original cascade order. */
+
+/* ── LYKN BOTFACE — living Bot avatars (see BotAvatar.jsx) ─────────────────
+   Each face gets --bf-blink (its own blink period) and --bf-delay (a negative
+   phase offset) from the bot's id, so a roster never animates in unison.
+   The global html[data-reduce-motion] rule above freezes all of this. */
+
+.lykn-botface svg {
+  overflow: visible;
+  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.28));
+}
+
+/* The currentColor icon variant (BotMark) sits among flat glyphs — no
+   character drop shadow there. */
+.lykn-botface--mark svg {
+  filter: none;
+}
+
+/* Idle: gentle bob + periodic blink. */
+.lykn-botface[data-mood='idle'] .bf-bob {
+  animation: lykn-bf-bob 4.2s ease-in-out infinite;
+  animation-delay: var(--bf-delay, 0s);
+}
+.lykn-botface[data-mood='idle'] .bf-eyes {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: lykn-bf-blink var(--bf-blink, 4.6s) linear infinite;
+  animation-delay: var(--bf-delay, 0s);
+}
+
+/* Idle glance — every so often something catches its attention: eyes dart
+   left (left eye squinting, sizing it up), flick up, check right, settle.
+   Runs on its own inner group so it composes with blink and the spin sweep. */
+.lykn-botface[data-mood='idle'] .bf-look {
+  animation: lykn-bf-look var(--bf-look, 9s) ease-in-out infinite;
+  animation-delay: var(--bf-delay, 0s);
+}
+.lykn-botface[data-mood='idle'] .bf-eye-l {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: lykn-bf-squint var(--bf-look, 9s) ease-in-out infinite;
+  animation-delay: var(--bf-delay, 0s);
+}
+
+/* Idle personality move — the bot's signature quirk fires every --bf-quirk
+   seconds: mostly rest, then a quick spin / squish / wobble / hop. Squishy
+   moves anchor at the body's base so they read as jelly, not scaling UI. */
+.lykn-botface[data-mood='idle'] .bf-quirk {
+  transform-box: view-box;
+  transform-origin: 50% 80%;
+  animation-duration: var(--bf-quirk, 8s);
+  animation-delay: var(--bf-delay, 0s);
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+/* Spin reads as a solid object turning left-to-right: the body stays full
+   the whole way around (with a slight squash) while the eyes travel across
+   the face, get clipped off the right edge, and wrap back in from the left.
+   Same trick 2D games use to fake a sphere rotating. */
+.lykn-botface[data-mood='idle'][data-quirk='spin'] .bf-quirk {
+  animation-name: lykn-bf-quirk-spinbody;
+}
+.lykn-botface[data-mood='idle'][data-quirk='spin'] .bf-eyes-inner {
+  animation: lykn-bf-quirk-spin var(--bf-quirk, 8s) ease-in-out infinite;
+  animation-delay: var(--bf-delay, 0s);
+}
+.lykn-botface[data-mood='idle'][data-quirk='squish'] .bf-quirk {
+  animation-name: lykn-bf-quirk-squish;
+}
+.lykn-botface[data-mood='idle'][data-quirk='wobble'] .bf-quirk {
+  animation-name: lykn-bf-quirk-wobble;
+}
+.lykn-botface[data-mood='idle'][data-quirk='hop'] .bf-quirk {
+  animation-name: lykn-bf-quirk-hop;
+}
+
+/* Working: eyes scan side to side, orbit ring spins. */
+.lykn-botface[data-mood='working'] .bf-eyes-inner {
+  animation: lykn-bf-scan 1.5s ease-in-out infinite;
+}
+.lykn-botface .bf-spin {
+  transform-box: view-box;
+  transform-origin: center;
+  animation: lykn-bf-spin 1.4s linear infinite;
+}
+
+/* Waiting on you: the whole face perks up under a pulsing halo. */
+.lykn-botface[data-mood='waiting'] .bf-bob {
+  animation: lykn-bf-perk 1.4s ease-in-out infinite;
+}
+.lykn-botface .bf-halo {
+  transform-box: view-box;
+  transform-origin: center;
+  animation: lykn-bf-halo 1.6s ease-in-out infinite;
+}
+
+@keyframes lykn-bf-blink {
+  0%,
+  90.5%,
+  95.5%,
+  100% {
+    transform: scaleY(1);
+  }
+  92.5%,
+  93.5% {
+    transform: scaleY(0.08);
+  }
+}
+@keyframes lykn-bf-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-1.5px);
+  }
+}
+@keyframes lykn-bf-scan {
+  0%,
+  100% {
+    transform: translateX(-2.4px);
+  }
+  50% {
+    transform: translateX(2.4px);
+  }
+}
+@keyframes lykn-bf-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes lykn-bf-perk {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  30% {
+    transform: translateY(-1.7px);
+  }
+  55% {
+    transform: translateY(0.3px);
+  }
+}
+@keyframes lykn-bf-halo {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.95);
+  }
+  50% {
+    opacity: 0.75;
+    transform: scale(1);
+  }
+}
+/* Eye travel: out the right edge, snap (invisible — fully clipped) to the
+   far left, and slide back in to rest. One quick full revolution. */
+@keyframes lykn-bf-quirk-spin {
+  0%,
+  76% {
+    transform: translateX(0);
+  }
+  80.5% {
+    transform: translateX(27px);
+  }
+  80.55% {
+    transform: translateX(-27px);
+  }
+  85%,
+  100% {
+    transform: translateX(0);
+  }
+}
+/* The body narrows hard mid-turn, like its profile whipping through. */
+@keyframes lykn-bf-quirk-spinbody {
+  0%,
+  76%,
+  85%,
+  100% {
+    transform: scaleX(1);
+  }
+  80.5% {
+    transform: scaleX(0.82);
+  }
+}
+/* Dart left (and squint at it), flick up, check right, settle. */
+@keyframes lykn-bf-look {
+  0%,
+  48%,
+  100% {
+    transform: translate(0, 0);
+  }
+  53%,
+  61% {
+    transform: translate(-3.8px, 0.5px);
+  }
+  67%,
+  73% {
+    transform: translate(0.5px, -3.6px);
+  }
+  79%,
+  85% {
+    transform: translate(3.6px, 0.5px);
+  }
+  91% {
+    transform: translate(0, 0);
+  }
+}
+/* The left eye narrows hard while the gaze holds left — scrutiny. */
+@keyframes lykn-bf-squint {
+  0%,
+  50%,
+  65%,
+  100% {
+    transform: scaleY(1);
+  }
+  54%,
+  61% {
+    transform: scaleY(0.3);
+  }
+}
+@keyframes lykn-bf-quirk-squish {
+  0%,
+  80%,
+  100% {
+    transform: scale(1, 1);
+  }
+  84% {
+    transform: scale(1.26, 0.7);
+  }
+  89% {
+    transform: scale(0.85, 1.18);
+  }
+  93% {
+    transform: scale(1.1, 0.93);
+  }
+  96% {
+    transform: scale(0.97, 1.03);
+  }
+}
+@keyframes lykn-bf-quirk-wobble {
+  0%,
+  80%,
+  100% {
+    transform: rotate(0deg);
+  }
+  84% {
+    transform: rotate(-15deg);
+  }
+  89% {
+    transform: rotate(13deg);
+  }
+  93% {
+    transform: rotate(-7deg);
+  }
+  96% {
+    transform: rotate(3deg);
+  }
+}
+@keyframes lykn-bf-quirk-hop {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0) scale(1, 1);
+  }
+  84% {
+    transform: translateY(1px) scale(1.16, 0.78);
+  }
+  89% {
+    transform: translateY(-7.5px) scale(0.92, 1.12);
+  }
+  93% {
+    transform: translateY(0.5px) scale(1.14, 0.86);
+  }
+  96% {
+    transform: translateY(-2px) scale(0.98, 1.04);
+  }
+  98.5% {
+    transform: translateY(0) scale(1.03, 0.97);
+  }
+}

@@ -153,9 +153,8 @@ a feature subfolder.
 ## Known structural debt (tracked, not yet acted on)
 
 The remaining megafiles — `server.js` (~27.8k), `electron/main.cjs` (~16.4k),
-`electron/ownedBrowserAct.cjs` (~12.8k), `electron/agentRuntime.cjs` (~11.9k) —
-plus `src/index.css` (~10.5k, mixes product and marketing styles). See
-`REFACTOR_LOG.md` for the incremental extraction plan and history.
+`electron/ownedBrowserAct.cjs` (~12.8k), `electron/agentRuntime.cjs` (~11.9k).
+See `REFACTOR_LOG.md` for the incremental extraction plan and history.
 `electron/browser-agent/` and `electron/bot-harness/` show the preferred
 modular shape for new work.
 
@@ -186,3 +185,9 @@ body and agent rail in `StudioBrowserBody.jsx` + `agentRail/`, and the
 dock in `StudioDock.jsx`. The page keeps orchestration: tabs, the Home
 chat layer, desktop drops/widgets, floating windows, Split View, and
 browser docking.
+
+`src/index.css` was decomposed in Phase VIII (10.5k → a 30-line manifest):
+domain stylesheets live under `src/styles/` (foundation, glass, chat,
+settings, studio shell, editors, marketing landing, wake onboarding, …).
+Import order is the original cascade; do not reorder without auditing
+selector overlap.

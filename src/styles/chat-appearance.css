@@ -1,0 +1,354 @@
+/* CHAT APPEARANCE — Settings › Appearance › AI chat: text color, size and shape tokens.
+   User-tunable chat bubble/bar geometry and ink, shared by the chat page and the Home desktop pill.
+   Extracted verbatim from src/index.css (pre-split lines 505-853).
+   Imported via the @import manifest in src/index.css — the import sequence preserves the original cascade order. */
+
+/* =========================================================
+   CHAT TEXT COLOR — Settings › Appearance › AI chat.
+
+   The app's text is `text-black/NN dark:text-white/NN` almost everywhere, and
+   both halves resolve through --lykn-ink-on-light / --lykn-ink-on-dark (see
+   tailwind.config.js), which the base layer holds at plain black and white.
+   Re-pointing that pair inside `.lykn-chat-ink` recolors every word on a chat
+   surface — headings, markdown bodies, LYKN's replies, at the opacity each was
+   written with — and reaches nothing outside it.
+
+   applyAppearance() flips data-chat-ink to 'off' for the Default ink, so the
+   chat then keeps the theme's own black/white with no override in play.
+   ========================================================= */
+html[data-chat-ink='on'] .lykn-chat-ink {
+  --lykn-ink-on-light: var(--lykn-chat-ink);
+  --lykn-ink-on-dark: var(--lykn-chat-ink);
+  --foreground: var(--lykn-chat-ink);
+  --card-fg: var(--lykn-chat-ink);
+  --lg-text: hsl(var(--lykn-chat-ink) / 0.92);
+  --lg-text-dim: hsl(var(--lykn-chat-ink) / 0.5);
+  /* Markdown bodies carry no color of their own — they inherit. */
+  color: hsl(var(--lykn-chat-ink) / 0.9);
+}
+
+/* The user's bubble sits inside that surface but answers to its own ink, so it
+   re-declares the pair unconditionally rather than inheriting LYKN's. The two
+   halves are equal when a color was picked and fall back to the theme's own
+   black/white otherwise — which is also what makes "Default" mean default here
+   even while the reply ink is set. */
+.lykn-user-prompt-bubble {
+  --lykn-ink-on-light: var(--lykn-chat-ink-user-light, 0 0% 0%);
+  --lykn-ink-on-dark: var(--lykn-chat-ink-user-dark, 0 0% 100%);
+}
+
+html[data-chat-bubble='on'] .lykn-user-prompt-bubble {
+  background: hsl(var(--lykn-chat-bubble)) !important;
+  border-color: hsl(var(--lykn-chat-bubble) / 0.65) !important;
+}
+
+/* =========================================================
+   CHAT SIZE & SHAPE — Settings › Appearance › AI chat.
+
+   The chat writes its type and its radii as Tailwind utilities (text-[14px],
+   rounded-[15px], p-2.5), so every rule below is written as html[…] .class to
+   outrank them on specificity rather than with !important — which leaves the
+   settings preview free to paint itself with a plain inline style.
+
+   applyAppearance() holds each data-* flag at 'default' until the choice
+   differs from the shipped one, so nothing here applies to an install that
+   never opened the pane. No rule may drop its guard for that reason.
+   ========================================================= */
+
+/* Message type. The bubble carries its own class; LYKN's replies get
+   `lykn-chat-ai-text` on the markdown wrapper. Both are sized in px, and the
+   line-heights around them are unitless, so they follow along. Headings inside
+   a reply keep their own scale — a reply's title is relative to the reply, not
+   to the person reading it. */
+html[data-chat-user-size='custom'] .lykn-user-prompt-bubble {
+  font-size: var(--lykn-chat-user-size);
+}
+
+html[data-chat-ai-size='custom'] .lykn-chat-ai-text {
+  font-size: var(--lykn-chat-ai-size);
+}
+
+/* Markdown headings inside a message are written as fixed px (text-xl/lg/base
+   = 20/18/16), which is a hierarchy only while the body sits at 14. Restate
+   them as the same ratios in em so a heading stays larger than the words under
+   it at Largest, and stays proportional at Small. */
+html[data-chat-user-size='custom'] .lykn-user-prompt-bubble h1,
+html[data-chat-ai-size='custom'] .lykn-chat-ai-text h1 {
+  font-size: 1.43em;
+}
+
+html[data-chat-user-size='custom'] .lykn-user-prompt-bubble h2,
+html[data-chat-ai-size='custom'] .lykn-chat-ai-text h2 {
+  font-size: 1.29em;
+}
+
+html[data-chat-user-size='custom'] .lykn-user-prompt-bubble h3,
+html[data-chat-ai-size='custom'] .lykn-chat-ai-text h3 {
+  font-size: 1.14em;
+}
+
+/* Bubble shape. A shorthand `border-radius` beats the utility longhand
+   (rounded-br-[4px]) it has to replace, which is what lets the shipped
+   bottom-right notch flatten out for the corner-less shapes. */
+html[data-chat-bubble-shape]:not([data-chat-bubble-shape='tail']) .lykn-user-prompt-bubble {
+  border-radius: var(--lykn-chat-bubble-radius);
+}
+
+/* How much further the Home desktop's bar reaches past where the shipped pill
+   ended — half the extra height, since the bar is centered and so grows by
+   that much at the top AND at the bottom.
+   Everything around that bar is pinned by hand off the window center (the
+   welcome headline, the mode pages' column and chips, the thread's bottom
+   clearance) because centering them with padding drifted. Each of those adds
+   this so it keeps the gap it was drawn with rather than letting a taller bar
+   eat it. Slate is 6.5rem against the pill's 2.75rem: 1.875rem a side. */
+html {
+  --lykn-home-bar-grow: 0rem;
+}
+html[data-chat-bar-shape='slate'] {
+  --lykn-home-bar-grow: 1.875rem;
+}
+
+/* Bar shape — the page composer and the Home desktop pill wear the same
+   radius, so the two chat bars stay recognizably one control. */
+html[data-chat-bar-shape]:not([data-chat-bar-shape='soft']) .lykn-chat-neu-chat-shell,
+html[data-chat-bar-shape]:not([data-chat-bar-shape='soft']) .lykn-home-chat-bar {
+  border-radius: var(--lykn-chat-bar-radius);
+}
+
+/* The Glass composer sets its own 16px radius at a higher specificity than the
+   shell rule above; re-state it here so a chosen shape reaches Glass too. */
+html.lykn-glass-embed.dark[data-chat-bar-shape]:not([data-chat-bar-shape='soft'])
+  .lykn-chat-neu-chat-shell {
+  border-radius: var(--lykn-chat-bar-radius);
+}
+
+/* The border light traces the shell's outline, so it has to bend the same way.
+   It rides 2px outside the shell and can't add that to a multi-corner radius,
+   so it settles for matching — a 2px difference, for 2.6s, once. */
+html[data-chat-bar-shape]:not([data-chat-bar-shape='soft'])
+  .lykn-chat-neu-chat-shell.lykn-chat-chat-border-run-once::before {
+  border-radius: var(--lykn-chat-bar-radius);
+}
+
+/* ── Rectangle: a flat outlined box ──
+   The other shapes only bend the corners of the neumorphic shell. Rectangle
+   drops the shell entirely: no raised gradient, no drop shadow, no inset
+   highlight — just the app's own glass behind one clean hairline, so the bar
+   reads as a box drawn around the field rather than a slab lifted off the
+   page. The field inside stays borderless and flush, which is what keeps the
+   single outline doing all the work.
+
+   Built from the --lg-* tokens rather than literal colors, so it is the same
+   material as every other glass surface: it follows the theme, Appearance ›
+   Glass depth, and the high-contrast toggle without restating any of them.
+   The second selector is Studio's Glass shell, which sets its own background
+   at a specificity this has to clear. */
+html[data-chat-bar-shape='rectangle'] .lykn-chat-neu-chat-shell,
+html.lykn-glass-embed.dark[data-chat-bar-shape='rectangle'] .lykn-chat-neu-chat-shell {
+  background: var(--lg-tint);
+  backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate));
+  border: 1px solid var(--lg-hairline);
+  box-shadow: none;
+  color: var(--lg-text);
+}
+
+/* ── Send button shape ──
+   The two chat bars disagree at rest: the page composer's send is a 10px
+   block, the Home pill's is a circle. Default leaves both alone, which is why
+   this is gated rather than always on; picking anything else is what makes the
+   two agree. `.lykn-chat-send-btn` is the Home pill's, which reaches for the
+   radius over a Tailwind `rounded-full` — unlayered, so it wins the cascade
+   against both that utility and the neumorphic block in @layer components. */
+html[data-chat-send-shape]:not([data-chat-send-shape='default']) .lykn-chat-neu-chat-send-btn,
+html[data-chat-send-shape]:not([data-chat-send-shape='default']) .lykn-chat-send-btn {
+  border-radius: var(--lykn-chat-send-radius);
+}
+
+/* Bar size. The composer's own min-height is set from JS (it's also the floor
+   the auto-grow measures against), so only padding and type are set here.
+   A roomy shape wants the padding too, at any size — the token already holds
+   whichever of the two asked for more. */
+html[data-chat-bar-size='custom'] .lykn-chat-neu-chat-shell,
+html[data-chat-bar-shape='slate'] .lykn-chat-neu-chat-shell {
+  padding: var(--lykn-chat-bar-pad);
+}
+
+html[data-chat-bar-size='custom'] textarea.lykn-chat-neu-chat-field {
+  font-size: var(--lykn-chat-bar-font);
+  line-height: 1.45;
+}
+
+html[data-chat-bar-size='custom'] .lykn-home-chat-bar {
+  padding-top: var(--lykn-chat-bar-pad-home);
+  padding-bottom: var(--lykn-chat-bar-pad-home);
+}
+
+html[data-chat-bar-size='custom'] .lykn-home-chat-bar-input {
+  font-size: var(--lykn-chat-bar-font);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   THE ONE GLASS. Every surface that floats above content — menus,
+   context menus, popovers, dropdowns, dialogs, side panels, tooltips, and
+   the desktop's own bar and menus — is one material: a flat wash over a
+   deep blur, a hairline edge, and a single drop shadow. Roles differ only
+   by corner radius; everything else is shared, and all of it is tokens.
+
+   Call sites should carry `lg-menu` / `lg-window` / `lg-sheet` / `lg-tip`
+   and pass no background, blur, border or shadow utilities of their own.
+
+   Some rules further down still write the wash as a gradient between
+   --lg-tint and --lg-tint-strong. Those pairs are held equal, so they
+   resolve to this same flat fill.
+   ───────────────────────────────────────────────────────────── */
+.lg-menu,
+.lg-window,
+.lg-sheet,
+.lg-tip,
+.lg-desktop-surface {
+  background: var(--lg-menu-tint);
+  backdrop-filter: blur(var(--lg-blur-menu)) saturate(var(--lg-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-blur-menu)) saturate(var(--lg-saturate));
+  border: 1px solid var(--lg-hairline);
+  box-shadow: var(--lg-shadow-menu);
+  color: var(--lg-text);
+}
+
+.lg-menu {
+  border-radius: var(--lg-radius-menu);
+}
+
+.lg-window,
+.lg-sheet {
+  background: var(--lg-tint);
+  backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate));
+  box-shadow: var(--lg-shadow-window);
+}
+.lg-window {
+  border-radius: var(--lg-radius-window);
+}
+
+/* Tooltips are the same glass at the smallest radius. */
+.lg-tip {
+  border-radius: var(--lg-radius-tip);
+  backdrop-filter: blur(var(--lg-blur-tip)) saturate(var(--lg-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-blur-tip)) saturate(var(--lg-saturate));
+  box-shadow: var(--lg-shadow-tip);
+}
+
+/* `lg-desktop-surface` is the same material with no radius of its own, for the
+   Home bar and the menus that open onto bare wallpaper, which set their own.
+
+   Anything using the glass must not be nested inside another backdrop-filtered
+   element — an ancestor that blurs its own backdrop becomes a backdrop root,
+   and a child positioned outside that ancestor's painted box has nothing left
+   to blur, so it renders as flat color over whatever is behind. */
+
+/* The dim behind a glass window. A heavy black wash flattens the blur, so this
+   stays a soft tint plus its own blur — the window then reads as a second
+   layer of glass rather than a card on a black hole. */
+.lg-scrim {
+  background-color: rgba(6, 8, 12, 0.4);
+  backdrop-filter: blur(8px) saturate(1.2);
+  -webkit-backdrop-filter: blur(8px) saturate(1.2);
+}
+html:not(.dark) .lg-scrim {
+  background-color: rgba(20, 22, 28, 0.28);
+}
+
+/* Safety net for floating surfaces that still ship their own tint utilities:
+   normalise anything Radix portals out, plus the legacy chat-bar menu class, to
+   the same material. Migrated call sites resolve to identical values, so the
+   overlap is a no-op. Opt out per element with `data-glass="off"`. */
+[data-radix-popper-content-wrapper] > *:not([data-glass='off']),
+[data-radix-menu-content]:not([data-glass='off']),
+[data-radix-dropdown-menu-content]:not([data-glass='off']),
+[data-radix-select-content]:not([data-glass='off']),
+[data-radix-popover-content]:not([data-glass='off']),
+[data-radix-context-menu-content]:not([data-glass='off']),
+.lykn-chat-bar-menu:not([data-glass='off']) {
+  background:
+    linear-gradient(
+      155deg,
+      var(--lg-menu-tint-strong) 0%,
+      var(--lg-menu-tint) 55%,
+      var(--lg-menu-tint-strong) 100%
+    ) !important;
+  backdrop-filter: blur(var(--lg-blur-menu)) saturate(var(--lg-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--lg-blur-menu)) saturate(var(--lg-saturate)) !important;
+  border-color: var(--lg-hairline) !important;
+  box-shadow:
+    var(--lg-shadow-menu),
+    inset 0 1px 0 var(--lg-sheen),
+    inset 0 -1px 0 var(--lg-edge) !important;
+}
+
+/* Tooltips ride the same portal, so pull them back to the small-scale glass. */
+[data-radix-popper-content-wrapper] > .lg-tip {
+  backdrop-filter: blur(var(--lg-blur-tip)) saturate(var(--lg-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--lg-blur-tip)) saturate(var(--lg-saturate)) !important;
+  box-shadow:
+    var(--lg-shadow-tip),
+    inset 0 1px 0 var(--lg-sheen) !important;
+}
+
+.lykn-settings-window {
+  padding: 0 !important;
+  gap: 0 !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: row !important;
+  /* No `position` here: the dialog primitive supplies `fixed`, and overriding
+     it knocks the window out of the centered viewport position. */
+  background:
+    linear-gradient(155deg, var(--lg-tint-strong) 0%, var(--lg-tint) 55%, var(--lg-tint-strong) 100%) !important;
+  backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate)) !important;
+  border: 1px solid var(--lg-hairline) !important;
+  box-shadow:
+    var(--lg-shadow-window),
+    inset 0 1px 0 var(--lg-sheen),
+    inset 0 -1px 0 var(--lg-edge) !important;
+}
+
+/* Studio's blanket dialog frost would flatten the window back to a slab. */
+html.lykn-glass-embed [role="dialog"].lykn-settings-window,
+html.lykn-studio-mode [role="dialog"].lykn-settings-window,
+html.lykn-glass-embed.dark [role="dialog"].lykn-settings-window,
+html.lykn-studio-mode.dark [role="dialog"].lykn-settings-window {
+  background:
+    linear-gradient(155deg, var(--lg-tint-strong) 0%, var(--lg-tint) 55%, var(--lg-tint-strong) 100%) !important;
+  border-color: var(--lg-hairline) !important;
+  backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate)) !important;
+}
+
+/* The sidebar is a flat recess in the same pane of glass, not a second
+   material laid over it — hence one uniform fill and a single hairline. */
+.lykn-settings-sidebar {
+  background: var(--lg-recess);
+  border-right: 1px solid var(--lg-hairline);
+}
+
+/* Hosted in a DesktopAppWindow: the frame already supplies rounding, border
+   and shadow, so the settings pane just fills it. */
+.lykn-settings-embedded {
+  position: absolute !important;
+  inset: 0 !important;
+  width: auto !important;
+  height: auto !important;
+  max-width: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+/* The content pane is the window glass itself. */
+.lykn-settings-pane {
+  background: transparent;
+}
+
