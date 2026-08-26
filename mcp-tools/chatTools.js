@@ -86,6 +86,12 @@ const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
 // a read, and writes get more conservative when the model has already
 // seen the world via reads.
 export const CHAT_TOOL_NAMES = [
+  // ── Personal memory (production authority as of Phase 2) ─────────
+  'memory_list',
+  'memory_read',
+  'memory_patch',
+  'memory_create',
+  'memory_forget',
   // ── Identity reads (call early — these shape EVERY reply) ────────
   'lykn_getBeliefs',
   'lykn_getRules',

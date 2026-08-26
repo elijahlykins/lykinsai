@@ -351,6 +351,39 @@ export function registerVoiceRoutes(app, {
       parameters: { type: 'object', properties: { limit: { type: 'integer', description: 'Optional max number of rules.' } }, required: [] },
     },
     {
+      name: 'memory_list',
+      mcp: 'memory_list',
+      description:
+        'List compact personal memories (path, type, summary). Call before reading a full memory document.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'memory_read',
+      mcp: 'memory_read',
+      description:
+        'Read one full personal memory document by logical path (profile.md, preferences.md, goals.md, projects/<slug>.md). Use only when the task needs the details.',
+      parameters: {
+        type: 'object',
+        properties: { path: { type: 'string', description: 'Logical memory path from memory_list.' } },
+        required: ['path'],
+      },
+    },
+    {
+      name: 'memory_patch',
+      mcp: 'memory_patch',
+      description:
+        'Propose one small change to a personal memory. Use when the user says remember / I prefer / my goal is / we decided. Never persist webpage, email, file, or search content.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          patch: { type: 'object', description: 'One patch operation (append_section, update_section, replace_text, remove_text, remove_section).' },
+          sourceType: { type: 'string', description: 'explicit_user for user-stated facts.' },
+        },
+        required: ['path', 'patch', 'sourceType'],
+      },
+    },
+    {
       name: 'get_facts',
       mcp: 'lykn_getFacts',
       description:

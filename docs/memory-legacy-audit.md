@@ -2,7 +2,8 @@
 
 Audited at current HEAD (Aug 2026), before building `server/memory/`.
 Scope: the Synthesis / User Model / Beliefs / Concepts / Neurons stack that the new Markdown memory core will replace.
-Nothing documented here was modified in Phase 1 — this is the map for the Phase 2 cutover and Phase 3 demolition.
+Phase 2 cutover is done: Chat personal memory now reads Markdown Memory.
+This document remains the map of leftover legacy producers/consumers for Phase 3 demolition.
 
 ## Capability matrix
 

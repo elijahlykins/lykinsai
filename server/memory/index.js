@@ -21,3 +21,18 @@ export {
   memoryForget,
   MEMORY_TOOL_DEFINITIONS,
 } from './memoryTools.js';
+export {
+  migrateUserMemory,
+  ensureLegacyMemoryMigrated,
+  isTrustworthyLegacyFact,
+  groupTrustworthyFactsByPath,
+  resetMemoryMigrationCache,
+} from './memoryMigration.js';
+export {
+  getMemoryStore,
+  resolveChatMemoryTurn,
+  formatChatMemoryPrompt,
+  invalidateMemoryThreadPath,
+  resetMemoryThreadCache,
+} from './memoryChat.js';
+export { syncTrustedFactToMemory } from './memoryBridge.js';

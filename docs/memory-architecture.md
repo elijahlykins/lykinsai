@@ -1,9 +1,10 @@
 # Memory Architecture — Database-Backed Markdown Memory Core
 
-Status: Phase 1 complete (core built beside legacy Synthesis; not yet wired into Chat).
+Status: Phase 2 complete (Chat cutover). Production personal memory for Chat is Markdown Memory.
 Code: `server/memory/`.
 Schema: `supabase-migrations/124_lykn_memory_documents.sql`.
 Tests: `tests/memory/` (`npm run test:memory`).
+Phase 3 demolition of Synthesis is still deferred.
 
 ## Core philosophy
 
@@ -114,12 +115,17 @@ Summaries are deterministic (first content line + section map), recomputed on ev
 
 ## Migration plan
 
-- Phase 1 (this): new core built and tested beside Synthesis.
-  Old routes, nightly jobs, beliefs, learned facts, prompt injection, and UI remain fully operational and untouched.
-- Phase 2 (deferred): wire `resolveMemoryContext` into the chat enrichment seam, expose the memory tools to the model, migrate legacy facts/identity/profile with `sourceType: 'migration'`, and add the user-facing Memory UI.
-  The seam is the enrichment `Promise.all` around `/api/lykn/invoke` and `/api/lykn/stream` in `server.js`, where `fetchUserModelSection`, `fetchUserIdentitySection`, `fetchBeliefSection`, and `fetchProjectSection` are consumed today (synthesis retrieval, beliefs, and related-neighborhood limbs are already permanently skipped at HEAD).
-- Phase 3 (deferred): demolish the legacy Synthesis/User-Model/Beliefs/Concepts stack — routes, jobs, tables, caches, UI — after the new core proves itself in production.
+- Phase 1: core built and tested beside Synthesis. Production Chat unchanged.
+- Phase 2 (this): Chat `/api/ai/invoke` and `/api/ai/stream` resolve personal memory through `resolveChatMemoryTurn` → `resolveMemoryContext`.
+  Trustworthy legacy facts (`stated` / `confirmed` / `corrected`) plus display name migrate idempotently with `source_type: 'migration'`.
+  The five memory tools are on the Chat whitelist.
+  A narrow dual-write bridge copies trusted `/api/learned` + confirm + `lykn_proposeFact` writes into Markdown.
+  Voice gets L0 memory in grounding and can dispatch the memory tools; beliefs/facts voice tools remain as a temporary bridge.
+  Discover still reads synthesis profile themes (no frontend consumer) — Phase 3 deletion candidate.
+  Nightly `runSynthesis` / `runConcepts` are still scheduled; they no longer feed Chat. Recommend disable in Phase 3.
+- Phase 3 (deferred): demolish the legacy Synthesis/User-Model/Beliefs/Concepts stack — routes, jobs, tables, caches, UI, leftover tools, and this dual-write bridge.
 
 ## Future
 
-Phase 2 also brings the user-visible Memory surface (view/edit/delete Profile, Preferences, Goals, Decisions, Projects) on top of the same tool operations, and threading of `knownVersions` through the chat session store so the cache works across turns.
+Phase 3 removes the leftover Synthesis producers/consumers listed in `docs/memory-legacy-audit.md`.
+A user-visible Memory surface (view/edit/delete Profile, Preferences, Goals, Decisions, Projects) is still deferred — backend correctness was the Phase 2 priority.

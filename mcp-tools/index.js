@@ -65,6 +65,13 @@ import { touchConceptTool } from './touchConcept.js';
 import { getUserPreferencesTool } from './getUserPreferences.js';
 import { updateUserPreferenceTool } from './updateUserPreference.js';
 import { getRecentActivityTool } from './getRecentActivity.js';
+import {
+  memoryListTool,
+  memoryReadTool,
+  memoryPatchTool,
+  memoryCreateTool,
+  memoryForgetTool,
+} from './memoryTools.js';
 import { saveLinkToVaultTool } from './saveLinkToVault.js';
 import { createReminderTool } from './createReminder.js';
 import { listRemindersTool } from './listReminders.js';
@@ -106,6 +113,12 @@ export const SYNTHESIS_TOOLS = [
   // Tier 3 — Identity facts (background, light-weight)
   getFactsTool,
   proposeFactTool,
+  // Phase 2 — Markdown memory (production personal-memory authority)
+  memoryListTool,
+  memoryReadTool,
+  memoryPatchTool,
+  memoryCreateTool,
+  memoryForgetTool,
   // Cross-tier helpers
   getContextBlockTool,
   searchVaultTool,

@@ -1,15 +1,9 @@
 // ============================================================================
 // server/memory/memoryResolver.js — the future Chat memory seam
 // ============================================================================
-// Phase 2 will replace the legacy enrichment limbs around /api/lykn/invoke
-// and /api/lykn/stream (fetchUserModelSection, fetchUserIdentitySection,
-// fetchBeliefSection, fetchProjectSection, synthesis retrieval, related
-// neighborhood) with ONE call:
-//
-//   const memory = await resolveMemoryContext(store, userId, { ... });
-//
-// NOT wired into production Chat yet — Phase 1 builds and proves it in
-// isolation.
+// Phase 2 Chat calls this through resolveChatMemoryTurn (memoryChat.js).
+// Production invoke/stream use that helper. Do not reimplement resolution
+// inside server.js.
 //
 // Hybrid retrieval levels:
 //   L0 — tiny automatic context: profile + preferences SUMMARIES only,

@@ -170,6 +170,12 @@ import {
   NEEDS,
 } from './beliefSystem.js';
 import { buildRelatedNeighborhoodSection } from './lib/synthesis/relatedNeighborhood.js';
+import {
+  getMemoryStore,
+  ensureLegacyMemoryMigrated,
+  resolveChatMemoryTurn,
+  syncTrustedFactToMemory,
+} from './server/memory/index.js';
 import { CHAT_TOOLS, buildChatToolCtx, providerForModel, resolveChatModelLabel, supportsTools } from './mcp-tools/chatTools.js';
 import { LOCAL_TOOL_NAMES, looksLikeLocalSystemAsk, mightBeBrowserTaskAsk } from './mcp-tools/localTools.js';
 import {
@@ -3326,6 +3332,45 @@ async function fetchUserModelSection(authHeader, userId, opts = {}) {
   }
 }
 
+/**
+ * Phase 2 Chat personal-memory seam. Migrates trustworthy legacy facts
+ * once, then resolves L0/L1/L2 through MemoryResolver. Fail-soft: a
+ * memory error must never fail the turn.
+ */
+async function resolveProductionChatMemory({ userId, user, chatId, skip, recall, deepen }) {
+  if (skip || !userId) return { text: '', metrics: null };
+  const store = getMemoryStore(supabaseAdmin);
+  if (!store) return { text: '', metrics: null };
+  try {
+    await ensureLegacyMemoryMigrated(store, userId, {
+      listFacts: () => listActiveFactsForUser(supabaseAdmin, userId, { minConfidence: 0, limit: 200 }),
+      displayName: pickUserDisplayName(user),
+    });
+    const turn = await resolveChatMemoryTurn(store, userId, { chatId, recall, deepen });
+    if (turn.metrics) {
+      console.log(
+        `🧠 memory: l0=${turn.metrics.l0Tokens} registry=${turn.metrics.registryTokens} ` +
+          `docs=${turn.metrics.documentCount} deep=${turn.metrics.deepDocuments} ` +
+          `tokens=${turn.metrics.totalTokens}`,
+      );
+    }
+    return turn;
+  } catch (e) {
+    console.warn('⚠️ memory resolve:', e?.message || e);
+    return { text: '', metrics: null };
+  }
+}
+
+async function bridgeTrustedFactToMemory(userId, fact, opts = {}) {
+  const store = getMemoryStore(supabaseAdmin);
+  if (!store || !userId || !fact) return;
+  try {
+    await syncTrustedFactToMemory(store, userId, fact, opts);
+  } catch (e) {
+    console.warn('⚠️ memory bridge:', e?.message || e);
+  }
+}
+
 // ============================================
 // USER IDENTITY (name + active projects)
 // ----------------------------------------
@@ -6254,9 +6299,9 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   'USER-RECALL TURN — "what do you know about me?" / "tell me about myself"',
   '/ "what have you learned about me?" / "go deeper" / "tell me more" etc.',
   'This is about WHO THEY ARE, not their projects and not the Vault.',
-  '  • Answer from [WHO_I_AM] / lykn_getFacts in natural prose.',
-  '  • If [WHO_I_AM] looks thin, call lykn_getFacts once (no query, or a',
-  '    broad query) then answer — still prose, not a dump.',
+  '  • Answer from [USER MEMORY] / the memory index in natural prose.',
+  '  • If that looks thin, call memory_list, then memory_read on the one',
+  '    path that matches the ask — still prose, not a dump.',
   '  • On "go deeper" / "tell me more" / a repeat ask: do NOT recycle the',
   '    prior portrait — expand into uncovered WHO_I_AM facets.',
   '  • Do NOT run AUTO-CONNECT. Do NOT call lykn_setActiveProject /',
@@ -6293,28 +6338,26 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '  • NEVER push when there is no scoped/active project and they did not',
   '    name one.',
   '',
-  'IDENTITY (read — call early, these shape EVERY reply):',
-  '  • lykn_getBeliefs — the user\'s ratified beliefs (durable principles',
-  '    that should shape how you respond). Pull this on any nontrivial',
-  '    turn. Each belief has a serves_need (live | love | value |',
-  '    variety) — weight beliefs that match the topic.',
-  '  • lykn_getRules — auto-generated rules-of-thumb derived from active',
-  '    beliefs. Higher-fidelity than the underlying belief for "what',
-  '    would you tell me to do here?" questions. When a reply is shaped',
-  '    by one of these, follow up with lykn_recordRuleApplication so the',
-  '    user gets a clean audit trail.',
-  '  • lykn_getFacts — on-demand User Facts recall (pass query for topic).',
-  '    Prefer this over inventing biography when [WHO_I_AM] is thin. Short',
-  '    third-person facts about the user (role,',
-  '    location, tools, ongoing commitments). Call on "what do you know',
-  '    about me?" when [WHO_I_AM] is thin — answer as identity prose, not',
-  '    a project list. Skim before answering "advise me" questions so you',
-  '    reference what they actually do.',
+  'PERSONAL MEMORY — what you know about THIS user. Skills say HOW to work;',
+  '  memory says WHAT you know. [USER MEMORY] in the prompt is the tiny',
+  '  automatic context (profile + preferences summaries). Do not dump it',
+  '  back. Most turns need no memory write and no full-document read.',
+  '  • memory_list — cheap index (path, type, summary). Call before a deep read.',
+  '  • memory_read — full Markdown for ONE path when the task clearly needs it.',
+  '    Default is zero full reads. Prefer profile.md / preferences.md /',
+  '    goals.md / decisions.md / projects/<slug>.md.',
+  '  • memory_patch — preferred write when they say "remember", "I prefer",',
+  '    "my goal is", "we decided", "going forward". Prefer replace_text to',
+  '    supersede a contradiction instead of appending both. sourceType:',
+  '    explicit_user. NEVER persist webpage / email / file / search /',
+  '    connector content. NEVER write inferred personality ("they seem…").',
+  '  • memory_create — only for a valid missing path with durable content.',
+  '    Prefer patch when the document already exists.',
+  '  • memory_forget — remove a fact or archive a document when they ask',
+  '    to forget. Hard delete only when they explicitly want erasure.',
   '  • lykn_getUserPreferences — server-honoured privacy/pipeline',
   '    preferences. Check `memory_paused` BEFORE promising to remember',
-  '    anything or before writing a new vault note / fact / belief; if',
-  '    it\'s true, the synthesis is paused and you should not push',
-  '    durable state. Safe to call once per session.',
+  '    anything; if it\'s true, do not write durable memory.',
   '',
   'CROSS-SOURCE SEARCH (read):',
   '  • lykn_findConnections — given a topic OR a starter node_id, return',
@@ -6422,13 +6465,12 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   'NEW NEURONS (write):',
   '  USER FACTS ARE THE PERSONALIZATION WRITE PATH (Synthesis v2).',
   '  Do NOT propose Core Beliefs or if-then rules. Durable identity /',
-  '  preference / goal claims should use the <fact_confirm> tag in your',
-  '  reply so the user can Yes / Edit / No in chat. Soft signal can use',
-  '  <learned> or lykn_proposeFact. Core Beliefs are legacy — read-only',
+  '  preference / goal claims should use memory_patch (explicit_user) on',
+  '  the matching document. Soft leftover signal can still use',
+  '  <fact_confirm> / lykn_proposeFact. Core Beliefs are legacy — read-only',
   '  via lykn_getBeliefs if needed; never write new ones.',
-  '  • lykn_proposeFact — soft fact when the user discloses something',
-  '    concrete ("works as a designer in Brooklyn"). Prefer <fact_confirm>',
-  '    for durable prefs that need ratification.',
+  '  • lykn_proposeFact — leftover bridge. Prefer memory_patch for durable',
+  '    personal memory. Do not use this for webpage/file/search content.',
   '  • lykn_createVaultNote — save a piece of CONTENT (a summary you',
   '    produced, a snippet the user shared, a working code block, a',
   '    research extract) into the user\'s vault so it survives this',
@@ -8059,6 +8101,17 @@ app.post('/api/learned', requireAuth, requireAppAccess, profileRefreshLimiter, a
     // Bust the user-model section cache so the very NEXT chat turn sees this
     // freshly-minted fact in [USER_MODEL] and won't re-emit the same tag.
     invalidateUserModelCache(userId);
+    if (out.fact) {
+      void bridgeTrustedFactToMemory(userId, {
+        id: out.fact.id,
+        fact_kind: out.fact.fact_kind,
+        fact_text: out.fact.fact_text,
+        status: out.fact.status || 'stated',
+      }, {
+        sourceType: 'explicit_user',
+        previousText: out.fact.previousText || req.body?.replacesText || '',
+      });
+    }
 
     return res.json(out);
   } catch (e) {
@@ -8180,6 +8233,17 @@ app.post('/api/user-facts/:id/confirm', requireAuth, requireAppAccess, profileRe
       return res.status(status).json({ error: out.reason || 'confirm_failed' });
     }
     invalidateUserModelCache(userId);
+    if (out.fact) {
+      void bridgeTrustedFactToMemory(userId, {
+        id: out.fact.id,
+        fact_kind: out.fact.fact_kind,
+        fact_text: out.fact.fact_text,
+        status: out.fact.status || 'confirmed',
+      }, {
+        sourceType: 'user_confirmed',
+        previousText: out.fact.previousText || '',
+      });
+    }
     return res.json(out);
   } catch (e) {
     console.error('❌ /api/user-facts/confirm:', e?.message || e);
@@ -11897,17 +11961,16 @@ ${t}
     const wantsUserRecall = userRecallMode != null;
     const wantsUserRecallDeepen = userRecallMode === 'deepen';
     let userModelSection = "";
-    // Pure greetings: skip WHO_I_AM so the model doesn't invent a personality brief.
+    // Pure greetings: skip personal memory so the model doesn't invent a brief.
     if (!skipUserFacts && !wantsPureGreeting) {
-      userModelSection = await fetchUserModelSection(req.headers.authorization, req.user?.id, {
-        slim: slimIdentity && !wantsUserRecall,
+      const memoryTurn = await resolveProductionChatMemory({
+        userId: req.user?.id,
+        user: req.user,
+        chatId: req.body?.chatId,
         recall: wantsUserRecall,
         deepen: wantsUserRecallDeepen,
-        deprioritizeText: wantsUserRecall
-          ? recentAssistantTextFromConversation(conversation)
-          : '',
-        queryText: invokeMsg,
       });
+      userModelSection = memoryTurn.text || "";
     }
     // Server-side related neighborhood — light/full only. Built after
     // project section so we can walk authored links from clustered neurons.
@@ -14414,29 +14477,15 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           )
         : Promise.resolve({ text: '', projectId: null, neuronIds: [] }),
       streamCustomModelKnowledgePromise,
-      // User facts in parallel with enrichment (was a sequential await after).
-      // Fast-lean in-app turns may still use a WARM cache hit (0ms) so
-      // personalization survives without a cold Supabase round-trip.
       !streamSkipUserFacts
-        ? fetchUserModelSection(req.headers.authorization, req.user?.id, {
-            slim: !streamWantsUserRecall,
+        ? resolveProductionChatMemory({
+            userId: req.user?.id,
+            user: req.user,
+            chatId: req.body?.chatId,
             recall: streamWantsUserRecall,
             deepen: streamWantsUserRecallDeepen,
-            deprioritizeText: streamWantsUserRecall
-              ? recentAssistantTextFromConversation(conversation)
-              : '',
-            queryText: streamMsg,
-          })
-        : (streamFastLean && !overlayAsk && req.user?.id && !streamWantsPureGreeting)
-          ? Promise.resolve((() => {
-              const slim = userModelSectionCache.get(`${req.user.id}:facts:slim`);
-              const full = userModelSectionCache.get(`${req.user.id}:facts`);
-              const hit = slim || full;
-              if (!hit?.text) return '';
-              if (Date.now() - hit.at >= USER_MODEL_CACHE_TTL_MS) return '';
-              return hit.text;
-            })())
-          : Promise.resolve(""),
+          }).then((turn) => turn.text || "")
+        : Promise.resolve(""),
     ]);
     _ck('after enrichment Promise.all');
     if (deepResearchSources.length && !res.writableEnded) {
@@ -16616,10 +16665,12 @@ async function buildRealtimeSynthesisGrounding(authHeader, userId) {
   if (!userId) return '';
   const sections = [];
   try {
-    const [beliefSection, projectSection] = await Promise.all([
+    const [beliefSection, projectSection, memoryTurn] = await Promise.all([
       fetchBeliefSection(authHeader, userId).catch(() => ({ text: '' })),
       fetchProjectSection(authHeader, userId).catch(() => ({ text: '' })),
+      resolveProductionChatMemory({ userId, skip: false }).catch(() => ({ text: '' })),
     ]);
+    if (memoryTurn?.text) sections.push(memoryTurn.text);
     if (beliefSection?.text) sections.push(beliefSection.text);
     if (projectSection?.text) sections.push(projectSection.text);
   } catch (e) {

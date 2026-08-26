@@ -17,6 +17,8 @@
 
 import { recordLearnedFactFromChat, FACT_KINDS } from '../userModelLearning.js';
 import { jsonContent, errorContent } from './index.js';
+import { getMemoryStore } from '../server/memory/memoryChat.js';
+import { syncTrustedFactToMemory } from '../server/memory/memoryBridge.js';
 
 const FACT_KIND_LIST = Array.isArray(FACT_KINDS) && FACT_KINDS.length
   ? FACT_KINDS
@@ -140,6 +142,23 @@ export const proposeFactTool = {
           'Fact was rejected. Common reasons: empty text, unkeyable text, or a duplicate of an existing dismissed fact.',
       });
     }
+    // Temporary Phase 2 bridge: trusted chat facts also land in Markdown
+    // Memory so Chat (which no longer reads the legacy table) sees them.
+    try {
+      const store = getMemoryStore(ctx.supabaseAdmin);
+      if (store && out.fact) {
+        await syncTrustedFactToMemory(store, ctx.userId, {
+          id: out.fact.id,
+          fact_kind: out.fact.fact_kind || kind,
+          fact_text: out.fact.fact_text || text,
+          status: out.fact.status || 'stated',
+        }, {
+          sourceType: 'explicit_user',
+          previousText: out.fact.previousText || '',
+        });
+      }
+    } catch { /* bridge must not fail the legacy write */ }
+
     return jsonContent({
       ok: true,
       message: out.fact?.isNew
