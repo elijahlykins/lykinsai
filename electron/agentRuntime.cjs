@@ -9911,7 +9911,19 @@ function createAgentRuntime(deps) {
     ) {
       return { ok: false, error: "no_pending_choice" };
     }
-    if (choiceId && pending.id !== choiceId) {
+    // Approval attestation: a consequential approval may only be satisfied by
+    // the exact request that generated it. The choiceId is a main-issued,
+    // unguessable nonce (newId → crypto.randomBytes) delivered to the renderer
+    // in the matching `lykn:agent-choice` event. Requiring an exact match — and
+    // failing closed on a missing, stale, or wrong id — stops a renderer from
+    // approving another pending action merely by knowing the agent id, and
+    // stops a resolved choice from being replayed (the pending record is
+    // cleared below on the first accepted resolve).
+    const providedChoiceId = String(choiceId || "").trim();
+    if (!providedChoiceId) {
+      return { ok: false, error: "missing_choice_id" };
+    }
+    if (!pending.id || pending.id !== providedChoiceId) {
       return { ok: false, error: "stale_choice" };
     }
     const btn = String(buttonId || "").trim();
@@ -11845,6 +11857,11 @@ function createAgentRuntime(deps) {
     classifyAgentSkill,
     disposeAll,
     publicAgent,
+    // Test-only: hand back the internal mutable agent so security tests can
+    // seed a pending choice and exercise the REAL resolveChoice attestation.
+    // This is never forwarded to a renderer — the runtime object lives only in
+    // the main process — so it adds no IPC/renderer-reachable surface.
+    __getAgentForTest: (id) => agents.get(id) || null,
   };
 }
 

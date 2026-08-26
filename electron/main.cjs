@@ -135,6 +135,11 @@ const {
 const ownedBrowserAct = require("./ownedBrowserAct.cjs");
 const agentRecentVisits = require("./agentRecentVisits.cjs");
 const localSystem = require("./localSystem.cjs");
+const { createLocalApprovalRegistry } = require("./localToolApproval.cjs");
+// Main-issued, single-use approval tokens for renderer-invoked risky local
+// tools. Approval can only come from a token main minted for the exact tool +
+// args — never from a renderer-asserted `approved` flag.
+const localApprovals = createLocalApprovalRegistry();
 const macFiles = require("./macFiles.cjs");
 const localStore = require("./localStore/index.cjs");
 const appDock = require("./appDock.cjs");
@@ -3779,6 +3784,15 @@ const AGENT_BROWSER_HOME_URL = pathToFileURL(
   path.join(__dirname, "agent-browser-home.html"),
 ).href;
 
+// Exact identity of the bundled home/welcome documents, for the home-only
+// privileged IPC gates. The preload is on every agent tab, so these handlers
+// must confirm the EXACT packaged document rather than a URL that merely looks
+// like it (a remote https page whose path ends in the filename must fail).
+const { createAgentHomeIdentity } = require("./agentHomeIdentity.cjs");
+const agentHomeIdentity = createAgentHomeIdentity(__dirname);
+const isTrustedAgentBrowserHomeUrl = (url) =>
+  agentHomeIdentity.isTrustedAgentBrowserHomeUrl(url);
+
 /** LYKN start page (new-tab home) — omnibox stays empty so typing starts clean. */
 function isAgentBrowserHomeUrl(url) {
   return ownedBrowserAct.isAgentBrowserHomeDocument(url);
@@ -3789,7 +3803,8 @@ function agentBrowserHomeSender(event) {
   const sender = event?.sender;
   if (!sender || sender.isDestroyed?.()) return null;
   try {
-    if (!ownedBrowserAct.isAgentBrowserHomeDocument(sender.getURL?.() || "")) {
+    // Exact packaged-document identity — not a filename suffix match.
+    if (!isTrustedAgentBrowserHomeUrl(sender.getURL?.() || "")) {
       return null;
     }
   } catch {
@@ -5562,7 +5577,9 @@ function agentBrowserAllowsPermission(webContents, permission) {
   }
   if (permission === "media") {
     try {
-      return ownedBrowserAct.isAgentBrowserHomeDocument(webContents?.getURL?.());
+      // Mic/camera only on the EXACT bundled home/welcome document (dictation),
+      // never a page that merely looks like it.
+      return isTrustedAgentBrowserHomeUrl(webContents?.getURL?.());
     } catch {
       return false;
     }
@@ -12514,15 +12531,30 @@ function registerOverlayIpc() {
     broadcastToAllWindows("lykn:local-mode-changed", { enabled: next.enabled });
     return { ok: true, enabled: next.enabled };
   });
-  ipcMain.handle("lykn:local-tool-run", async (_e, { name, args, approved } = {}) => {
+  ipcMain.handle("lykn:local-tool-run", async (_e, { name, args, approvalToken } = {}) => {
     const { enabled } = localSystem.readLocalMode(app.getPath("userData"));
     if (!enabled) {
       return { ok: false, error: "Local mode is off — enable it in the Vault first." };
     }
-    return localSystem.run(String(name || ""), args || {}, {
-      approved: approved === true,
+    const toolName = String(name || "");
+    const toolArgs = args || {};
+    // Approval is NEVER taken from a renderer-supplied boolean. It is granted
+    // only by a main-issued, single-use token bound to this exact tool + args.
+    // Consuming here (before the run) makes the token one-shot; a missing,
+    // wrong, expired, or already-used token simply yields approved=false.
+    const approved = localApprovals.consume(approvalToken, toolName, toolArgs);
+    const result = await localSystem.run(toolName, toolArgs, {
+      approved,
       userDataPath: app.getPath("userData"),
     });
+    // First pass on a risky action: main's own classifier asked for approval.
+    // Mint a token so the approval UI can re-invoke the SAME action once the
+    // user confirms. The token is bound to (tool, normalized args), so it can
+    // only authorize this action.
+    if (result && result.needsApproval === true) {
+      result.approvalToken = localApprovals.issue(toolName, toolArgs);
+    }
+    return result;
   });
 
   // Serve files from this Mac to the Files browser. Independent of the local
@@ -13173,7 +13205,9 @@ function registerOverlayIpc() {
     if (!goal) return { ok: false, error: "empty_prompt" };
     const sender = event?.sender;
     const senderUrl = String(sender?.getURL?.() || "");
-    if (!/agent-browser-welcome\.html(?:[?#]|$)/i.test(senderUrl)) {
+    // Exact packaged-document identity — a remote page whose path ends in
+    // agent-browser-welcome.html must not reach the agent.
+    if (!isTrustedAgentBrowserHomeUrl(senderUrl)) {
       return { ok: false, error: "invalid_sender" };
     }
     let agentId = "";

@@ -135,13 +135,12 @@ const AUTH_HOST_RE =
 const AUTH_PATH_RE =
   /^\/(login|log-in|signin|sign-in|sign_in|signup|sign-up|sign_up|register|oauth|sso|auth|session\/new)(\/|$)/i;
 
-/** Fields we must never type into, matched on the input type or its label. */
-const SENSITIVE_FIELD_RE =
-  /\b(password|passwd|passcode|pin|cvv|cvc|security code|card ?number|credit ?card|debit ?card|expiry|expiration|ssn|social security|routing|account ?number|tax ?id|passport|licen[cs]e ?number)\b/i;
-
-/** Values that are secrets regardless of what the field claims to be. */
-const SENSITIVE_VALUE_RE =
-  /\b(?:\d[ -]?){13,19}\b|\b\d{3}-\d{2}-\d{4}\b/;
+/**
+ * Fields we must never type into / values that are always secrets. Sourced
+ * from the shared leaf module so the snapshot builder redacts exactly what the
+ * guard refuses to type — one definition, no require cycle.
+ */
+const { SENSITIVE_FIELD_RE, SENSITIVE_VALUE_RE } = require("../sensitiveFields.cjs");
 
 const DEFAULT_MAX_HOSTS = 25;
 

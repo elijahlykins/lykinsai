@@ -14,6 +14,12 @@ export type LocalToolResult = {
   summary?: string;
   tool?: string;
   error?: string;
+  /**
+   * Main-issued, single-use approval token accompanying a `needsApproval`
+   * result. The UI carries it back to authorize the SAME action — the renderer
+   * cannot self-assert approval.
+   */
+  approvalToken?: string;
   [key: string]: unknown;
 };
 
@@ -24,7 +30,7 @@ type LocalBridge = {
   localToolRun: (
     name: string,
     args: Record<string, unknown>,
-    opts?: { approved?: boolean },
+    opts?: { approvalToken?: string },
   ) => Promise<LocalToolResult>;
 };
 
@@ -126,20 +132,23 @@ export function subscribeLocalMode(cb: (enabled: boolean) => void): () => void {
 }
 
 /**
- * Execute a local tool in the Electron main process. Pass `approved: true` to
- * run a risky action the user already confirmed.
+ * Execute a local tool in the Electron main process. To run a risky action the
+ * user just confirmed, pass the `approvalToken` that main returned on the
+ * preceding `needsApproval` result — the renderer cannot self-assert approval.
  */
 export async function runLocalTool(
   name: string,
   args: Record<string, unknown>,
-  opts: { approved?: boolean } = {},
+  opts: { approvalToken?: string } = {},
 ): Promise<LocalToolResult> {
   const bridge = getBridge();
   if (!bridge) {
     return { ok: false, error: "Local mode is only available in the LYKN desktop app." };
   }
   try {
-    return await bridge.localToolRun(name, args || {}, { approved: opts.approved === true });
+    return await bridge.localToolRun(name, args || {}, {
+      approvalToken: typeof opts.approvalToken === "string" ? opts.approvalToken : "",
+    });
   } catch (e) {
     return { ok: false, error: (e as Error)?.message || "Local tool failed" };
   }

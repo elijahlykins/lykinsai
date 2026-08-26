@@ -268,7 +268,8 @@ contextBridge.exposeInMainWorld("lykn", {
     ipcRenderer.invoke("lykn:local-tool-run", {
       name: String(name || ""),
       args: args || {},
-      approved: opts?.approved === true,
+      // Approval is a main-issued token, not a renderer-asserted boolean.
+      approvalToken: typeof opts?.approvalToken === "string" ? opts.approvalToken : "",
     }),
   // Local store — the device-side home for vault items, chat threads,
   // artifacts, and the retrieval index. Every call resolves to

@@ -19,7 +19,8 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
     ipcRenderer.invoke("lykn:local-tool-run", {
       name: String(name || ""),
       args: args || {},
-      approved: opts?.approved === true,
+      // Approval is a main-issued token, not a renderer-asserted boolean.
+      approvalToken: typeof opts?.approvalToken === "string" ? opts.approvalToken : "",
     }),
   // Ask LYKN about the current screen. The main process captures the screen
   // silently and streams the answer back via onDelta/onDone/onError.

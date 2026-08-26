@@ -7,6 +7,12 @@
  * the controller rejects refs from older snapshots.
  */
 
+// Keep secret VALUES (passwords, OTPs, card/CVV numbers) out of the
+// model-facing snapshot. Reuses the same proven classifier the eval guard uses
+// to refuse typing secrets — imported from a dependency-free leaf so there is
+// no require cycle between snapshot and guard/executor.
+const { isSensitiveField } = require("../../sensitiveFields.cjs");
+
 let snapshotCounter = 0;
 
 /**
@@ -30,12 +36,20 @@ function buildSnapshot({ url = "", title = "", catalog = [], text = "", tabs = [
     const ref = `e${uid}`;
     const role = normalizeRole(item);
     const label = String(item.label || "").slice(0, 120);
+    // Passwords, OTPs, card/CVV fields: the model must know the field EXISTS
+    // (label, role, type are kept) but must never receive its value. Redact
+    // here — the single point where the raw catalog becomes the model-facing
+    // snapshot — and scrub the retained `raw` copy so no downstream consumer
+    // (diff, logs) can recover it either.
+    const sensitive = isSensitiveField(item, label);
+    const safeItem = sensitive && item.value ? { ...item, value: "" } : item;
     const el = {
       ref,
       loc: elementLocator(item, role, label),
       role,
       label,
-      value: item.value ? String(item.value).slice(0, 80) : "",
+      sensitive,
+      value: sensitive ? "" : item.value ? String(item.value).slice(0, 80) : "",
       checked: item.checked === true,
       // Tri-state on purpose: null means the widget does not claim the state at
       // all, which is different from claiming it and being false. Collapsing
@@ -55,7 +69,7 @@ function buildSnapshot({ url = "", title = "", catalog = [], text = "", tabs = [
       // Elements inside an embedded editor's iframe — the model should know
       // it is working in a nested document.
       frameHost: item.frameHost ? String(item.frameHost).slice(0, 60) : "",
-      raw: item,
+      raw: safeItem,
     };
     elements.push(el);
     // Two elements can collide on a ref only if the collector handed out a
@@ -217,7 +231,9 @@ function formatSnapshotForModel(snapshot, { maxElements = 90, maxTextChars = 500
     // navigate straight to the URL it is already holding.
     const href = linkDestination(el);
     if (href) line += ` -> ${href}`;
-    if (el.value) line += ` value="${el.value}"`;
+    // Sensitive fields advertise their existence but never their contents.
+    if (el.sensitive) line += " (sensitive — value hidden)";
+    else if (el.value) line += ` value="${el.value}"`;
     if (el.checked) line += " (checked)";
     // A menu the agent already opened looks identical to one it has not, and
     // that is how a round gets spent opening something twice — the second

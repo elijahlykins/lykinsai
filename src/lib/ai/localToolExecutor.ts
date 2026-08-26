@@ -296,7 +296,11 @@ export async function executeAwaitingLocalTool(
       args,
     });
     if (approved) {
-      result = await runLocalTool(name, args, { approved: true });
+      // Authorize the re-run with the main-issued token from the needsApproval
+      // result — not a renderer-asserted boolean. Main validates it against
+      // this exact tool + args and consumes it (single-use).
+      const approvalToken = typeof result.approvalToken === "string" ? result.approvalToken : "";
+      result = await runLocalTool(name, args, { approvalToken });
     } else {
       result = { ok: false, error: "You declined this action." };
     }
