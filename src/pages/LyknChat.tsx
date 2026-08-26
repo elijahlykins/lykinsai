@@ -1,54 +1,60 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import ChatSendIcon from "@/lib/chatSendIcon";
-import { takePendingBotChatAttachments } from "@/lib/bots/botAttachments";
-import { followBotTask, sendBotChatTurn } from "@/lib/bots/botChatBridge";
-import {
-  botHasUnseenResult,
-  getBot,
-  getBots,
-  markBotSeen,
-  setBotChatBoard,
-  subscribeBots,
-} from "@/lib/bots/botsClient";
-import { ensureThreadSnapshot } from "@/lib/chat/chatThreadRuntime";
-import { readEmbeddedPreviewParams } from "@/lib/embeddedPreview";
-import { ChevronDown, ChevronUp, ChevronRight, Code, Link as LinkIcon, Image as ImageIcon, ImagePlus, MessageCircle, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, FolderKanban, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, Telescope, ThumbsUp, ThumbsDown, Square, Sparkles, Save, SquarePen, Globe, GripVertical, ArrowUp, Layers, GraduationCap, Newspaper, Users, TrendingUp, type LucideIcon } from "lucide-react";
-import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import {
-  RESEARCH_SOURCE_OPTIONS,
-  normalizeResearchSourcePref,
-  type ResearchSourcePref,
-} from "@/lib/ai/researchSourcePrefs";
-import {
-  IMAGE_LAYOUT_OPTIONS,
-  imagineLayoutOption,
-  isImagineAspect,
-  loadImagineAspect,
-  saveImagineAspect,
-} from "@/lib/chat/imagineLayout";
 
-const RESEARCH_SOURCE_ICONS: Record<ResearchSourcePref, LucideIcon> = {
-  all: Layers,
-  web: Globe,
-  academic: GraduationCap,
-  news: Newspaper,
-  social: Users,
-  finance: TrendingUp,
-};
-import ModelSelectOptions from "@/components/ModelSelectOptions";
+import { takePendingBotChatAttachments } from "@/lib/bots/botAttachments";
+
+import { getBot, getBots, setBotChatBoard } from "@/lib/bots/botsClient";
+
+import { readEmbeddedPreviewParams } from "@/lib/embeddedPreview";
+import {
+  ChevronDown,
+  ChevronUp,
+  ChevronRight,
+  Link as LinkIcon,
+  Image as ImageIcon,
+  BookOpen,
+  X,
+  Clock,
+  Edit2,
+  Folder as FolderIcon,
+  Link2,
+  MoreHorizontal,
+  PanelRightClose,
+  PanelRight,
+  StickyNote,
+  Play,
+  FileText,
+  Music,
+  Video,
+  Share2,
+  Copy,
+  Check,
+  RefreshCw,
+  ThumbsUp,
+  ThumbsDown,
+  Save,
+  GripVertical,
+  ArrowUp,
+} from "lucide-react";
+import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+
+import { normalizeResearchSourcePref, type ResearchSourcePref } from "@/lib/ai/researchSourcePrefs";
+import { isImagineAspect, loadImagineAspect, saveImagineAspect } from "@/lib/chat/imagineLayout";
+
 import { toast } from "@/components/ui/use-toast";
 import { useUserPlan } from "@/lib/useUserPlan";
 import { isModelAllowedForPlan, defaultModelForTier } from "@/lib/modelTiers";
 import { useAssistantName } from "@/hooks/useAssistantName";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
-import { openInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
-import {
-  getAttachedPageForChat,
-  subscribeBrowserChatAttach,
-} from "@/lib/lyknChat/browserChatAttach";
+
+import { getAttachedPageForChat, subscribeBrowserChatAttach } from "@/lib/lyknChat/browserChatAttach";
 import { supabase } from "@/lib/supabase";
 import { localBlobUrl } from "@/lib/vault/repository/mediaUrl";
 import { LOCAL_BUCKET } from "@/lib/vault/repository/types";
@@ -58,15 +64,14 @@ import { useUsageGate } from "@/lib/useUsageGate";
 import UpgradeModal from "@/components/UpgradeModal";
 import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import LinkPreview from "@/components/LinkPreview";
-import { SiteFavicon } from "@/components/SiteFavicon";
+
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
 import { copyMarkdownAsRich } from "@/lib/copyRichClipboard";
 import { getAiPrefs } from "@/lib/ai-prefs";
-import { maybeAutoNameChat, buildAttachmentContext } from "@/lib/ai/chatSendOrchestrator";
-import { ocrImageAttachments } from "@/lib/ai/imageOcr";
+
 import { ingestChatFiles } from "@/lib/chat/ingestChatFiles";
 import { useDropZone } from "@/lib/drag/dragEngine";
 import {
@@ -88,24 +93,14 @@ import { createNewChat } from "@/lib/chat/chatThreadsClient";
 import { addOpenThread } from "@/lib/chat/chatThreadRuntime";
 import { notifyLyknChatsChanged } from "@/lib/lyknChat/chatsChanged";
 import { getVaultSidebarWidth, useIsTouchOnlyDevice } from "@/hooks/useViewportTier";
-import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
-import { saveFileToVault, saveGeneratedImageToVault } from "@/lib/saveToVault";
-import { createVaultWrites } from "@/lib/vault/repository";
-import { insertWithSchemaFallback } from "@/lib/vault/insertWithSchemaFallback";
-import {
-  chatAttachmentFileType,
-  chatAttachmentFilename,
-  chatAttachmentKind,
-  chatAttachmentSaveKeys,
-  chatAttachmentText,
-  fetchChatAttachmentBlob,
-} from "@/lib/chat/chatAttachmentFile";
+
+import { chatAttachmentSaveKeys } from "@/lib/chat/chatAttachmentFile";
 import { stripAttachmentsMarker } from "@/lib/vault/attachmentsMarker";
 import { CONTEXT_BUDGETS } from "@/lib/ai/promptBuilder";
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
 import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
 import { snapshotToSynthesisText } from "@/lib/synthesis/sourceText";
-import { fetchLoadInUpdatesMessage } from "@/lib/synthesis/loadInUpdates";
+
 import { useProjectFiles } from "@/hooks/useProjectFiles";
 import LyknChatToolbar from "@/components/lyknChat/LyknChatToolbar";
 import LyknChatToasts from "@/components/lyknChat/LyknChatToasts";
@@ -121,23 +116,19 @@ import {
   rememberAppEdit,
   takePendingAppEdit,
 } from "@/lib/apps/editApp";
-import AppSourceStrip, {
-  publishAppSourceStrip,
-  subscribeDismissAppEdit,
-} from "@/components/lyknChat/AppSourceStrip";
+import AppSourceStrip, { publishAppSourceStrip, subscribeDismissAppEdit } from "@/components/lyknChat/AppSourceStrip";
 import LyknChatVoiceMode from "@/components/lyknChat/LyknChatVoiceMode";
-import { openLyknMediaPop } from "@/lib/lyknMediaPop";
+
 import SubAgentTasksStrip from "@/components/lyknChat/SubAgentTasksStrip";
 import MobileLyknChat from "@/components/lyknChat/MobileLyknChat";
 import { useLyknChatPersistence, makeDefaultNotesPages } from "@/hooks/useLyknChatPersistence";
 import { fetchMostRecentLyknChat } from "@/lib/lyknChat/fetchLyknChatsWithContext";
-import { useChatEngine, type ComposerMode, type ArtifactKind } from "@/hooks/useChatEngine";
+import { useChatEngine } from "@/hooks/useChatEngine";
 import { detectStudioModeRedirect, imagineSwitchNotice } from "@/lib/ai/studioModeIntent";
 import StudioImagineMode, {
   IMAGINE_CLEAR_EVENT,
   imagineBatchesFromTurns,
   type ImagineCommit,
-  type ImagineGenerateInput,
   type StudioImagineHandle,
 } from "@/components/lyknChat/StudioImagineMode";
 import {
@@ -148,1129 +139,45 @@ import {
   imagesFromImagineCommit,
 } from "@/lib/chat/imagineThread";
 import { fetchPublishedCustomModels } from "@/lib/modelBuilder/customModelsClient";
-import {
-  loadActiveCustomModelId,
-  saveActiveCustomModelId,
-} from "@/lib/modelBuilder/activeCustomModelStorage";
-import {
-  customModelSelectValue,
-  parseCustomModelSelectValue,
-} from "@/lib/modelBuilder/customModelSelect";
+import { loadActiveCustomModelId, saveActiveCustomModelId } from "@/lib/modelBuilder/activeCustomModelStorage";
+import { customModelSelectValue, parseCustomModelSelectValue } from "@/lib/modelBuilder/customModelSelect";
 import { CUSTOM_MODELS_ENABLED } from "@/lib/customModelsEnabled";
 import { fromChatModelKey, toChatModelKey } from "@/lib/lyknChat/chatModelKey";
 import { patchThreadSnapshot } from "@/lib/chat/chatThreadRuntime";
-import LyknChatPlusMenu from "@/components/lyknChat/LyknChatPlusMenu";
+
 import LyknChatProjectPicker, { type LyknChatScopedProject } from "@/components/lyknChat/LyknChatProjectPicker";
 import AddLinkDialog, { type AddLinkPreview } from "@/components/AddLinkDialog";
-
-const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
-
-function tiptapJsonToPlainText(node: any): string {
-  if (!node || typeof node !== "object") return "";
-  let text = "";
-  if (node.type === "text") return node.text || "";
-  if (node.type === "youtube" && node.attrs?.src) return `\n[YouTube: ${node.attrs.src}]\n`;
-  if (node.type === "webEmbed" && node.attrs?.src) return `\n[Embedded link: ${node.attrs.src}]\n`;
-  if (node.type === "image" && node.attrs?.src) return `\n[Image: ${node.attrs.alt || ""} ${node.attrs.src}]\n`;
-  if (Array.isArray(node.content)) {
-    for (const child of node.content) {
-      text += tiptapJsonToPlainText(child);
-    }
-  }
-  const block = node.type === "paragraph" || node.type === "heading" || node.type === "listItem" || node.type === "taskItem" || node.type === "blockquote";
-  if (block) text += "\n";
-  return text;
-}
-
-const flattenNodeText = (node: any): string => {
-  if (node == null || typeof node === "boolean") return "";
-  if (typeof node === "string" || typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(flattenNodeText).join("");
-  if (React.isValidElement(node)) return flattenNodeText((node.props as any)?.children);
-  return "";
-};
-
-const normalizeChecklistSyntax = (value: string) =>
-  String(value || "")
-    .split(/\r?\n/)
-    .map((line) => {
-      const match = String(line || "").match(TASK_LINE_RE);
-      if (!match) return line;
-      const marker = String(match[1] || "").toLowerCase() === "x" ? "x" : " ";
-      return `- [${marker}] ${String(match[2] || "").trim()}`;
-    })
-    .join("\n");
-
-const splitResponseIntoChunks = (text: string): string[] => {
-  const raw = String(text || "").trim();
-  if (!raw) return [];
-  const lines = raw.split("\n");
-  const chunks: string[] = [];
-  let buf: string[] = [];
-  const flush = () => {
-    const t = buf.join("\n").trim();
-    if (t) chunks.push(t);
-    buf = [];
-  };
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const isHeading = /^\s*#{1,6}\s/.test(line);
-    const isListItem = /^\s*[-*]\s/.test(line);
-    const isNumbered = /^\s*\d+[.)]\s/.test(line);
-    const isCodeFence = /^\s*```/.test(line);
-    const isEmpty = !line.trim();
-    if (isCodeFence) {
-      if (buf.length && !buf.some((l) => /^\s*```/.test(l))) flush();
-      buf.push(line);
-      const alreadyClosed = buf.filter((l) => /^\s*```/.test(l)).length >= 2;
-      if (alreadyClosed) flush();
-      continue;
-    }
-    if (buf.some((l) => /^\s*```/.test(l)) && buf.filter((l) => /^\s*```/.test(l)).length < 2) {
-      buf.push(line);
-      continue;
-    }
-    if (isHeading) {
-      flush();
-      buf.push(line);
-      continue;
-    }
-    if (isEmpty && buf.length > 0) {
-      const lastIsListOrNum = buf.some((l) => /^\s*[-*]\s/.test(l) || /^\s*\d+[.)]\s/.test(l));
-      const nextIsListOrNum = (i + 1 < lines.length) && (/^\s*[-*]\s/.test(lines[i + 1]) || /^\s*\d+[.)]\s/.test(lines[i + 1]));
-      if (lastIsListOrNum && nextIsListOrNum) {
-        buf.push(line);
-        continue;
-      }
-      flush();
-      continue;
-    }
-    if ((isListItem || isNumbered) && buf.length > 0) {
-      const lastLine = buf[buf.length - 1];
-      const lastIsList = /^\s*[-*]\s/.test(lastLine) || /^\s*\d+[.)]\s/.test(lastLine);
-      const lastIsHeading = /^\s*#{1,6}\s/.test(lastLine);
-      const lastIsPlain = !lastIsList && !lastIsHeading && lastLine.trim();
-      if (lastIsPlain) flush();
-    }
-    buf.push(line);
-  }
-  flush();
-  if (chunks.length <= 1) return [raw];
-  return chunks;
-};
-
-/** Runtime-shaped attachment riding a Bot send (see botAttachments.js). */
-type BotSendAttachment = {
-  kind: "image" | "text";
-  name: string;
-  dataUrl?: string;
-  text?: string;
-};
-
-type PromptMessage = {
-  id: string;
-  role: "user";
-  content: string;
-  aiResponse?: string;
-  aiImageUrl?: string;
-  aiYouTubeUrls?: { url: string; videoId: string }[];
-  aiWebLinks?: string[];
-  sources?: { title: string; url: string }[];
-  kind?: "prompt" | "load-in-greeting";
-  attachments?: FocusedChatAttachment[];
-  /** Set when this turn was addressed to a Bot instead of the chat model —
-   *  the reply streams from its worker agent and the view shows its face. */
-  bot?: { id: string; name: string; face: string; eyes: string; color: string };
-  /** The Bot task carrying this turn — lets the row re-attach to the live
-   *  stream after the user leaves the chat mid-task and comes back. */
-  botTaskId?: string;
-  /** True while the Bot's task is still running — the row shows an animated
-   *  thinking indicator with `botStatus` (and the `botTrail` of recent
-   *  statuses) under whatever has streamed so far. Cleared on the final
-   *  update, and by the re-attach pass when a task settled off-screen. */
-  botWorking?: boolean;
-  botStatus?: string;
-  botTrail?: string[];
-  // Action buttons rendered below the assistant bubble. Populated only
-  // by the load-in greeting today. Optional / ignored otherwise.
-  aiResponseActions?: Array<{
-    label: string;
-    href: string;
-    description?: string;
-    tone?: "primary" | "neutral" | "amber" | "emerald" | "fuchsia";
-    /** Optional brand-mark URL for "Connect <Platform>" prompts. */
-    iconUrl?: string;
-  }>;
-  // Structured sections for the load-in greeting: heading per topic,
-  // each row carrying its own inline CTA button. When present the
-  // renderer prefers this over the flat `aiResponseActions` strip.
-  aiResponseSections?: Array<{
-    id: string;
-    heading: string;
-    intro?: string;
-    items: Array<{
-      title: string;
-      subtitle?: string;
-      iconUrl?: string;
-      action?: {
-        label: string;
-        href: string;
-        description?: string;
-        tone?: "primary" | "neutral" | "amber" | "emerald" | "fuchsia";
-        iconUrl?: string;
-      };
-    }>;
-    summary?: string;
-    groups?: Array<{
-      id: string;
-      label: string;
-      iconUrl?: string;
-      domain?: string;
-      count: number;
-      latestTitle?: string;
-      latestRelative?: string;
-      items: Array<{
-        id: string;
-        title: string;
-        subtitle?: string;
-        href?: string;
-      }>;
-    }>;
-    chips?: Array<{
-      id: string;
-      label: string;
-      iconUrl: string;
-      href: string;
-      tone?: "primary" | "neutral" | "amber" | "emerald" | "fuchsia";
-    }>;
-    /**
-     * When present, identifies this section as user-authored (a row in
-     * `lykn_load_in_user_sections`). The chat renderer attaches inline
-     * edit / delete affordances to sections that carry this id.
-     */
-    userSectionId?: string;
-  }>;
-  /**
-   * Roll-up counts + 7-day activity series for the at-a-glance
-   * dashboard panel rendered next to the load-in greeting. Pulled
-   * verbatim from `LoadInUpdatesPayload.stats`. Optional so the
-   * field is harmless for non-greeting turns.
-   */
-  aiResponseStats?: import("@/lib/synthesis/loadInUpdates").LoadInUpdatesStats;
-};
-
-type CreateAction =
-  | { type: "create_sheet"; content?: string; title?: string }
-  | { type: "create_spreadsheet"; rows?: number; cols?: number; cells?: Record<string, string>; cells2d?: string[][] }
-  | { type: "create_list"; listType?: "todo" | "bulleted" | "numbered"; items?: string[] }
-  | { type: "create_design_board"; board?: any; title?: string; seedText?: string }
-  | { type: "create_code_block"; language?: string; content?: string }
-  | { type: "create_universal_block"; universalType?: string; name?: string; data?: Record<string, unknown> }
-  | { type: "create_youtube_block"; url?: string; title?: string }
-  | { type: "create_database_relation"; fromDatabaseName?: string; toDatabaseName?: string; relationType?: "one-to-one" | "one-to-many" | "many-to-many"; rollup?: { property?: string; aggregation?: "sum" | "count" | "average" } }
-  | { type: "delete_block"; blockId?: string; blockIds?: string[] }
-  | { type: "update_notes"; content: string | object }
-  | { type: "append_notes"; content: string | object }
-  | { type: string; [key: string]: any };
-
-type OrchestratorResult = {
-  response: string;
-  followUpQuestions: string[];
-  actions: CreateAction[];
-  requiresClarification: boolean;
-  groundingSummary?: string;
-};
-
-const CHAT_TO_BOARD_IMPORT_KEY = "lyknchat_chat_import_v1";
-
-type ImportedChatPrompt = {
-  id?: string;
-  role?: "user";
-  content?: string;
-  aiResponse?: string;
-  kind?: "prompt";
-};
-
-type ImportedTodoList = {
-  id?: string;
-  title?: string;
-  items?: Array<{ text?: string; checked?: boolean }>;
-};
-
-type ImportedChatAttachment = {
-  id?: string;
-  type?: string;
-  url?: string;
-  name?: string;
-  videoId?: string;
-  vaultTitle?: string;
-  vaultContent?: string;
-  transcript?: string;
-  pdfText?: string;
-  extractedText?: string;
-  mime?: string;
-};
-
-type ImportedChatBoardPayload = {
-  version?: number;
-  createdAt?: number;
-  chatId?: string;
-  source?: string;
-  prompts?: ImportedChatPrompt[];
-  todoLists?: ImportedTodoList[];
-  attachments?: ImportedChatAttachment[];
-};
-
-
-type FocusedChatAttachment = {
-  id: string;
-  type: string;
-  url: string;
-  name: string;
-  mime: string;
-  size: number;
-  videoId?: string;
-  vaultTitle?: string;
-  vaultContent?: string;
-  transcript?: string;
-  pdfText?: string;
-  extractedText?: string;
-  canvasBlockId?: string;
-  rawFile?: File;
-};
-
-const isYouTubeUrl = (url = "") =>
-  /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\//i.test(String(url).trim());
-
-const getUrlExtension = (url = "") => {
-  const raw = String(url || "").trim();
-  if (!raw) return "";
-  try {
-    const parsed = new URL(raw);
-    const fileName = decodeURIComponent(parsed.pathname.split("/").pop() || "");
-    const ext = fileName.includes(".") ? fileName.split(".").pop()?.toLowerCase() || "" : "";
-    return ext;
-  } catch { return ""; }
-};
-
-const DOCUMENT_EXTS = new Set(["doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "txt", "md", "markdown", "json", "html", "htm", "csv", "rtf"]);
-
-const inferUrlAttachmentType = (url = "") => {
-  const trimmed = String(url || "").trim();
-  if (!trimmed) return "link";
-  if (isYouTubeUrl(trimmed)) return "youtube";
-  const ext = getUrlExtension(trimmed);
-  if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "heic", "heif"].includes(ext)) return "image";
-  if (["mp4", "mov", "webm", "mkv", "avi"].includes(ext)) return "video";
-  if (["mp3", "wav", "m4a", "ogg", "aac", "flac"].includes(ext)) return "audio";
-  if (ext === "pdf") return "pdf";
-  if (DOCUMENT_EXTS.has(ext)) return "document";
-  return "link";
-};
-
-function chatAttachmentsToImagineInput(
-  text: string,
-  atts: FocusedChatAttachment[],
-): ImagineGenerateInput {
-  const referenceUrls: string[] = [];
-  const documents: { name: string; text: string }[] = [];
-  for (const a of atts || []) {
-    const isImg = a.type === "image" || String(a.mime || "").startsWith("image/");
-    const src = String(a.url || "");
-    if (isImg && src) {
-      referenceUrls.push(src);
-      continue;
-    }
-    const body = [a.extractedText, a.pdfText, a.transcript, a.vaultContent]
-      .filter(Boolean)
-      .join("\n")
-      .trim();
-    if (body) documents.push({ name: a.name || a.vaultTitle || "attachment", text: body });
-  }
-  return { text, referenceUrls, documents };
-}
-
-const makeAttId = () =>
-  (typeof crypto !== "undefined" && crypto.randomUUID && crypto.randomUUID()) ||
-  `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-
-/** Shared model list for top panel and chat-bar selectors. Thin wrapper
- * around the canonical `<ModelSelectOptions>` so existing call sites that
- * pass a JSX node prop don't need to import the shared component directly.
- *
- * `modelTier` gates which models are selectable:
- *   - "basic"     (Free / guest)   → LYKN only
- *   - "top+media" (Pro)            → LYKN + frontier picks
- * Locked models are shown greyed out with a lock badge so users can see the
- * upgrade path instead of hiding the tier entirely.
- */
-function LyknChatModelSelectMenuBody({
-  modelTier = "basic",
-  publishedCustomModels = [],
-  lyknLabel,
-}: {
-  modelTier?: string;
-  publishedCustomModels?: { id: string; name: string }[];
-  lyknLabel?: string;
-}) {
-  return (
-    <ModelSelectOptions
-      modelTier={modelTier}
-      publishedCustomModels={publishedCustomModels}
-      lyknLabel={lyknLabel}
-    />
-  );
-}
-
-const CREATE_MODE_LABELS: Record<ArtifactKind, string> = {
-  deck: "Pitch deck",
-  study: "Study guide",
-  document: "Document",
-  worksheet: "Worksheet",
-  spreadsheet: "Spreadsheet",
-  chart: "Chart",
-  diagram: "Diagram",
-  webapp: "Interactive page",
-};
-
-function composerModeLabel(mode: ComposerMode): string {
-  if (mode === "image") return "Generate image";
-  if (mode === "web") return "Web search";
-  if (mode === "research") return "Deep research";
-  if (mode.startsWith("create:")) {
-    const kind = mode.slice("create:".length) as ArtifactKind;
-    // "webapp" is surfaced in the menu as Build mode (AI codes it out live).
-    if (kind === "webapp") return "Build mode";
-    return CREATE_MODE_LABELS[kind] ? `Create: ${CREATE_MODE_LABELS[kind]}` : "Create";
-  }
-  return "";
-}
-
-// Studio glass mode selector — Chat / Build / Imagine / Research. Floats at
-// the top of the glass chat page (inside LYKN Studio). Each mode segment is
-// its own page view: a fresh centered composer with a mode headline, the
-// composer mode armed silently (no blue chip). The mode rides through the
-// same pipeline as the "+" menu (Build = live React artifact, Imagine =
-// image gen, Research = deep-research report).
-type StudioView = "chat" | "build" | "imagine" | "research";
-
-const STUDIO_VIEW_MODES: Record<Exclude<StudioView, "chat">, ComposerMode> = {
-  build: "create:webapp",
-  imagine: "image",
-  research: "research",
-};
-
-const STUDIO_VIEW_HEADLINES: Record<Exclude<StudioView, "chat">, string> = {
-  build: "What would you like to build?",
-  imagine: "Generate any image",
-  research: "What should LYKN research?",
-};
-
-const STUDIO_VIEW_SUBTITLES: Record<Exclude<StudioView, "chat">, string> = {
-  build:
-    "Pitch decks, presentations, and polished visual docs. Describe what you need and LYKN builds it live.",
-  imagine: "Describe any image and LYKN generates a set of variations you can refine.",
-  research:
-    "Give a topic or question and LYKN digs into current sources, then writes a structured research report.",
-};
-
-// Per-mode system prompt, injected server-side into the stream system prompt
-// ([ACTIVE_MODE] section) on every turn while the mode page is active. The
-// pages are sticky sessions: the whole conversation stays in-lane.
-// Every mode prompt ends with the same out-of-lane rule: if the ask belongs
-// to a different mode, do NOT produce this mode's deliverable — point the
-// user at the mode pills at the top of the page (never the "+" menu).
-const STUDIO_MODE_SWITCH_RULE =
-  " Ordinary questions are always in-lane: answer them directly without telling the user to " +
-  "switch to Chat. If the user explicitly asks for a deliverable this mode can't create (e.g. an image in Build/Research, a " +
-  "research report in Build/Imagine, or an app/deck in Imagine/Research), do NOT produce this " +
-  "mode's deliverable as a substitute. Instead reply briefly telling them to switch modes using " +
-  "the pills at the top of the page (Chat / Build / Imagine / Research) and resend their " +
-  "request there. Never tell them to use the \"+\" menu for this.";
-
-const STUDIO_VIEW_SYSTEM_PROMPTS: Record<StudioView, string> = {
-  chat:
-    "The user is in Chat mode. Answer questions and talk. Images are Imagine-only: if they ask " +
-    "to generate an image or tweak one, do NOT generate it here. Reply in one short line telling " +
-    "them to click Imagine at the top of the page and resend — never fake an image, never write a " +
-    "prompt as if that's all you can do, and never substitute a diagram or mermaid block.",
-  build:
-    "The user is in Build mode — a dedicated session for designing and building artifacts " +
-    "(interactive pages, apps, tools, games, decks, documents, charts, diagrams). Act as their " +
-    "build partner: answer ordinary questions normally, help shape ideas, and propose concrete " +
-    "directions without building unless the user clearly asks you to create, change, fix, or " +
-    "refine an artifact. If they ask you to build but name no kind and no topic " +
-    "(\"can you build me something\", \"just make something\", \"surprise me\"), ask ONE short " +
-    "question with 2–4 concrete options (a playable mini-game, a landing page, a dashboard, a " +
-    "small utility) — do not invent a deliverable. A question about an idea or an open artifact is not an edit request. When " +
-    "an artifact is already open in the panel and they ask to add, change, fix, or extend it, " +
-    "ALWAYS patch that artifact in place with targeted `edits` — never rebuild from scratch " +
-    "unless they clearly ask to redesign, start over, or build something entirely new. If a " +
-    "tool call returns a compile_error or edits_required, fix it silently and retry before " +
-    "telling the user you're done. COLOR DEFAULT: stay in a quiet earthy-neutral palette — black, " +
-    "white, gray, muted dark/sage greens, dark/slate blues, beige, and browns. Do not invent " +
-    "bright candy accents (orange, rose, cyan, neon, purple) unless the user explicitly asks " +
-    "for vivid color / a chromatic style, OR they show you a reference idea (attached image, " +
-    "screenshot, mood board) — then match that idea." +
-    STUDIO_MODE_SWITCH_RULE,
-  imagine:
-    "The user is in Imagine mode — a session for image creation and visual exploration. Answer " +
-    "ordinary questions normally and discuss ideas, styles, composition, or an existing image " +
-    "without generating anything unless the user clearly asks you to create or modify an image. " +
-    "When they do ask to create or refine one, turn the request into a vivid, detailed image " +
-    "prompt, generate it, and iterate on style, composition, lighting, and details as they react." +
-    STUDIO_MODE_SWITCH_RULE,
-  research:
-    "The user is in Research mode — a dedicated session for producing deep research reports. " +
-    "Treat each request as a research brief: investigate thoroughly using current sources and " +
-    "deliver a structured, well-organized report. Ask a short clarifying question first only " +
-    "when the scope is genuinely unclear; otherwise research and write. Follow-up messages " +
-    "refine or extend the report — keep the session focused on the research topic." +
-    STUDIO_MODE_SWITCH_RULE,
-};
-
-function openPageInstruction(page?: { url?: string; title?: string } | null) {
-  const url = String(page?.url || "").trim();
-  if (!url) return "";
-  const label = String(page?.title || "").trim();
-  const named = label ? `${label} (${url})` : url;
-  return (
-    ` The user opened ${named} in the LYKN browser and is looking at that page ` +
-    `while continuing this conversation. Treat it as the open page they are viewing.`
-  );
-}
-
-function studioInstructionsFor(
-  view: StudioView,
-  page?: { url?: string; title?: string } | null,
-) {
-  return (STUDIO_VIEW_SYSTEM_PROMPTS[view] || "") + openPageInstruction(page);
-}
-
-const STUDIO_MODE_OPTIONS: {
-  id: StudioView;
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
-}[] = [
-  { id: "chat", label: "Chat", icon: MessageCircle },
-  { id: "build", label: "Build", icon: Code },
-  { id: "imagine", label: "Imagine", icon: ImagePlus },
-  { id: "research", label: "Research", icon: Telescope },
-];
-
-const StudioModePill = React.memo(function StudioModePill({
-  activeView,
-  onSelect,
-  onNewChat,
-}: {
-  activeView: StudioView;
-  onSelect: (view: StudioView) => void;
-  onNewChat?: () => void;
-}) {
-  return (
-    <div className="pointer-events-none absolute inset-x-0 top-3 z-[70] flex items-center justify-center gap-2">
-      {onNewChat && (
-        <button
-          type="button"
-          onClick={onNewChat}
-          title="New chat"
-          aria-label="New chat"
-          className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/10 bg-white/55 text-black/60 shadow-lg backdrop-blur-2xl transition-colors hover:text-black dark:border-white/15 dark:bg-black/35 dark:text-white/65 dark:hover:text-white"
-        >
-          <SquarePen className="h-4 w-4" />
-        </button>
-      )}
-      <div className="pointer-events-auto flex items-center gap-0.5 rounded-full border border-black/10 bg-white/55 p-1 shadow-lg backdrop-blur-2xl dark:border-white/15 dark:bg-black/35">
-        {STUDIO_MODE_OPTIONS.map(({ id, label, icon: Icon }) => {
-          const active = id === activeView;
-          return (
-            <button
-              key={id}
-              type="button"
-              onClick={() => onSelect(id)}
-              aria-pressed={active}
-              className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[0.72rem] font-medium transition-all ${
-                active
-                  ? "bg-black/85 text-white shadow dark:bg-white dark:text-black"
-                  : "text-black/60 hover:bg-black/10 hover:text-black/85 dark:text-white/65 dark:hover:bg-white/15 dark:hover:text-white/90"
-              }`}
-            >
-              <Icon className="h-3.5 w-3.5" />
-              {label}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-});
-
-// Per-mode composer identity: each Studio page gets its own placeholder and
-// a strip of quick-start chips above the chat bar, so the bar itself signals
-// which page you're on. (Imagine has its own dedicated bar and skips this.)
-const STUDIO_COMPOSER_PLACEHOLDERS: Record<StudioView, string> = {
-  chat: "Ask me anything...",
-  build: "Describe what you want to build...",
-  imagine: "Describe the image you want...",
-  research: "What should LYKN research?",
-};
-
-const STUDIO_COMPOSER_CHIPS: Record<
-  Exclude<StudioView, "imagine" | "chat">,
-  { label: string; insert: string }[]
-> = {
-  build: [
-    { label: "Pitch deck", insert: "Make a pitch deck about " },
-    { label: "Slide deck", insert: "Create a slide deck that covers " },
-    { label: "One-pager", insert: "Design a one-pager for " },
-    { label: "Investor deck", insert: "Build an investor deck for " },
-    { label: "App", insert: "Build me an app that " },
-    { label: "Game", insert: "Create an interactive game where " },
-    { label: "Study guide", insert: "Make a study guide for " },
-    { label: "Dashboard", insert: "Design a dashboard for " },
-  ],
-  research: [
-    {
-      label: "Tesla stock performance",
-      insert: "Research Tesla stock: recent performance, valuation, and analyst outlook",
-    },
-    {
-      label: "AI chip market",
-      insert: "Give me a market overview of the AI semiconductor industry in 2026",
-    },
-    {
-      label: "Sleep and memory",
-      insert: "Do an academic research report on how sleep affects memory consolidation, citing recent studies",
-    },
-    {
-      label: "Global EV trends",
-      insert: "Write a trend report on the global electric vehicle market",
-    },
-    {
-      label: "CRISPR research",
-      insert: "Research the latest advances and debates in CRISPR gene editing",
-    },
-  ],
-};
-
-const StudioComposerStrip = React.memo(function StudioComposerStrip({
-  view,
-  onInsert,
-}: {
-  view: Exclude<StudioView, "imagine" | "chat">;
-  onInsert: (text: string) => void;
-}) {
-  return (
-    <div className="lykn-studio-chips mb-1 flex flex-nowrap items-center gap-1.5 overflow-x-auto px-1">
-      {STUDIO_COMPOSER_CHIPS[view].map((chip) => (
-        <button
-          key={chip.label}
-          type="button"
-          onClick={() => onInsert(chip.insert)}
-          className="shrink-0 whitespace-nowrap rounded-full border border-black/10 bg-white/40 px-2.5 py-1 text-[11px] font-medium text-black/55 backdrop-blur-sm transition-colors hover:bg-black/[0.06] hover:text-black/80 dark:border-white/12 dark:bg-white/[0.05] dark:text-white/55 dark:hover:bg-white/[0.1] dark:hover:text-white/85"
-        >
-          {chip.label}
-        </button>
-      ))}
-    </div>
-  );
-});
-
-/** Short topic phrase for post-report suggestion labels ("Brainstorm …"). */
-function researchSuggestionTopic(raw: string, maxLen = 42): string {
-  let t = String(raw || "").replace(/\s+/g, " ").trim();
-  t = t.replace(
-    /^(please\s+)?(?:do\s+)?(?:an?\s+)?(?:deep\s+)?(?:research|investigate|look into|analyze|study|explore|write|give me)\s+(?:(?:a|an|the)\s+)?(?:academic\s+)?(?:research\s+)?(?:report|overview|brief|summary)?\s*(?:on|about|into|regarding|for)?\s+/i,
-    "",
-  );
-  t = t.replace(/[.?!]+$/, "").trim();
-  if (!t) return "these findings";
-  if (t.length > maxLen) t = `${t.slice(0, Math.max(12, maxLen - 1)).replace(/\s+\S*$/, "")}…`;
-  return t;
-}
-
-function buildSuggestionTopic(raw: string, maxLen = 42): string {
-  let t = String(raw || "").replace(/\s+/g, " ").trim();
-  t = t.replace(
-    /^(please\s+)?(?:can you\s+)?(?:make|build|create|design|generate|code|write|whip up|mock up|put together)\s+(?:me\s+)?(?:an?\s+)?(?:interactive\s+)?(?:presentation|pitch deck|slide deck|deck|app|game|dashboard|one-pager|investor deck|study guide|page|site|tool)?\s*(?:about|on|for|that|which|where)?\s*/i,
-    "",
-  );
-  t = t.replace(/[.?!]+$/, "").trim();
-  if (!t) return "this build";
-  if (t.length > maxLen) t = `${t.slice(0, Math.max(12, maxLen - 1)).replace(/\s+\S*$/, "")}…`;
-  return t;
-}
-
-type StudioSuggestionItem = {
-  key: string;
-  view: StudioView;
-  label: string;
-  prompt: string;
-  icon: React.ComponentType<{ className?: string }>;
-};
-
-// Shared strip above the chat bar: three one-tap next steps after a
-// Research report finishes. Each switches Studio mode (when needed) and
-// immediately starts the turn. Build keeps the composer clean — no
-// follow-up chips sitting above the bar.
-const StudioFollowUpSuggestions = React.memo(function StudioFollowUpSuggestions({
-  items,
-  disabled,
-  onSelect,
-}: {
-  items: StudioSuggestionItem[];
-  disabled?: boolean;
-  onSelect: (view: StudioView, prompt: string) => void;
-}) {
-  return (
-    <div className="lykn-studio-suggestions mb-1.5 px-1">
-      <p className="mb-1.5 px-0.5 text-[0.65rem] font-semibold uppercase tracking-[0.08em] text-black/40 dark:text-white/40">
-        Suggestions
-      </p>
-      <div className="flex flex-col gap-1.5 sm:flex-row sm:flex-wrap">
-        {items.map(({ key, view, label, prompt, icon: Icon }) => (
-          <button
-            key={key}
-            type="button"
-            disabled={disabled}
-            onClick={() => onSelect(view, prompt)}
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-2xl border border-black/10 bg-white/50 px-3 py-2 text-left text-[12px] font-medium leading-snug text-black/70 backdrop-blur-sm transition-colors hover:bg-black/[0.06] hover:text-black/90 disabled:pointer-events-none disabled:opacity-40 dark:border-white/12 dark:bg-white/[0.06] dark:text-white/70 dark:hover:bg-white/[0.1] dark:hover:text-white/90"
-          >
-            <Icon className="h-3.5 w-3.5 shrink-0 opacity-60" />
-            <span className="min-w-0">{label}</span>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-});
-
-function researchFollowUpItems(topic: string): StudioSuggestionItem[] {
-  const blank = researchSuggestionTopic(topic, 42);
-  const fullTopic = researchSuggestionTopic(topic, 160);
-  return [
-    {
-      key: "build",
-      view: "build",
-      label: "Build · Turn this into an interactive presentation",
-      prompt: "Turn this research report into an interactive presentation",
-      icon: Code,
-    },
-    {
-      key: "brainstorm",
-      view: "chat",
-      label: `Chat · Brainstorm ${blank}`,
-      prompt: `Brainstorm ideas, angles, and next steps around ${fullTopic}`,
-      icon: MessageCircle,
-    },
-    {
-      key: "deeper",
-      view: "research",
-      label: "Dive deeper",
-      prompt: `Dive deeper into ${fullTopic}`,
-      icon: Telescope,
-    },
-  ];
-}
-
-function buildFollowUpItems(topic: string): StudioSuggestionItem[] {
-  const blank = buildSuggestionTopic(topic, 42);
-  const fullTopic = buildSuggestionTopic(topic, 160);
-  return [
-    {
-      key: "research",
-      view: "research",
-      label: `Research · Dig into ${blank}`,
-      prompt: `Research ${fullTopic}: key facts, current context, and anything I should know to strengthen this build`,
-      icon: Telescope,
-    },
-    {
-      key: "brainstorm",
-      view: "chat",
-      label: `Chat · Brainstorm improvements for ${blank}`,
-      prompt: `Brainstorm improvements, alternate directions, and next features for ${fullTopic}`,
-      icon: MessageCircle,
-    },
-    {
-      key: "polish",
-      view: "build",
-      label: "Polish this",
-      prompt:
-        "Polish and refine this build — tighten the design, improve clarity, and add polished interactions",
-      icon: Sparkles,
-    },
-  ];
-}
-
-// Studio Research page: right rail listing every link the deep-research
-// pipeline searched/read (streamed from the server before the report text),
-// plus a Save report action that writes the finished report into the vault.
-function researchLinkHostname(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return url;
-  }
-}
-
-const StudioResearchSidebar = React.memo(function StudioResearchSidebar({
-  sources,
-  canSave,
-  saving,
-  onSave,
-}: {
-  sources: { title: string; url: string }[];
-  canSave: boolean;
-  saving: boolean;
-  onSave: () => void;
-}) {
-  const openLink = (url: string) => {
-    if (openInStudioBrowser(url)) return;
-    const lykn = (window as any).lykn;
-    if (lykn?.openExternal) lykn.openExternal(url);
-    else window.open(url, "_blank", "noopener");
-  };
-  // Shared blur glass so the report underneath is frosted, not readable.
-  return (
-    <div className="lg-desktop-surface flex h-full flex-col rounded-none pt-14">
-      <div className="flex items-center justify-between px-4 pb-2.5">
-        <p className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-black/55 dark:text-white/60">
-          Research links
-        </p>
-        {sources.length > 0 && (
-          <span className="rounded-full border border-black/10 bg-black/[0.05] px-2 py-0.5 text-[0.62rem] font-medium text-black/65 dark:border-white/10 dark:bg-white/[0.07] dark:text-white/70">
-            {sources.length}
-          </span>
-        )}
-      </div>
-      <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2 scrollbar-hide">
-        {sources.length === 0 ? (
-          <p className="px-3 py-8 text-center text-[0.7rem] leading-relaxed text-black/40 dark:text-white/40">
-            No sources were captured for this report.
-          </p>
-        ) : (
-          sources.map((s, i) => (
-            <button
-              key={`${s.url}-${i}`}
-              type="button"
-              onClick={() => openLink(s.url)}
-              title={s.url}
-              className="flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-black/[0.06] dark:hover:bg-white/[0.08]"
-            >
-              <SiteFavicon url={s.url} className="mt-0.5 h-3.5 w-3.5" />
-              <span className="min-w-0">
-                <span className="block truncate text-[0.74rem] text-black/85 dark:text-white/85">
-                  {s.title || "Source"}
-                </span>
-                <span className="block truncate text-[0.62rem] text-black/40 dark:text-white/40">
-                  {researchLinkHostname(s.url)}
-                </span>
-              </span>
-            </button>
-          ))
-        )}
-      </div>
-      <div className="p-3">
-        <button
-          type="button"
-          onClick={onSave}
-          disabled={!canSave || saving}
-          className="flex w-full items-center justify-center gap-1.5 rounded-full bg-black/85 py-2 text-[0.75rem] font-semibold text-white shadow transition-opacity hover:bg-black/75 dark:bg-white dark:text-black dark:hover:bg-white/90 disabled:opacity-40"
-        >
-          <Save className="h-3.5 w-3.5" />
-          {saving ? "Saving…" : "Save report"}
-        </button>
-      </div>
-    </div>
-  );
-});
-
-const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
-  compact, onSend, chatInputHasText, hasAttachments, isChatLoading, isDictating, isTranscribing,
-  modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
-  handleStopAi, handleDictateToggle,
-  handlePickFiles, handleAddLinkClick, handlePullFromVault,
-  handleSelectProjectClick, scopedProjectName, handleClearScopedProject,
-  composerMode, setComposerMode,
-  hideComposerModeChip,
-  showResearchSourceSelect,
-  researchSourcePref,
-  onResearchSourcePrefChange,
-  showImagineLayoutSelect,
-  imagineAspect,
-  onImagineAspectChange,
-}: {
-  compact?: boolean;
-  onSend: () => void | Promise<void>;
-  chatInputHasText: boolean;
-  hasAttachments?: boolean;
-  isChatLoading: boolean;
-  isDictating: boolean;
-  isTranscribing: boolean;
-  modelSelectValue: string;
-  persistSelectedModel: (v: string) => void;
-  modelTier?: string;
-  modelSelectMenu: React.ReactNode;
-  handleStopAi: () => void;
-  handleDictateToggle: () => void;
-  handlePickFiles: () => void;
-  handleAddLinkClick: () => void;
-  handlePullFromVault: () => void;
-  handleSelectProjectClick: () => void;
-  scopedProjectName: string | null;
-  handleClearScopedProject: () => void;
-  composerMode: ComposerMode;
-  setComposerMode: (m: ComposerMode) => void;
-  /** Studio mode pages (Build / Imagine / Research) surface the mode in the
-   *  top pill instead of a blue chip inside the chat bar. */
-  hideComposerModeChip?: boolean;
-  showResearchSourceSelect?: boolean;
-  researchSourcePref?: ResearchSourcePref;
-  onResearchSourcePrefChange?: (v: ResearchSourcePref) => void;
-  showImagineLayoutSelect?: boolean;
-  imagineAspect?: string;
-  onImagineAspectChange?: (v: string) => void;
-}) {
-  const [modelMenuOpen, setModelMenuOpen] = React.useState(false);
-  const [sourceMenuOpen, setSourceMenuOpen] = React.useState(false);
-  const [layoutMenuOpen, setLayoutMenuOpen] = React.useState(false);
-  const sendDisabled = (!chatInputHasText && !hasAttachments) || isChatLoading || isDictating || isTranscribing;
-  const modelTriggerCls = compact
-    ? "lykn-chat-neu-chat-toolbar-select-trigger h-8 !w-auto max-w-[7rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-[0.625rem] px-1 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>svg]:w-3 [&>svg]:h-3 [&>svg]:opacity-40 [&>svg]:shrink-0"
-    : "lykn-chat-neu-chat-toolbar-select-trigger h-9 !w-auto max-w-[9rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-xs px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>svg]:w-3.5 [&>svg]:h-3.5 [&>svg]:opacity-40 [&>svg]:shrink-0";
-  const sourceTriggerCls = compact
-    ? "lykn-chat-neu-chat-toolbar-select-trigger h-8 !w-auto max-w-[7.5rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-[0.625rem] px-1 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-1.5 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>span]:pr-0.5 [&>svg]:w-3 [&>svg]:h-3 [&>svg]:opacity-40 [&>svg]:shrink-0 [&>svg]:ml-0.5"
-    : "lykn-chat-neu-chat-toolbar-select-trigger h-9 !w-auto max-w-[8.5rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-xs px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-1.5 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>span]:pr-0.5 [&>svg]:w-3.5 [&>svg]:h-3.5 [&>svg]:opacity-40 [&>svg]:shrink-0 [&>svg]:ml-0.5";
-  const iconBtn = compact ? "h-8 w-8" : "h-9 w-9";
-  const iconSm = compact ? "w-3 h-3" : "w-3.5 h-3.5";
-  const dropdownCls = "lykn-chat-bar-menu lg-menu p-1.5";
-
-  const blurModelTrigger = React.useCallback(() => {
-    requestAnimationFrame(() => {
-      document
-        .querySelectorAll<HTMLElement>(".lykn-chat-neu-chat-toolbar-select-trigger")
-        .forEach((el) => el.blur());
-    });
-  }, []);
-
-  const handleModelOpenChange = React.useCallback(
-    (open: boolean) => {
-      setModelMenuOpen(open);
-      if (!open) blurModelTrigger();
-    },
-    [blurModelTrigger],
-  );
-
-  const handleModelChange = React.useCallback(
-    (value: string) => {
-      setModelMenuOpen(false);
-      persistSelectedModel(value);
-      blurModelTrigger();
-    },
-    [persistSelectedModel, blurModelTrigger],
-  );
-
-  const handleSourceOpenChange = React.useCallback(
-    (open: boolean) => {
-      setSourceMenuOpen(open);
-      if (!open) blurModelTrigger();
-    },
-    [blurModelTrigger],
-  );
-
-  const handleSourceChange = React.useCallback(
-    (value: string) => {
-      setSourceMenuOpen(false);
-      onResearchSourcePrefChange?.(normalizeResearchSourcePref(value));
-      blurModelTrigger();
-    },
-    [onResearchSourcePrefChange, blurModelTrigger],
-  );
-
-  const handleLayoutOpenChange = React.useCallback(
-    (open: boolean) => {
-      setLayoutMenuOpen(open);
-      if (!open) blurModelTrigger();
-    },
-    [blurModelTrigger],
-  );
-
-  const handleLayoutChange = React.useCallback(
-    (value: string) => {
-      setLayoutMenuOpen(false);
-      onImagineAspectChange?.(saveImagineAspect(value));
-      blurModelTrigger();
-    },
-    [onImagineAspectChange, blurModelTrigger],
-  );
-
-  return (
-    <div className={`flex items-center gap-1.5 ${compact ? "pt-0.5" : "pt-1"}`}>
-      <Select
-        modal={false}
-        open={modelMenuOpen}
-        onOpenChange={handleModelOpenChange}
-        value={modelSelectValue}
-        onValueChange={handleModelChange}
-      >
-        <SelectTrigger className={modelTriggerCls}>
-          <SelectValue placeholder="Model" />
-        </SelectTrigger>
-        <SelectContent
-          side="top"
-          align="start"
-          className={`${dropdownCls} max-h-[min(28rem,70vh)] overflow-y-auto w-[min(92vw,18rem)]`}
-        >
-          {modelSelectMenu}
-        </SelectContent>
-      </Select>
-      {composerMode !== "none" && !hideComposerModeChip && (
-        <button
-          type="button"
-          onClick={() => setComposerMode("none")}
-          className="inline-flex items-center gap-1 rounded-full border border-blue-400/40 bg-blue-500/12 px-2 h-7 text-[0.6875rem] font-medium text-blue-700 dark:text-blue-300 shrink-0 hover:bg-blue-500/20 transition-colors"
-          title="Turn off"
-        >
-          {composerModeLabel(composerMode)}
-          <X className="w-3 h-3" />
-        </button>
-      )}
-      {scopedProjectName && (
-        <button
-          type="button"
-          onClick={handleClearScopedProject}
-          className="inline-flex items-center gap-1 rounded-full border border-blue-400/40 bg-blue-500/12 px-2 h-7 max-w-[10rem] text-[0.6875rem] font-medium text-blue-700 dark:text-blue-300 shrink-0 hover:bg-blue-500/20 transition-colors"
-          title="Stop chatting about this project"
-        >
-          <FolderKanban className="w-3 h-3 shrink-0" />
-          <span className="truncate">{scopedProjectName}</span>
-          <X className="w-3 h-3 shrink-0" />
-        </button>
-      )}
-      <div className="flex-1 min-w-[4px]" aria-hidden />
-      {showResearchSourceSelect ? (
-        <Select
-          modal={false}
-          open={sourceMenuOpen}
-          onOpenChange={handleSourceOpenChange}
-          value={researchSourcePref || "all"}
-          onValueChange={handleSourceChange}
-        >
-          <SelectTrigger className={sourceTriggerCls} title="Sources to pull from">
-            <SelectValue placeholder="Sources">
-              {(() => {
-                const pref = researchSourcePref || "all";
-                const opt = RESEARCH_SOURCE_OPTIONS.find((o) => o.value === pref);
-                const Icon = RESEARCH_SOURCE_ICONS[pref] || Layers;
-                return (
-                  <span className="inline-flex min-w-0 items-center gap-1">
-                    <Icon className={`${compact ? "h-3 w-3" : "h-3.5 w-3.5"} shrink-0 opacity-70`} />
-                    <span className="truncate">{opt?.shortLabel || "Sources"}</span>
-                  </span>
-                );
-              })()}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent
-            side="top"
-            align="end"
-            className={`${dropdownCls} w-[min(92vw,14rem)]`}
-          >
-            {RESEARCH_SOURCE_OPTIONS.map((opt) => {
-              const Icon = RESEARCH_SOURCE_ICONS[opt.value];
-              return (
-                <SelectItem key={opt.value} value={opt.value} className="text-xs">
-                  <span className="inline-flex items-center gap-2">
-                    <Icon className="h-3.5 w-3.5 shrink-0 opacity-70" />
-                    {opt.label}
-                  </span>
-                </SelectItem>
-              );
-            })}
-          </SelectContent>
-        </Select>
-      ) : null}
-      {showImagineLayoutSelect ? (
-        <Select
-          modal={false}
-          open={layoutMenuOpen}
-          onOpenChange={handleLayoutOpenChange}
-          value={imagineAspect || "1:1"}
-          onValueChange={handleLayoutChange}
-        >
-          <SelectTrigger className={sourceTriggerCls} title="Image layout">
-            <SelectValue placeholder="Layout">
-              {(() => {
-                const opt = imagineLayoutOption(imagineAspect);
-                const Icon = opt.icon;
-                return (
-                  <span className="inline-flex min-w-0 items-center gap-1">
-                    <Icon className={`${compact ? "h-3 w-3" : "h-3.5 w-3.5"} shrink-0 opacity-70`} />
-                    <span className="truncate">{opt.shortLabel}</span>
-                  </span>
-                );
-              })()}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent
-            side="top"
-            align="end"
-            className={`${dropdownCls} w-[min(92vw,14rem)]`}
-          >
-            {IMAGE_LAYOUT_OPTIONS.map((opt) => {
-              const Icon = opt.icon;
-              return (
-                <SelectItem key={opt.value} value={opt.value} className="text-xs">
-                  <span className="inline-flex items-center gap-2">
-                    <Icon className="h-3.5 w-3.5 shrink-0 opacity-70" />
-                    {opt.label}
-                  </span>
-                </SelectItem>
-              );
-            })}
-          </SelectContent>
-        </Select>
-      ) : null}
-      <LyknChatPlusMenu
-        iconBtnCls={iconBtn}
-        iconSmCls={iconSm}
-        onAddFiles={handlePickFiles}
-        onAddLink={handleAddLinkClick}
-        onPullVault={handlePullFromVault}
-        onProjects={handleSelectProjectClick}
-      />
-      {isChatLoading ? (
-        <button
-          type="button"
-          onClick={handleStopAi}
-          className={`${iconBtn} lykn-chat-neu-chat-icon-plain flex items-center justify-center shrink-0`}
-          title="Stop generating"
-        >
-          <Square className={`${compact ? "w-2.5 h-2.5" : "w-3 h-3"} text-red-600 dark:text-red-400`} fill="currentColor" />
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={handleDictateToggle}
-          className={`${iconBtn} lykn-chat-neu-chat-icon-plain flex items-center justify-center shrink-0 ${isDictating ? "ring-1 ring-blue-400/40 rounded-lg" : ""}`}
-          title={isDictating ? "Stop recording" : "Dictate"}
-        >
-          <Mic className={`${iconSm} text-black/75 dark:text-white/80 ${isDictating ? "text-blue-600 dark:text-blue-400" : ""}`} />
-        </button>
-      )}
-      <button
-        type="button"
-        onClick={() => void onSend()}
-        disabled={sendDisabled}
-        className={`${iconBtn} lykn-chat-neu-chat-send-btn flex items-center justify-center shrink-0 ${sendDisabled ? "opacity-40 cursor-not-allowed" : "text-blue-600 dark:text-blue-400"}`}
-        title="Send"
-      >
-        <ChatSendIcon className={iconSm} strokeWidth={2.25} />
-      </button>
-    </div>
-  );
-});
+import {
+  CHAT_TO_BOARD_IMPORT_KEY,
+  type BotSendAttachment,
+  type FocusedChatAttachment,
+  type ImportedChatBoardPayload,
+  type PromptMessage,
+} from "@/lib/lyknChat/chatTurnTypes";
+import {
+  chatAttachmentsToImagineInput,
+  inferUrlAttachmentType,
+  makeAttId,
+} from "@/lib/lyknChat/chatAttachmentInput";
+import {
+  STUDIO_COMPOSER_PLACEHOLDERS,
+  STUDIO_VIEW_HEADLINES,
+  STUDIO_VIEW_MODES,
+  STUDIO_VIEW_SUBTITLES,
+  StudioComposerStrip,
+  StudioFollowUpSuggestions,
+  StudioModePill,
+  StudioResearchSidebar,
+  buildFollowUpItems,
+  researchFollowUpItems,
+  studioInstructionsFor,
+  type StudioView,
+} from "@/components/lyknChat/StudioChatChrome";
+import LyknChatBarToolbar, { LyknChatModelSelectMenuBody } from "@/components/lyknChat/ChatBarToolbar";
+import { useChatVaultSaves } from "@/hooks/useChatVaultSaves";
+import { useChatVoiceMode } from "@/hooks/useChatVoiceMode";
+import { useBotChatBridge } from "@/hooks/useBotChatBridge";
+import { useLoadInGreeting } from "@/hooks/useLoadInGreeting";
 
 // `studioSurface` — the page is mounted IN-DOCUMENT inside the LYKN Studio
 // panel (its own MemoryRouter, no iframe). It behaves like the glass Studio
@@ -1641,8 +548,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   // fresh blank chat every time — empty "New Chat" shells stay hidden
   // from sidebars until they have real content. Hard reloads at
   // `/chat/<id>` are left alone so the URL the user bookmarked wins.
-  const loadInGreetingSeededRef = useRef<Set<string>>(new Set());
-
   useEffect(() => {
     if (!user?.id) return;
     if (planLoading) return;
@@ -1741,10 +646,11 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   }, [user?.id, planLoading, routeChatId, nav, studioSurface]);
 
   // The matching "graduation" effect (clears the saved dashboard
-  // pointer once a user types into a load-in greeting board) and the
-  // "consume" half (inflates a stashed greeting payload into a chat
-  // message) live below. They both gate on the load-in greeting flow
-  // that this trigger no longer seeds, so they're effectively dormant.
+  // pointer once a user types into a load-in greeting board) lives below;
+  // the "consume" half (inflates a stashed greeting payload into a chat
+  // message) lives in useLoadInGreeting. They both gate on the load-in
+  // greeting flow that this trigger no longer seeds, so they're
+  // effectively dormant.
 
   const createWelcomeText = useMemo(() => {
     const emailName = String(user?.email || "").split("@")[0].trim();
@@ -1768,7 +674,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     }, 52);
     return () => window.clearInterval(timer);
   }, [createWelcomeText]);
-
 
   const reSignChatAttachments = useCallback((messages?: any[]) => {
     (async () => {
@@ -1966,373 +871,18 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     resolveProjectFileToFile,
   } = useProjectFiles(chatId, user?.id);
 
-  // Load-in greeting (consume half — paired with the trigger effect
-  // further up). Once useLyknChatPersistence has hydrated the brand-new
-  // board, look for a sessionStorage entry stashed by the trigger and
-  // seed the chat with LYKN's "what's been happening / approvals /
-  // project updates" recap.
-  useEffect(() => {
-    if (!routeChatId) return;
-    if (!user?.id) return;
-    // `chatId === routeChatId` is the cleanest signal we have for
-    // "hydration of this board is complete and chatMessages was just
-    // reset to []" — `useLyknChatPersistence` sets chatId synchronously
-    // alongside the reset, so observing the match means we're safe to
-    // append without racing the reset.
-    if (chatId !== routeChatId) return;
-    if (loadInGreetingSeededRef.current.has(routeChatId)) return;
-
-    let raw: string | null = null;
-    try {
-      raw = sessionStorage.getItem(`lykn:loadInGreeting:${routeChatId}`);
-    } catch {
-      // ignore
-    }
-    if (!raw) return;
-
-    type LoadInAction = NonNullable<PromptMessage["aiResponseActions"]>[number];
-    type LoadInSection = NonNullable<PromptMessage["aiResponseSections"]>[number];
-    type LoadInStats = PromptMessage["aiResponseStats"];
-    let parsed: {
-      message?: string;
-      actions?: LoadInAction[];
-      sections?: LoadInSection[];
-      stats?: LoadInStats;
-      greetingName?: string;
-    } = {};
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      parsed = {};
-    }
-    const message = String(parsed?.message || "").trim();
-    const actions: LoadInAction[] = Array.isArray(parsed?.actions)
-      ? parsed.actions
-      : [];
-    const sections: LoadInSection[] = Array.isArray(parsed?.sections)
-      ? parsed.sections
-      : [];
-    const stats: LoadInStats = parsed?.stats || undefined;
-    const greetingNameForPanel = String(parsed?.greetingName || "").trim() || undefined;
-    try {
-      sessionStorage.removeItem(`lykn:loadInGreeting:${routeChatId}`);
-    } catch {
-      // ignore
-    }
-    if (!message) return;
-    loadInGreetingSeededRef.current.add(routeChatId);
-
-    // Match the existing typewriter-intro pattern: a tiny synthetic
-    // "Catch me up" user prompt sits above LYKN's recap as the
-    // `aiResponse` of that prompt (PromptMessage.role is hard-typed to
-    // "user", every reply belongs to a prompt). We then progressively
-    // populate `aiResponse` word-by-word so the user sees LYKN typing
-    // out the update in real time — same cadence as the other in-app
-    // intros. Action buttons (`aiResponseActions`) are attached at the
-    // end of the type-out so they don't pop in mid-stream.
-    const promptId = `loadin-intro-${Date.now()}`;
-    const timeouts: number[] = [];
-
-    // Tokenise on whitespace BUT keep the whitespace tokens in the
-    // array so spaces / newlines accumulate naturally as we slice.
-    const words = message.split(/(\s+)/);
-    // Bigger messages need to type a touch faster so the user isn't
-    // staring at a half-rendered list for 20s. We scale step time
-    // inversely to length, clamped to a tight band.
-    // Cadence scales with length so multi-category recaps don't take
-    // forever. Bands roughly target a 6–10s total type-out regardless
-    // of how rich the user's day was.
-    const baseStepMs =
-      words.length > 600
-        ? 6
-        : words.length > 400
-          ? 9
-          : words.length > 220
-            ? 14
-            : words.length > 120
-              ? 20
-              : 26;
-
-    timeouts.push(
-      window.setTimeout(() => {
-        setChatRailOpen(true);
-        setChatRailVisible(true);
-        setChatMessages((prev) =>
-          prev.length > 0
-            ? prev
-            : [
-                {
-                  id: promptId,
-                  role: "user",
-                  // No synthetic user prompt — the load-in greeting is
-                  // an unprompted assistant briefing. `kind` flags this
-                  // turn so the renderer hides the user bubble and
-                  // skips the "AI Response" collapsible wrapper.
-                  content: "",
-                  aiResponse: "",
-                  kind: "load-in-greeting",
-                  // Attach the dashboard stats immediately so the
-                  // right-side briefing panel animates in alongside the
-                  // type-out, not as a last-tick pop-in.
-                  aiResponseStats: stats,
-                  ...(greetingNameForPanel
-                    ? ({ greetingName: greetingNameForPanel } as any)
-                    : {}),
-                },
-              ],
-        );
-
-        let i = 0;
-        const tick = () => {
-          i += 1;
-          const partial = words.slice(0, i).join("");
-          setChatMessages((prev) =>
-            prev.map((m) =>
-              m.id === promptId ? { ...m, aiResponse: partial } : m,
-            ),
-          );
-          if (i < words.length) {
-            timeouts.push(window.setTimeout(tick, baseStepMs));
-          } else if (sections.length > 0 || actions.length > 0) {
-            // Reveal the section blocks (and the legacy flat action
-            // strip, for any consumer that still reads it) one tick
-            // after the last word lands so the transition reads as
-            // "LYKN finished, here's what you can do next" rather
-            // than buttons popping in simultaneously with the final
-            // period.
-            timeouts.push(
-              window.setTimeout(() => {
-                setChatMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === promptId
-                      ? {
-                          ...m,
-                          aiResponseSections:
-                            sections.length > 0 ? sections : undefined,
-                          aiResponseActions:
-                            sections.length > 0
-                              ? undefined
-                              : actions.length > 0
-                                ? actions
-                                : undefined,
-                        }
-                      : m,
-                  ),
-                );
-              }, 240),
-            );
-          }
-        };
-        tick();
-      }, 250),
-    );
-
-    return () => {
-      for (const t of timeouts) window.clearTimeout(t);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeChatId, user?.id, chatId]);
-
-  // Stale-greeting refresh: any time we land on a board whose ONLY
-  // chat turn is a `load-in-greeting` (i.e. the user hasn't typed
-  // anything yet — they just came back to a board that was minted
-  // purely to host the welcome recap), re-fetch the load-in payload
-  // and rewrite the assistant turn in place. The URL stays stable,
-  // but the user always sees up-to-the-minute activity instead of
-  // whatever was persisted on the previous visit.
-  //
-  // We guard tightly to avoid clobbering legitimate state:
-  //   • `chatId === routeChatId` — wait for hydration to settle.
-  //   • Exactly one message, role=user, kind="load-in-greeting".
-  //   • One refresh per board id per session (ref-tracked).
-  //   • `mintedThisSession` flag short-circuits the freshly-minted
-  //     case so we don't double-fetch right after the trigger seeds
-  //     a brand-new board.
-  const loadInGreetingRefreshedRef = useRef<Set<string>>(new Set());
-
-  // Timeout ids for the in-place greeting refresh typewriter. Mirrors the
-  // consume effect's cleanup: without this, switching chats (or leaving the
-  // page) mid-animation keeps firing setChatMessages against the wrong board.
-  const greetingRefreshTimeoutsRef = useRef<number[]>([]);
-  useEffect(() => {
-    return () => {
-      for (const t of greetingRefreshTimeoutsRef.current) window.clearTimeout(t);
-      greetingRefreshTimeoutsRef.current = [];
-    };
-  }, [routeChatId]);
-
-  // Reusable refresher used by both the on-mount effect below and the
-  // inline user-sections composer in the chat surface. Re-fetches the
-  // greeting payload and overlays it onto the single load-in-greeting
-  // message in-place (no remount, no URL change). Returns a no-op if
-  // the chat isn't currently sitting on a load-in greeting.
-  //
-  // When the current message is the "Catching you up…" placeholder
-  // (i.e. we're upgrading a freshly-minted greeting board on first
-  // load, not refreshing an already-shown one), we replay the same
-  // word-by-word type-out animation the consume effect uses so the
-  // briefing fades into view instead of snapping in all at once.
-  const refreshLoadInGreetingInPlace = useCallback(async () => {
-    if (!user?.id) return;
-    const emailName = String(user?.email || "").split("@")[0].trim();
-    const fullName = String(
-      user?.user_metadata?.full_name || user?.user_metadata?.name || "",
-    ).trim();
-    const firstName = fullName ? fullName.split(/\s+/)[0] : "";
-    const greetingName = firstName || emailName || null;
-    let payload: Awaited<ReturnType<typeof fetchLoadInUpdatesMessage>> | null =
-      null;
-    try {
-      payload = await fetchLoadInUpdatesMessage({ greetingName });
-    } catch {
-      payload = null;
-    }
-    if (!payload) return;
-
-    // Sniff whether we're overlaying a placeholder vs. refreshing a
-    // briefing the user has already been reading. Placeholder text is
-    // always "Catching you up…" / "Catching you up, <name>…" — short
-    // and ends in an ellipsis.
-    let isPlaceholder = false;
-    let targetMsgId: string | null = null;
-    {
-      // Read via the ref instead of a side-effecting setState updater —
-      // updaters must stay pure (StrictMode runs them twice), and by this
-      // point (post-await) the ref mirrors the latest committed state.
-      const currentMsgs = chatMessagesRef.current || [];
-      if (currentMsgs.length === 1 && currentMsgs[0].kind === "load-in-greeting") {
-        const cur = currentMsgs[0];
-        const txt = String(cur.aiResponse || "").trim();
-        isPlaceholder = txt.startsWith("Catching you up") && txt.endsWith("…");
-        targetMsgId = cur.id;
-      }
-    }
-
-    if (!isPlaceholder) {
-      // Already-shown briefing → instant overlay, no animation.
-      setChatMessages((prev) => {
-        if (prev.length !== 1) return prev;
-        const cur = prev[0];
-        if (cur.kind !== "load-in-greeting") return prev;
-        return [
-          {
-            ...cur,
-            aiResponse: payload!.message,
-            aiResponseSections:
-              (payload!.sections && payload!.sections.length > 0)
-                ? payload!.sections
-                : undefined,
-            aiResponseActions:
-              (!payload!.sections || payload!.sections.length === 0) &&
-              payload!.actions && payload!.actions.length > 0
-                ? payload!.actions
-                : undefined,
-            aiResponseStats: payload!.stats,
-            ...(greetingName ? ({ greetingName } as any) : {}),
-          },
-        ];
-      });
-      return;
-    }
-
-    // Placeholder upgrade → clear the placeholder, attach the
-    // dashboard stats immediately, then type out the real message
-    // word-by-word using the same cadence as the consume effect.
-    if (!targetMsgId) return;
-    const words = payload.message.split(/(\s+)/);
-    const baseStepMs =
-      words.length > 600
-        ? 6
-        : words.length > 400
-          ? 9
-          : words.length > 220
-            ? 14
-            : words.length > 120
-              ? 20
-              : 26;
-    setChatMessages((prev) =>
-      prev.map((m) =>
-        m.id === targetMsgId
-          ? {
-              ...m,
-              aiResponse: "",
-              aiResponseSections: undefined,
-              aiResponseActions: undefined,
-              aiResponseStats: payload!.stats,
-              ...(greetingName ? ({ greetingName } as any) : {}),
-            }
-          : m,
-      ),
-    );
-    let i = 0;
-    const tick = () => {
-      i += 1;
-      const partial = words.slice(0, i).join("");
-      setChatMessages((prev) =>
-        prev.map((m) =>
-          m.id === targetMsgId ? { ...m, aiResponse: partial } : m,
-        ),
-      );
-      if (i < words.length) {
-        greetingRefreshTimeoutsRef.current.push(
-          window.setTimeout(tick, baseStepMs),
-        );
-      } else if (
-        (payload!.sections && payload!.sections.length > 0) ||
-        (payload!.actions && payload!.actions.length > 0)
-      ) {
-        greetingRefreshTimeoutsRef.current.push(
-          window.setTimeout(() => {
-            setChatMessages((prev) =>
-              prev.map((m) =>
-                m.id === targetMsgId
-                  ? {
-                      ...m,
-                      aiResponseSections:
-                        payload!.sections && payload!.sections.length > 0
-                          ? payload!.sections
-                          : undefined,
-                      aiResponseActions:
-                        payload!.sections && payload!.sections.length > 0
-                          ? undefined
-                          : payload!.actions && payload!.actions.length > 0
-                            ? payload!.actions
-                            : undefined,
-                    }
-                  : m,
-              ),
-            );
-          }, 240),
-        );
-      }
-    };
-    tick();
-  }, [user?.id, user?.email, user?.user_metadata]);
-
-  useEffect(() => {
-    if (!routeChatId) return;
-    if (!user?.id) return;
-    if (chatId !== routeChatId) return;
-    if (chatMessages.length !== 1) return;
-    const only = chatMessages[0];
-    if (!only || only.kind !== "load-in-greeting") return;
-    let mintedThisSession = false;
-    try {
-      mintedThisSession =
-        sessionStorage.getItem("lykn:loadInGreetingMintedThisSession") === "1";
-    } catch {
-      /* ignore */
-    }
-    if (mintedThisSession && loadInGreetingSeededRef.current.has(routeChatId)) {
-      // The trigger+consume pair already populated this board with
-      // fresh data on the mint cycle — don't double-fetch.
-      return;
-    }
-    if (loadInGreetingRefreshedRef.current.has(routeChatId)) return;
-    loadInGreetingRefreshedRef.current.add(routeChatId);
-    void refreshLoadInGreetingInPlace();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeChatId, user?.id, chatId, chatMessages]);
+  // Load-in greeting lifecycle (consume + stale refresh) — see
+  // useLoadInGreeting.
+  const { refreshLoadInGreetingInPlace } = useLoadInGreeting({
+    user,
+    chatId,
+    routeChatId,
+    chatMessages,
+    chatMessagesRef,
+    setChatMessages,
+    setChatRailOpen,
+    setChatRailVisible,
+  });
 
   // Dashboard graduation: as soon as the user types into a dashboard
   // board (chatMessages grows past the single load-in-greeting turn),
@@ -2445,7 +995,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     const maxW = Math.max(minW + 20, Math.floor(width * 0.9));
     return Math.max(minW, Math.min(maxW, Math.floor(raw || minW)));
   }, []);
-
 
   const getChatRailWidthPx = useCallback(
     (vw: number) => {
@@ -2636,7 +1185,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     await generateProjectSummary(projectId);
   }, [generateProjectSummary, projectId]);
 
-
   // Knowledge base is project-scoped; workspace summary (vault + other boards) must load even without a project.
   const kbChatId = routeChatId || chatId;
   useEffect(() => {
@@ -2648,7 +1196,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     if (!user?.id) return;
     refreshWorkspaceSummary(user.id, chatId || undefined);
   }, [user?.id, chatId, refreshWorkspaceSummary]);
-
 
   // Sync model picker with settings changes (same-tab + cross-tab), like the old Create panel.
   // Skip while applying a per-chat hydrated key so reopen doesn't snap back to global.
@@ -2836,136 +1383,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
       /* ignore bad payload */
     }
   }, [applyVaultDropToChat]);
-
-  const saveAiImageToMedia = useCallback(async (
-    imageUrl: string,
-    promptText?: string,
-    meta?: { storagePath?: string; mimeType?: string },
-  ): Promise<boolean> => {
-    if (!imageUrl) return false;
-    if (!user?.id) { requireSignIn("save to the vault"); return false; }
-    if (!(await checkVaultLimit())) return false;
-
-    const result = await saveGeneratedImageToVault({
-      userId: user.id,
-      imageUrl,
-      storagePath: meta?.storagePath,
-      mimeType: meta?.mimeType,
-      promptText,
-      source: "studio_imagine",
-      folder: "Generated",
-    });
-
-    if (!result.ok) {
-      if (result.reason === "duplicate") {
-        // Already in vault — treat as success so the UI shows Saved.
-        return true;
-      }
-      if (result.reason !== "cap" && result.reason !== "rate") {
-        toast({
-          title: "Couldn't save to vault",
-          description: result.message || "Please try again.",
-        });
-      }
-      return false;
-    }
-
-    incrementVaultCount();
-    if (import.meta.env.DEV) console.log("[LYKN] AI image saved to media", result.id);
-    try {
-      const { queryClientInstance } = await import("@/lib/query-client");
-      void queryClientInstance.invalidateQueries({ queryKey: ["vault-notes", user.id] });
-    } catch { /* vault will refresh on next visit */ }
-    return true;
-  }, [user?.id, requireSignIn, checkVaultLimit, incrementVaultCount]);
-
-  const saveYouTubeToMedia = useCallback(async (videoId: string, url: string) => {
-    if (!videoId) return;
-    if (!user?.id) { requireSignIn("save to the vault"); return; }
-    if (!(await checkVaultLimit())) return;
-    const title = `YouTube Video: ${videoId}`;
-    const watchUrl = url || `https://www.youtube.com/watch?v=${videoId}`;
-    const thumbnail = `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
-    try {
-      const attachment = [{
-        type: "youtube",
-        url: watchUrl,
-        videoId,
-        name: title,
-        thumbnail,
-      }];
-      const noteContent = `${title}\n\n[Watch on YouTube](${watchUrl})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
-      const { data: ins, error } = await supabase
-        .from("vault_items")
-        .insert({
-          user_id: user.id,
-          title,
-          content: noteContent,
-        })
-        .select("id")
-        .single();
-      if (error) {
-        notifyVaultCapIfApplicable(error);
-        if (import.meta.env.DEV) console.warn("[LYKN] Failed to save YouTube note:", error.message);
-      } else if (ins?.id) {
-        afterVaultNoteSaved(user.id, ins.id, { title, content: noteContent }, {
-          excludeChatId: routeChatId || chatId || undefined,
-        });
-      }
-    } catch (err) {
-      if (import.meta.env.DEV) console.warn("[LYKN] Error saving YouTube to media:", err);
-    }
-  }, [user?.id, routeChatId, chatId, requireSignIn]);
-
-  const saveLinkToMedia = useCallback(async (linkUrl: string) => {
-    if (!linkUrl) return;
-    if (!user?.id) { requireSignIn("save to the vault"); return; }
-    if (!(await checkVaultLimit())) return;
-    try {
-      const { API_BASE_URL } = await import("@/lib/api-config");
-      const res = await fetch(`${API_BASE_URL}/api/unfurl?url=${encodeURIComponent(linkUrl)}`);
-      const meta = res.ok ? await res.json() : { url: linkUrl, title: linkUrl, description: "", image: "", siteName: "", favicon: "", articleText: "" };
-      const attachment = [{
-        type: "bookmark",
-        url: meta.url || linkUrl,
-        name: meta.title || linkUrl,
-        title: meta.title || "",
-        description: meta.description || "",
-        image: meta.image || "",
-        favicon: meta.favicon || "",
-        siteName: meta.siteName || "",
-        articleText: meta.articleText || "",
-        oembedType: meta.oembedType || "",
-        oembedHtml: meta.oembedHtml || "",
-        authorName: meta.authorName || "",
-        authorHandle: meta.authorHandle || "",
-      }];
-      const noteContent = `${meta.title || linkUrl}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
-      const { data: ins, error } = await supabase
-        .from("vault_items")
-        .insert({
-          user_id: user.id,
-          title: meta.title || linkUrl,
-          content: noteContent,
-        })
-        .select("id")
-        .single();
-      if (error) {
-        notifyVaultCapIfApplicable(error);
-        if (import.meta.env.DEV) console.warn("[LYKN] Failed to save link note:", error.message);
-      } else {
-        if (import.meta.env.DEV) console.log("[LYKN] Link saved to media");
-        if (ins?.id) {
-          afterVaultNoteSaved(user.id, ins.id, {
-            title: meta.title || linkUrl,
-            content: noteContent,
-          }, { excludeChatId: routeChatId || chatId || undefined });
-        }
-      }
-    } catch (err) {
-      if (import.meta.env.DEV) console.warn("[LYKN] Error saving link to media:", err);
-    }
-  }, [user?.id, routeChatId, chatId, requireSignIn]);
 
   // Add a URL as a focused chat attachment. Shows the chip instantly, then
   // unfurls Open Graph metadata in the background (unless the Add Link
@@ -3211,227 +1628,15 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   // the finished exchange is pushed into the model's thread snapshot so LYKN
   // knows what its coworker was asked and what came back.
   //
-  // Tasks whose stream is already patching a row in THIS mount. Reset on
-  // remount by design — that's exactly when re-attaching is needed.
-  const followedBotTasksRef = useRef<Set<string>>(new Set());
-  const handleBotChatSend = useCallback(
-    (botId: string, text: string, attachments: BotSendAttachment[] = []) => {
-      const bot = getBot(botId);
-      if (!bot) return;
-      const msgId = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-      const chatIdAtSend = String(routeChatId || "");
-      // The prompt row shows the same chips a regular send would, so the user
-      // can see their files actually went with the ask.
-      const displayAtts: FocusedChatAttachment[] = attachments.map((a, i) => ({
-        id: `bot-att-${msgId}-${i}`,
-        type: a.kind === "image" ? "image" : "document",
-        url: a.kind === "image" ? String(a.dataUrl || "") : "",
-        name: a.name || "file",
-        mime: "",
-        size: 0,
-      }));
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id: msgId,
-          role: "user",
-          content: text,
-          kind: "prompt",
-          aiResponse: "",
-          ...(displayAtts.length ? { attachments: displayAtts } : {}),
-          bot: { id: bot.id, name: bot.name, face: bot.face, eyes: bot.eyes, color: bot.color },
-        } as PromptMessage,
-      ]);
-      const taskId = sendBotChatTurn(
-        botId,
-        text,
-        ({ text: reply, done, working, status, trail }: {
-          text: string;
-          done?: boolean;
-          working?: boolean;
-          status?: string;
-          trail?: string[];
-        }) => {
-          setChatMessages((prev) =>
-            prev.map((m) =>
-              m.id === msgId
-                ? {
-                    ...m,
-                    aiResponse: reply,
-                    botWorking: !done && !!working,
-                    botStatus: String(status || ""),
-                    botTrail: Array.isArray(trail) ? trail : [],
-                  }
-                : m,
-            ),
-          );
-          if (done && chatIdAtSend) {
-            try {
-              const snap = ensureThreadSnapshot(chatIdAtSend);
-              snap.aiThread.push({ role: "user", content: `(asked ${bot.name}) ${text}` });
-              snap.aiThread.push({ role: "assistant", content: `(${bot.name} replied) ${reply}` });
-              if (snap.aiThread.length > 40) snap.aiThread.splice(0, snap.aiThread.length - 40);
-            } catch {
-              /* the snapshot is a convenience; never fail a bot turn over it */
-            }
-          }
-        },
-        attachments,
-      );
-      // Stamp the task on the row so it can re-attach after a remount, and
-      // remember we're already streaming it so the re-attach effect skips it.
-      if (taskId) {
-        followedBotTasksRef.current.add(taskId);
-        setChatMessages((prev) =>
-          prev.map((m) => (m.id === msgId ? { ...m, botTaskId: taskId } : m)),
-        );
-      }
-    },
-    [routeChatId, setChatMessages],
-  );
-
-  // Coming back to a Bot's chat mid-task: rows whose task is still in flight
-  // re-attach to the live stream, and rows whose task settled while this
-  // board was closed catch up to the final result. The bot keeps working
-  // whether or not its chat is on screen — this only re-binds the view.
-  useEffect(() => {
-    if (!routeChatId || chatId !== routeChatId) return;
-    // Scan committed state, not the ref — hydration may land the messages a
-    // beat after chatId settles, and the deps re-run this scan when it does.
-    // followedBotTasksRef keeps repeat scans from double-attaching.
-    const lastRowByTask = new Map<string, PromptMessage>();
-    for (const m of chatMessages) {
-      if (m.bot?.id && m.botTaskId) lastRowByTask.set(m.botTaskId, m);
-    }
-    for (const [taskId, row] of lastRowByTask) {
-      if (followedBotTasksRef.current.has(taskId)) continue;
-      const bot = getBot(row.bot!.id);
-      const task = bot?.tasks?.find((t: { id: string }) => t.id === taskId);
-      if (!bot || !task) {
-        // The bot (or its task log) is gone — nothing will ever finish this
-        // row, so a working indicator persisted mid-task must not spin forever.
-        if (row.botWorking) {
-          const rowId = row.id;
-          setChatMessages((prev) =>
-            prev.map((m) => (m.id === rowId ? { ...m, botWorking: false } : m)),
-          );
-        }
-        continue;
-      }
-      const settled = task.status === "done" || task.status === "failed";
-      const finalText = String(task.result || "").trim() || "Done.";
-      // Already showing the final result — leave the row alone, but retire a
-      // working indicator persisted mid-task; the task is over.
-      if (settled && String(row.aiResponse || "") === finalText) {
-        if (row.botWorking) {
-          const rowId = row.id;
-          setChatMessages((prev) =>
-            prev.map((m) => (m.id === rowId ? { ...m, botWorking: false } : m)),
-          );
-        }
-        continue;
-      }
-      followedBotTasksRef.current.add(taskId);
-      const msgId = row.id;
-      followBotTask(bot.id, taskId, ({ text: reply, done, working, status, trail }: {
-        text: string;
-        done?: boolean;
-        working?: boolean;
-        status?: string;
-        trail?: string[];
-      }) => {
-        setChatMessages((prev) =>
-          prev.map((m) =>
-            m.id === msgId
-              ? {
-                  ...m,
-                  aiResponse: reply,
-                  botWorking: !done && !!working,
-                  botStatus: String(status || ""),
-                  botTrail: Array.isArray(trail) ? trail : [],
-                }
-              : m,
-          ),
-        );
-      });
-    }
-  }, [chatId, routeChatId, chatMessages, setChatMessages]);
-
-  // The chat bar's working-Bots strip (and its dropdown) asks this surface to
-  // jump to a Bot's own thread. A warm surface hops on the event; a cold one
-  // (the click also opened this window) picks up the parked hop on mount.
-  useEffect(() => {
-    const hop = (botId: string, chatIdIn: string) => {
-      const board = String(chatIdIn || getBot(botId)?.chatId || "");
-      if (board && board !== routeChatId) nav(`/chat/${board}`);
-    };
-    try {
-      const raw = sessionStorage.getItem("lykn_pending_bot_open");
-      if (raw) {
-        sessionStorage.removeItem("lykn_pending_bot_open");
-        const p = JSON.parse(raw) as { botId?: string; chatId?: string; at?: number };
-        // Recent only — a hop parked for a window that never opened must not
-        // hijack a chat the user opens minutes later for something else.
-        if (Date.now() - Number(p?.at || 0) < 15000) {
-          hop(String(p?.botId || ""), String(p?.chatId || ""));
-        }
-      }
-    } catch {
-      /* storage blocked — the event path below still works */
-    }
-    const onOpenBot = (e: Event) => {
-      try {
-        sessionStorage.removeItem("lykn_pending_bot_open");
-      } catch {
-        /* already handled live */
-      }
-      const d = ((e as CustomEvent).detail || {}) as { botId?: string; chatId?: string };
-      hop(String(d.botId || ""), String(d.chatId || ""));
-    };
-    window.addEventListener("lykn-bot-chat-open", onOpenBot);
-    return () => window.removeEventListener("lykn-bot-chat-open", onOpenBot);
-  }, [routeChatId, nav]);
-
-  // Standing on a Bot's board means its latest result has been seen — that's
-  // what clears the green/red dot in the chat bar's working-Bots strip. Only
-  // while mounted and settled on the board, so a stream finishing in a closed
-  // window keeps its dot.
-  useEffect(() => {
-    if (!routeChatId || chatId !== routeChatId) return;
-    const check = () => {
-      const owner = getBots().find((b) => b.chatId === routeChatId);
-      if (owner && botHasUnseenResult(owner)) markBotSeen(owner.id);
-    };
-    check();
-    return subscribeBots(check);
-  }, [chatId, routeChatId]);
-
-  // A Bot send that arrives while this board is still hydrating (chatId lags
-  // routeChatId on a cold-opened chat) must wait: the hydration snapshot
-  // replaces chatMessages and would wipe the streaming row — which is exactly
-  // "the first Bot prompt does nothing, the second works". Hold it here and
-  // flush the moment hydration settles.
-  const pendingBotSendRef = useRef<{
-    botId: string;
-    text: string;
-    attachments: BotSendAttachment[];
-  } | null>(null);
-  const chatIdLiveRef = useRef(chatId);
-  chatIdLiveRef.current = chatId;
-  useEffect(() => {
-    if (!routeChatId || chatId !== routeChatId) return;
-    const held = pendingBotSendRef.current;
-    if (!held) return;
-    // The send belongs on the bot's own board — if this surface settled
-    // somewhere else in the meantime, steer back before firing it.
-    const board = String(getBot(held.botId)?.chatId || "");
-    if (board && board !== routeChatId) {
-      nav(`/chat/${board}`);
-      return;
-    }
-    pendingBotSendRef.current = null;
-    handleBotChatSend(held.botId, held.text, held.attachments);
-  }, [chatId, routeChatId, nav, handleBotChatSend]);
+  // Bot chat integration (send / re-attach / hop / seen / held sends) — see
+  // useBotChatBridge.
+  const { handleBotChatSend, pendingBotSendRef, chatIdLiveRef } = useBotChatBridge({
+    chatId,
+    routeChatId,
+    nav,
+    chatMessages,
+    setChatMessages,
+  });
 
   // Home-screen chat bar: the Studio desktop stashes {view, text} and flips
   // to this tab. Consume on mount (cold surface) or via the DOM event (warm
@@ -3971,469 +2176,25 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     return "this build";
   }, [activeArtifact?.title, chatMessages]);
 
-  const [researchReportSaving, setResearchReportSaving] = useState(false);
-  const handleSaveResearchReport = useCallback(async () => {
-    if (researchReportSaving) return;
-    const research = latestResearch;
-    if (!research?.report) return;
-    if (!user?.id) { requireSignIn("save the report"); return; }
-    if (!(await checkVaultLimit())) return;
-    setResearchReportSaving(true);
-    try {
-      const topic = research.topic.replace(/\s+/g, " ").slice(0, 80);
-      const title = topic ? `Research report — ${topic}` : "Research report";
-      const sourcesBlock = research.sources.length
-        ? `\n\nSources:\n${research.sources.map((s) => `- [${s.title}](${s.url})`).join("\n")}`
-        : "";
-      const content = `${research.report}${sourcesBlock}`;
-      let noteId: string | null = null;
-      const { data: ins, error } = await supabase
-        .from("vault_items")
-        .insert({ user_id: user.id, title, content, source: "research_report" })
-        .select("id")
-        .single();
-      if (error) {
-        if (notifyVaultCapIfApplicable(error)) return;
-        // Older schema without a `source` column — retry plain.
-        const { data: ins2, error: err2 } = await supabase
-          .from("vault_items")
-          .insert({ user_id: user.id, title, content })
-          .select("id")
-          .single();
-        if (err2) {
-          if (!notifyVaultCapIfApplicable(err2)) {
-            toast({ title: "Couldn't save report", description: "Please try again." });
-          }
-          return;
-        }
-        noteId = ins2?.id ?? null;
-      } else {
-        noteId = ins?.id ?? null;
-      }
-      if (noteId) {
-        afterVaultNoteSaved(user.id, noteId, { title, content }, {
-          excludeChatId: routeChatId || chatId || undefined,
-        });
-      }
-      toast({ title: "Report saved to vault", description: title });
-    } catch {
-      toast({ title: "Couldn't save report", description: "Please try again." });
-    } finally {
-      setResearchReportSaving(false);
-    }
-  }, [researchReportSaving, latestResearch, user?.id, requireSignIn, checkVaultLimit, routeChatId, chatId]);
-
-  /**
-   * Save a file the user attached to a chat turn into the vault as its own
-   * downloaded copy: pull the bytes from wherever they currently live (data
-   * URL, signed URL, device blob, or the original File still in memory), write
-   * them to a fresh `{userId}/{fileId}/original.{ext}` object, and hand the
-   * result to the shared upload path so the card looks and behaves like any
-   * other file in the vault — right type, tags, extracted text, embedding.
-   *
-   * The chat attachment keeps pointing at its own copy, so deleting the vault
-   * card can never blank an image out of the transcript.
-   */
-  const saveAttachmentToMedia = useCallback(async (
-    att: FocusedChatAttachment,
-    opts?: { source?: string; quiet?: boolean },
-  ) => {
-    if (!att) return false;
-    if (!user?.id) { requireSignIn("save to the vault"); return false; }
-    if (!(await checkVaultLimit())) return false;
-    // Background saves (voice paste) report nothing — the user didn't ask for
-    // this one and a toast per pasted file would bury the conversation.
-    const say = opts?.quiet
-      ? () => {}
-      : (title: string, description?: string) => toast({ title, description });
-
-    const kind = chatAttachmentKind(att);
-    if (kind === "link") {
-      const linkUrl = String(att.url || "").trim();
-      if (!linkUrl) return false;
-      await saveLinkToMedia(linkUrl);
-      return true;
-    }
-
-    const filename = chatAttachmentFilename(att);
-    const blob = await fetchChatAttachmentBlob(att);
-    if (!blob) {
-      say("Couldn't save to vault", "This file's contents are no longer available.");
-      return false;
-    }
-
-    const mimeType = blob.type || String(att.mime || "") || "application/octet-stream";
-    const ext =
-      filename.match(/\.([a-z0-9]{1,8})$/i)?.[1]?.toLowerCase() ||
-      mimeType.split("/")[1]?.replace("jpeg", "jpg") ||
-      "bin";
-    const storagePath = `${user.id}/${crypto.randomUUID()}/original.${ext}`;
-
-    const { error: uploadError } = await supabase.storage
-      .from("user-files")
-      .upload(storagePath, blob, { cacheControl: "3600", upsert: false, contentType: mimeType });
-    if (uploadError) {
-      notifyVaultCapIfApplicable(uploadError);
-      say("Couldn't save to vault", "The upload didn't finish. Please try again.");
-      return false;
-    }
-    const { data: signedData } = await supabase.storage
-      .from("user-files")
-      .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
-
-    const fileType = chatAttachmentFileType(att);
-    const result = await saveFileToVault({
-      userId: user.id,
-      filename,
-      fileType,
-      fileUrl: signedData?.signedUrl || "",
-      storagePath,
-      storageBucket: "user-files",
-      fileSize: blob.size,
-      mimeType,
-      extractedText: chatAttachmentText(att),
-      source: opts?.source || "chat_attachment",
-      tags: [fileType, "uploaded"],
-    });
-
-    if (!result.ok) {
-      if (result.reason === "duplicate") return true;
-      if (result.reason !== "cap" && result.reason !== "rate") {
-        say("Couldn't save to vault", result.message || "Please try again.");
-      }
-      return false;
-    }
-
-    incrementVaultCount();
-    say("Saved to vault", filename);
-    try {
-      const { queryClientInstance } = await import("@/lib/query-client");
-      void queryClientInstance.invalidateQueries({ queryKey: ["vault-notes", user.id] });
-    } catch { /* vault will refresh on next visit */ }
-    return true;
-  }, [user?.id, requireSignIn, checkVaultLimit, incrementVaultCount, saveLinkToMedia]);
-
-  // Save an AI-built artifact (deck / document / chart / file) from the side
-  // panel into the vault. Documents & decks save the human-friendly PDF when
-  // one exists; charts/images save the image; websites / React artifacts prefer
-  // the in-memory srcDoc (avoids cross-origin fetch failures on branded /f/
-  // proxy URLs that still work as <a download> navigations). The bytes are
-  // copied into the user's own storage so the vault note keeps a permanent,
-  // re-signable copy instead of a 7-day proxy link.
-  //
-  // Called only on explicit user intent (Save button). Refines and code edits
-  // upsert the same vault note (keyed by chat + tool + title) so only the
-  // latest version is kept instead of stacking every intermediate edit.
-  type SavedArtifactVault = {
-    noteId: string;
-    fileId: string;
-    storagePath: string;
-    ext: string;
-    contentKey: string;
-  };
-  const savedArtifactVaultRef = useRef<Map<string, SavedArtifactVault>>(new Map());
-  const artifactVaultChatKeyRef = useRef<string>("");
-  useEffect(() => {
-    const key = chatId || routeChatId || "";
-    if (artifactVaultChatKeyRef.current === key) return;
-    artifactVaultChatKeyRef.current = key;
-    savedArtifactVaultRef.current.clear();
-  }, [chatId, routeChatId]);
-
-  const saveArtifactToVault = useCallback(async (
-    artifact: ChatArtifact,
-    opts?: { auto?: boolean },
-  ): Promise<boolean> => {
-    if (!artifact) return false;
-    if (!user?.id) {
-      if (!opts?.auto) requireSignIn("save to the vault");
-      return false;
-    }
-
-    const title = (artifact.title || "Artifact").trim() || "Artifact";
-    const chatScope = chatId || routeChatId || "local";
-    const lineageKey = `${chatScope}:${artifact.toolName || "artifact"}:${title.toLowerCase()}`;
-    const existing = savedArtifactVaultRef.current.get(lineageKey);
-
-    // Cap check only for new inserts — updates replace an existing card.
-    if (!existing && !(await checkVaultLimit())) return false;
-
-    // Generated images already live in user-files — reuse the path so Vault
-    // gets a durable card without re-downloading the proxy URL.
-    if (artifact.kind === "image" && !existing) {
-      const imageUrl = artifact.previewUrl || artifact.downloadUrl || "";
-      const path = typeof artifact.storagePath === "string" ? artifact.storagePath.trim() : "";
-      if (imageUrl || path) {
-        const result = await saveGeneratedImageToVault({
-          userId: user.id,
-          imageUrl: imageUrl || path,
-          storagePath: path || undefined,
-          promptText: title,
-          source: "ai_artifact",
-          folder: "Generated",
-        });
-        if (result.ok) {
-          incrementVaultCount();
-          savedArtifactVaultRef.current.set(lineageKey, {
-            noteId: result.id,
-            fileId: path.split("/")[1] || result.id,
-            storagePath: path || "",
-            ext: (artifact.format || "png").toLowerCase(),
-            contentKey: `image|${path || imageUrl}`,
-          });
-          try {
-            const { queryClientInstance } = await import("@/lib/query-client");
-            void queryClientInstance.invalidateQueries({ queryKey: ["vault-notes", user.id] });
-          } catch { /* vault will refresh on next visit */ }
-          if (!opts?.auto) {
-            toast({ title: "Saved to vault", description: title });
-          }
-          return true;
-        }
-        if (result.reason === "duplicate") {
-          if (!opts?.auto) toast({ title: "Already in vault", description: title });
-          return true;
-        }
-        if (!opts?.auto && result.reason !== "cap" && result.reason !== "rate") {
-          toast({ title: "Couldn't save", description: result.message || "Please try again." });
-        }
-        return false;
-      }
-    }
-
-    const downloads = artifact.downloads || [];
-    const pdf = downloads.find((d) => String(d.format).toLowerCase() === "pdf");
-    const htmlDownload = downloads.find((d) => String(d.format).toLowerCase() === "html");
-
-    let blob: Blob | null = null;
-    let filename = "";
-    let mimeType = "";
-
-    const useSrcDoc = () => {
-      if (!artifact.srcDoc) return false;
-      blob = new Blob([artifact.srcDoc], { type: "text/html;charset=utf-8" });
-      filename = artifact.filename || `${title}.html`;
-      if (!/\.html?$/i.test(filename)) filename = `${filename}.html`;
-      mimeType = "text/html;charset=utf-8";
-      return true;
-    };
-
-    try {
-      if (artifact.kind !== "image" && pdf) {
-        const res = await fetch(pdf.url);
-        if (res.ok) blob = await res.blob();
-        filename = pdf.filename || `${title}.pdf`;
-        mimeType = "application/pdf";
-      }
-      // Prefer inline HTML for website / deck / React artifacts — no network,
-      // immune to CORS on the API file proxy. Only skip when we already have a PDF.
-      if (!blob && artifact.kind === "html" && artifact.srcDoc) {
-        useSrcDoc();
-      }
-      if (!blob) {
-        const url =
-          artifact.previewUrl ||
-          artifact.downloadUrl ||
-          htmlDownload?.url ||
-          downloads[0]?.url ||
-          "";
-        if (url) {
-          try {
-            const res = await fetch(url);
-            if (res.ok) blob = await res.blob();
-          } catch { /* CORS / network — fall through to srcDoc */ }
-          if (blob?.size) {
-            const fmt = String(
-              artifact.format || htmlDownload?.format || downloads[0]?.format || "",
-            ).toLowerCase();
-            const ext = fmt || (blob.type?.split("/")[1]) || "bin";
-            filename =
-              artifact.filename ||
-              htmlDownload?.filename ||
-              downloads[0]?.filename ||
-              `${title}.${ext}`;
-            mimeType = blob.type || "";
-          }
-        }
-      }
-      // URL fetch failed or missing — still have the live preview markup.
-      if (!blob?.size) useSrcDoc();
-      // React artifacts: last resort save the component source.
-      if (!blob?.size && typeof artifact.code === "string" && artifact.code.trim()) {
-        const base = (artifact.filename || title).replace(/\.[a-z0-9]+$/i, "");
-        blob = new Blob([artifact.code], { type: "text/plain;charset=utf-8" });
-        filename = `${base}.jsx`;
-        mimeType = "text/plain;charset=utf-8";
-      }
-    } catch { /* network/CORS — handled below */ }
-
-    if (!blob || !blob.size) {
-      if (!opts?.auto) {
-        toast({ title: "Couldn't save", description: "Try the Download button instead." });
-      }
-      return false;
-    }
-    if (!mimeType) mimeType = blob.type || "application/octet-stream";
-
-    // Skip no-op re-saves of the exact same bytes (e.g. StrictMode double-mount).
-    const contentKey = [
-      blob.size,
-      mimeType,
-      filename,
-      (artifact.srcDoc || artifact.code || "").length,
-      artifact.previewUrl || artifact.downloadUrl || "",
-      artifact.toolCallId || artifact.id || "",
-    ].join("|");
-    if (existing && existing.contentKey === contentKey) return true;
-
-    // Classify the attachment so the vault renders the right card.
-    // HTML/React artifacts must be "html" (iframe preview), not generic "file".
-    const m = mimeType.toLowerCase().split(";")[0].trim();
-    const ext = (filename.split(".").pop() || "").toLowerCase();
-    const isHtmlArtifact =
-      (["html", "htm"].includes(ext) || m === "text/html") &&
-      !["jsx", "tsx", "js", "ts"].includes(ext);
-    const fileType = isHtmlArtifact
-      ? "html"
-      : m.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)
-        ? "image"
-        : m === "application/pdf" || ext === "pdf"
-          ? "pdf"
-          : m.includes("spreadsheetml") || m === "text/csv" || ["xlsx", "csv", "xls"].includes(ext)
-            ? "spreadsheet"
-            : "file";
-
-    try {
-      const safeExt = ext || "bin";
-      const fileId = existing && existing.ext === safeExt ? existing.fileId : crypto.randomUUID();
-      const storagePath =
-        existing && existing.ext === safeExt
-          ? existing.storagePath
-          : `${user.id}/${fileId}/artifact.${safeExt}`;
-      const { error: uploadError } = await supabase.storage
-        .from("user-files")
-        .upload(storagePath, blob, {
-          cacheControl: "3600",
-          upsert: Boolean(existing && existing.ext === safeExt),
-          contentType: mimeType,
-        });
-      if (uploadError) {
-        notifyVaultCapIfApplicable(uploadError);
-        if (!opts?.auto) toast({ title: "Couldn't save", description: "Please try again." });
-        return false;
-      }
-      const { data: signedData } = await supabase.storage
-        .from("user-files")
-        .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
-      let fileUrl = signedData?.signedUrl || "";
-      // HTML artifacts preview in a sandboxed iframe — mint a branded
-      // file-proxy URL so Content-Type / frame-ancestors are correct
-      // (raw Supabase signed URLs often blank the vault preview).
-      if (fileType === "html") {
-        try {
-          const { API_BASE_URL } = await import("@/lib/api-config");
-          const session = (await supabase.auth.getSession())?.data?.session;
-          const token = session?.access_token;
-          if (token) {
-            const resp = await fetch(`${API_BASE_URL}/api/storage/file-proxy-url`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${token}`,
-              },
-              body: JSON.stringify({
-                storagePath,
-                bucket: "user-files",
-                filename,
-              }),
-            });
-            if (resp.ok) {
-              const { url } = await resp.json();
-              if (url) fileUrl = url;
-            }
-          }
-        } catch {
-          /* keep Supabase signed URL fallback */
-        }
-      }
-
-      const attachment = [{
-        type: fileType,
-        url: fileUrl,
-        name: filename,
-        fileId,
-        storagePath,
-        storageBucket: "user-files",
-        size: blob.size,
-        mimeType,
-      }];
-      const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
-
-      // Through the repository rather than straight at Supabase: an artifact
-      // written past it lands somewhere AI Drive never reads once the user has
-      // moved their vault onto this device.
-      const writes = createVaultWrites(user.id);
-      // `folder` and `source` are re-stamped on update as well as insert, so
-      // an artifact saved over a row that predates them gets filed properly
-      // the first time it changes.
-      const filing = {
-        source: "ai_artifact",
-        folder: "Generated",
-        tags: [fileType, "generated"],
-      };
-
-      let noteId = existing?.noteId || "";
-      if (existing?.noteId) {
-        const { error } = await writes.update(existing.noteId, {
-          title,
-          content: noteContent,
-          ...filing,
-          updated_at: new Date().toISOString(),
-        });
-        if (error) {
-          if (notifyVaultCapIfApplicable(error)) return false;
-          if (!opts?.auto) toast({ title: "Couldn't save", description: "Please try again." });
-          return false;
-        }
-      } else {
-        const { data: ins, error } = await insertWithSchemaFallback(
-          (row) => writes.insert(row),
-          { title, content: noteContent, ...filing },
-          ["title", "content"],
-        );
-        if (error) {
-          if (notifyVaultCapIfApplicable(error)) return false;
-          if (!opts?.auto) toast({ title: "Couldn't save", description: "Please try again." });
-          return false;
-        }
-        noteId = ins?.id || "";
-      }
-
-      if (noteId) {
-        savedArtifactVaultRef.current.set(lineageKey, {
-          noteId,
-          fileId,
-          storagePath,
-          ext: safeExt,
-          contentKey,
-        });
-        afterVaultNoteSaved(user.id, noteId, { title, content: noteContent }, {
-          excludeChatId: routeChatId || chatId || undefined,
-        });
-      }
-      if (!opts?.auto) {
-        toast({
-          title: existing ? "Updated in vault" : "Saved to vault",
-          description: title,
-        });
-      }
-      return true;
-    } catch {
-      if (!opts?.auto) toast({ title: "Couldn't save", description: "Please try again." });
-      return false;
-    }
-  }, [user?.id, routeChatId, chatId, requireSignIn, checkVaultLimit, incrementVaultCount]);
-
+  // Save-to-vault paths (images, links, attachments, reports, artifacts) —
+  // see useChatVaultSaves.
+  const {
+    saveAiImageToMedia,
+    saveYouTubeToMedia,
+    saveLinkToMedia,
+    researchReportSaving,
+    handleSaveResearchReport,
+    saveAttachmentToMedia,
+    saveArtifactToVault,
+  } = useChatVaultSaves({
+    user,
+    chatId,
+    routeChatId,
+    requireSignIn,
+    checkVaultLimit,
+    incrementVaultCount,
+    latestResearch,
+  });
 
   // Sticky-mode lane guard: explicit deliverable requests on Chat / Build /
   // Imagine / Research route down that page's pipeline, so a clearly
@@ -4520,7 +2281,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     setCenterChatLeaving(false);
     await studioGuardedSend();
   }, [studioGuardedSend, isChatLoading, chatInputRef, focusedChatAttachments.length]);
-
 
   const chatIsNearBottom = useCallback((threshold = 80) => {
     const el = chatScrollRef.current;
@@ -4727,8 +2487,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     return () => window.removeEventListener("lyknchat_source_toggled", handleSourceToggled);
   }, [chatMessages, selectedModel, extractSourceLinksLocal]);
 
-
-
   const renderFocusedAttachmentPreview = useCallback((att: FocusedChatAttachment) => {
     const t = att.type.toLowerCase();
     const videoId = att.videoId || (t === "youtube" ? extractYouTubeVideoId(att.url) : null);
@@ -4897,325 +2655,34 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
   }, [addFocusedAttachment, applyVaultDropToChat, updateFocusedAttachment, user?.id]);
 
-
-  // Voice Mode is only offered on "main model agents": the default LYKN
-  // model (no custom model active) or the user's main-agent orchestrator.
-  // Model-Builder custom/sub agents are excluded for the MVP.
-  const voiceModeEligible = !activeCustomModelId || isMainAgentChat;
-
-  // Switching to an ineligible model while voice mode is on silently exits
-  // voice mode so the chat can't get stuck speaking on an unsupported agent.
-  useEffect(() => {
-    if (!voiceModeEligible && voiceModeOn) setVoiceMode(false);
-  }, [voiceModeEligible, voiceModeOn, setVoiceMode]);
-
-  // Assemble the LYKN-grounded system instructions for a realtime voice
-  // session from the same workspace/KB context the text chat uses, plus the
-  // recent conversation so voice picks up where the user left off.
-  const buildVoiceInstructions = useCallback(async (): Promise<string> => {
-    // The server caps the whole client grounding at 8000 chars. We budget here
-    // so the WRITTEN CHAT conversation is guaranteed to survive: it used to be
-    // appended last and got truncated away entirely behind a long workspace
-    // summary, so voice couldn't actually "see" the chat the user was having.
-    const MAX = 7800;
-    const parts: string[] = [];
-    let used = 0;
-    const push = (s: string) => {
-      const text = String(s || "").trim();
-      if (!text) return;
-      const remaining = MAX - used;
-      if (remaining <= 0) return;
-      const clipped = text.length > remaining ? `${text.slice(0, Math.max(0, remaining - 1))}…` : text;
-      parts.push(clipped);
-      used += clipped.length + 2; // +2 for the "\n\n" join separator
-    };
-
-    // User preferences (custom assistant name + voice feel) ride along in the
-    // session grounding, which is appended after the base instructions so a
-    // rename / tone directive here overrides the default "you are LYKN" persona.
-    const voicePrefs = getAiPrefs() as { aiName?: string; voicePrompt?: string };
-    const aiName = voicePrefs.aiName || "LYKN";
-    if (voicePrefs.aiName) {
-      push(`Your name is now "${voicePrefs.aiName}". Always refer to yourself as "${voicePrefs.aiName}" instead of "LYKN".`);
-    }
-    if (voicePrefs.voicePrompt) {
-      push(`How the user wants you to sound and behave in voice conversations — follow this:\n${String(voicePrefs.voicePrompt).slice(0, 1500)}`);
-    }
-    const boardTitle = String(titleRef.current || title || "").trim();
-    if (boardTitle) push(`The user's current workspace is titled "${boardTitle}".`);
-
-    // Conversation FIRST among the large blocks (after prefs): this is the chat
-    // the user was just having, and the whole point of voice is to continue it
-    // seamlessly. Pushed before workspace/KB so the budget can never starve it.
-    try {
-      const recent = (chatMessagesRef.current || []).slice(-24);
-      const convo = recent
-        .map((m) => {
-          const atts = Array.isArray((m as { attachments?: { name?: string; type?: string }[] }).attachments)
-            ? (m as { attachments?: { name?: string; type?: string }[] }).attachments || []
-            : [];
-          const attNote = atts.length
-            ? ` [shared: ${atts.map((a) => a?.name || a?.type || "file").slice(0, 5).join(", ")}]`
-            : "";
-          const lines: string[] = [];
-          if (m.content || attNote) lines.push(`User: ${String(m.content || "").slice(0, 800)}${attNote}`);
-          if (m.aiResponse) lines.push(`${aiName}: ${String(m.aiResponse).slice(0, 800)}`);
-          return lines.join("\n");
-        })
-        .filter(Boolean)
-        .join("\n");
-      if (convo) {
-        push(`The written chat conversation in this workspace so far (oldest first, most recent last) — pick it up naturally and reference earlier points when relevant:\n${convo.slice(0, 5000)}`);
-      }
-    } catch { /* ignore */ }
-
-    // Workspace + KB fill whatever budget the conversation left. Generous caps;
-    // the running budget trims them down (and gives them MORE room on a fresh
-    // chat with little/no conversation yet).
-    try {
-      const ws = getCachedWorkspaceSummary()?.full;
-      if (ws) push(`Workspace & memory summary:\n${String(ws).slice(0, 6000)}`);
-    } catch { /* ignore */ }
-    try {
-      const kb = typeof getCachedKbText === "function" ? getCachedKbText() : "";
-      const kbText = typeof kb === "string" ? kb : String((kb as { text?: string })?.text || "");
-      if (kbText) push(`Relevant saved knowledge:\n${kbText.slice(0, 4000)}`);
-    } catch { /* ignore */ }
-
-    return parts.join("\n\n");
-  }, [title, getCachedWorkspaceSummary, getCachedKbText]);
-
-  // Voice Mode persists each finalized turn into the chat thread so the full
-  // conversation is waiting in the text chat when the user switches back. The
-  // live transcript is intentionally NOT shown in the voice UI; this is the
-  // single source of truth for what was said.
-  const voiceTurnIdRef = useRef<string | null>(null);
-  const lastVoiceUserTextRef = useRef<string>("");
-  const newMsgId = useCallback(
-    () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `voice-${Date.now().toString(36)}`),
-    [],
-  );
-
-  // A vault document the voice agent pulled up on screen (display_document).
-  // Rendered in the embedded reader above the voice overlay; null when closed.
-  const handleVoiceDisplayDocument = useCallback((payload: unknown) => {
-    const p = payload as { ok?: boolean; kind?: string } | null;
-    if (p && p.ok && p.kind === "vault") {
-      openLyknMediaPop({ type: "vault-payload", payload: p });
-    }
-  }, []);
-
-  const handleVoiceUserTranscript = useCallback((text: string) => {
-    const content = String(text || "").trim();
-    if (!content) return;
-    const id = newMsgId();
-    voiceTurnIdRef.current = id;
-    lastVoiceUserTextRef.current = content;
-    const msg = { id, role: "user", content, kind: "prompt", viaVoice: true } as unknown as PromptMessage;
-    setChatMessages((prev) => [...prev, msg]);
-    try { aiThreadRef.current = [...(aiThreadRef.current || []), { role: "user", content }]; } catch { /* ignore */ }
-  }, [newMsgId, setChatMessages, aiThreadRef]);
-
-  const handleVoiceAssistantReply = useCallback((text: string) => {
-    const reply = String(text || "").trim();
-    if (!reply) return;
-    const pendingId = voiceTurnIdRef.current;
-    setChatMessages((prev) => {
-      const target = pendingId ? prev.find((m) => m.id === pendingId) : null;
-      // Attach the reply to the pending user turn when it has none yet;
-      // otherwise (assistant spoke first, or a follow-up) start a fresh turn.
-      if (target && !target.aiResponse) {
-        return prev.map((m) => (m.id === pendingId ? { ...m, aiResponse: reply } : m));
-      }
-      const id = newMsgId();
-      return [...prev, { id, role: "user", content: "", aiResponse: reply, kind: "prompt", viaVoice: true } as unknown as PromptMessage];
-    });
-    voiceTurnIdRef.current = null;
-    try { aiThreadRef.current = [...(aiThreadRef.current || []), { role: "assistant", content: reply }]; } catch { /* ignore */ }
-    // Auto-name the chat from this voice exchange exactly like a typed turn
-    // would, so voice-only conversations show a real title in history
-    // instead of being stuck on "New Chat".
-    try {
-      maybeAutoNameChat({
-        chatId: routeChatId || chatId,
-        userId: user?.id,
-        currentTitle: titleRef.current,
-        userMessage: lastVoiceUserTextRef.current,
-        assistantReply: reply,
-      });
-    } catch { /* auto-name is cosmetic */ }
-  }, [newMsgId, setChatMessages, aiThreadRef, routeChatId, chatId, titleRef, user?.id]);
-
-  // Paste / attach from Voice Mode. The voice overlay captures the clipboard
-  // (or a file pick / drop / link) and hands us the raw inputs. We run them
-  // through the SAME ingestion the typed composer uses, mirror the result into
-  // the written chat as a `viaVoice` turn (so the conversation stays in sync),
-  // and return a text summary the caller injects into the live voice session
-  // as a contextual update — that's how the agent gets to "see" the paste.
-  const handleVoiceAttach = useCallback(async (
-    input: { files?: File[]; text?: string },
-  ): Promise<string> => {
-    const collected: FocusedChatAttachment[] = [];
-    const add = (att: FocusedChatAttachment) => { collected.push(att); };
-    const update = (id: string, patch: Record<string, unknown>) => {
-      const i = collected.findIndex((a) => a.id === id);
-      if (i >= 0) collected[i] = { ...collected[i], ...patch };
-    };
-
-    const rawText = String(input?.text || "").trim();
-    const isBareUrl = /^https?:\/\/\S+$/i.test(rawText) && !/\s/.test(rawText);
-    let noteText = isBareUrl ? "" : rawText;
-
-    // Files → attachments (images/pdf/docs/spreadsheets/audio/video), reusing
-    // the shared picker/paste pipeline (text extraction + background upload).
-    try {
-      if (input?.files?.length) {
-        await ingestChatFiles(input.files, add as never, {
-          userId: user?.id,
-          updateAttachment: update as never,
-        });
-      }
-    } catch { /* ingestion is best-effort */ }
-
-    // A pasted URL becomes a link/youtube/media attachment, unfurled for the
-    // agent so it gets the page title + description, not just a bare URL.
-    if (isBareUrl) {
-      const urlType = inferUrlAttachmentType(rawText);
-      const videoId = urlType === "youtube" ? (extractYouTubeVideoId(rawText) || "") : "";
-      const linkAtt: FocusedChatAttachment = {
-        id: makeAttId(), type: urlType, url: rawText, name: rawText, mime: "", size: 0,
-        ...(videoId ? { videoId } : {}),
-      };
-      if (urlType === "link") {
-        try {
-          const { API_BASE_URL } = await import("@/lib/api-config");
-          const res = await fetch(`${API_BASE_URL}/api/unfurl?url=${encodeURIComponent(rawText)}`);
-          if (res.ok) {
-            const meta = await res.json();
-            linkAtt.name = meta?.title || linkAtt.name;
-            (linkAtt as Record<string, unknown>).linkTitle = meta?.title || "";
-            (linkAtt as Record<string, unknown>).linkDescription = meta?.description || "";
-            (linkAtt as Record<string, unknown>).linkImage = meta?.image || "";
-            (linkAtt as Record<string, unknown>).linkSiteName = meta?.siteName || "";
-            (linkAtt as Record<string, unknown>).linkFavicon = meta?.favicon || "";
-          }
-        } catch { /* unfurl is best-effort */ }
-      }
-      collected.push(linkAtt);
-    }
-
-    if (!collected.length && !noteText) return "";
-
-    // OCR pasted images so the voice agent can read text inside them (the live
-    // voice LLM is text-only; the image itself still rides into the written
-    // chat where the vision model can see it on the next typed turn).
-    try {
-      await ocrImageAttachments(collected as never, new AbortController().signal, () => {});
-    } catch { /* OCR is additive, never blocking */ }
-
-    // Describe pasted IMAGES with a vision model. The realtime voice LLM is
-    // text-only and can't fetch the image url, so without a written
-    // description a photo (no OCR text) is completely invisible to it — the
-    // agent would say it "can't see images". We hand each image's data url to
-    // /api/ai/describe-image and stash the 2-3 sentence result on the
-    // attachment so buildAttachmentContext can fold it into what the agent
-    // "sees" this turn.
-    try {
-      const imageAtts = collected.filter(
-        (a) => (a.type || "").toLowerCase() === "image" && !a.aiDescription && a.url,
-      );
-      if (imageAtts.length) {
-        const { API_BASE_URL } = await import("@/lib/api-config");
-        const { supabase } = await import("@/lib/supabase");
-        let authHeader: Record<string, string> = {};
-        try {
-          const sess = await supabase?.auth?.getSession?.();
-          const token = sess?.data?.session?.access_token;
-          if (token) authHeader = { Authorization: `Bearer ${token}` };
-        } catch { /* anonymous — endpoint may still allow */ }
-        await Promise.all(
-          imageAtts.map(async (att) => {
-            try {
-              const res = await fetch(`${API_BASE_URL}/api/ai/describe-image`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json", ...authHeader },
-                body: JSON.stringify({ imageUrl: att.url, fileType: "image", fileName: att.name }),
-              });
-              if (!res.ok) return;
-              const data = await res.json().catch(() => null);
-              const description = String(data?.description || "").trim();
-              if (description) att.aiDescription = description;
-            } catch { /* description is additive, never blocking */ }
-          }),
-        );
-      }
-    } catch { /* vision description is best-effort */ }
-
-    // Mirror into the written chat as a shared (no-response) user turn so the
-    // pasted content shows up in the conversation exactly like a typed attach.
-    const id = newMsgId();
-    const fallbackLabel = collected.length === 1
-      ? `Shared ${collected[0].name || "a file"}`
-      : collected.length > 1
-        ? `Shared ${collected.length} files`
-        : "";
-    const mirrorMsg = {
-      id,
-      role: "user",
-      content: noteText || fallbackLabel,
-      kind: "prompt",
-      viaVoice: true,
-      ...(collected.length ? { attachments: collected } : {}),
-    } as unknown as PromptMessage;
-    setChatMessages((prev) => [...prev, mirrorMsg]);
-    try {
-      const threadNote = [noteText, buildAttachmentContext(collected)].filter(Boolean).join("\n");
-      aiThreadRef.current = [...(aiThreadRef.current || []), { role: "user", content: threadNote || fallbackLabel }];
-    } catch { /* ignore */ }
-
-    // Auto-save everything pasted into the voice paste bar to the vault,
-    // reusing the same side-rail "Save to Vault" helpers so pasted files and
-    // links persist permanently instead of living only inside this voice
-    // conversation. Fire-and-forget: it must not block the contextual update
-    // the agent is waiting on, and each item is best-effort on its own.
-    if (user?.id && collected.length) {
-      void (async () => {
-        for (const att of collected) {
-          const t = (att.type || "").toLowerCase();
-          try {
-            if (t === "youtube" && att.videoId) {
-              await saveYouTubeToMedia(att.videoId, att.url || "");
-            } else if (t === "link" || t === "bookmark") {
-              if (att.url) await saveLinkToMedia(att.url);
-            } else {
-              // Images already carry a downscaled data URL; documents/audio/
-              // video have no URL, so fall back to the original File bytes.
-              const rawFile =
-                att.rawFile || (input?.files || []).find((file) => file.name === att.name);
-              // Keep the voice source tag: the voice `add_to_project` tool
-              // resolves "add this to my <project>" by looking up the most
-              // recent vault row saved with it.
-              await saveAttachmentToMedia(rawFile ? { ...att, rawFile } : att, {
-                source: "lykn-voice-attachment",
-                quiet: true,
-              });
-            }
-          } catch { /* per-item best-effort */ }
-        }
-      })();
-    }
-
-    // Context the voice agent "sees": a note + extracted/ocr/link text.
-    const parts: string[] = [];
-    if (noteText) parts.push(`The user pasted this into the chat: ${noteText}`);
-    const attachCtx = buildAttachmentContext(collected);
-    if (attachCtx) {
-      parts.push(
-        `The user just shared the following in the chat. Treat it as context for the conversation.${attachCtx}`,
-      );
-    }
-    return parts.join("\n\n");
-  }, [user?.id, newMsgId, setChatMessages, aiThreadRef, saveYouTubeToMedia, saveLinkToMedia, saveAttachmentToMedia]);
+  // Realtime Voice Mode integration — see useChatVoiceMode.
+  const {
+    voiceModeEligible,
+    buildVoiceInstructions,
+    newMsgId,
+    handleVoiceDisplayDocument,
+    handleVoiceUserTranscript,
+    handleVoiceAssistantReply,
+    handleVoiceAttach,
+  } = useChatVoiceMode({
+    user,
+    chatId,
+    routeChatId,
+    title,
+    titleRef,
+    activeCustomModelId,
+    isMainAgentChat,
+    voiceModeOn,
+    setVoiceMode,
+    chatMessagesRef,
+    setChatMessages,
+    aiThreadRef,
+    getCachedWorkspaceSummary,
+    getCachedKbText,
+    saveYouTubeToMedia,
+    saveLinkToMedia,
+    saveAttachmentToMedia,
+  });
 
   const chatBarToolbarProps = useMemo(() => ({
     chatInputHasText, hasAttachments: focusedChatAttachments.length > 0,

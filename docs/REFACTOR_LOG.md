@@ -296,3 +296,96 @@ None intended. Known pre-existing dead code kept as-is: `handleCardDrag` /
 ### Result
 `Vault.jsx`: 9,455 → 3,744 lines (−5,711). 15 new modules, 6,937 lines.
 Diff: 18 files changed, +7,620 / −6,257.
+
+---
+
+## Phase VI — LyknChat megafile decomposition
+
+Single architectural phase (one commit): decompose `src/pages/LyknChat.tsx`
+from 6,127 lines toward the ~4,000-line target while preserving behavior.
+Method identical to Phase V: verbatim line-range extraction (Python scripts,
+no retyping), lint/typecheck/build after every extraction, "move first,
+improve later".
+
+### What moved where
+
+Lib (module-scope types + helpers):
+- `src/lib/lyknChat/chatTurnTypes.ts` (186) — PromptMessage (turn row with
+  bot/greeting metadata), FocusedChatAttachment, BotSendAttachment,
+  CreateAction / OrchestratorResult contracts, board→chat import payload
+  types + `CHAT_TO_BOARD_IMPORT_KEY`.
+- `src/lib/lyknChat/chatAttachmentInput.ts` (62) — URL attachment-type
+  inference, attachment id minting, chat-attachments → Imagine input mapping.
+
+Components:
+- `src/components/lyknChat/StudioChatChrome.tsx` (459) — the Studio glass
+  chrome: StudioView model (Chat/Build/Imagine/Research) with per-mode
+  system prompts / headlines / placeholders, `StudioModePill`,
+  `StudioComposerStrip` quick-start chips, post-report/post-build
+  `StudioFollowUpSuggestions` (+ item builders), `StudioResearchSidebar`.
+- `src/components/lyknChat/ChatBarToolbar.tsx` (398) — the page's inline
+  chat-bar toolbar (model select, mode/project chips, research-source and
+  imagine-layout selects, "+" menu, dictate/stop/send) plus
+  `LyknChatModelSelectMenuBody` and `composerModeLabel`.
+
+Hooks:
+- `src/hooks/useChatVaultSaves.ts` (650) — every save-to-vault path: AI
+  images, YouTube/link bookmark notes, chat file attachments (bytes copied
+  into user storage), research report save, artifact save with per-chat
+  lineage upsert map.
+- `src/hooks/useChatVoiceMode.ts` (395) — Voice Mode: eligibility + silent
+  exit on model switch, session instruction assembly (prefs + recent chat +
+  workspace/KB under the 8k budget), voice-turn mirroring into the thread,
+  display_document hook, voice paste/attach pipeline (ingest → OCR → vision
+  description → chat mirror → quiet vault auto-save → contextual update).
+- `src/hooks/useBotChatBridge.ts` (261) — Bot turns: send + streamed reply
+  patching, re-attach/catch-up after remount, board hop, mark-seen, and the
+  held-send ref pair (`pendingBotSendRef` / `chatIdLiveRef`) consumed by the
+  page's home-screen stash effect.
+- `src/hooks/useLoadInGreeting.ts` (406) — load-in greeting lifecycle:
+  consume the stashed payload (typewriter seed), stale-greeting in-place
+  refresh + placeholder-upgrade animation.
+
+### `LyknChatBarToolbar` duplicate — verdict
+Drifted duplication with intentionally different behavior, NOT consolidated.
+`src/components/lyknChat/LyknChatBarToolbar.tsx` (141 lines) is an earlier,
+simpler variant used only by the Wake marketing tour
+(`WakeChatTourPreview`), with a different prop contract (`toolbarSelect`
+override, single `handleOpenAttachments` button, no mode chips/selects).
+The page's inline version had grown the "+" menu, composer-mode and
+scoped-project chips, research-source and imagine-layout selects, and its
+own open-state management. Both files now carry header comments explaining
+the relationship; merge only with proven equivalence.
+
+### Dead code removed (verified, not moved)
+`TASK_LINE_RE`, `tiptapJsonToPlainText`, `flattenNodeText`,
+`normalizeChecklistSyntax`, `splitResponseIntoChunks` were file-private and
+unreferenced in LyknChat.tsx — stale copies left behind by the earlier
+LyknChatView extraction (live versions exist in `LyknChatView.tsx` /
+`useChatEngine.ts`). Imports orphaned by the moves were removed; imports
+that were already unused at HEAD were left untouched.
+
+### Deliberately left in LyknChat.tsx (orchestration concerns)
+Engine integration (`useChatEngine` wiring), send pipeline
+(`studioGuardedSend`, bot routing, home-screen stash consumption),
+hydration/persistence (`useLyknChatPersistence` + attachment re-signing),
+app-edit strip, imagine thread persistence/commit, focused-chat handlers,
+rail sizing, dialogs, page JSX composition. `useChatEngine` and
+`chatSendOrchestrator` untouched (own phases later).
+
+### Behavior changes
+None intended.
+
+### Validation
+- `npm run typecheck`: 822 errors at HEAD baseline; 822 attributable errors
+  after (signature-level diff: zero new). Note: a parallel work stream
+  dropped untracked `src/components/studio/` files into the working tree
+  mid-phase; the 5 extra diagnostics they add are theirs, not this phase's
+  (verified by stash/re-run).
+- `npx vite build`: success after every extraction and at phase end.
+- Chat tests (`browserChatAttach.test.ts`): 6/6 pass.
+- `npm run test:vault` regression: 51/51 pass.
+- ESLint: repo config does not cover .ts/.tsx (validated via tsc instead).
+
+### Result
+`LyknChat.tsx`: 6,127 → 3,594 lines (−2,533). 8 new modules, 2,817 lines.

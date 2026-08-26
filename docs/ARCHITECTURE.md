@@ -166,3 +166,14 @@ rendering in `src/components/vault/` (card renderer factories, preview
 overlay, card popovers, toolbar, grid). Its state/responsibility map is in
 `VAULT_STATE_MAP.md` (18 ownership groups, cross-group dependency tree);
 consult it before moving any remaining Vault state.
+
+`src/pages/LyknChat.tsx` was decomposed in Phase VI (6.1k → ~3.6k lines):
+turn/attachment types live in `src/lib/lyknChat/chatTurnTypes.ts` +
+`chatAttachmentInput.ts`, the Studio glass chrome (mode pill, per-mode
+prompts, chips, follow-ups, research sidebar) in
+`src/components/lyknChat/StudioChatChrome.tsx`, the chat-bar toolbar in
+`src/components/lyknChat/ChatBarToolbar.tsx` (NOT the same component as the
+older `LyknChatBarToolbar.tsx`, which is a simpler variant kept for the Wake
+tour), and behavior in `src/hooks/useChatVaultSaves.ts`, `useChatVoiceMode.ts`,
+`useBotChatBridge.ts`, and `useLoadInGreeting.ts`. The page keeps
+orchestration: engine integration, send pipeline wiring, hydration, layout.
