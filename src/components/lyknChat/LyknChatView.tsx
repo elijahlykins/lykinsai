@@ -23,6 +23,7 @@ const RESEARCH_SIDEBAR_WIDTH = "min(340px, 30vw)";
 import { extractChatArtifacts, sortArtifactsForDisplay, extractLeakedHtmlDocument, buildLeakedHtmlArtifact, type ChatArtifact } from "@/lib/ai/chatArtifacts";
 import { isAppEditSeed } from "@/lib/apps/editApp";
 import ChatNeuronCard from "@/components/lyknChat/ChatNeuronCard";
+import { GridIcon } from "@/components/ui/GridIcon";
 import SentChatAttachment, { type SentChatAttachmentData } from "@/components/lyknChat/SentChatAttachment";
 import { chatAttachmentSaveKeys } from "@/lib/chat/chatAttachmentFile";
 import { SiteFavicon } from "@/components/SiteFavicon";
