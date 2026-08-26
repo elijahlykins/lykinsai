@@ -8,6 +8,7 @@
  */
 
 const { buildSnapshot, diffSnapshots } = require("./snapshot.cjs");
+const { createBrowserSession } = require("./session.cjs");
 
 /**
  * @param {object} deps
@@ -24,6 +25,10 @@ const { buildSnapshot, diffSnapshots } = require("./snapshot.cjs");
  *   harness that measured an agent with this switched off would be measuring
  *   something we do not ship. Off leaves every banner in the element list for
  *   the model to deal with by hand.
+ * @param {object} [deps.session] BrowserSession (browser/session.cjs) — the
+ *   authority for observation generations and ref lifetimes. When absent one
+ *   is created here, so refs are generation-scoped and session-isolated even
+ *   for callers that predate sessions.
  */
 function createBrowserController({
   webContents,
@@ -31,7 +36,9 @@ function createBrowserController({
   tabs = null,
   ownership = null,
   autoDismissOverlays = true,
+  session = null,
 }) {
+  const refSession = session || createBrowserSession();
   let currentSnapshot = null;
   let snapshotStale = true;
   /**
@@ -213,7 +220,35 @@ function createBrowserController({
     }
     const el = currentSnapshot.byRef.get(wanted);
     if (!el) {
+      // Not on the current view. Say precisely WHY, because the recoveries
+      // differ: a stale ref means "re-observe and re-aim", a foreign ref means
+      // the model is reusing a handle from another task or from before a
+      // restart, and a malformed ref means it invented one.
+      const missing = refSession.classifyMissingRef(wanted);
       const was = seenRefs.get(wanted);
+      if (missing.kind === "stale") {
+        return {
+          error: "stale_reference",
+          hint:
+            (was ? `${wanted} was "${was}" in an earlier view of this page. ` : `${wanted} came from an earlier view of this page. `) +
+            "References are only valid for the snapshot they came from — the page has been re-read since. " +
+            "Aim at the same control using a reference from the CURRENT element list.",
+        };
+      }
+      if (missing.kind === "foreign") {
+        return {
+          error: "foreign_reference",
+          hint:
+            `${wanted} was not created in this task's browser session, so it cannot name anything here. ` +
+            "Use only references from the CURRENT element list.",
+        };
+      }
+      if (missing.kind === "malformed") {
+        return {
+          error: "malformed_reference",
+          hint: `${wanted} is not an element reference. Use a reference from the element list (like "g7:12") or loc=….`,
+        };
+      }
       return {
         error: "unknown_reference",
         hint: was
@@ -364,6 +399,9 @@ function createBrowserController({
     // page has nothing on it" and "I could not read this page".
     const catalogFailed = !catalogRes || catalogRes.ok === false || !Array.isArray(catalogRes.items);
     const contextFailed = !contextRes || contextRes.ok === false;
+    // A new authoritative observation begins a new generation: every ref
+    // handed out below embeds it, and every ref from before this line is now
+    // formally stale rather than informally risky.
     currentSnapshot = buildSnapshot({
       url: contextRes?.url || catalogRes?.url || w.getURL?.() || "",
       title: contextRes?.title || w.getTitle?.() || "",
@@ -371,6 +409,7 @@ function createBrowserController({
       text: contextRes?.text || "",
       tabs: tabList,
       viewport: catalogRes?.viewport || null,
+      generation: refSession.beginGeneration(),
     });
     currentSnapshot.collectorFailed = catalogFailed || contextFailed;
     // What was in the way, and what still is. Both matter to the model: the
@@ -995,6 +1034,7 @@ function createBrowserController({
     currentUrl,
     diffSnapshots,
     ownership: () => ownership,
+    session: () => refSession,
   };
 }
 

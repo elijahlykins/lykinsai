@@ -2,24 +2,40 @@
  * Loads the agent's markdown instruction files. Files live under
  * electron/browser-agent/agent/ and are cached after the first read.
  *
- * The operating rules are three files — core, browser, safety — and all three
- * are always loaded. They used to be nine, routed in per round by a heuristic
- * that guessed which ones the situation called for. That guessing cost more
- * than it saved: the navigation rules were routed out on every round after the
- * first click (leaving the agent with three "stay where you were told" rules
- * and nothing about when moving on is correct), and the download rules were
- * unreachable by any combination of inputs at all. The whole corpus is ~24KB;
- * the snapshot it sits next to is bigger. Load it and be done.
+ * The operating rules are tiered by the task's CAPABILITIES, never by a
+ * per-round heuristic. History matters here: the rules were once nine files
+ * routed in per round by a guess about what the situation called for, and the
+ * guess was wrong in both directions (navigation rules vanished after the
+ * first click; the download rules were unreachable entirely). Capability
+ * tiering is different in kind — it is decided by what the task's action
+ * schema CONTAINS, in code, and is fixed for the life of the task:
+ *
+ *   - core.md            — always: identity, reasoning, the loop, priorities.
+ *   - browser-read.md    — always: observation, navigation, overlays, tabs,
+ *                          downloads, recovery, batching.
+ *   - browser-interact.md — only when the task can click/type: interaction,
+ *                          forms, editing.
+ *   - safety-actions.md  — only when the task can click/type: permissions,
+ *                          deliveries, purchases, destructive actions. A
+ *                          read-only task cannot express those actions in its
+ *                          schema, so instructions about them are dead weight.
+ *   - safety-core.md     — always: credentials, sign-in handovers, and the
+ *                          never-ask-permission rules.
  *
  * Skills stay routed — they are genuinely task-specific, and there is no
- * situation where all five apply at once.
+ * situation where all of them apply at once. (The builders/visual-editor
+ * rules, which are surface-specific HOW knowledge, live as a skill now.)
+ *
+ * The identity file (identity.md) is the former runtime AGENTS.md, relocated
+ * so the name no longer collides with developer-facing AGENTS.md files. It is
+ * loaded for PLANNING only: its content overlaps core.md almost entirely, and
+ * paying for the overlap on every decision round bought nothing.
  */
 
 const fs = require("node:fs");
 const path = require("node:path");
 
 const AGENT_DIR = path.join(__dirname, "..", "agent");
-const ROOT_AGENTS_MD = path.join(__dirname, "..", "AGENTS.md");
 
 const cache = new Map();
 
@@ -35,8 +51,9 @@ function readCached(filePath) {
   return text;
 }
 
-function loadAgentsMd() {
-  return readCached(ROOT_AGENTS_MD);
+/** The agent's identity charter (the former runtime AGENTS.md). */
+function loadIdentity() {
+  return readCached(path.join(AGENT_DIR, "identity.md"));
 }
 
 /** Identity, reasoning, the loop, and the priority order. */
@@ -44,15 +61,24 @@ function loadCoreInstructions() {
   return readCached(path.join(AGENT_DIR, "core.md"));
 }
 
-/** Observation, navigation, interaction, forms, editing, builders, tabs,
- * downloads and recovery. */
-function loadBrowserRules() {
-  return readCached(path.join(AGENT_DIR, "browser.md"));
+/** Observation, navigation, overlays, tabs, downloads, recovery, batching. */
+function loadBrowserReadRules() {
+  return readCached(path.join(AGENT_DIR, "browser-read.md"));
 }
 
-/** Permissions, purchases, destructive actions and credentials. */
-function loadSafetyRules() {
-  return readCached(path.join(AGENT_DIR, "safety.md"));
+/** Interaction, forms and editing — only for tasks that can click and type. */
+function loadBrowserInteractRules() {
+  return readCached(path.join(AGENT_DIR, "browser-interact.md"));
+}
+
+/** Permissions, deliveries, purchases, destructive actions. */
+function loadSafetyActionRules() {
+  return readCached(path.join(AGENT_DIR, "safety-actions.md"));
+}
+
+/** Credentials, sign-in handovers, never-ask-permission. Always loaded. */
+function loadSafetyCoreRules() {
+  return readCached(path.join(AGENT_DIR, "safety-core.md"));
 }
 
 function listSkills() {
@@ -85,10 +111,12 @@ function loadWebsiteSeed(host) {
 
 module.exports = {
   AGENT_DIR,
-  loadAgentsMd,
+  loadIdentity,
   loadCoreInstructions,
-  loadBrowserRules,
-  loadSafetyRules,
+  loadBrowserReadRules,
+  loadBrowserInteractRules,
+  loadSafetyActionRules,
+  loadSafetyCoreRules,
   listSkills,
   loadSkill,
   loadMemorySeed,

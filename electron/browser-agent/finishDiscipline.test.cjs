@@ -165,6 +165,19 @@ function makeTwoDeliveryFake() {
   return { webContents, actuator, state };
 }
 
+/**
+ * The current-generation ref for the element carrying `label`, read off the
+ * observation text the loop hands the model. Refs (`g{gen}:{uid}`) are
+ * re-minted on every snapshot, so the model must re-read one each round —
+ * a hardcoded ref would classify as malformed or stale.
+ */
+function refFor(user, label) {
+  const re = new RegExp(`\\[(g\\d+:[^\\]\\s]+)\\][^\\n]*"${label}"`);
+  const m = re.exec(String(user || ""));
+  assert.ok(m, `the observation must list an element labeled "${label}"`);
+  return m[1];
+}
+
 test("the second delivery of a two-part ask still runs instead of being finished away", async () => {
   const fake = makeTwoDeliveryFake();
   let decideN = 0;
@@ -179,12 +192,12 @@ test("the second delivery of a two-part ask still runs instead of being finished
         clarification: "",
       };
     },
-    async decide() {
+    async decide({ user }) {
       decideN += 1;
       if (decideN === 1) {
         return {
           kind: "act",
-          action: { type: "click", target: "e1" },
+          action: { type: "click", target: refFor(user, "Send to Alice") },
           expectedOutcome: "the message to Alice is sent",
           planStepCompleted: true,
           risk: "consequential",
@@ -196,7 +209,7 @@ test("the second delivery of a two-part ask still runs instead of being finished
       if (decideN === 2) {
         return {
           kind: "act",
-          action: { type: "click", target: "e2" },
+          action: { type: "click", target: refFor(user, "Send to Bob") },
           expectedOutcome: "the message to Bob is sent",
           planStepCompleted: true,
           risk: "consequential",
@@ -252,12 +265,12 @@ test("a one-part ask still refuses to restart after the delivery", async () => {
         clarification: "",
       };
     },
-    async decide() {
+    async decide({ user }) {
       decideN += 1;
       if (decideN === 1) {
         return {
           kind: "act",
-          action: { type: "click", target: "e1" },
+          action: { type: "click", target: refFor(user, "Send to Alice") },
           expectedOutcome: "the message to Alice is sent",
           planStepCompleted: true,
           risk: "consequential",
@@ -269,7 +282,7 @@ test("a one-part ask still refuses to restart after the delivery", async () => {
       // The model tries to send again — the loop must finish instead.
       return {
         kind: "act",
-        action: { type: "click", target: "e2" },
+        action: { type: "click", target: refFor(user, "Send to Bob") },
         expectedOutcome: "the message is sent",
         planStepCompleted: false,
         risk: "consequential",

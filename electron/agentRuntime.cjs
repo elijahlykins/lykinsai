@@ -23,8 +23,9 @@ const { TaskRuntime } = require("./task-runtime/taskRuntime.cjs");
 const { isTerminalTaskStatus } = require("./task-runtime/task.cjs");
 const { BotExecutor } = require("./task-runtime/executors/botExecutor.cjs");
 const {
-  BrowserExecutorAdapter,
-} = require("./task-runtime/executors/browserExecutorAdapter.cjs");
+  BrowserExecutor,
+  BrowserOptInGate,
+} = require("./task-runtime/executors/browserExecutor.cjs");
 const { LocalExecutorAdapter } = require("./task-runtime/executors/localExecutorAdapter.cjs");
 // Local Mode task runner (files + terminal on the user's machine). Only used
 // when the user enabled Local Mode from the Vault switch.
@@ -6868,7 +6869,7 @@ function createAgentRuntime(deps) {
       runLocalTask: ({ instruction, signal }) =>
         runLocalTask(agent, instruction, gen, { signal, structured: true }),
     });
-    const browserAdapter = new BrowserExecutorAdapter({
+    const browserOptInGate = new BrowserOptInGate({
       isDeclined: () =>
         !!(
           agent.botBrowseDeclinedAt &&
@@ -6889,7 +6890,7 @@ function createAgentRuntime(deps) {
       build_artifact: streamTool("build"),
       generate_image: streamTool("image"),
       local_computer: (args) => localAdapter.execute(args),
-      browser: (args) => browserAdapter.execute({ ...args, task: canonicalTask }),
+      browser: (args) => browserOptInGate.execute({ ...args, task: canonicalTask }),
     };
 
     const execution = await taskRuntime.execute(canonicalTask.id, botExecutor, {
@@ -6942,7 +6943,19 @@ function createAgentRuntime(deps) {
    * result onto the legacy adaptive-loop result shape so downstream handling
    * (finishBrowseResult, needs-help surfacing, history) works unchanged.
    */
-  async function runModularBrowserAgent(agent, browseGoal, gen, wc, { convHistory, maxRounds, userAsk = "", sendPolicy = "auto" }) {
+  async function runModularBrowserAgent(agent, browseGoal, gen, wc, {
+    convHistory,
+    maxRounds,
+    userAsk = "",
+    sendPolicy = "auto",
+    // Capability strings from the canonical Task. Null keeps the legacy
+    // blanket grant for the few compatibility callers not yet running under
+    // the BrowserExecutor.
+    capabilities = null,
+    // The canonical Task's cancellation signal, composed with the agent's own
+    // abort below so either one stops the run.
+    taskSignal = null,
+  }) {
     resetLiveOutputSteps(agent);
     // Who holds this tab. Real input from the user seizes it; the controller
     // refuses to act until they hand it back.
@@ -7193,10 +7206,19 @@ function createAgentRuntime(deps) {
       return { resumed: true, note: changeNote };
     };
 
+    // Either canceller ends the run: the user's Stop (agent.abort) or the
+    // canonical Task's own cancellation (timeout budget, supersession).
+    const cancelSignals = [agent.abort?.signal, taskSignal].filter(Boolean);
+    const runSignal =
+      cancelSignals.length > 1 && typeof AbortSignal.any === "function"
+        ? AbortSignal.any(cancelSignals)
+        : cancelSignals[0] || null;
+
     const result = await browserAgent.runBrowserAgentTask({
       goal: browseGoal,
       userAsk,
       sendPolicy,
+      capabilities,
       resumeTask,
       onTaskState: persistTaskSnapshot,
       onNeedsUser,
@@ -7214,7 +7236,7 @@ function createAgentRuntime(deps) {
         role: m?.role === "assistant" ? "assistant" : "user",
         content: String(m?.content || "").slice(0, 600),
       })),
-      signal: agent.abort?.signal,
+      signal: runSignal,
       maxRounds,
       userDataPath,
       onProgress: (p) => {
@@ -7316,7 +7338,7 @@ function createAgentRuntime(deps) {
       }
     });
 
-    if (gen !== agent.generation) return { ok: false, error: "aborted" };
+    if (gen !== agent.generation) return { ok: false, status: "cancelled", error: "aborted" };
 
     // Where the diagnostics viewer and any later persistence read a run's cost.
     agent.lastModelUsage = modelUsage;
@@ -7351,11 +7373,19 @@ function createAgentRuntime(deps) {
       // recipient is no longer written anywhere on screen, which it read as
       // "not shared yet" and answered by starting the whole task again.
       agent.verifiedComplete = true;
-      return { ok: true, answer: result.answer || "Done.", history, url, verifiedComplete: true };
+      return {
+        ok: true,
+        status: "completed",
+        answer: result.answer || "Done.",
+        history,
+        url,
+        verifiedComplete: true,
+      };
     }
     if (result.status === "waiting_for_user") {
       return {
         ok: true,
+        status: "waiting_for_user",
         stuck: true,
         needsHelp: true,
         // The pause is a review-before-send gate (draft/share prepared, final
@@ -7368,8 +7398,150 @@ function createAgentRuntime(deps) {
         url,
       };
     }
-    if (result.error === "aborted") return { ok: false, error: "aborted", history, url };
-    return { ok: true, stuck: true, answer: result.answer || "I couldn't complete this task.", history, url };
+    if (result.error === "aborted") {
+      return { ok: false, status: "cancelled", error: "aborted", history, url };
+    }
+    // The loop gave up (ran out of rounds, or finished without evidence). The
+    // reply still reaches the user, but the canonical Task records a failure —
+    // "I couldn't complete this" must never be filed as a completion.
+    return {
+      ok: true,
+      status: "failed",
+      reason: String(result.error || result.status || "browser_task_incomplete"),
+      stuck: true,
+      answer: result.answer || "I couldn't complete this task.",
+      history,
+      url,
+    };
+  }
+
+  // The ONE canonical browser executor. Every browser run — a normal Agent's
+  // browse, a Bot's approved browser errand, the mail-compose venue — executes
+  // its canonical Task through this instance, so identity, capabilities,
+  // cancellation and terminal state all live on the Task record. The injected
+  // function carries the Electron-side context (agent, tab, generation) in
+  // context.browse; the browser itself stays owned by the existing
+  // controller/actuator stack inside runModularBrowserAgent.
+  const browserExecutor = new BrowserExecutor({
+    runBrowserTask: async ({ task, context }) => {
+      const { agent, gen, wc, browseGoal, convHistory, maxRounds, sendPolicy, userAsk } =
+        context.browse;
+      // One transient retry inside the SAME execution: an upstream blip (rate
+      // limit, 5xx) must not fail the Task or swap the engine — the legacy
+      // loop verifies and gates differently — so the run waits out the hiccup
+      // and goes again with everything the browser already did intact.
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          return await runModularBrowserAgent(agent, browseGoal, gen, wc, {
+            convHistory,
+            maxRounds,
+            sendPolicy,
+            userAsk,
+            capabilities: task.capabilities,
+            taskSignal: context.signal,
+          });
+        } catch (e) {
+          if (!(e instanceof browserAgent.AgentModelUnavailableError)) throw e;
+          const transient = /\((?:408|429|500|502|503|504)\)/.test(String(e?.message || ""));
+          if (transient && attempt === 0 && !context.signal?.aborted && gen === agent.generation) {
+            emitProgress(agent.id, {
+              status: "running",
+              step: "The model service hiccuped — retrying…",
+              url: wc.getURL?.() || agent.url,
+              skill: "browse",
+            });
+            await new Promise((r) => setTimeout(r, 4000));
+            continue;
+          }
+          // Structural: the agent-model endpoint is missing. Fail the Task
+          // truthfully; runAdaptiveBrowse records the fallback and runs the
+          // legacy engine (a documented compatibility path outside the
+          // runtime, kept only until it is retired).
+          return {
+            ok: false,
+            status: "failed",
+            error: "agent_model_unavailable",
+            reason: "agent_model_unavailable",
+            detail: String(e?.message || e),
+          };
+        }
+      }
+    },
+  });
+
+  /**
+   * The canonical Task a browser run executes under.
+   *
+   * A Bot's browse IS its canonical task's approved continuation, so the
+   * active task is reused as-is. A normal agent resumes a non-terminal task
+   * only when the objective is the same browse; a different ask supersedes it
+   * — one active task per agent, and the record stays truthful.
+   */
+  function ensureBrowserTask(agent, browseGoal, { maxRounds } = {}) {
+    const objective = String(browseGoal || "").trim() || "Browse task";
+    const active = taskRuntime.get(agent.activeTaskId);
+    if (active && !isTerminalTaskStatus(active.status)) {
+      if (agent.headless || active.objective === objective) return active;
+      taskRuntime.cancel(active.id, "superseded_by_new_task");
+    }
+    const task = taskRuntime.register({
+      id: `task_${crypto.randomBytes(12).toString("hex")}`,
+      objective,
+      capabilities: ["browser.read", "browser.navigate", "browser.interact"],
+      budgets: { maxRounds: maxRounds || 18 },
+      origin: { type: "agent" },
+      association: { agentId: agent.id },
+    });
+    agent.activeTaskId = task.id;
+    return task;
+  }
+
+  /**
+   * Run one browse through TaskRuntime -> BrowserExecutor and hand back the
+   * legacy-shaped result the browse pipeline downstream already understands.
+   * Model-endpoint unavailability re-surfaces as AgentModelUnavailableError so
+   * the caller's engine-fallback ladder keeps working unchanged.
+   */
+  async function runBrowserTaskViaExecutor(agent, browseGoal, gen, wc, opts = {}) {
+    const task = ensureBrowserTask(agent, browseGoal, { maxRounds: opts.maxRounds });
+    const execution = await taskRuntime.execute(task.id, browserExecutor, {
+      executorName: "browser",
+      browse: {
+        agent,
+        gen,
+        wc,
+        browseGoal,
+        convHistory: opts.convHistory,
+        maxRounds: opts.maxRounds,
+        sendPolicy: opts.sendPolicy,
+        userAsk: opts.userAsk,
+      },
+    });
+    // A real throw inside the run (not a mapped failure) keeps its existing
+    // meaning for callers: TaskRuntime already recorded the failed Task.
+    if (execution?.error) throw execution.error;
+    const result = execution?.result || null;
+    const mapped = result?.browserResult || null;
+    if (mapped?.error === "agent_model_unavailable") {
+      throw new browserAgent.AgentModelUnavailableError(mapped.detail || "");
+    }
+    if (execution?.task?.status === "cancelled" || result?.status === "cancelled") {
+      return {
+        ok: false,
+        error: "aborted",
+        history: mapped?.history || [],
+        url: mapped?.url || agent.url || "",
+      };
+    }
+    return (
+      mapped || {
+        ok: true,
+        stuck: true,
+        answer: String(result?.output || result?.answer || "I couldn't complete this task."),
+        history: [],
+        url: agent.url || "",
+      }
+    );
   }
 
   async function runAdaptiveBrowse(agent, text, gen, wc, opts = {}) {
@@ -7452,51 +7624,35 @@ function createAgentRuntime(deps) {
       // does not expose the agent-model endpoint yet.
       result = null;
       if (!useLegacyBrowseLoop) {
-        // A transient upstream blip (rate limit, 5xx) used to swap the ENGINE:
-        // the legacy loop has different verification, progress and safety
-        // behavior, so a 30-second outage changed how the task behaved for its
-        // whole remainder. Give the modular runtime one more go after a short
-        // wait — the browser keeps everything already done, and the fresh run
-        // re-reads the live page — and only fall back when the failure is
-        // structural (endpoint missing, not signed in) or the retry loses too.
-        for (let modularTry = 0; modularTry < 2 && !result; modularTry += 1) {
-          try {
-            result = await runModularBrowserAgent(agent, browseGoal, gen, wc, {
-              convHistory,
-              maxRounds,
-              // Run the whole task through, but never deliver anything to
-              // other people without a yes: the agent prepares the send and
-              // confirms, wherever it is working. Only a reply that approves
-              // the send it just prepared skips the second ask.
-              sendPolicy: looksLikeSendApprovalFollowUp(text) ? "approved" : "auto",
-              userAsk: text,
-            });
-          } catch (e) {
-            if (!(e instanceof browserAgent.AgentModelUnavailableError)) throw e;
-            const transient = /\((?:408|429|500|502|503|504)\)/.test(String(e?.message || ""));
-            if (transient && modularTry === 0 && !agent.abort?.signal?.aborted && gen === agent.generation) {
-              emitProgress(agent.id, {
-                status: "running",
-                step: "The model service hiccuped — retrying…",
-                url: wc.getURL?.() || agent.url,
-                skill: "browse",
-              });
-              await new Promise((r) => setTimeout(r, 4000));
-              continue;
-            }
-            // Falling back is right — the user's task should still run — but it
-            // used to happen in total silence, which made a version-skewed
-            // deploy (app shipped ahead of the server route) indistinguishable
-            // from a healthy one. Record it so it is answerable after the fact.
-            diagnostics.recordRuntimeFallback({
-              userDataPath,
-              surface: "browse",
-              reason: e?.message,
-              appVersion: getAppVersion(),
-            });
-            result = null; // graceful fallback to the legacy loop below
-            break;
-          }
+        // The canonical path: this browse executes its Task through the
+        // BrowserExecutor under TaskRuntime. A transient upstream blip is
+        // retried INSIDE that execution (the Task stays running and the
+        // engine never swaps); only a structural failure — the agent-model
+        // endpoint missing entirely — surfaces here as unavailability.
+        try {
+          result = await runBrowserTaskViaExecutor(agent, browseGoal, gen, wc, {
+            convHistory,
+            maxRounds,
+            // Run the whole task through, but never deliver anything to
+            // other people without a yes: the agent prepares the send and
+            // confirms, wherever it is working. Only a reply that approves
+            // the send it just prepared skips the second ask.
+            sendPolicy: looksLikeSendApprovalFollowUp(text) ? "approved" : "auto",
+            userAsk: text,
+          });
+        } catch (e) {
+          if (!(e instanceof browserAgent.AgentModelUnavailableError)) throw e;
+          // Falling back is right — the user's task should still run — but it
+          // used to happen in total silence, which made a version-skewed
+          // deploy (app shipped ahead of the server route) indistinguishable
+          // from a healthy one. Record it so it is answerable after the fact.
+          diagnostics.recordRuntimeFallback({
+            userDataPath,
+            surface: "browse",
+            reason: e?.message,
+            appVersion: getAppVersion(),
+          });
+          result = null; // graceful fallback to the legacy loop below
         }
       }
 
@@ -8136,7 +8292,7 @@ function createAgentRuntime(deps) {
     // used, which is why "write an email to X" sent itself. The attachment
     // flow additionally has to wait for the file, so it never pre-approves.
     const sendApproved = looksLikeSendApprovalFollowUp(text);
-    const result = await runModularBrowserAgent(agent, goalParts.join("\n"), gen, wc, {
+    const result = await runBrowserTaskViaExecutor(agent, goalParts.join("\n"), gen, wc, {
       convHistory: historyForPlanner(agent),
       maxRounds: 18,
       sendPolicy: wantsAttachment ? "ask" : sendApproved ? "approved" : "auto",
@@ -10467,19 +10623,15 @@ function createAgentRuntime(deps) {
           : null;
       agent.pendingBotBrowse = null;
       if (pendingBrowse) {
+        // The Task stays waiting_for_user through routing; the moment the
+        // browse dispatches, TaskRuntime.execute moves this SAME Task to
+        // running under the canonical BrowserExecutor — the parked ask is
+        // the objective that resumes, never a re-interpreted user reply.
         if (BOT_BROWSER_BARE_YES_RE.test(q)) {
           agent.botBrowserRun = true;
-          taskRuntime.beginCompatibilityExecution(
-            pendingBrowse.taskId || agent.activeTaskId,
-            "browser_compatibility_adapter",
-          );
           q = pendingBrowse.ask;
         } else if (BOT_BROWSER_YES_START_RE.test(q) && !BOT_BROWSER_NO_START_RE.test(q)) {
           agent.botBrowserRun = true;
-          taskRuntime.beginCompatibilityExecution(
-            pendingBrowse.taskId || agent.activeTaskId,
-            "browser_compatibility_adapter",
-          );
           q = `${pendingBrowse.ask}\nAdditional guidance from the user: ${q}`;
         } else if (BOT_BROWSER_BARE_NO_RE.test(q)) {
           agent.skipBotBrowseAskOnce = true;
@@ -11826,9 +11978,11 @@ function createAgentRuntime(deps) {
           : [];
       agent.lastSuggestions = finishSuggestions;
 
-      // BotExecutor normally settles the Task before this host formatting
-      // layer. The browser compatibility bridge still finishes here after
-      // leaving the harness, so record that result against the same Task id.
+      // BotExecutor and BrowserExecutor settle the Task before this host
+      // formatting layer, so a Task still open here means the turn finished
+      // on a path outside the runtime (a chat answer to a parked question,
+      // or the legacy browse engine). Record that result against the same
+      // Task id rather than leaving it dangling.
       const runtimeTask = taskRuntime.get(agent.activeTaskId);
       if (agent.headless && runtimeTask && !isTerminalTaskStatus(runtimeTask.status)) {
         if (waitingUser || waitingChoice) {
@@ -11841,7 +11995,7 @@ function createAgentRuntime(deps) {
           taskRuntime.complete(runtimeTask.id, {
             executor:
               lastSkill === "browse" || lastSkill === "browse-summary"
-                ? "browser_compatibility_adapter"
+                ? "browser_legacy_fallback"
                 : "bot",
             output: String(doneText || answer || ""),
           });

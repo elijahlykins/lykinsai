@@ -107,18 +107,29 @@ function makeComposeFake() {
   };
 }
 
+/**
+ * Element refs are generation-scoped (`g{gen}:{uid}`) and re-minted on every
+ * snapshot, so the model reads the current one off the observation text the
+ * loop hands it — element lines look like `[g7:1] button "Send"`.
+ */
+function refFromObservation(user) {
+  const m = /\[(g\d+:[^\]\s]+)\]/.exec(String(user || ""));
+  assert.ok(m, "the observation must list at least one element ref");
+  return m[1];
+}
+
 function sendingModel() {
   let i = 0;
   return {
     async plan() {
       return { plan: ["Send the draft"], constraints: [], knownFacts: {}, skills: [], clarification: "" };
     },
-    async decide() {
+    async decide({ user }) {
       i += 1;
       if (i === 1) {
         return {
           kind: "act",
-          action: { type: "click", target: "e1" },
+          action: { type: "click", target: refFromObservation(user) },
           reason: "", narration: "", expectedOutcome: "the message is sent",
           risk: "low", answer: "", question: "", replanReason: "", constraints: null,
           steps: null, planStepCompleted: true, factsLearned: [], candidateResults: [],

@@ -95,6 +95,41 @@ export const AI_SURFACES = [
     ],
   },
   {
+    id: "browser_agent",
+    name: "Agent Harness (browser + Bot stages)",
+    description:
+      "Stage-level structured model calls behind the desktop Agent Harness: task planning, per-round action decisions, action verification, post-task learning, and the small pre-turn route/offer judgements. The Bot Harness shares the decide/verify stages. Grounding (described target to screen point) is metered separately as browser_agent_ground.",
+    endpoint: "POST /api/desktop/agent-model, POST /api/desktop/agent-ground",
+    file: "server/routes/desktop.routes.js",
+    lineRange: "~695-800",
+    providers: ["openai", "anthropic", "holo"],
+    models: [
+      "gpt-5.6-terra (BROWSER_AGENT_MODEL)",
+      "claude-opus-5 (plan/judge overrides)",
+      "gpt-4.1-mini (learn/route/offer)",
+      "holo3-1-35b-a3b (ground)",
+    ],
+    actionTypes: [
+      "browser_agent_plan",
+      "browser_agent_decide",
+      "browser_agent_verify",
+      "browser_agent_learn",
+      "browser_agent_route",
+      "browser_agent_offer",
+      "browser_agent_judge",
+      "browser_agent_ground",
+    ],
+    tier: "high",
+    guestAccessible: false,
+    metered: true,
+    optimization:
+      "Decide dominates: one call per browser round with the observation in context. Capability-tiered prompt loading already trims read-only rounds; keep observations bounded and prompt-cache the per-stage system prefix (cacheKey is already per stage+user).",
+    risks: [
+      "A long browse (up to 48 rounds) multiplies decide+verify calls per task.",
+      "Screenshot rounds add vision tokens on top of the structured observation.",
+    ],
+  },
+  {
     id: "youtube_transcribe",
     name: "YouTube transcription (Whisper)",
     description:

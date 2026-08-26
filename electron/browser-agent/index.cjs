@@ -27,6 +27,7 @@ const { createGrounder } = require("./runtime/grounding.cjs");
 const taskState = require("./runtime/taskState.cjs");
 const planner = require("./runtime/planner.cjs");
 const executor = require("./runtime/executor.cjs");
+const capabilitiesPolicy = require("./runtime/capabilities.cjs");
 const verifier = require("./runtime/verifier.cjs");
 const visionPolicy = require("./runtime/visionPolicy.cjs");
 const contextRouter = require("./runtime/contextRouter.cjs");
@@ -443,6 +444,12 @@ async function runTask({
   // instead of reading coordinates off the screenshot itself. Kill switch for
   // the caller; an outage of the grounder degrades rather than failing.
   holoAssist = true,
+  // Capability strings from the canonical Task ("browser", "browser.read",
+  // "browser.navigate", "browser.interact"). They bound the action vocabulary
+  // in code: the decision schema is filtered to what they license and
+  // anything outside it is rejected before the safety gate. Null keeps the
+  // legacy blanket grant for callers that predate capabilities.
+  capabilities = null,
   // Per-stage span timing. Off in production; the disabled timer is a no-op.
   timing = false,
   // Awaited pre-action hook. onProgress is fired-and-forgotten, so a harness
@@ -463,6 +470,21 @@ async function runTask({
 }) {
   const restored = resumeTask ? taskState.restoreTask(resumeTask, { conversationHistory }) : null;
   const task = restored || taskState.createTask({ goal, conversationHistory });
+  // Null when no capability strings were supplied (legacy callers get the
+  // full vocabulary); a Set otherwise. A task whose capabilities license no
+  // browser operation at all cannot run.
+  const allowedActions = capabilities === null ? null : capabilitiesPolicy.allowedActionTypes(capabilities);
+  if (capabilities !== null && !allowedActions) {
+    return {
+      ok: false,
+      status: "failed",
+      answer: "This task does not hold a browser capability, so no browser operation can run.",
+      task,
+      history: [],
+      learning: Promise.resolve(),
+      error: "browser_capability_missing",
+    };
+  }
   // Whether this ask commits ONE delivery or several. Judged once — it gates
   // both the "already delivered, do not start over" conversion and the
   // auto-completion of leftover plan steps after a send, and a two-part ask
@@ -922,6 +944,7 @@ async function runTask({
         // Only ever true on the round after the ladder reached for pixels, and
         // only while the grounder is actually answering.
         assistGrounding: assistOffered && assistAvailable && !!pendingScreenshot,
+        allowedActions,
       }));
     } catch (e) {
       if (e instanceof AgentModelUnavailableError) throw e;

@@ -161,15 +161,32 @@ function mutatingBrowser() {
   return { state, webContents, actuator };
 }
 
+/**
+ * Placeholder target a scripted decision uses to mean "the element on the
+ * page". Refs are generation-scoped (`g{gen}:{uid}`) and re-minted on every
+ * snapshot, so the model reads the current one off the observation text each
+ * round — a hardcoded ref would classify as malformed or stale.
+ */
+const CURRENT_REF = "<current-ref>";
+
+function refFromObservation(user) {
+  const m = /\[(g\d+:[^\]\s]+)\]/.exec(String(user || ""));
+  assert.ok(m, "the observation must list at least one element ref");
+  return m[1];
+}
+
 function scriptedModel({ decisions, verifySpy }) {
   let i = 0;
   return {
     async plan() {
       return { plan: ["Do it"], constraints: [], knownFacts: {}, skills: [], clarification: "" };
     },
-    async decide() {
-      const d = decisions[Math.min(i, decisions.length - 1)];
+    async decide(ctx) {
+      let d = decisions[Math.min(i, decisions.length - 1)];
       i += 1;
+      if (d?.action?.target === CURRENT_REF) {
+        d = { ...d, action: { ...d.action, target: refFromObservation(ctx.user) } };
+      }
       return {
         kind: "act", action: null, reason: "", narration: "", expectedOutcome: "", risk: "low",
         answer: "", question: "", replanReason: "", constraints: null, steps: null,
@@ -191,7 +208,7 @@ test("at most two verifications run on faith before a real verdict", async () =>
     verifySpy,
     decisions: [{
       kind: "act",
-      action: { type: "click", target: "e1" },
+      action: { type: "click", target: CURRENT_REF },
       expectedOutcome: "the quantum flux stabilizes",
     }],
   });
@@ -219,7 +236,7 @@ test("deferred successes alone cannot underwrite a completed task", async () => 
     decisions: [
       {
         kind: "act",
-        action: { type: "click", target: "e1" },
+        action: { type: "click", target: CURRENT_REF },
         expectedOutcome: "the quantum flux stabilizes",
       },
       { kind: "finish", answer: "All done, definitely.", planStepCompleted: false },

@@ -106,6 +106,17 @@ function createScriptedModel({ plan, decisions, verify, onDecide } = {}) {
   };
 }
 
+/**
+ * Read a live element ref off the observation handed to the model. Refs are
+ * generation-scoped ("g7:12") and the generation counter is process-global,
+ * so a scripted decision can never hardcode one — it has to aim at what the
+ * current snapshot actually minted.
+ */
+function refFrom(ctx) {
+  const m = String(ctx?.user || "").match(/\[(g\d+:[^\]]+)\]/);
+  return m ? m[1] : "";
+}
+
 function runTask(fake, model, opts = {}) {
   return runBrowserAgentTask({
     goal: "do the thing",
@@ -290,11 +301,12 @@ test("link destinations reach the model", () => {
     ],
   });
   const rendered = formatSnapshotForModel(snap);
-  assert.match(rendered, /\[e1\] link "MLPerf results" -> mlcommons\.org\/benchmarks\?…/,
+  const ref = (label) => snap.elements.find((e) => e.label === label).ref;
+  assert.match(rendered, new RegExp(`\\[${ref("MLPerf results")}\\] link "MLPerf results" -> mlcommons\\.org/benchmarks\\?…`),
     "without the destination the agent cannot tell an outbound link from an internal one");
-  assert.match(rendered, /\[e2\] link "About us" -> lykn\.io\/about/);
+  assert.match(rendered, new RegExp(`\\[${ref("About us")}\\] link "About us" -> lykn\\.io/about`));
   assert.doesNotMatch(rendered, /javascript:/, "javascript: hrefs are noise");
-  assert.match(rendered, /\[e4\] button "Subscribe"(?! ->)/, "non-links get no destination");
+  assert.match(rendered, new RegExp(`\\[${ref("Subscribe")}\\] button "Subscribe"(?! ->)`), "non-links get no destination");
 });
 
 test("a screenshot the model asked for comes back to it", async () => {
@@ -332,13 +344,13 @@ test("every action leaves the agent looking at a fresh page", async () => {
     "press Escape": (c) => c.pressKey("Escape"),
     "press Tab": (c) => c.pressKey("Tab"),
     "press Enter": (c) => c.pressKey("Enter"),
-    click: (c) => c.click("e1"),
-    type: (c) => c.type("e1", "x"),
+    click: (c, snap) => c.click(snap.elements[0].ref),
+    type: (c, snap) => c.type(snap.elements[0].ref, "x"),
   };
   for (const [name, run] of Object.entries(actions)) {
     const c = controllerFor();
-    await c.getPageState();
-    await run(c);
+    const snap = await c.getPageState();
+    await run(c, snap);
     advanced += 1;
     assert.equal(c.getCurrentSnapshot(), null, `${name} must force a fresh observation`);
   }
@@ -577,7 +589,7 @@ test("stop prevents the action, not just the next round", async () => {
     decisions: [
       // Abort fires while the model is deciding — which is when people press
       // Stop. The round had already passed its abort check at the top.
-      () => { ac.abort(); return { kind: "act", action: { type: "click", target: "e1" }, expectedOutcome: "ordered" }; },
+      (ctx) => { ac.abort(); return { kind: "act", action: { type: "click", target: refFrom(ctx) }, expectedOutcome: "ordered" }; },
       { kind: "finish", answer: "done", factsLearned: ["x"] },
     ],
   });
@@ -677,7 +689,7 @@ test("a run that fails still records what it learned about the site", async () =
   });
   const model = createScriptedModel({
     plan: { plan: ["Try"] },
-    decisions: [{ kind: "act", action: { type: "click", target: "e1" }, expectedOutcome: "something happens" }],
+    decisions: [(ctx) => ({ kind: "act", action: { type: "click", target: refFrom(ctx) }, expectedOutcome: "something happens" })],
     verify: () => ({ success: false, evidence: "", reason: "nothing moved", next: "recover" }),
   });
   model.learn = async () => ({ notes: ["The Go button on this site does nothing until a plan is chosen"], userNotes: [] });
@@ -703,7 +715,7 @@ test("the answer is never delayed by post-run learning", async () => {
   });
   const model = createScriptedModel({
     plan: { plan: ["Try"] },
-    decisions: [{ kind: "act", action: { type: "click", target: "e1" }, expectedOutcome: "something happens" }],
+    decisions: [(ctx) => ({ kind: "act", action: { type: "click", target: refFrom(ctx) }, expectedOutcome: "something happens" })],
     verify: () => ({ success: false, evidence: "", reason: "nothing moved", next: "recover" }),
   });
   let learnSettled = false;
@@ -814,8 +826,11 @@ test("a controller that cannot screenshot does not throw the run away at the vis
   const fake = createFakeBrowser({ elements: named });
   const controller = createBrowserController({ webContents: fake.webContents, actuator: fake.actuator });
   controller.screenshot = async () => { throw new Error("capture device busy"); };
+  // A coordinate click keeps the same recovery signature across rounds
+  // (element refs are re-minted under a new generation on every observation),
+  // so the ladder genuinely reaches its visual rung.
   const model = createScriptedModel({
-    decisions: [{ kind: "act", action: { type: "click", target: "e1" }, expectedOutcome: "something happens" }],
+    decisions: [{ kind: "act", action: { type: "click_coord", x: 500, y: 500, label: "Button 1" }, expectedOutcome: "something happens" }],
     verify: () => ({ success: false, evidence: "", reason: "nothing moved", next: "recover" }),
   });
 

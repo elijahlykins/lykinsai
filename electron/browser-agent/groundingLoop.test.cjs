@@ -43,6 +43,26 @@ function createFakeBrowser() {
   return { webContents, actuator, actuated };
 }
 
+/**
+ * Placeholder target a scripted decision uses to mean "the element on the
+ * page". Refs are generation-scoped (`g{gen}:{uid}`) and re-minted on every
+ * snapshot, so the model resolves this from the observation text each round —
+ * a hardcoded ref would classify as malformed or stale.
+ */
+const CURRENT_REF = "<current-ref>";
+
+function refFromObservation(user) {
+  const m = /\[(g\d+:[^\]\s]+)\]/.exec(String(user || ""));
+  assert.ok(m, "the observation must list at least one element ref");
+  return m[1];
+}
+
+/** Swap the CURRENT_REF placeholder for the ref this round's snapshot minted. */
+function resolveTarget(d, user) {
+  if (d?.action?.target !== CURRENT_REF) return d;
+  return { ...d, action: { ...d.action, target: refFromObservation(user) } };
+}
+
 function makeModel({ decisions, groundImpl }) {
   let i = 0;
   const groundCalls = [];
@@ -51,8 +71,8 @@ function makeModel({ decisions, groundImpl }) {
     async plan() {
       return { plan: ["Check out"], constraints: [], knownFacts: {}, skills: [], clarification: "" };
     },
-    async decide() {
-      const d = decisions[Math.min(i, decisions.length - 1)];
+    async decide(ctx) {
+      const d = resolveTarget(decisions[Math.min(i, decisions.length - 1)], ctx.user);
       i += 1;
       return {
         kind: "act", action: null, reason: "", expectedOutcome: "", risk: "low",
@@ -91,7 +111,7 @@ test("refs mode never reaches the grounder and actuates an element ref", async (
   // ground() throws if called at all, so any contact fails the test loudly.
   const model = makeModel({
     decisions: [
-      { action: { type: "click", target: "e1" } },
+      { action: { type: "click", target: CURRENT_REF } },
       { kind: "finish", answer: "done", factsLearned: ["the cart holds 1 item"] },
     ],
     groundImpl: null,
@@ -167,7 +187,7 @@ test("onBeforeAct is awaited before the action lands", async () => {
   const fake = createFakeBrowser();
   const order = [];
   const model = makeModel({
-    decisions: [{ action: { type: "click", target: "e1" } }, { kind: "finish", answer: "done", factsLearned: ["the cart holds 1 item"] }],
+    decisions: [{ action: { type: "click", target: CURRENT_REF } }, { kind: "finish", answer: "done", factsLearned: ["the cart holds 1 item"] }],
   });
   const origRun = fake.actuator.runAction.bind(fake.actuator);
   fake.actuator.runAction = async (wc, action) => { order.push(`act:${action.type}`); return origRun(wc, action); };
@@ -242,7 +262,7 @@ function makeAssistModel({ description = "the zoom control in the top toolbar", 
         kind: "act",
         action: invited
           ? { type: "click", targetDescription: description }
-          : { type: "click", target: "e1" },
+          : { type: "click", target: refFromObservation(ctx.user) },
         reason: "", expectedOutcome: "the canvas zooms in", risk: "low",
         answer: "", question: "", replanReason: "", planStepCompleted: false,
         factsLearned: [], candidateResults: [],
@@ -263,7 +283,7 @@ test("production defaults to assist: references are never grounded while they wo
   const fake = createFakeBrowser();
   const model = makeModel({
     decisions: [
-      { action: { type: "click", target: "e1" } },
+      { action: { type: "click", target: CURRENT_REF } },
       { kind: "finish", answer: "done", factsLearned: ["the cart holds 1 item"] },
     ],
     groundImpl: null, // throws if the loop ever reaches it
@@ -283,7 +303,7 @@ test("a described target on a round that did not invite one is refused, not grou
   const model = makeModel({
     decisions: [
       { action: { type: "click", targetDescription: "the Checkout button" } },
-      { action: { type: "click", target: "e1" } },
+      { action: { type: "click", target: CURRENT_REF } },
       { kind: "finish", answer: "done", factsLearned: ["the cart holds 1 item"] },
     ],
     groundImpl: null,

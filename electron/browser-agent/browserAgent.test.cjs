@@ -185,6 +185,20 @@ function createScriptedModel({ plan, decisions, verify }) {
   };
 }
 
+/**
+ * Pull the ref for a uid out of the decision prompt the scripted model was
+ * handed. Refs are generation-scoped ("g{generation}:{uid}") and the
+ * generation counter is process-global and monotonic, so no test may hardcode
+ * one — the only honest source is the prompt the loop actually built, where
+ * each element line reads `[g7:12] role "label"`. The fake catalog mints
+ * uid = catalog position + 1.
+ */
+function refFor(ctx, uid) {
+  const m = String(ctx?.user || "").match(new RegExp(`\\[(g\\d+:${uid})\\]`));
+  assert.ok(m, `no element with uid ${uid} in the decision prompt`);
+  return m[1];
+}
+
 function runTask({ fake, model, goal, maxRounds = 12, onApprovalNeeded = null }) {
   const controller = createBrowserController({
     webContents: fake.webContents,
@@ -230,12 +244,12 @@ test("navigation: go to Wikipedia and search for Alan Turing", async () => {
         action: { type: "navigate", url: "https://www.wikipedia.org" },
         expectedOutcome: "Wikipedia home page loads",
       },
-      {
+      (ctx) => ({
         kind: "act",
-        action: { type: "type", target: "e1", text: "Alan Turing", pressEnter: true },
+        action: { type: "type", target: refFor(ctx, 1), text: "Alan Turing", pressEnter: true },
         expectedOutcome: "Alan Turing article or search results appear",
         planStepCompleted: true,
-      },
+      }),
       {
         kind: "finish",
         answer: "I searched Wikipedia for Alan Turing; the article is open.",
@@ -340,12 +354,12 @@ test("multi-step: find three mechanical keyboards under $100 without purchasing"
         action: { type: "navigate", url: "https://www.amazon.com" },
         expectedOutcome: "Amazon home page with search box",
       },
-      {
+      (ctx) => ({
         kind: "act",
-        action: { type: "type", target: "e1", text: "mechanical keyboard", pressEnter: true },
+        action: { type: "type", target: refFor(ctx, 1), text: "mechanical keyboard", pressEnter: true },
         expectedOutcome: "results for mechanical keyboard listed",
         planStepCompleted: true,
-      },
+      }),
       {
         kind: "act",
         action: { type: "scroll", direction: "down" },
@@ -410,26 +424,38 @@ test("recovery: stale reference then flaky click — agent re-observes and conti
     "https://app.example.com",
   );
 
+  // The ref the first prompt handed out — replayed later, after the page has
+  // been re-observed, it belongs to an older generation and is stale.
+  let firstObservationRef = "";
   const decisions = [
-    // 1. Invalid ref — never handed out by any snapshot.
-    {
+    // 1. A ref no snapshot ever minted: current generation, absent uid.
+    (ctx) => {
+      firstObservationRef = refFor(ctx, 1);
+      return {
+        kind: "act",
+        action: { type: "click", target: firstObservationRef.replace(/:\d+$/, ":999") },
+        expectedOutcome: "reports open",
+      };
+    },
+    // 2. A stale ref — minted by the previous observation, now superseded.
+    () => ({
       kind: "act",
-      action: { type: "click", target: "e999" },
+      action: { type: "click", target: firstObservationRef },
       expectedOutcome: "reports open",
-    },
-    // 2. Correct ref after re-observe — actuator fails once (flaky page).
-    {
+    }),
+    // 3. Correct ref after re-observe — actuator fails once (flaky page).
+    (ctx) => ({
       kind: "act",
-      action: { type: "click", target: "e1" },
+      action: { type: "click", target: refFor(ctx, 1) },
       expectedOutcome: "Reports page opens",
-    },
-    // 3. Retry after recovery hint.
-    {
+    }),
+    // 4. Retry after recovery hint.
+    (ctx) => ({
       kind: "act",
-      action: { type: "click", target: "e1" },
+      action: { type: "click", target: refFor(ctx, 1) },
       expectedOutcome: "Reports page opens",
       planStepCompleted: true,
-    },
+    }),
     { kind: "finish", answer: "Reports are open.", factsLearned: ["Reports page reached"] },
   ];
 
@@ -478,13 +504,13 @@ test("consequential: agent prepares checkout but stops before Place Order", asyn
     decisions: [
       // The model even under-reports risk as "low" — the deterministic
       // classifier must still catch the "Place Order" label.
-      {
+      (ctx) => ({
         kind: "act",
-        action: { type: "click", target: "e2" },
+        action: { type: "click", target: refFor(ctx, 2) },
         expectedOutcome: "order placed",
         risk: "low",
         factsLearned: ["Cart total is $14.20 for 1x USB-C cable"],
-      },
+      }),
     ],
   });
 
@@ -522,12 +548,12 @@ test("consequential: agent prepares checkout but stops before Place Order", asyn
   const model2 = createScriptedModel({
     plan: { plan: ["Complete the purchase"] },
     decisions: [
-      {
+      (ctx) => ({
         kind: "act",
-        action: { type: "click", target: "e1" },
+        action: { type: "click", target: refFor(ctx, 1) },
         expectedOutcome: "order confirmed",
         risk: "consequential",
-      },
+      }),
       { kind: "finish", answer: "Order placed — confirmation page shown." },
     ],
   });
@@ -582,34 +608,36 @@ function makeGmailFake() {
 }
 
 function gmailComposeDecisions() {
+  // uid 1 = Compose; the fields pushed by clicking it follow in catalog order:
+  // 2 = To, 3 = Subject, 4 = Body, 5 = Send.
   return [
-    {
+    (ctx) => ({
       kind: "act",
-      action: { type: "click", target: "e1" },
+      action: { type: "click", target: refFor(ctx, 1) },
       expectedOutcome: "Compose window with To recipients and Subject fields appears",
-    },
-    {
+    }),
+    (ctx) => ({
       kind: "act",
-      action: { type: "type", target: "e2", text: "sarah@example.com" },
+      action: { type: "type", target: refFor(ctx, 2), text: "sarah@example.com" },
       expectedOutcome: "To field contains sarah@example.com",
-    },
-    {
+    }),
+    (ctx) => ({
       kind: "act",
-      action: { type: "type", target: "e3", text: "Meeting moved" },
+      action: { type: "type", target: refFor(ctx, 3), text: "Meeting moved" },
       expectedOutcome: "Subject contains Meeting moved",
-    },
-    {
+    }),
+    (ctx) => ({
       kind: "act",
-      action: { type: "type", target: "e4", text: "Hi Sarah, the meeting moved to 3pm Thursday." },
+      action: { type: "type", target: refFor(ctx, 4), text: "Hi Sarah, the meeting moved to 3pm Thursday." },
       expectedOutcome: "Body contains the message",
       planStepCompleted: true,
-    },
-    {
+    }),
+    (ctx) => ({
       kind: "act",
-      action: { type: "click", target: "e5" },
+      action: { type: "click", target: refFor(ctx, 5) },
       expectedOutcome: "Message sent toast appears",
       risk: "consequential",
-    },
+    }),
     { kind: "finish", answer: "Email to sarah@example.com sent — Gmail showed 'Message sent'." },
   ];
 }
@@ -698,8 +726,16 @@ test("email: after a verified send, leftover plan steps do not restart compose",
     decisions: [
       ...gmailComposeDecisions().slice(0, -1),
       // The model "forgets" it already sent and starts the task over.
-      { kind: "act", action: { type: "click", target: "e1" }, expectedOutcome: "the compose window opens" },
-      { kind: "act", action: { type: "click", target: "e5" }, expectedOutcome: "the message is sent" },
+      (ctx) => ({
+        kind: "act",
+        action: { type: "click", target: refFor(ctx, 1) },
+        expectedOutcome: "the compose window opens",
+      }),
+      (ctx) => ({
+        kind: "act",
+        action: { type: "click", target: refFor(ctx, 5) },
+        expectedOutcome: "the message is sent",
+      }),
       { kind: "finish", answer: "Sent it again." },
     ],
   });
@@ -742,8 +778,14 @@ test("email: an approval reply cannot authorize spending or deletion", async () 
   // "approved" releases a delivery and nothing else — money and destruction
   // always take their own interactive yes.
   const executor = require("./runtime/executor.cjs");
-  const snapshot = { byRef: new Map([["e1", { label: "Place your order" }]]) };
-  const buy = { action: { type: "click", target: "e1" }, expectedOutcome: "the order is placed" };
+  const { buildSnapshot } = require("./browser/snapshot.cjs");
+  // A real snapshot mints the ref — the generation counter is process-global,
+  // so the value cannot be written down in advance.
+  const snapshot = buildSnapshot({
+    catalog: [{ uid: 1, tag: "button", selector: "#placeOrder", label: "Place your order" }],
+  });
+  const ref = snapshot.elements[0].ref;
+  const buy = { action: { type: "click", target: ref }, expectedOutcome: "the order is placed" };
   assert.equal(executor.classifyActionRisk(buy, snapshot), "consequential");
   assert.equal(executor.goalAuthorizesAction("yes, send it", buy, snapshot), false);
 });
@@ -795,16 +837,16 @@ test("email: revision edits the draft in place instead of retyping it", async ()
   const model = createScriptedModel({
     plan: { plan: ["Edit the meeting time in the open draft"], skills: ["communication"] },
     decisions: [
-      {
+      (ctx) => ({
         kind: "act",
         action: {
           type: "replace_text",
-          target: "e4",
+          target: refFor(ctx, 4),
           find: "the meeting moved to 3pm Thursday",
           text: "the meeting moved to 4pm Friday",
         },
         expectedOutcome: "Body says 4pm Friday, rest of the draft untouched",
-      },
+      }),
       { kind: "finish", answer: "Updated the draft — it now says 4pm Friday." },
     ],
   });
@@ -845,27 +887,35 @@ test("context router: progressive skill loading", () => {
 // routed the navigation rules out on every round after the first click — so
 // the agent kept "never substitute a different product" and lost every rule
 // about when moving on is correct — and it could not reach the download rules
-// under any combination of inputs at all. They are one file each now, always
-// loaded, and this test exists to keep them that way.
+// under any combination of inputs at all. The corpus is tiered by CAPABILITY
+// now, fixed for the life of the task: with the legacy full grant
+// (allowedActions null) every decision must carry the read rules, the
+// interaction rules, and both safety files. Builders guidance is
+// surface-specific HOW knowledge and travels as a skill, never as a standing
+// operating rule.
 
 test("context router: every operating rule reaches every decision", () => {
   const task = { goal: "anything at all", skills: [] };
-  const system = contextRouter.buildDecisionSystem({ task });
+  const system = contextRouter.buildDecisionSystem({ task, allowedActions: null });
   for (const heading of [
+    // browser-read.md — reading the page is every decision's job.
     "# Observation",
     "# Navigation",
     "## Leaving the site you are on",
-    "# Interaction",
-    "# Forms",
-    "# Editing existing text",
-    "# Builders and visual editors",
     "# Tabs",
     "# Downloads",
     "# Recovery",
+    // browser-interact.md — the full grant licenses interaction.
+    "# Interaction",
+    "# Forms",
+    "# Editing existing text",
+    // safety-actions.md — interactive tasks carry the action safety rules.
     "# Permissions",
     "# Purchases",
     "# Destructive actions",
+    // safety-core.md — always loaded.
     "# Credentials",
+    // core.md — always loaded.
     "# Priorities",
   ]) {
     assert.ok(system.includes(heading), `${heading} must be in every decision prompt`);
@@ -873,6 +923,19 @@ test("context router: every operating rule reaches every decision", () => {
   // The counterweight to the site constraint has to be there, or the agent is
   // left with restrictions and no permission.
   assert.match(system, /Going to another website is ordinary browsing/);
+
+  // Builders content reaches a decision only through the builders skill.
+  assert.ok(
+    !system.includes("# Builders and visual editors"),
+    "builders guidance must not be a standing operating rule",
+  );
+  const skills = contextRouter.routeSkills("Design a newsletter campaign in Mailchimp");
+  assert.ok(skills.includes("builders"), "a builder-shaped goal routes the builders skill");
+  const withBuilders = contextRouter.buildDecisionSystem({ task, skills, allowedActions: null });
+  assert.ok(
+    withBuilders.includes("# Builders and visual editors"),
+    "the routed builders skill must reach the decision prompt",
+  );
 });
 
 test("planning contract never manufactures a site lock", () => {
@@ -948,14 +1011,18 @@ test("a 404 is routed around without asking the user", async () => {
 
 test("verifier: typed text verifies despite contenteditable newline inflation", async () => {
   const verifier = require("./runtime/verifier.cjs");
+  const { buildSnapshot } = require("./browser/snapshot.cjs");
   const typed = "Hi Elijah,\n\nQuick update: the office raccoon has reviewed our processes.";
+  const before = buildSnapshot({
+    catalog: [{ uid: 10, tag: "textarea", selector: "#body", label: "Message Body" }],
+  });
   // Gmail's body renders "\n\n" back as "\n\n\n" — must still verify as landed,
   // otherwise the agent retypes the whole body in a loop.
   const result = await verifier.verifyOutcome({
     model: null,
-    decision: { action: { type: "type", target: "e10", text: typed } },
+    decision: { action: { type: "type", target: before.elements[0].ref, text: typed } },
     actionResult: { ok: true },
-    before: null,
+    before,
     after: null,
     diff: { urlChanged: false, titleChanged: false, textChanged: true, newLabels: [], summary: "" },
     extracted: { ok: true, label: "Message Body", value: typed.replace("\n\n", "\n\n\n") },

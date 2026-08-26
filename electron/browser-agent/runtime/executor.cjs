@@ -364,14 +364,21 @@ async function decideNext({
   // default — describing a target that a reference already names is a paid
   // round-trip for a worse aim.
   assistGrounding = false,
+  // Action types the task's capabilities license (runtime/capabilities.cjs).
+  // Null means everything — the legacy blanket "browser" grant. Enforced here
+  // in code (schema filtering + rejection below), never by instruction alone.
+  allowedActions = null,
   signal = null,
 }) {
   // The system prompt is byte-stable across the task so providers can serve
   // it from prompt cache; everything that varies — memory included — goes in
-  // the user message, which changes every round regardless.
+  // the user message, which changes every round regardless. Capabilities are
+  // fixed for the life of a task, so tiering the rules by them keeps that
+  // stability.
   const system = contextRouter.buildDecisionSystem({
     task,
     skills: task.skills,
+    allowedActions,
   });
 
   const memoryBlock = contextRouter.buildMemoryContext(memoryContext);
@@ -426,9 +433,10 @@ async function decideNext({
     user: userParts.join("\n\n"),
     imageUrl: screenshotDataUrl || undefined,
     signal,
+    allowedActions,
   });
 
-  return normalizeDecision(decision, snapshot, { groundingMode, assistGrounding });
+  return normalizeDecision(decision, snapshot, { groundingMode, assistGrounding, allowedActions });
 }
 
 function coordPairValid(x, y) {
@@ -446,7 +454,7 @@ function validEndpoint(snapshot, ref, x, y) {
   return coordPairValid(x, y);
 }
 
-function normalizeDecision(decision, snapshot, { groundingMode = "refs", assistGrounding = false } = {}) {
+function normalizeDecision(decision, snapshot, { groundingMode = "refs", assistGrounding = false, allowedActions = null } = {}) {
   // Screen any proposed batch before anything else, so every exit below —
   // including the invalid ones — carries a decision whose `steps` is either
   // admitted or absent. An inadmissible batch is never a failed round: it
@@ -479,6 +487,22 @@ function normalizeDecision(decision, snapshot, { groundingMode = "refs", assistG
     const type = String(action.type || "").trim();
     if (!type) {
       return { ...decision, kind: "invalid", invalidReason: "action missing type" };
+    }
+    // Capability wall. The schema already excluded these, so reaching this
+    // branch means the model output something the contract never offered —
+    // reject it here so it can never reach the safety gate or the actuator.
+    if (allowedActions && !allowedActions.has(type)) {
+      return {
+        ...decision,
+        kind: "invalid",
+        invalidReason: `the ${type} action is not available to this task`,
+      };
+    }
+    if (allowedActions && Array.isArray(decision.steps)) {
+      const disallowed = decision.steps.find((s) => !allowedActions.has(String(s?.type || "")));
+      if (disallowed) {
+        decision = { ...decision, steps: null, batchRejected: `step ${disallowed.type} is not available to this task` };
+      }
     }
     // A described target is only meaningful on a round that invited one. The
     // field lives in the schema permanently, so a model that reaches for it

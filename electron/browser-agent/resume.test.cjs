@@ -17,7 +17,20 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const taskState = require("./runtime/taskState.cjs");
+const { nextGeneration } = require("./browser/snapshot.cjs");
 const { runBrowserAgentTask, createBrowserController } = require("./index.cjs");
+
+/**
+ * Refs are generation-scoped ("g{generation}:{uid}") and the generation
+ * counter is process-global, so a test may never write one down in advance —
+ * the only honest source is the decision prompt the loop built, where each
+ * element line reads `[g7:12] role "label"`.
+ */
+function refFor(ctx, uid) {
+  const m = String(ctx?.user || "").match(new RegExp(`\\[(g\\d+:${uid})\\]`));
+  assert.ok(m, `no element with uid ${uid} in the decision prompt`);
+  return m[1];
+}
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "lykn-resume-"));
 
@@ -34,7 +47,9 @@ test("a serialized task restores with its plan, facts and history intact", () =>
   taskState.markStepDone(task);
   taskState.addFact(task, "the Tuesday flight is $312");
   taskState.recordAction(task, {
-    action: { type: "click", target: "e4" },
+    // Recorded history is opaque data here — but it still has to look like a
+    // real generation-scoped ref, and the generation cannot be hardcoded.
+    action: { type: "click", target: `g${nextGeneration()}:4` },
     expectedOutcome: "results load",
     result: "success",
     observedOutcome: "results loaded",
@@ -108,10 +123,11 @@ function model({ onDecide = null, decisions }) {
       if (onDecide) onDecide(ctx, i);
       const d = decisions[Math.min(i, decisions.length - 1)];
       i += 1;
+      const out = typeof d === "function" ? d(ctx) : d;
       return {
         kind: "act", action: null, reason: "", narration: "", expectedOutcome: "", risk: "low",
         answer: "", question: "", replanReason: "", constraints: null, steps: null,
-        planStepCompleted: false, factsLearned: [], candidateResults: [], ...d,
+        planStepCompleted: false, factsLearned: [], candidateResults: [], ...out,
       };
     },
     async verify() { return { success: true, evidence: "confirmed", reason: "", next: "continue" }; },
@@ -158,7 +174,12 @@ test("onTaskState receives snapshots as the run progresses, ending with a termin
   const snapshots = [];
   const m = model({
     decisions: [
-      { kind: "act", action: { type: "click", target: "e1" }, expectedOutcome: "something", factsLearned: ["it worked"] },
+      (ctx) => ({
+        kind: "act",
+        action: { type: "click", target: refFor(ctx, 1) },
+        expectedOutcome: "something",
+        factsLearned: ["it worked"],
+      }),
       { kind: "finish", answer: "Done." },
     ],
   });

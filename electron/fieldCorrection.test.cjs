@@ -155,8 +155,8 @@ test("replacing a chip-style recipient field asks the actuator to clear it first
     role: "combobox",
     value: "wrong@example.com",
   });
-  await controller.getPageState();
-  const res = await controller.type("e1", "right@example.com", { mode: "replace" });
+  const state = await controller.getPageState();
+  const res = await controller.type(state.elements[0].ref, "right@example.com", { mode: "replace" });
   assert.notEqual(res.error, "replace_mode_unsupported", "there must be a way to fix this field");
   assert.equal(res.ok, true);
   assert.equal(actions.at(-1).mode, "replace", "the actuator is told to clear before typing");
@@ -165,8 +165,8 @@ test("replacing a chip-style recipient field asks the actuator to clear it first
 
 test("an ordinary append is unchanged", async () => {
   const { actions, controller } = makeController({ tag: "input", value: "" });
-  await controller.getPageState();
-  await controller.type("e1", "hello");
+  const state = await controller.getPageState();
+  await controller.type(state.elements[0].ref, "hello");
   assert.equal(actions.at(-1).mode, "append");
 });
 

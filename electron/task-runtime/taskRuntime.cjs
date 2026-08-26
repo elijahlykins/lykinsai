@@ -59,6 +59,7 @@ class TaskRuntime {
       result: null,
       timeout: null,
     });
+    this.emit(canonical, TASK_EVENT_TYPES.CREATED);
     return canonical;
   }
 
@@ -69,21 +70,6 @@ class TaskRuntime {
   getByBotTaskId(botTaskId) {
     const taskId = this.botTaskIndex.get(String(botTaskId || ""));
     return taskId ? this.get(taskId) : null;
-  }
-
-  beginCompatibilityExecution(taskId, executor = "compatibility_adapter") {
-    const record = this.records.get(String(taskId || ""));
-    if (!record || isTerminalTaskStatus(record.task.status)) return record?.task || null;
-    this.update(record, {
-      status: TASK_STATUSES.RUNNING,
-      startedAt: record.task.startedAt || this.now(),
-    });
-    if (!record.started) {
-      record.started = true;
-      this.emit(record.task, TASK_EVENT_TYPES.STARTED);
-    }
-    this.emit(record.task, TASK_EVENT_TYPES.EXECUTOR_STARTED, { executor });
-    return record.task;
   }
 
   waitForUser(taskId, detail = {}) {

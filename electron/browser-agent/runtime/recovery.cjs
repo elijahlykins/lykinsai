@@ -5,6 +5,8 @@
  * retries of essentially the same operation the strategy escalates.
  */
 
+const { parseRef } = require("../browser/session.cjs");
+
 const MAX_SAME_ACTION_RETRIES = 2;
 const MAX_TOTAL_RECOVERIES = 6;
 
@@ -51,9 +53,19 @@ function createRecoveryTracker() {
     // and a 20-unit bucket (2% of the frame) is close enough to be the same
     // attempt while a different control is a different signature.
     const bucket = (n) => (Number.isFinite(Number(n)) ? Math.round(Number(n) / 20) : "");
+    // References embed the observation generation and are re-minted on every
+    // snapshot, so two retries of the same element never share a raw ref. The
+    // uid is the document-lifetime identity — that is what "the same action
+    // again" means here. Without this the ladder could never get past its
+    // first rung for ref-targeted actions: every retry re-observes, and the
+    // fresh ref read as a brand-new action.
+    const stableTarget = (t) => {
+      const parsed = parseRef(t);
+      return parsed ? parsed.uid : String(t || "");
+    };
     return [
       a.type || "",
-      a.target || "",
+      stableTarget(a.target),
       String(a.url || "").slice(0, 80),
       String(a.text || "").slice(0, 40),
       String(a.value ?? "").slice(0, 40),
@@ -61,7 +73,7 @@ function createRecoveryTracker() {
       (Array.isArray(a.modifiers) ? a.modifiers : []).join("+"),
       bucket(a.x),
       bucket(a.y),
-      a.to || "",
+      stableTarget(a.to),
       bucket(a.toX),
       bucket(a.toY),
     ]

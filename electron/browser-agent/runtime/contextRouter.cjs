@@ -1,9 +1,10 @@
 /**
  * Context router — assembles the prompt for each stage of the loop.
  *
- * Operating rules (core, browser, safety) are always loaded; only skills and
- * website memory are selected per task. See instructions.cjs for why the
- * per-round routing of browser and safety rules was removed.
+ * Operating rules are tiered by the task's capabilities (see
+ * instructions.cjs); skills and website memory are selected per task. Nothing
+ * is routed per round — the corpus a task starts with is the corpus it keeps,
+ * so provider prompt caches stay warm for the whole run.
  */
 
 const instructions = require("./instructions.cjs");
@@ -16,6 +17,10 @@ const SKILL_HINTS = [
   { skill: "scheduling", re: /\b(calendar|meeting|schedule|book|booking|reservation|reserve|appointment|flight|hotel|restaurant|event|invite)\b/i },
   { skill: "data-entry", re: /\b(spreadsheet|sheet|fill (?:in|out)|enter (?:the|this|data)|data entry|(?:into|in) (?:the |our |my )?crm|update (?:the )?record|transcribe)\b/i },
   { skill: "research", re: /\b(research|find (?:out|me|the)|what|when|who|which|best|compare|top|look up|search for|release|history|review)\b/i },
+  // Surface-specific HOW knowledge for campaign builders, design tools, page
+  // builders and slide editors — the former "Builders and visual editors"
+  // section of browser.md, now selected only when the task is that shape.
+  { skill: "builders", re: /\b(campaign|newsletter|mailchimp|klaviyo|canva|figma|design|slide|slides|presentation|deck|template|page builder|site builder|landing page|wix|squarespace|webflow|logo|flyer|poster|banner|mockup)\b/i },
 ];
 
 function routeSkills(goal, { maxSkills = 2 } = {}) {
@@ -35,30 +40,38 @@ function routeSkills(goal, { maxSkills = 2 } = {}) {
  * skills + the output contract.
  *
  * Deliberately byte-stable for the life of a task. Providers cache prompt
- * prefixes, and the decide call is made every round with the same ~24KB of
- * rules in front — but only if nothing volatile is spliced into them. Memory
- * used to live here, and website memory changes whenever the task crosses to
- * another site, which invalidated the cached prefix exactly mid-task. Memory
- * now travels in the user message (buildMemoryContext), which is rebuilt every
+ * prefixes, and the decide call is made every round with the same rules in
+ * front — but only if nothing volatile is spliced into them. Memory used to
+ * live here, and website memory changes whenever the task crosses to another
+ * site, which invalidated the cached prefix exactly mid-task. Memory now
+ * travels in the user message (buildMemoryContext), which is rebuilt every
  * round anyway.
+ *
+ * `allowedActions` (a Set from runtime/capabilities.cjs, or null for the
+ * legacy full grant) tiers the corpus: a task whose schema contains no click
+ * or type gets no interaction, form-filling or delivery-safety instructions,
+ * because it cannot express the actions they govern. Capabilities are fixed
+ * per task, so the tiering never breaks byte-stability mid-run.
  */
-function buildDecisionSystem({ task, skills = [] }) {
+function buildDecisionSystem({ task, skills = [], allowedActions = null }) {
+  const interactive = !allowedActions || allowedActions.has("click");
   const parts = [
-    instructions.loadAgentsMd(),
     instructions.loadCoreInstructions(),
-    instructions.loadBrowserRules(),
+    instructions.loadBrowserReadRules(),
   ];
+  if (interactive) parts.push(instructions.loadBrowserInteractRules());
   for (const name of skills) {
     const text = instructions.loadSkill(name);
     if (text) parts.push(text);
   }
-  parts.push(instructions.loadSafetyRules());
+  if (interactive) parts.push(instructions.loadSafetyActionRules());
+  parts.push(instructions.loadSafetyCoreRules());
   // Constant per machine, so it never breaks the cached prefix. Without it
   // the model guessed at modifier keys — control+Enter to send in Gmail on
   // a Mac, where the send shortcut is meta(⌘)+Enter — and the miss was
   // invisible because shortcut effects rarely show in a page scrape.
   parts.push(platformNote());
-  parts.push(decisionOutputContract());
+  parts.push(decisionOutputContract(allowedActions));
   return parts.filter(Boolean).join("\n\n---\n\n");
 }
 
@@ -93,21 +106,34 @@ function buildMemoryContext({ userMemory = "", websiteMemory = "" } = {}) {
   return parts.join("\n\n");
 }
 
-function decisionOutputContract() {
+function decisionOutputContract(allowedActions = null) {
+  const has = (type) => !allowedActions || allowedActions.has(type);
+  // Guidance for an action the schema does not contain is dead weight — the
+  // model cannot express it, so it never needs to be told when to use it.
+  const actionGuidance = [
+    has("drag") &&
+      '  - `drag`: move something onto something else — a content block into an email layout, an element onto a design, a card to another column. Give `target` + `to` as element refs, or x/y + toX/toY screenshot coordinates, or one of each. In builders this is often the ONLY way to add content; do not substitute clicks for it.',
+    has("click_coord") &&
+      '  - `click_coord`: click a point you can see in an attached screenshot but cannot find in the element list (x and y in 0-1000 of the image). For drawn interfaces and unlabeled icons. Always prefer an element ref when one exists. Set `label` to what you are clicking ("Send", "Delete") — it is the only description of the target anything downstream gets.',
+    has("scroll") &&
+      '  - `scroll` with a `target`: scroll INSIDE that element. Editor palettes, block lists and side panels scroll internally and do not respond to page scrolling.',
+    has("press_key") &&
+      '  - `press_key` with `modifiers`: keyboard shortcuts, e.g. key "b" modifiers ["meta"]. Design and text tools are built around these and they are often faster and more reliable than hunting for a toolbar button.',
+    has("paste_text") &&
+      '  - `paste_text`: put a WHOLE document body into the editor on this page, in one go — how you write a long piece into Notion, Docs or Slides. It finds and focuses the editor itself, so DO NOT hunt for the writing area first: paste, then read the page back to confirm. Typing a long document instead is slow and lets autocomplete and autosave interfere. Set `mode` to "replace" to overwrite what is there.',
+    has("screenshot") &&
+      '  - `screenshot`: look at the page when the element list plainly does not describe what you are working on. The image comes back attached to your next decision.',
+    has("dismiss_overlay") &&
+      '  - `dismiss_overlay`: clear whatever a page has put in front of itself — a cookie or consent wall, a newsletter modal, an "open in app" interstitial, a notification prompt. This already runs for you before most snapshots, so reach for it when a wall arrived mid-task, or when clicks are landing on nothing and something is covering the page. It only ever clicks controls that dismiss, so it cannot agree to anything that matters; if it reports nothing to dismiss, close the thing yourself from the element list.',
+  ].filter(Boolean);
   return [
     "# Output Contract",
     "",
     "Respond with a single structured decision:",
-    '- kind "act": one action with `expectedOutcome` describing what the page should show if it works. Use element references (e.g. "e12") from the CURRENT snapshot only.',
+    '- kind "act": one action with `expectedOutcome` describing what the page should show if it works. Use element references (e.g. "g7:12") from the CURRENT snapshot only — references embed the observation they came from, and one from an earlier snapshot is rejected as stale.',
     "",
     "  Actions beyond the obvious ones, and when they are the right choice:",
-    '  - `drag`: move something onto something else — a content block into an email layout, an element onto a design, a card to another column. Give `target` + `to` as element refs, or x/y + toX/toY screenshot coordinates, or one of each. In builders this is often the ONLY way to add content; do not substitute clicks for it.',
-    '  - `click_coord`: click a point you can see in an attached screenshot but cannot find in the element list (x and y in 0-1000 of the image). For drawn interfaces and unlabeled icons. Always prefer an element ref when one exists. Set `label` to what you are clicking ("Send", "Delete") — it is the only description of the target anything downstream gets.',
-    '  - `scroll` with a `target`: scroll INSIDE that element. Editor palettes, block lists and side panels scroll internally and do not respond to page scrolling.',
-    '  - `press_key` with `modifiers`: keyboard shortcuts, e.g. key "b" modifiers ["meta"]. Design and text tools are built around these and they are often faster and more reliable than hunting for a toolbar button.',
-    '  - `paste_text`: put a WHOLE document body into the editor on this page, in one go — how you write a long piece into Notion, Docs or Slides. It finds and focuses the editor itself, so DO NOT hunt for the writing area first: paste, then read the page back to confirm. Typing a long document instead is slow and lets autocomplete and autosave interfere. Set `mode` to "replace" to overwrite what is there.',
-    '  - `screenshot`: look at the page when the element list plainly does not describe what you are working on. The image comes back attached to your next decision.',
-    '  - `dismiss_overlay`: clear whatever a page has put in front of itself — a cookie or consent wall, a newsletter modal, an "open in app" interstitial, a notification prompt. This already runs for you before most snapshots, so reach for it when a wall arrived mid-task, or when clicks are landing on nothing and something is covering the page. It only ever clicks controls that dismiss, so it cannot agree to anything that matters; if it reports nothing to dismiss, close the thing yourself from the element list.',
+    ...actionGuidance,
     '- kind "finish": every part of the goal is done with evidence, or it is genuinely impossible; `answer` is the final user-facing report. Do NOT finish with plan steps still outstanding unless you say in `answer` why each one no longer applies. A goal that asks for several deliveries ("email Alice and text Bob") is finished only when every one of them has happened. If the page already shows the outcome — "Message sent", "Access updated", the compose window gone after a send — you are done: finish now. Do not compose again, do not click Send again, do not start the task over. And the moment the goal is met, finish — one more look around, one more page, one more check is browsing past the end of the task.',
     '- kind "ask_user": the task cannot continue without something only the user has. Two shapes: (a) something they do in the browser — a credential, a verification code, clearing a wall — where `question` names ONE concrete action ("sign in to Meta with your password") and you resume automatically once they have; (b) something they tell you — above all WHAT A MESSAGE SHOULD SAY when the request named a recipient but no content, or WHO IT GOES TO when the request named content but no recipient. Never invent the substance of anything you are going to send, and never guess an address or a recipient; ask ONCE, propose answers in `questionOptions`, and write it when they reply.',
     "  One question per task. Bundle everything you need (what to say, tone, subject) into that single ask. Do not follow up with tone, then subject, then timing — those are yours to pick after they answer. If they already told you what it should say, do not ask again.",
@@ -130,7 +156,7 @@ function decisionOutputContract() {
 /** System prompt for planning. */
 function buildPlanningSystem() {
   return [
-    instructions.loadAgentsMd(),
+    instructions.loadIdentity(),
     instructions.loadCoreInstructions(),
     [
       "# Planning Contract",

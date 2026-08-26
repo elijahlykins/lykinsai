@@ -2,9 +2,10 @@
  * Structured page snapshots for the browser agent.
  *
  * A snapshot is the agent's only view of the page: URL, title, tabs,
- * interactive elements (each with a temporary reference like "e12"), and
- * visible text. References are valid ONLY for the snapshot they came from —
- * the controller rejects refs from older snapshots.
+ * interactive elements (each with a generation-scoped reference like
+ * "g42:17"), and visible text. References are valid ONLY for the observation
+ * generation they came from — the controller rejects refs from older
+ * generations (STALE_REF) and refs minted by other sessions.
  */
 
 // Keep secret VALUES (passwords, OTPs, card/CVV numbers) out of the
@@ -16,13 +17,34 @@ const { isSensitiveField } = require("../../sensitiveFields.cjs");
 let snapshotCounter = 0;
 
 /**
+ * The process-global observation generation counter.
+ *
+ * ONE counter for the whole process, on purpose: generations double as the
+ * session-isolation mechanism. Because no two BrowserSessions ever hold the
+ * same generation number, a ref minted for one task can never collide with a
+ * ref minted for another — the failure is structural, not probabilistic.
+ * (Lives here rather than in session.cjs so a snapshot built without a
+ * session still gets a unique generation instead of a shared default.)
+ */
+let generationCounter = 0;
+function nextGeneration() {
+  generationCounter += 1;
+  return generationCounter;
+}
+
+/**
  * Build a structured snapshot from raw browser data.
  * `catalog` items come from ownedBrowserAct.getDOMCatalog
  * ({id, tag, type, role, selector, label, value, checked, href, clientX, clientY, inView}).
+ *
+ * `generation` scopes every ref minted here. Callers with a BrowserSession
+ * pass the session's current generation; a snapshot built without one mints
+ * its own, so its refs are still unique across the process.
  */
-function buildSnapshot({ url = "", title = "", catalog = [], text = "", tabs = [], viewport = null } = {}) {
+function buildSnapshot({ url = "", title = "", catalog = [], text = "", tabs = [], viewport = null, generation = 0 } = {}) {
   snapshotCounter += 1;
   const id = `snap-${snapshotCounter}`;
+  const gen = Number(generation) > 0 ? Number(generation) : nextGeneration();
   const elements = [];
   const byRef = new Map();
   const byLoc = new Map();
@@ -32,8 +54,8 @@ function buildSnapshot({ url = "", title = "", catalog = [], text = "", tabs = [
     // The uid is minted in page context and pinned to the element for the
     // document's lifetime. A catalog from an older collector has none, so fall
     // back to position — a stale ref is better than a crash.
-    const uid = item.uid === undefined || item.uid === null || item.uid === "" ? `p${i + 1}` : item.uid;
-    const ref = `e${uid}`;
+    const uid = item.uid === undefined || item.uid === null || item.uid === "" ? `p${i + 1}` : String(item.uid);
+    const ref = `g${gen}:${uid}`;
     const role = normalizeRole(item);
     const label = String(item.label || "").slice(0, 120);
     // Passwords, OTPs, card/CVV fields: the model must know the field EXISTS
@@ -45,6 +67,10 @@ function buildSnapshot({ url = "", title = "", catalog = [], text = "", tabs = [
     const safeItem = sensitive && item.value ? { ...item, value: "" } : item;
     const el = {
       ref,
+      // Document-lifetime identity, generation-free. Refs change every
+      // observation by design; the uid is what lets the diff say "this is the
+      // SAME node as before" across two generations of the same document.
+      uid,
       loc: elementLocator(item, role, label),
       role,
       label,
@@ -80,6 +106,7 @@ function buildSnapshot({ url = "", title = "", catalog = [], text = "", tabs = [
   }
   return {
     id,
+    generation: gen,
     at: Date.now(),
     url: String(url || ""),
     title: String(title || ""),
@@ -430,13 +457,15 @@ function diffElementStates(before, after) {
   const changes = [];
   const seen = new Map();
   for (const el of Array.isArray(before?.elements) ? before.elements : []) {
-    if (el?.ref && !seen.has(el.ref)) seen.set(el.ref, el);
+    if (el?.uid && !seen.has(el.uid)) seen.set(el.uid, el);
   }
   for (const now of Array.isArray(after?.elements) ? after.elements : []) {
-    // Refs are minted per element and pinned for the document's lifetime, so
-    // the same ref in both snapshots is the same node — not merely one that
-    // looks like it.
-    const was = now?.ref ? seen.get(now.ref) : null;
+    // uids are minted per element and pinned for the document's lifetime, so
+    // the same uid in both snapshots is the same node — not merely one that
+    // looks like it. (Refs cannot do this job any more: they embed the
+    // observation generation, so the same node carries a different ref in
+    // each snapshot on purpose.)
+    const was = now?.uid ? seen.get(now.uid) : null;
     if (!was) continue;
     const name = `"${now.label || was.label || now.role}"`;
     for (const [key, onWord, offWord] of TRACKED_STATES) {
@@ -444,11 +473,12 @@ function diffElementStates(before, after) {
       // Appearing or losing the attribute entirely is a re-render, not a state
       // change the agent caused; only a real flip counts.
       if (typeof was[key] !== "boolean" || typeof now[key] !== "boolean") continue;
-      changes.push({ ref: now.ref, key, from: was[key], to: now[key], text: `${name} ${now[key] ? onWord : offWord}` });
+      changes.push({ ref: now.ref, uid: now.uid, key, from: was[key], to: now[key], text: `${name} ${now[key] ? onWord : offWord}` });
     }
     if (was.disabled !== now.disabled) {
       changes.push({
         ref: now.ref,
+        uid: now.uid,
         key: "disabled",
         from: was.disabled,
         to: now.disabled,
@@ -458,6 +488,7 @@ function diffElementStates(before, after) {
     if (normText(was.value) !== normText(now.value)) {
       changes.push({
         ref: now.ref,
+        uid: now.uid,
         key: "value",
         from: was.value,
         to: now.value,
@@ -467,6 +498,7 @@ function diffElementStates(before, after) {
     if ((was.current || "") !== (now.current || "")) {
       changes.push({
         ref: now.ref,
+        uid: now.uid,
         key: "current",
         from: was.current,
         to: now.current,
@@ -514,4 +546,5 @@ module.exports = {
   diffSnapshots,
   hasObservableChange,
   elementLocator,
+  nextGeneration,
 };

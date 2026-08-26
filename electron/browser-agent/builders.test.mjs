@@ -85,8 +85,9 @@ test("acting on an embedded element routes the action to its frame", async () =>
       },
     ],
   });
-  await controller.getPageState();
-  await controller.click("e2");
+  const state = await controller.getPageState();
+  const body = state.elements.find((e) => e.label === "Body");
+  await controller.click(body.ref);
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].frameId, 7, "the click must carry the frame that owns the element");
@@ -117,8 +118,9 @@ test("reading an embedded field's value runs inside that frame, not the main doc
       },
     ],
   });
-  await controller.getPageState();
-  const out = await controller.extract("e1");
+  const state = await controller.getPageState();
+  const body = state.elements.find((e) => e.label === "Body");
+  const out = await controller.extract(body.ref);
 
   assert.deepEqual(ran, [7], "the read must happen in frame 7");
   assert.equal(out.value, "the copy in the editor");
@@ -140,8 +142,10 @@ test("a drag between two elements reaches the actuator with both ends", async ()
       { id: "el1", tag: "div", label: "Drop area", selector: "#canvas-slot", clientX: 400, clientY: 300 },
     ],
   });
-  await controller.getPageState();
-  const res = await controller.drag("e1", "e2");
+  const state = await controller.getPageState();
+  const source = state.elements.find((e) => e.label === "Text block");
+  const dest = state.elements.find((e) => e.label === "Drop area");
+  const res = await controller.drag(source.ref, dest.ref);
 
   assert.equal(res.ok, true);
   assert.equal(calls[0].type, "drag");
@@ -162,8 +166,9 @@ test("a drag can use screenshot coordinates on either end", async () => {
       { id: "el0", tag: "div", label: "Square", selector: "#square", clientX: 900, clientY: 200 },
     ],
   });
-  await controller.getPageState();
-  await controller.drag("e1", { x: 500, y: 640 });
+  const state = await controller.getPageState();
+  const square = state.elements.find((e) => e.label === "Square");
+  await controller.drag(square.ref, { x: 500, y: 640 });
 
   assert.equal(calls[0].selector, "#square");
   assert.equal(calls[0].toX, 500);
@@ -174,15 +179,16 @@ test("drag is rejected without a destination, and accepted with coordinates", ()
   const snapshot = buildSnapshot({
     catalog: [{ uid: 1, id: "el0", tag: "div", label: "Block", selector: "#b" }],
   });
+  const blockRef = snapshot.elements[0].ref;
   const sourceOnly = executor.normalizeDecision(
-    { kind: "act", action: { type: "drag", target: "e1" } },
+    { kind: "act", action: { type: "drag", target: blockRef } },
     snapshot,
   );
   assert.equal(sourceOnly.kind, "invalid");
   assert.match(sourceOnly.invalidReason, /destination/i);
 
   const withCoords = executor.normalizeDecision(
-    { kind: "act", action: { type: "drag", target: "e1", toX: 300, toY: 400 } },
+    { kind: "act", action: { type: "drag", target: blockRef, toX: 300, toY: 400 } },
     snapshot,
   );
   assert.equal(withCoords.kind, "act");
@@ -211,7 +217,7 @@ test("dragging is not treated as a consequential action", () => {
   const risk = executor.classifyActionRisk(
     {
       kind: "act",
-      action: { type: "drag", target: "e1", toX: 10, toY: 10 },
+      action: { type: "drag", target: snapshot.elements[0].ref, toX: 10, toY: 10 },
       expectedOutcome: "the block sits in the layout",
     },
     snapshot,
@@ -301,13 +307,18 @@ test("progress earns recovery budget back; pure failure still exhausts it", () =
 });
 
 test("builder rules are present whatever the page turns out to be", () => {
-  // These rules used to be routed in from the URL and the goal, which meant a
-  // design tool on an unrecognised domain, or a campaign editor reached from a
-  // goal that never mentioned one, got none of them. They ride along now.
-  const system = contextRouter.buildDecisionSystem({ task: { goal: "what is the top story", skills: [] } });
-  assert.ok(system.includes("# Builders and visual editors"));
-  assert.match(system, /dragging is the\s+gesture these products are built around/);
-  assert.match(system, /Never conclude a document is empty because the element list looks empty/);
+  // Builder guidance is a skill now, routed from the GOAL text alone — a
+  // builder-shaped task carries the rules before the page is ever seen, so a
+  // design tool on an unrecognised domain still gets every one of them. The
+  // page URL plays no part in the routing.
+  for (const goal of ["design a canva flyer", "put together the newsletter campaign"]) {
+    const skills = contextRouter.routeSkills(goal);
+    assert.ok(skills.includes("builders"), `"${goal}" must route the builders skill`);
+    const system = contextRouter.buildDecisionSystem({ task: { goal, skills }, skills });
+    assert.ok(system.includes("# Builders and visual editors"));
+    assert.match(system, /dragging is the\s+gesture these products are built around/);
+    assert.match(system, /Never conclude a document is empty because the element list looks empty/);
+  }
 });
 
 // ── Not calling correct work a failure ──────────────────────────────────────
@@ -426,8 +437,9 @@ test("scrolling with a target scrolls that container, not the window", async () 
     },
     catalog: [{ id: "el0", tag: "div", label: "Blocks panel", selector: "#panel", scrollable: true }],
   });
-  await controller.getPageState();
-  await controller.scroll("down", 600, "e1");
+  const state = await controller.getPageState();
+  const panel = state.elements.find((e) => e.label === "Blocks panel");
+  await controller.scroll("down", 600, panel.ref);
 
   assert.equal(calls[0].type, "scroll_element");
   assert.equal(calls[0].selector, "#panel");

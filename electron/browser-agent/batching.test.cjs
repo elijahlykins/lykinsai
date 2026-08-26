@@ -8,6 +8,7 @@ const test = require("node:test");
 const assert = require("node:assert");
 
 const batch = require("./runtime/batch.cjs");
+const { nextGeneration } = require("./browser/snapshot.cjs");
 
 test("a ref-free read-only sequence is admitted", () => {
   const out = batch.admitBatch([
@@ -20,9 +21,11 @@ test("a ref-free read-only sequence is admitted", () => {
 });
 
 test("a step carrying an element ref is refused", () => {
+  // Refs are generation-scoped and the counter is process-global, so even a
+  // ref that only exists to be refused is minted, never written down.
   const out = batch.admitBatch([
     { type: "scroll", direction: "down" },
-    { type: "screenshot", target: "e12" },
+    { type: "screenshot", target: `g${nextGeneration()}:12` },
   ]);
   assert.equal(out.admitted, false);
   assert.match(out.reason, /reference/i);

@@ -78,33 +78,51 @@ function item(overrides = {}) {
   };
 }
 
+/** The uid part of a generation-scoped ref like "g7:12". */
+function uidOfRef(ref) {
+  const m = /^g(\d+):(.+)$/.exec(String(ref));
+  assert.ok(m, `${ref} must be a g{generation}:{uid} reference`);
+  return m[2];
+}
+
 test("refs come from uid, not array position", () => {
   const snap = buildSnapshot({
     catalog: [item({ uid: 7, label: "Checkout" }), item({ uid: 4, label: "Help" })],
   });
-  assert.equal(snap.elements[0].ref, "e7");
-  assert.equal(snap.elements[1].ref, "e4");
+  assert.equal(snap.elements[0].uid, "7");
+  assert.equal(snap.elements[1].uid, "4");
+  assert.equal(snap.elements[0].ref, `g${snap.generation}:7`);
+  assert.equal(snap.elements[1].ref, `g${snap.generation}:4`);
 });
 
-test("an element keeps its ref when something is inserted above it", () => {
+test("an element keeps its uid when something is inserted above it", () => {
   const checkout = item({ uid: 7, label: "Checkout" });
   const before = buildSnapshot({ catalog: [checkout] });
   const after = buildSnapshot({ catalog: [item({ uid: 9, label: "Cookie banner" }), checkout] });
-  assert.equal(before.byRef.get("e7").label, "Checkout");
-  assert.equal(after.byRef.get("e7").label, "Checkout", "the ref must still name the same control");
+  const beforeEl = before.elements[0];
+  assert.equal(before.byRef.get(beforeEl.ref).label, "Checkout");
+  // Refs are generation-scoped on purpose, so the full ref changes across
+  // snapshots — the uid is what must survive the insertion.
+  const afterEl = after.elements.find((el) => el.uid === beforeEl.uid);
+  assert.ok(afterEl, "the uid must still be present after the insertion");
+  assert.equal(afterEl.label, "Checkout", "the uid must still name the same control");
+  assert.equal(after.byRef.get(afterEl.ref).label, "Checkout");
+  assert.equal(uidOfRef(afterEl.ref), uidOfRef(beforeEl.ref), "the uid part of the ref must not change");
 });
 
 test("sub-frame refs are namespaced by frame", () => {
   const snap = buildSnapshot({
     catalog: [item({ uid: 3, label: "Outer" }), item({ uid: "7_3", label: "Inner", frameHost: "embed.example" })],
   });
-  assert.equal(snap.elements[0].ref, "e3");
-  assert.equal(snap.elements[1].ref, "e7_3");
+  assert.equal(snap.elements[0].uid, "3");
+  assert.equal(snap.elements[1].uid, "7_3");
+  assert.equal(snap.elements[0].ref, `g${snap.generation}:3`);
+  assert.equal(snap.elements[1].ref, `g${snap.generation}:7_3`);
 });
 
 test("catalog items with no uid still get a usable positional ref", () => {
   const snap = buildSnapshot({ catalog: [item({ uid: undefined, label: "Legacy" })] });
-  assert.match(snap.elements[0].ref, /^e/);
+  assert.match(snap.elements[0].ref, /^g\d+:p1$/);
   assert.equal(snap.byRef.get(snap.elements[0].ref).label, "Legacy");
 });
 
@@ -123,12 +141,18 @@ test("locators prefer a real DOM id, then href, then role+label", () => {
 
 test("byLoc indexes elements by their locator", () => {
   const snap = buildSnapshot({ catalog: [item({ uid: 1, selector: "#pay-now", label: "Pay" })] });
-  assert.equal(snap.byLoc.get("css:#pay-now").ref, "e1");
+  assert.equal(snap.byLoc.get("css:#pay-now").ref, snap.elements[0].ref);
+  assert.equal(snap.byLoc.get("css:#pay-now").uid, "1");
 });
 
 test("the rendered element line carries the locator", () => {
   const snap = buildSnapshot({ catalog: [item({ uid: 7, selector: "#pay-now", label: "Pay" })] });
-  assert.match(formatSnapshotForModel(snap), /\[e7\] button "Pay".*loc=css:#pay-now/);
+  const ref = snap.elements[0].ref;
+  const line = formatSnapshotForModel(snap)
+    .split("\n")
+    .find((l) => l.startsWith(`[${ref}]`));
+  assert.ok(line, "the element line must lead with its ref");
+  assert.match(line, /button "Pay".*loc=css:#pay-now/);
 });
 
 const { createBrowserController } = require("./browser/controller.cjs");
@@ -162,29 +186,40 @@ test("a loc= target resolves to the element carrying that locator", async () => 
   assert.equal(calls[0].label, "Pay");
 });
 
-test("a uid ref still resolves normally", async () => {
+test("a ref from the current snapshot still resolves normally", async () => {
   const { calls, controller } = makeHarness([item({ uid: 7, selector: "#pay-now", label: "Pay" })]);
-  await controller.getPageState();
-  const res = await controller.click("e7");
+  const state = await controller.getPageState();
+  const res = await controller.click(state.elements[0].ref);
   assert.equal(res.ok, true);
   assert.equal(calls[0].label, "Pay");
 });
 
-test("an unknown ref that was on a previous page says so", async () => {
+test("a ref from an earlier observation is stale, and the hint names what it was", async () => {
   const { controller } = makeHarness([item({ uid: 7, selector: "#pay-now", label: "Pay" })]);
-  await controller.getPageState();
+  const first = await controller.getPageState();
+  const payRef = first.elements[0].ref;
   controller.__setCatalog([item({ uid: 9, selector: "#help", label: "Help" })]);
   await controller.getPageState();
-  const res = await controller.click("e7");
+  const res = await controller.click(payRef);
   assert.equal(res.ok, false);
-  assert.equal(res.error, "unknown_reference");
+  assert.equal(res.error, "stale_reference");
   assert.match(res.hint, /Pay/, "the hint must name what the ref used to be");
 });
 
-test("an unknown ref never seen before does not invent history", async () => {
+test("a ref never seen before does not invent history", async () => {
   const { controller } = makeHarness([item({ uid: 7, selector: "#pay-now", label: "Pay" })]);
-  await controller.getPageState();
-  const res = await controller.click("e999");
-  assert.equal(res.error, "unknown_reference");
-  assert.doesNotMatch(String(res.hint || ""), /Pay/);
+  const state = await controller.getPageState();
+  // Current generation, but a uid that was never listed on this page.
+  const unknown = await controller.click(`g${state.generation}:999`);
+  assert.equal(unknown.error, "unknown_reference");
+  assert.doesNotMatch(String(unknown.hint || ""), /Pay/);
+  // A generation this session never minted — another task's ref, or one from
+  // before a restart.
+  const foreign = await controller.click(`g${state.generation + 1000000}:7`);
+  assert.equal(foreign.error, "foreign_reference");
+  assert.doesNotMatch(String(foreign.hint || ""), /Pay/);
+  // The old "e7" shape was never minted by this system at all.
+  const malformed = await controller.click("e999");
+  assert.equal(malformed.error, "malformed_reference");
+  assert.doesNotMatch(String(malformed.hint || ""), /Pay/);
 });

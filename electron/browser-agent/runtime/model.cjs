@@ -72,7 +72,7 @@ const DECISION_SCHEMA = {
             "wait", "screenshot", "dismiss_overlay",
           ],
         },
-        target: { type: "string", description: "Element reference like e12 (click/type/replace_text/select/extract/drag source; optional on scroll to scroll inside that container)" },
+        target: { type: "string", description: "Element reference like g7:12 from the CURRENT snapshot (click/type/replace_text/select/extract/drag source; optional on scroll to scroll inside that container)" },
         targetDescription: {
           type: "string",
           description:
@@ -169,6 +169,39 @@ const DECISION_SCHEMA = {
   required: ["kind"],
   additionalProperties: false,
 };
+
+/**
+ * The decision schema with its action enum narrowed to what the task's
+ * capabilities license. A read-only task's model cannot even express a click:
+ * the disallowed types are absent from the contract it is answering, which is
+ * cheaper and more reliable than instructing it not to use them.
+ *
+ * Returns the shared DECISION_SCHEMA object unchanged when every action is
+ * allowed, so the common case keeps its identity (and any provider-side
+ * schema caching keyed on it).
+ */
+function decisionSchemaFor(allowedActions) {
+  if (!allowedActions || typeof allowedActions.has !== "function") return DECISION_SCHEMA;
+  const fullEnum = DECISION_SCHEMA.properties.action.properties.type.enum;
+  const narrowed = fullEnum.filter((t) => allowedActions.has(t));
+  if (narrowed.length === fullEnum.length) return DECISION_SCHEMA;
+  return {
+    ...DECISION_SCHEMA,
+    properties: {
+      ...DECISION_SCHEMA.properties,
+      action: {
+        ...DECISION_SCHEMA.properties.action,
+        properties: {
+          ...DECISION_SCHEMA.properties.action.properties,
+          type: {
+            ...DECISION_SCHEMA.properties.action.properties.type,
+            enum: narrowed,
+          },
+        },
+      },
+    },
+  };
+}
 
 /**
  * Does this ask need the browser, or can it be answered as it stands?
@@ -426,10 +459,17 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
       };
     },
 
-    async decide({ system, user, imageUrl, signal }) {
+    async decide({ system, user, imageUrl, signal, allowedActions = null }) {
       // Raised with `narration`: the running commentary is a few dozen tokens
       // per round, and a decision truncated mid-JSON is a lost round.
-      const out = await call("decide", { system, user, imageUrl, schema: DECISION_SCHEMA, maxTokens: 1100, signal });
+      const out = await call("decide", {
+        system,
+        user,
+        imageUrl,
+        schema: decisionSchemaFor(allowedActions),
+        maxTokens: 1100,
+        signal,
+      });
       const kind = ["act", "finish", "ask_user", "replan"].includes(out.kind) ? out.kind : "act";
       return {
         kind,
@@ -601,6 +641,7 @@ module.exports = {
   createAgentModel,
   AgentModelUnavailableError,
   normalizeAnswerOptions,
+  decisionSchemaFor,
   PLAN_SCHEMA,
   DECISION_SCHEMA,
   LEARN_SCHEMA,

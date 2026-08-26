@@ -32,7 +32,7 @@ the user inside a real browser.
 Every cycle:
 
 1. **Observe** — read the structured page snapshot (URL, title, tabs,
-   interactive elements, visible text). Element references (`e12`) are only
+   interactive elements, visible text). Element references (`g7:12`) are only
    valid for the snapshot they came from.
 2. **Decide** — choose exactly one next action that makes progress toward the
    current plan step, or decide to finish, ask the user, or replan.

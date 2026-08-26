@@ -87,9 +87,9 @@ async function verifyOutcome({ model, decision, actionResult, before, after, dif
       reason:
         `browser action failed: ${actionResult.error || "unknown error"}` +
         (actionResult.hint ? ` — ${actionResult.hint}` : ""),
-      next: actionResult.error === "stale_reference" || actionResult.error === "unknown_reference"
-        ? "recover"
-        : "recover",
+      // Every controller-reported failure recovers: a bad reference re-observes
+      // and re-aims, and anything else earns one retry before replanning.
+      next: "recover",
       method: "deterministic",
     };
   }
@@ -383,7 +383,11 @@ async function verifyOutcome({ model, decision, actionResult, before, after, dif
   // model to judge.
   if (["click", "click_coord", "press_key"].includes(type) && diff?.stateChanges?.length) {
     const target = String(action.target || "");
-    const onTarget = target ? diff.stateChanges.find((c) => c.ref === target) : null;
+    // The action's ref belongs to the BEFORE generation and the diff entries
+    // carry AFTER-generation refs, so refs can never match across the two.
+    // The uid is the document-lifetime identity that says "same node".
+    const targetUid = target ? before?.byRef?.get?.(target)?.uid || "" : "";
+    const onTarget = targetUid ? diff.stateChanges.find((c) => c.uid === targetUid) : null;
     if (onTarget) {
       return {
         success: true,

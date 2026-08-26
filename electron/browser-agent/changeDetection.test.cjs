@@ -224,9 +224,11 @@ const noModel = { async verify() { throw new Error("the verifier should not need
 test("a control reporting its own new state verifies the click", async () => {
   const before = snap([{ label: "Filters", expanded: false }]);
   const after = snap([{ label: "Filters", expanded: true }]);
+  // The action carries the ref the model aimed with — a BEFORE-generation ref;
+  // the verifier maps it to the uid to find the same node in the diff.
   const verdict = await verifier.verifyOutcome({
     model: noModel,
-    decision: { action: { type: "click", target: "e1" }, expectedOutcome: "" },
+    decision: { action: { type: "click", target: before.elements[0].ref }, expectedOutcome: "" },
     actionResult: { ok: true },
     before,
     after,
@@ -244,7 +246,7 @@ test("an expectation written about state is confirmed by the state diff", async 
   const verdict = await verifier.verifyOutcome({
     model: noModel,
     decision: {
-      action: { type: "select", target: "e1" },
+      action: { type: "select", target: before.elements[0].ref },
       expectedOutcome: "the advanced options section opened",
     },
     actionResult: { ok: true },
@@ -263,7 +265,7 @@ test("a genuinely dead click is still a failure", async () => {
   const after = snap(items);
   const verdict = await verifier.verifyOutcome({
     model: noModel,
-    decision: { action: { type: "click", target: "e1" }, expectedOutcome: "the form submits" },
+    decision: { action: { type: "click", target: before.elements[0].ref }, expectedOutcome: "the form submits" },
     actionResult: { ok: true },
     before,
     after,
@@ -339,7 +341,7 @@ function clickFiltersTask(fake) {
     async plan() {
       return { plan: ["Open the filters"], constraints: [], knownFacts: {}, skills: [], clarification: "" };
     },
-    async decide() {
+    async decide({ user }) {
       round += 1;
       const base = {
         kind: "act",
@@ -355,7 +357,11 @@ function clickFiltersTask(fake) {
         candidateResults: [],
       };
       if (round === 1) {
-        return { ...base, action: { type: "click", target: "e1" }, expectedOutcome: "the filters panel opens" };
+        // Aim with the ref the CURRENT BROWSER STATE hands the model — refs
+        // are generation-scoped now, so a hardcoded one would never resolve.
+        const m = /\[(g\d+:[^\]]+)\] button "Filters"/.exec(String(user || ""));
+        assert.ok(m, "the Filters button must appear in the state shown to the model");
+        return { ...base, action: { type: "click", target: m[1] }, expectedOutcome: "the filters panel opens" };
       }
       return { ...base, kind: "finish", answer: "The filters panel is open." };
     },

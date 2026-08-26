@@ -136,11 +136,20 @@ function harness(ownership) {
   return { calls, controller: createBrowserController({ webContents, actuator, ownership }) };
 }
 
+/**
+ * Refs are generation-scoped (`g{gen}:{uid}`) and the generation counter is
+ * process-global, so a ref is only ever obtained from the snapshot that
+ * minted it — never hardcoded.
+ */
+function firstRef(state) {
+  return state.elements[0].ref;
+}
+
 test("the controller acts normally when the agent holds control", async () => {
   const store = createOwnership();
   const { calls, controller } = harness(store);
-  await controller.getPageState();
-  const res = await controller.click("e1");
+  const state = await controller.getPageState();
+  const res = await controller.click(firstRef(state));
   assert.equal(res.ok, true);
   assert.deepEqual(calls, ["click"]);
 });
@@ -148,9 +157,9 @@ test("the controller acts normally when the agent holds control", async () => {
 test("a mutating action is refused while the user holds control", async () => {
   const store = createOwnership();
   const { calls, controller } = harness(store);
-  await controller.getPageState();
+  const state = await controller.getPageState();
   store.seize("user clicked");
-  const res = await controller.click("e1");
+  const res = await controller.click(firstRef(state));
   assert.equal(res.ok, false);
   assert.equal(res.error, "user_controlling");
   assert.deepEqual(calls, [], "nothing may reach the actuator");
@@ -177,10 +186,10 @@ test("observing is always allowed — the agent may look while the user drives",
 test("the agent's own click does not seize control from itself", async () => {
   const store = createOwnership();
   const { controller } = harness(store);
-  await controller.getPageState();
+  const state = await controller.getPageState();
   // Simulate the input-event Electron raises for the agent's synthetic click,
   // arriving while the action is still in flight.
-  const original = controller.click("e1");
+  const original = controller.click(firstRef(state));
   store.noteInput("user");
   await original;
   assert.equal(store.state(), "agent", "the suppression window must cover the agent's own input");
@@ -188,12 +197,23 @@ test("the agent's own click does not seize control from itself", async () => {
 
 test("a controller built without an ownership store behaves exactly as before", async () => {
   const { calls, controller } = harness(undefined);
-  await controller.getPageState();
-  assert.equal((await controller.click("e1")).ok, true);
+  const state = await controller.getPageState();
+  assert.equal((await controller.click(firstRef(state))).ok, true);
   assert.deepEqual(calls, ["click"]);
 });
 
 const { runBrowserAgentTask } = require("./index.cjs");
+
+/**
+ * The current-generation ref for this round, read off the observation text the
+ * loop hands the model — element lines look like `[g7:1] button "Go"`. Refs
+ * are re-minted per snapshot, so the model must re-read one every round.
+ */
+function refFromObservation(user) {
+  const m = /\[(g\d+:[^\]\s]+)\]/.exec(String(user || ""));
+  assert.ok(m, "the observation must list at least one element ref");
+  return m[1];
+}
 
 /** A model that always clicks, so the run reaches the gate immediately. */
 function clickingModel() {
@@ -203,9 +223,9 @@ function clickingModel() {
     // both unguarded right after the decide call, so a model that omits them
     // makes every test throw "decision.factsLearned is not iterable" long
     // before it reaches the ownership gate.
-    decide: async () => ({
+    decide: async ({ user }) => ({
       kind: "act",
-      action: { type: "click", target: "e1" },
+      action: { type: "click", target: refFromObservation(user) },
       reason: "click",
       expectedOutcome: "something",
       risk: "low",
@@ -246,12 +266,18 @@ test("a run resumes when the user hands the browser back", async () => {
     controller,
     model: {
       ...clickingModel(),
-      decide: async () => {
+      decide: async ({ user }) => {
         calls += 1;
         const base = { factsLearned: [], candidateResults: [] };
         return calls > 1
           ? { ...base, kind: "finish", answer: "done", reason: "r", risk: "read" }
-          : { ...base, kind: "act", action: { type: "click", target: "e1" }, reason: "click", risk: "low" };
+          : {
+              ...base,
+              kind: "act",
+              action: { type: "click", target: refFromObservation(user) },
+              reason: "click",
+              risk: "low",
+            };
       },
     },
     maxRounds: 4,

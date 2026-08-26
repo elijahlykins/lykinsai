@@ -102,9 +102,10 @@ test("a coordinate drag after a resize is refused; a ref-to-ref drag is not", as
   assert.equal(calls.length, 0);
   // Refs re-resolve by selector at act time, so geometry drift does not
   // invalidate them — but the observation was invalidated above, so re-observe
-  // first, exactly as the loop would.
-  await controller.getPageState();
-  const refDrag = await controller.drag("e1", "e1");
+  // first, exactly as the loop would, and aim with a ref from that snapshot.
+  const fresh = await controller.getPageState();
+  const ref = fresh.elements[0].ref;
+  const refDrag = await controller.drag(ref, ref);
   assert.equal(refDrag.ok, true, "ref-aimed actions must not pay the layout toll");
   assert.equal(calls.length, 1);
 });
@@ -120,9 +121,9 @@ test("ordinary drift-free coordinate clicks pass through untouched", async () =>
 
 test("ref clicks are never blocked by viewport drift", async () => {
   const { calls, controller, resizeTo } = makeHarness();
-  await controller.getPageState();
+  const state = await controller.getPageState();
   resizeTo(1120, 900);
-  const res = await controller.click("e1");
+  const res = await controller.click(state.elements[0].ref);
   assert.equal(res.ok, true, "selector re-resolution makes ref clicks resize-tolerant");
   assert.equal(calls.length, 1);
 });

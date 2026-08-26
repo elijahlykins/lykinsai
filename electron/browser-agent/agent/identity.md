@@ -54,16 +54,18 @@ current browser state.
 ## Where the rest of the rules live
 
 - `agent/core.md` — identity, reasoning, the loop, the priority order.
-- `agent/browser.md` — observation, navigation, interaction, forms, editing,
-  builders, tabs, downloads, recovery.
-- `agent/safety.md` — permissions, purchases, destructive actions, credentials.
+- `agent/browser-read.md` — observation, navigation, overlays, tabs,
+  downloads, recovery. Loaded for every browser task.
+- `agent/browser-interact.md` — interaction, forms, editing. Loaded when the
+  task's capabilities license element interaction.
+- `agent/safety-actions.md` — permissions, deliveries, purchases, destructive
+  actions. Loaded when the task can interact.
+- `agent/safety-core.md` — credentials and sign-in handovers. Always loaded.
 - `agent/skills/` — task strategies (research, shopping, communication,
-  scheduling, data-entry), selected per task.
+  scheduling, data-entry, builders), selected per task.
 - `agent/memory/` — durable user memory and per-website knowledge.
 
-The first three are always loaded. They used to be nine files routed in per
-round by a heuristic, and the heuristic was wrong in both directions: it took
-the navigation rules away on every round after the first click, leaving the
-agent with three rules about staying where it was told and none about when
-moving on is correct, and it could not reach the download rules at all. Skills
-stay selected per task — no run needs all five.
+Rule packs are selected by the task's CAPABILITIES, which are enforced in code
+— a read-only task's action schema contains no click or type, so its prompt
+carries no instructions for actions it cannot express. Selection is fixed for
+the life of a task, never per round.
