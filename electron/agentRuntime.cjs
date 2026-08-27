@@ -55,6 +55,7 @@ const { runRemoteAgentTask, looksLikeRemoteSystemAsk } = require("./remote/remot
 const { connectRemoteSession } = require("./remote/remoteConnect.cjs");
 const { createSshTransport } = require("./remote/sshTransport.cjs");
 const { createRemoteTargetStore } = require("./remote/remoteTargetStore.cjs");
+const { resolveRemoteTargetFromAsk: resolveSavedRemoteTarget } = require("./remote/remoteTarget.cjs");
 const artifactBuildIntent = require("../lib/artifactBuildIntent.cjs");
 const workDestination = require("../lib/agentWorkDestination.cjs");
 const {
@@ -4610,23 +4611,7 @@ function createAgentRuntime(deps) {
    * "unknown" — conservative policy — until the user saves and classifies it).
    */
   function resolveRemoteTargetFromAsk(ask) {
-    const store = remoteTargets();
-    const q = String(ask || "").toLowerCase();
-    for (const t of store.list()) {
-      const name = String(t.name || "").trim().toLowerCase();
-      if (name && name.length >= 3 && q.includes(name)) return { target: t, saved: true };
-    }
-    const address = String(ask || "").match(/([A-Za-z0-9._-]+@[A-Za-z0-9._-]+(?::\d{1,5})?)/);
-    if (address) {
-      const resolved = store.resolveAdHoc(address[1]);
-      if (resolved.target) return { target: resolved.target, saved: resolved.saved };
-    }
-    const hostOnly = String(ask || "").match(/\bssh\s+(?:into|to|on)?\s*([A-Za-z0-9._-]{3,})/i);
-    if (hostOnly && hostOnly[1].includes(".")) {
-      const resolved = store.resolveAdHoc(hostOnly[1]);
-      if (resolved.target) return { target: resolved.target, saved: resolved.saved };
-    }
-    return { target: null, saved: false };
+    return resolveSavedRemoteTarget(ask, remoteTargets());
   }
 
   /** Canonical Task for a remote run — mirrors ensureLocalTask. */

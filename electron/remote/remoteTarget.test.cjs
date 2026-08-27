@@ -13,6 +13,7 @@ const {
   modelView,
   publicView,
   applyModelSuggestion,
+  resolveRemoteTargetFromAsk,
 } = require("./remoteTarget.cjs");
 const { createRemoteTargetStore, STORE_FILE } = require("./remoteTargetStore.cjs");
 
@@ -251,4 +252,22 @@ test("update never silently clears trust", () => {
   store.trustHostKey(t.id, "SHA256:abc");
   const updated = store.update(t.id, { name: "Renamed", trustedHostFingerprint: "" });
   assert.equal(updated.trusted, true);
+});
+
+test("remote ask does not substring-select prod-backup for prod", () => {
+  const prod = createRemoteTarget({ id: "rtarget_prod", name: "prod", host: "prod.example.com" });
+  const backup = createRemoteTarget({ id: "rtarget_backup", name: "prod-backup", host: "backup.example.com" });
+  const store = { list: () => [backup, prod] };
+  const exact = resolveRemoteTargetFromAsk("prod", store);
+  assert.equal(exact.target.id, prod.id);
+  const backupAsk = resolveRemoteTargetFromAsk("ssh into prod-backup", store);
+  assert.equal(backupAsk.target.id, backup.id);
+  const ambiguous = resolveRemoteTargetFromAsk("use api", {
+    list: () => [
+      createRemoteTarget({ name: "api", host: "api-a.example.com" }),
+      createRemoteTarget({ name: "api", host: "api-b.example.com" }),
+    ],
+  });
+  assert.equal(ambiguous.target, null);
+  assert.equal(ambiguous.reason, "ambiguous");
 });

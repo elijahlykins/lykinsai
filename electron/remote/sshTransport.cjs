@@ -194,6 +194,11 @@ function createSshTransport({
       "-o", "PreferredAuthentications=publickey",
       "-o", "NumberOfPasswordPrompts=0",
     ];
+    const honorUserConfig = target.authRef?.kind === "sshConfigHost";
+    if (!honorUserConfig) {
+      args.push("-F", "/dev/null");
+      args.push("-o", `HostName=${target.host}`);
+    }
     if (knownHostsFile) args.push("-o", `UserKnownHostsFile=${knownHostsFile}`);
     args.push(...authRefToArgs(target.authRef));
     return args;
