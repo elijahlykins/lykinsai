@@ -58,6 +58,7 @@ function cleanList(value, limit) {
 
 function sanitizeBot(bot) {
   if (!bot || typeof bot !== "object") return null;
+  const connectionIds = cleanConnectionIds(bot.connectionIds);
   const out = {
     id: String(bot.id || "").trim().slice(0, 120),
     name: String(bot.name || "").trim().slice(0, 60),
@@ -67,7 +68,38 @@ function sanitizeBot(bot) {
     eyes: String(bot.eyes || "").trim().slice(0, 60),
     color: String(bot.color || "").trim().slice(0, 60),
   };
+  if (connectionIds !== undefined) out.connectionIds = connectionIds;
   return out.id || out.name || out.persona ? out : null;
+}
+
+function cleanConnectionIds(value) {
+  if (value === undefined || value === null) return undefined;
+  const list = Array.isArray(value) ? value : [value];
+  return [
+    ...new Set(
+      list
+        .map((item) => String(item || "").trim())
+        .filter((id) => {
+          if (!id || id.length > 80) return false;
+          if (/token|secret|bearer|password/i.test(id)) return false;
+          if (id.includes(".")) return false;
+          return /^[a-zA-Z0-9_-]+$/.test(id);
+        }),
+    ),
+  ].slice(0, 20);
+}
+
+/**
+ * Trusted Bot/Routine allowlists are the authority.
+ * Request-supplied ids may only narrow; they cannot expand.
+ */
+function intersectConnectionIds(trusted, requested) {
+  const trustedIds = cleanConnectionIds(trusted);
+  const requestedIds = cleanConnectionIds(requested);
+  if (trustedIds === undefined) return requestedIds;
+  if (requestedIds === undefined) return trustedIds;
+  const allowed = new Set(trustedIds);
+  return requestedIds.filter((id) => allowed.has(id));
 }
 
 /**
@@ -121,6 +153,9 @@ function compileBotTask(input = {}, options = {}) {
       chatId: String(input.chatId || "").trim(),
       agentId: String(input.agentId || "").trim(),
       parentTaskId: String(input.parentTaskId || "").trim(),
+      ...(intersectConnectionIds(bot?.connectionIds, input.connectionIds) !== undefined
+        ? { connectionIds: intersectConnectionIds(bot?.connectionIds, input.connectionIds) }
+        : {}),
     },
     collaborators: (Array.isArray(input.teammates) ? input.teammates : [])
       .map((teammate) => ({
@@ -405,6 +440,17 @@ function compileRoutineTask(input = {}, options = {}) {
       routineRunId: String(input.runId || "").trim(),
       chatId: String(routine.bot?.chatId || "").trim(),
       agentId: String(input.agentId || "").trim(),
+      ...(intersectConnectionIds(
+        routine.connectionIds ?? bot?.connectionIds,
+        input.connectionIds,
+      ) !== undefined
+        ? {
+            connectionIds: intersectConnectionIds(
+              routine.connectionIds ?? bot?.connectionIds,
+              input.connectionIds,
+            ),
+          }
+        : {}),
     },
     status: TASK_STATUSES.CREATED,
     createdAt: now,
@@ -427,4 +473,6 @@ module.exports = {
   DEFAULT_SCOPE,
   DEFAULT_DO_NOT,
   ROUTINE_DEFAULT_TIMEOUT_MS,
+  cleanConnectionIds,
+  intersectConnectionIds,
 };

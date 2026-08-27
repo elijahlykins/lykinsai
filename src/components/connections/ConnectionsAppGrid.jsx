@@ -16,6 +16,7 @@ import OAuthConnectDialog from "@/components/connections/OAuthConnectDialog";
 import TokenConnectDialog from "@/components/connections/TokenConnectDialog";
 import CustomApiDialog from "@/components/connections/CustomApiDialog";
 import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
+import McpConnectionsPanel from "@/components/connections/McpConnectionsPanel";
 
 // Unified "app store" view for the Connections page. Everything LYKN
 // can plug into renders as the same tile shape so the answer to "what
@@ -494,6 +495,12 @@ export default function ConnectionsAppGrid({
           </div>
         )}
       </section>
+
+      {user && !compactGrid && (
+        <div id="mcp-connections" className={embedded ? "mb-5" : "mb-6"}>
+          <McpConnectionsPanel user={user} embedded={embedded} />
+        </div>
+      )}
 
       {/* ── Launcher card ──────────────────────────────────────────── */}
       {/* When the picker is inline (Settings or wake preview) it replaces the

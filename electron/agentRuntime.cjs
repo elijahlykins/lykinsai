@@ -11107,7 +11107,11 @@ function createAgentRuntime(deps) {
         canonicalTask = taskRuntime.createBotTask({
           objective: String(request.objective || botAskCore(q) || q).trim(),
           capabilities: defaultBotCapabilities({ localMode: localModeEnabled() }),
-          bot: { ...agent.botProfile, ...(bot || {}) },
+          bot: {
+            ...agent.botProfile,
+            ...(bot || {}),
+            connectionIds: agent.botProfile.connectionIds,
+          },
           botId: request.botId || bot?.id || agent.botProfile.id,
           botTaskId,
           chatId: request.chatId || bot?.chatId || agent.botProfile.chatId,

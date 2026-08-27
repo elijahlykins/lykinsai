@@ -74,6 +74,7 @@ import { registerStripeWebhook } from './server/routes/stripeWebhook.routes.js';
 import { registerAssistRoutes } from './server/routes/assist.routes.js';
 import { registerCustomConnectionsRoutes } from './server/routes/connections.routes.js';
 import { registerConnectionsOAuthRoutes } from './server/routes/connectionsOAuth.routes.js';
+import { registerMcpRoutes, getMcpManager } from './server/routes/mcp.routes.js';
 import {
   registerDesktopRoutes,
   getBrowserControlProvider,
@@ -154,7 +155,9 @@ import {
 } from './mcp-tools/chatIntentSignals.js';
 import {
   resolveChatTurnDisclosure,
+  composeWithExternalTools,
 } from './mcp-tools/firstPartyCapabilities.js';
+import { resolveMcpToolsForTurn, bindMcpChatHandlers } from './lib/mcp/chatTurn.js';
 import {
   buildCapabilityToolGuidance,
   buildSlimChatToolGuidance,
@@ -6184,6 +6187,7 @@ const PROJECT_WRITE_TOOLS = new Set([
 // ── Custom connections — extracted to server/routes/connections.routes.js (Wave 2)
 // 5 routes register here, in their original order.
 registerCustomConnectionsRoutes(app, { requireAuth, supabaseAdmin, invalidateConnectedToolsCache });
+registerMcpRoutes(app, { requireAuth, supabaseAdmin, PORT });
 
 registerCustomModelRoutes(app, { requireAuth, supabaseAdmin });
 
@@ -8862,6 +8866,8 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     /** True when first-party disclosure attached a small tool set (slim guidance). */
     let streamLeanToolSet = false;
     let streamDisclosure = null;
+    let mcpChatTools = [];
+    let mcpTurn = null;
     let model = normalizedModel;
     console.log('[LYKN-STREAM] workspaceContext received:', workspaceContext ? `${String(workspaceContext).length} chars` : 'EMPTY/MISSING');
 
@@ -9112,6 +9118,48 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
             ? ` fallback=${streamDisclosure.fallback}`
             : ''),
       );
+    }
+    if (
+      req.user?.id &&
+      !forceImage &&
+      !translateMode &&
+      exclusiveComposerMode !== 'image' &&
+      exclusiveComposerMode !== 'translate'
+    ) {
+      try {
+        mcpTurn = await resolveMcpToolsForTurn({
+          manager: getMcpManager(supabaseAdmin),
+          userId: req.user.id,
+          text: String(text || ''),
+          botConnectionIds: undefined,
+        });
+        if (mcpTurn.tools.length) {
+          const bound = bindMcpChatHandlers(mcpTurn.tools, mcpTurn.bindings, {
+            manager: getMcpManager(supabaseAdmin),
+            userId: req.user.id,
+            text: String(text || ''),
+          });
+          const composed = composeWithExternalTools(
+            Array.isArray(streamChatToolNames) ? streamChatToolNames : [],
+            bound,
+          );
+          mcpChatTools = composed.externalTools;
+          streamChatToolNames = composed.toolNames;
+          streamDisclosure = {
+            ...(streamDisclosure || {}),
+            externalTools: composed.externalTools,
+            toolNames: composed.toolNames,
+            keepToolsOn:
+              composed.firstPartyToolNames.length > 0 || composed.externalTools.length > 0,
+          };
+          if (streamDisclosure.keepToolsOn) useTools = true;
+          console.log(
+            `🔌 Stream: MCP tools (${mcpChatTools.length}): ${mcpChatTools.map((t) => t.name).join(', ')}`,
+          );
+        }
+      } catch (e) {
+        console.warn('⚠️ mcp turn resolve skipped:', e?.message || e);
+      }
     }
 
     // Custom AI instructions are Studio+. Strip them for basic-tier callers.
@@ -10071,6 +10119,34 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // knows WHEN to call. The descriptors themselves go on the provider
     // request as `tools[]` / `functionDeclarations` — that's the schema;
     // this is the policy.
+    if (mcpTurn?.resolution?.ambiguous) {
+      prompt +=
+        '\n\n[MCP CONNECTIONS — AMBIGUOUS ACCOUNT]\n' +
+        'Multiple equivalent external accounts could perform this write. Ask the user which connection to use. Do not pick one arbitrarily. Candidates: ' +
+        (mcpTurn.resolution.candidates || [])
+          .map((c) => `${c.connectionName} (${c.connectionId})`)
+          .join(', ') +
+        '.';
+    } else if (
+      mcpTurn?.resolution?.reason === 'missing_capability' ||
+      mcpTurn?.resolution?.reason === 'connection_required'
+    ) {
+      const names = (mcpTurn.suggestions || []).map((item) => item.name).filter(Boolean);
+      try {
+        getMcpManager(supabaseAdmin).noteAttention(req.user.id, {
+          type: 'missing_capability',
+          title: names[0] ? `Connect ${names[0]}` : 'Connect a service',
+          catalogId: mcpTurn.suggestions?.[0]?.catalogId || null,
+          needs: mcpTurn.resolution.needs || [],
+        });
+      } catch {
+        /* attention is best effort */
+      }
+      prompt +=
+        '\n\n[MCP CONNECTIONS — NEEDS CONNECTION]\n' +
+        'This task needs an external connection the user does not have yet. Tell them which service to connect in Settings → Connections. Do not invent OAuth URLs. Do not browse or install MCP servers. Do not pretend Vault notes or the browser are a live substitute. ' +
+        (names.length ? `Suggested services: ${names.join(', ')}.` : '');
+    }
     if (useTools) {
       const turnCapabilities = streamDisclosure?.capabilities || [];
       if (streamLeanToolSet) {
@@ -11380,6 +11456,10 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
               allowStyleChange:
                 redesignArtifactAsk || buildModeFresh || styleChangeArtifactAsk,
             });
+            if (mcpChatTools.length) {
+              base.extraChatTools = mcpChatTools;
+              base.extraChatToolsByName = Object.fromEntries(mcpChatTools.map((t) => [t.name, t]));
+            }
             // Remotion renders (lykn_render_video) run 1-4 real minutes with
             // no provider stream — ping the stall watchdog on every frame and
             // surface throttled percent updates so the client sees progress.
