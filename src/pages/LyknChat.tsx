@@ -50,6 +50,7 @@ import SubAgentTasksStrip from "@/components/lyknChat/SubAgentTasksStrip";
 import MobileLyknChat from "@/components/lyknChat/MobileLyknChat";
 import { useLyknChatPersistence, makeDefaultNotesPages } from "@/hooks/useLyknChatPersistence";
 import { fetchMostRecentLyknChat } from "@/lib/lyknChat/fetchLyknChatsWithContext";
+import { shouldReplaceProvisionalChat, provisionalChatHasUserMessages } from "@/lib/lyknChat/resumeOwnership";
 import { useChatEngine } from "@/hooks/useChatEngine";
 import StudioImagineMode from "@/components/lyknChat/StudioImagineMode";
 import { CUSTOM_MODELS_ENABLED } from "@/lib/customModelsEnabled";
@@ -178,6 +179,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   /* Shared chat state (lifted here so both useLyknChatPersistence and useChatEngine can use them) */
   const [chatMessages, setChatMessages] = useState<PromptMessage[]>([]);
   const chatMessagesRef = useRef<PromptMessage[]>([]);
+  const resumeGuardRef = useRef({ isChatLoading: false, isSending: false });
   const aiThreadRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
   const convoSummaryRef = useRef<string>("");
   const convoTurnsSinceSummaryRef = useRef(0);
@@ -291,7 +293,16 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         targetId = provisionalId;
       }
 
-      if (!cancelled && targetId !== provisionalId) {
+      if (
+        !cancelled &&
+        shouldReplaceProvisionalChat({
+          targetId,
+          provisionalId,
+          isChatLoading: resumeGuardRef.current.isChatLoading,
+          isSending: resumeGuardRef.current.isSending,
+          hasUserMessages: provisionalChatHasUserMessages(chatMessagesRef.current),
+        })
+      ) {
         nav(`/chat/${targetId}`, { replace: true });
       }
     })();
@@ -607,6 +618,8 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     toggleAiExpanded, toggleUserPromptExpanded, getCollapsedPreview,
     buildChatMarkdownComponents,
   } = chatEngine;
+  resumeGuardRef.current.isChatLoading = isChatLoading;
+  resumeGuardRef.current.isSending = isChatLoading;
 
   const {
     fileInputRef,

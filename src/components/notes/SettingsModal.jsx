@@ -80,7 +80,7 @@ const NAV_ITEMS = [
   { id: 'installedApps', title: 'Apps', icon: LayoutGrid, keywords: 'apps installed built build mode generated permissions storage data uninstall remove notes app' },
   { id: 'privacy', title: 'Privacy', icon: Lock, keywords: 'policy cookies terms dpa legal sessions devices sign out' },
   { id: 'appearance', title: 'Appearance', icon: Palette, keywords: 'theme dark light system swatch accent color hue custom wallpaper background photo desktop widgets glass blur dim density typeface font corner radius motion contrast dividers icons chat bar size shape bubble message text bigger smaller pill rectangle rounded send button arrow icon glyph circle square' },
-  { id: 'integrations', title: 'Integrations', icon: Plug, keywords: 'apps api mcp google slack notion connect connections' },
+  { id: 'integrations', title: 'Connections', icon: Plug, keywords: 'apps api mcp google slack notion connect connections marketplace' },
   { id: 'billing', title: 'Billing', icon: CreditCard, keywords: 'payment plan subscription stripe upgrade invoice cancel' },
   { id: 'keyboard', title: 'Keyboard', icon: Keyboard, keywords: 'shortcuts hotkey command overlay keys' },
   { id: 'advanced', title: 'Advanced', icon: SlidersHorizontal, keywords: 'import export reset defaults support help chatgpt claude zip' },
@@ -104,7 +104,7 @@ const VIEW_TITLES = {
   installedApps: 'Apps',
   privacy: 'Privacy',
   appearance: 'Appearance',
-  integrations: 'Integrations',
+  integrations: 'Connections',
   billing: 'Billing',
   keyboard: 'Keyboard',
   advanced: 'Advanced',
@@ -508,6 +508,12 @@ export default function SettingsModal({
       params.get('section') === 'connections';
     if (wantsConnections) setView('integrations');
   }, [isOpen, location.hash, location.search]);
+
+  useEffect(() => {
+    const onOpen = () => setView('integrations');
+    window.addEventListener('lykn-open-connections', onOpen);
+    return () => window.removeEventListener('lykn-open-connections', onOpen);
+  }, []);
 
   const openBillingPortal = useCallback(async (flow) => {
     if (portalBusy) return;

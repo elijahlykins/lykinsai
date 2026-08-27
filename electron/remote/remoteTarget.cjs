@@ -264,11 +264,57 @@ function applyModelSuggestion(currentEnvironment, suggestedEnvironment) {
   return { environment: current, changed: false };
 }
 
+/**
+ * Resolve a human ask onto a saved target by durable identity, not substring.
+ * Exact id, then exact name, then whole-token name/host. Ambiguous matches
+ * return no target so the caller must ask.
+ */
+function resolveRemoteTargetFromAsk(ask, store) {
+  const raw = String(ask || "").trim();
+  if (!raw) return { target: null, saved: false, reason: "empty" };
+  const list = typeof store?.list === "function" ? store.list() : [];
+  const tokens = raw.toLowerCase().split(/[^a-z0-9._:-]+/).filter(Boolean);
+  const exactId = list.filter((target) => target.id && raw === target.id);
+  if (exactId.length === 1) return { target: exactId[0], saved: true };
+  if (exactId.length > 1) return { target: null, saved: true, reason: "ambiguous", matches: exactId };
+
+  const exactName = list.filter((target) => {
+    const name = String(target.name || "").trim().toLowerCase();
+    return name && name === raw.toLowerCase();
+  });
+  if (exactName.length === 1) return { target: exactName[0], saved: true };
+  if (exactName.length > 1) return { target: null, saved: true, reason: "ambiguous", matches: exactName };
+
+  const tokenHits = list.filter((target) => {
+    const name = String(target.name || "").trim().toLowerCase();
+    const host = String(target.host || "").trim().toLowerCase();
+    const id = String(target.id || "").trim().toLowerCase();
+    return tokens.includes(name) || tokens.includes(host) || tokens.includes(id);
+  });
+  if (tokenHits.length === 1) return { target: tokenHits[0], saved: true };
+  if (tokenHits.length > 1) return { target: null, saved: true, reason: "ambiguous", matches: tokenHits };
+
+  if (typeof store?.resolveAdHoc === "function") {
+    const address = raw.match(/([A-Za-z0-9._-]+@[A-Za-z0-9._-]+(?::\d{1,5})?)/);
+    if (address) {
+      const resolved = store.resolveAdHoc(address[1]);
+      if (resolved.target) return { target: resolved.target, saved: resolved.saved };
+    }
+    const hostOnly = raw.match(/\bssh\s+(?:into|to|on)?\s*([A-Za-z0-9._-]{3,})/i);
+    if (hostOnly && hostOnly[1].includes(".")) {
+      const resolved = store.resolveAdHoc(hostOnly[1]);
+      if (resolved.target) return { target: resolved.target, saved: resolved.saved };
+    }
+  }
+  return { target: null, saved: false, reason: "unresolved" };
+}
+
 module.exports = {
   DEFAULT_SSH_PORT,
   ENVIRONMENT_STRICTNESS,
   createRemoteTarget,
   parseAdHocTarget,
+  resolveRemoteTargetFromAsk,
   sanitizeAuthRef,
   sanitizeFingerprint,
   modelView,

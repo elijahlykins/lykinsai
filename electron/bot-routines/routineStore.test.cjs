@@ -54,6 +54,35 @@ test("create → restart → the routine is still there, trigger intact", async 
   assert.equal(loaded.enabled, true);
 });
 
+test("a routine can reference a connectionId without storing a secret", () => {
+  const store = makeStore();
+  const routine = sampleRoutine(store, {
+    connectionIds: ["conn_work_gmail", "Bearer secret-token-value"],
+  });
+  assert.deepEqual(routine.connectionIds, ["conn_work_gmail"]);
+  const json = JSON.stringify(routine);
+  assert.ok(!json.includes("Bearer"));
+  assert.ok(!json.includes("secret-token"));
+});
+
+test("a routine references a learned workflow instead of duplicating it", () => {
+  const store = makeStore();
+  const routine = sampleRoutine(store, {
+    workflowId: "workflow_weekly_report",
+    workflowVersion: 3,
+    instructions: 'Run learned workflow "Weekly Vendor Report".',
+    approvalPolicy: "preserve_executor_security_gates",
+  });
+  assert.equal(routine.workflowId, "workflow_weekly_report");
+  assert.equal(routine.workflowVersion, 3);
+  assert.equal(routine.approvalPolicy, "preserve_executor_security_gates");
+  assert.ok(!JSON.stringify(routine).includes("capturedEvents"));
+
+  const rejected = sampleRoutine(store, { workflowId: "Bearer secret-token", workflowVersion: 4 });
+  assert.equal(rejected.workflowId, undefined);
+  assert.equal(rejected.workflowVersion, undefined);
+});
+
 test("an invalid trigger cannot be persisted", () => {
   const store = makeStore();
   assert.throws(() => sampleRoutine(store, { trigger: { type: "telepathy" } }), TypeError);

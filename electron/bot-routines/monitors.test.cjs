@@ -12,7 +12,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { createRoutineStore } = require("./routineStore.cjs");
-const { createMonitorRuntime } = require("./monitors.cjs");
+const { createMonitorRuntime, MAX_MONITORS } = require("./monitors.cjs");
 
 let dir;
 test.beforeEach(() => {
@@ -521,4 +521,29 @@ test("monitor state never persists screenshots or page text", async () => {
   assert.equal(state.screenshot, undefined);
   assert.equal(state.pageText, undefined);
   assert.doesNotMatch(JSON.stringify(state), /data:image/);
+});
+
+test("the next monitor past capacity is not silently dropped", () => {
+  const world = makeWorld();
+  const created = [];
+  for (let i = 0; i < MAX_MONITORS; i += 1) {
+    created.push(fsRoutine(world.store, { name: `Watch ${i}`, trigger: { type: "filesystem", path: `~/Downloads/${i}`, event: "created", pattern: "*.pdf" } }));
+    const synced = world.monitors.syncRoutine(created[i].id);
+    assert.equal(synced.ok, true);
+  }
+  assert.equal(world.monitors.monitorCount(), MAX_MONITORS);
+  const overflow = fsRoutine(world.store, {
+    name: "Overflow",
+    trigger: { type: "filesystem", path: "~/Downloads/overflow", event: "created", pattern: "*.pdf" },
+  });
+  const denied = world.monitors.syncRoutine(overflow.id);
+  assert.equal(denied.ok, false);
+  assert.equal(denied.error, "monitor_capacity_reached");
+  assert.equal(world.monitors.monitorCount(), MAX_MONITORS);
+  assert.equal(world.store.getMonitorState(overflow.id).status, "capacity_reached");
+  world.store.remove(created[0].id);
+  world.monitors.syncRoutine(created[0].id);
+  const resumed = world.monitors.syncRoutine(overflow.id);
+  assert.equal(resumed.ok, true);
+  assert.equal(world.monitors.isActive(overflow.id), true);
 });

@@ -83,8 +83,14 @@ function createRoutineRuntime({
   function publicRoutine(routine) {
     if (!routine) return null;
     const monitor = store.getMonitorState(routine.id) || {};
+    const active = activeRuns.get(routine.id);
+    const running = Boolean(active && (active.taskId || !routine.trigger?.notifyOnly));
+    const capacityBlocked = monitor.status === "capacity_reached";
     const watching =
-      routine.enabled === true && isMonitorTrigger(routine.trigger) && !activeRuns.has(routine.id);
+      routine.enabled === true &&
+      isMonitorTrigger(routine.trigger) &&
+      !running &&
+      !capacityBlocked;
     let watchingTarget = "";
     let watchingCondition = "";
     if (routine.trigger?.type === "browser") {
@@ -103,7 +109,7 @@ function createRoutineRuntime({
     return {
       ...routine,
       triggerLabel: describeTrigger(routine.trigger),
-      running: activeRuns.has(routine.id),
+      running,
       watching,
       watchingTarget,
       watchingCondition,
@@ -266,6 +272,24 @@ function createRoutineRuntime({
     now,
     deps: monitorDeps,
     onTrigger: (routine, { reason, context }) => {
+      if (routine.trigger?.notifyOnly === true) {
+        const botName = routine.bot?.name || "Bot";
+        notifications.notify({
+          botId: routine.botId,
+          routineId: routine.id,
+          title: `${botName}: ${routine.name}`,
+          body: String(context?.summary || reason || "Changed").slice(0, 240),
+          urgency: "normal",
+          policy: routine.notificationPolicy || "on_change",
+        });
+        store.recordRun(routine.id, {
+          status: "completed",
+          triggerReason: String(reason || "notify"),
+          resultSummary: String(context?.summary || "Notified.").slice(0, 2000),
+        });
+        emit("lykn:routines-changed", { routines: store.list().map(publicRoutine) });
+        return;
+      }
       void startOccurrence(routine, {
         reason,
         occurredAt: new Date(now()).toISOString(),
@@ -412,6 +436,7 @@ function createRoutineRuntime({
     reconcile,
     shutdown,
     monitorCount: () => monitors.monitorCount(),
+    evaluateFilesystem: (routineId) => monitors.evaluateFilesystem(routineId),
   };
 }
 

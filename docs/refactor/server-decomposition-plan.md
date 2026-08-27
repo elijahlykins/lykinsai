@@ -33,6 +33,11 @@ A limiter-exemption characterization test for the rebuild route was added to `se
 `server.js`: 18,114 → 17,803 lines.
 Pattern used: `registerXRoutes(app, deps)` with full literal paths (§7), registered at the exact original position in server.js; bootstrap-owned singletons (limiters, `supabaseAdmin`, `upload`, `requireAuth`/`requireAppAccess`, `isUrlSafe`, `sha256`) are passed as focused deps; stateless external services are imported directly by the router modules.
 Remaining inline after Wave 7 (28 routes): chat core ×5 (`/api/ai/models`, stream-guest, invoke, local-tool-result, stream), the learning/user-model band ×21 (MEMORY-REPLACEMENT CANDIDATE), and discover ×2 (legacy-adjacent). Chat core is now the only long-term live route domain left inline; all services, pollers, shared billing infra, and global middleware stay in bootstrap.
+
+C2 (2026-08-26) extracted Chat/AI infrastructure into `server/ai/*` and billing helpers into `server/services/billingService.js`.
+The six Chat routes now register via `registerAiModelsRoute` / `registerAiGuestStreamRoute` / `registerAiFeedbackRoute` / `registerAiInvokeRoute` / `registerAiStreamRoutes` at their original bootstrap positions.
+`server.js` is the composition root (clients, middleware, ordered `register*` calls, listen/jobs).
+Route/middleware manifest must stay unchanged. `enrichVaultNoteSummary` remains re-exported from `server.js` for `connectors/notion.js`.
 **Audited:** 2026-08-25, against `server.js` at 27,839 lines (working tree, unstaged frontend work by other agents present but no server changes).
 Line numbers in §2–§6 refer to that pre-Wave-1 snapshot; re-verify against HEAD before each extraction.
 **Absolute goal:** take `server.js` from ~27,800 lines to a small bootstrap/orchestration file with **zero runtime behavior change**.

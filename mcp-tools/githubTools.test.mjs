@@ -217,6 +217,41 @@ test("API errors come back bounded and token-free", async () => {
   assert.match(out.message, /rate limit/);
 });
 
+test("cancelled merge does not become success", async () => {
+  const ac = new AbortController();
+  const fetchImpl = async (_url, options = {}) => {
+    ac.abort();
+    if (options.signal?.aborted) {
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      throw err;
+    }
+    return { status: 200, json: async () => ({ merged: true, sha: "late" }) };
+  };
+  const out = await runGithubTool(
+    "github_merge_pull_request",
+    { owner: "acme", repo: "app", number: 42 },
+    deps(fetchImpl, { capabilities: ["github.pr.merge"], approved: true, signal: ac.signal }),
+  );
+  assert.equal(out.ok, false);
+  assert.equal(out.cancelled || out.error === "cancelled", true);
+});
+
+test("late write result after cancel is ignored", async () => {
+  const ac = new AbortController();
+  const fetchImpl = async () => {
+    ac.abort();
+    return { status: 200, json: async () => ({ merged: true, sha: "late" }) };
+  };
+  const out = await runGithubTool(
+    "github_merge_pull_request",
+    { owner: "acme", repo: "app", number: 42 },
+    deps(fetchImpl, { capabilities: ["github.pr.merge"], approved: true, signal: ac.signal }),
+  );
+  assert.equal(out.ok, false);
+  assert.equal(out.error, "cancelled");
+});
+
 test("approval descriptions are contextual and human-readable", () => {
   assert.equal(
     describeGithubAction("github_merge_pull_request", { owner: "acme", repo: "app", number: 42 }),

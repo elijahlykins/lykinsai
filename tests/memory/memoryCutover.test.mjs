@@ -188,10 +188,13 @@ test('memory tools take ownership from ctx.userId — model cannot choose anothe
 });
 
 test('server Chat seams call MemoryResolver with no legacy parallel retrieval', () => {
-  const src = readFileSync(join(HERE, '../../server.js'), 'utf8');
-  assert.match(src, /async function resolveProductionChatMemory/);
-  assert.match(src, /resolveChatMemoryTurn\(/);
-  assert.match(src, /fetchProjectSection\(/);
+  const serverSrc = readFileSync(join(HERE, '../../server.js'), 'utf8');
+  const invokeSrc = readFileSync(join(HERE, '../../server/ai/chatInvoke.routes.js'), 'utf8');
+  const streamSrc = readFileSync(join(HERE, '../../server/ai/chatStream.routes.js'), 'utf8');
+  const chatSrc = `${serverSrc}\n${invokeSrc}\n${streamSrc}`;
+  assert.match(serverSrc, /async function resolveProductionChatMemory/);
+  assert.match(serverSrc, /resolveChatMemoryTurn\(/);
+  assert.match(chatSrc, /fetchProjectSection\(/);
   for (const obsolete of [
     'fetchUserModelSection(',
     'fetchBeliefSection(',
@@ -204,21 +207,18 @@ test('server Chat seams call MemoryResolver with no legacy parallel retrieval', 
     'const skipRelated =',
     'const streamSkipRelated =',
   ]) {
-    assert.ok(!src.includes(obsolete), obsolete);
+    assert.ok(!chatSrc.includes(obsolete), obsolete);
   }
 
-  const invokeStart = src.indexOf("app.post('/api/ai/invoke'");
-  const streamStart = src.indexOf("app.post('/api/ai/stream'");
-  const localStart = src.indexOf("app.post('/api/ai/local-tool-result'");
-  assert.ok(invokeStart > 0 && streamStart > invokeStart);
-  const invokeBody = src.slice(invokeStart, streamStart);
-  const streamBody = src.slice(streamStart, localStart > streamStart ? src.indexOf('registerStorageRoutes') : src.length);
-  assert.match(invokeBody, /resolveProductionChatMemory\(/);
-  assert.match(streamBody, /resolveProductionChatMemory\(/);
-  assert.ok(!invokeBody.includes('fetchUserModelSection('), 'invoke must not read legacy facts');
-  assert.ok(!streamBody.includes('fetchUserModelSection('), 'stream must not read legacy facts');
-  assert.match(invokeBody, /fetchProjectSection\(/);
-  assert.match(streamBody, /fetchProjectSection\(/);
+  assert.match(invokeSrc, /app\.post\('\/api\/ai\/invoke'/);
+  assert.match(streamSrc, /app\.post\('\/api\/ai\/stream'/);
+  assert.match(streamSrc, /app\.post\('\/api\/ai\/local-tool-result'/);
+  assert.match(invokeSrc, /resolveProductionChatMemory\(/);
+  assert.match(streamSrc, /resolveProductionChatMemory\(/);
+  assert.ok(!invokeSrc.includes('fetchUserModelSection('), 'invoke must not read legacy facts');
+  assert.ok(!streamSrc.includes('fetchUserModelSection('), 'stream must not read legacy facts');
+  assert.match(invokeSrc, /fetchProjectSection\(/);
+  assert.match(streamSrc, /fetchProjectSection\(/);
 });
 
 test('legacy personal-memory tools and nightly jobs are absent', () => {
@@ -257,6 +257,23 @@ test('retained project-neuron product paths expose Vault membership only', () =>
   assert.match(add, /\^vault_/);
   const read = readFileSync(join(HERE, '../../mcp-tools/getProjectNeurons.js'), 'utf8');
   assert.match(read, /\.like\('node_id', 'vault_%'\)/);
+});
+
+test('episodic prompt copy does not revive User Facts', () => {
+  const src = readFileSync(join(HERE, '../../src/lib/conversationMemory.ts'), 'utf8');
+  assert.equal(/User Facts|get_facts|get_beliefs/.test(src), false);
+  assert.match(src, /Markdown Memory/);
+});
+
+test('chat load-in calendar greeting reads lykn_events', () => {
+  const src = readFileSync(join(HERE, '../../src/lib/synthesis/loadInUpdates.ts'), 'utf8');
+  assert.match(src, /\.from\("lykn_events"\)/);
+  assert.doesNotMatch(src, /\.eq\("source", "gcal_event"\)/);
+});
+
+test('stopped chat send does not clobber a successor stream', () => {
+  const src = readFileSync(join(HERE, '../../src/hooks/useChatEngine.ts'), 'utf8');
+  assert.match(src, /activeAiAbortRef\.current !== sendAbort/);
 });
 
 test('getMemoryThreadState starts empty so a missing chatId still works', () => {

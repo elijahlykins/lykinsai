@@ -761,15 +761,24 @@ function createMonitorRuntime({
       existing.close();
       active.delete(id);
     }
-    if (!isMonitored(routine)) return;
-    if (active.size >= MAX_MONITORS) return; // bounded; surfaced via monitorCount
+    if (!isMonitored(routine)) return { ok: true, watching: false };
+    if (active.size >= MAX_MONITORS) {
+      store.setMonitorState(id, {
+        status: "capacity_reached",
+        lastError: "monitor_capacity_reached",
+        capacity: MAX_MONITORS,
+      });
+      return { ok: false, error: "monitor_capacity_reached", max: MAX_MONITORS };
+    }
+    store.setMonitorState(id, { status: "watching", lastError: null, capacity: MAX_MONITORS });
     let monitor;
     if (routine.trigger.type === "filesystem") monitor = startFilesystemMonitor(routine);
     else if (routine.trigger.type === "process") monitor = startProcessMonitor(routine);
     else if (routine.trigger.type === "browser") monitor = startBrowserMonitor(routine);
     else if (routine.trigger.type === "screen") monitor = startScreenMonitor(routine);
-    else return;
+    else return { ok: true, watching: false };
     active.set(id, monitor);
+    return { ok: true, watching: true };
   }
 
   function start() {
@@ -803,6 +812,7 @@ function createMonitorRuntime({
     syncRoutine,
     reconcile,
     monitorCount: () => active.size,
+    isActive: (routineId) => active.has(String(routineId || "")),
     // Exposed for tests: deterministic single evaluations.
     evaluateFilesystem: (routineId) => {
       const routine = store.get(routineId);

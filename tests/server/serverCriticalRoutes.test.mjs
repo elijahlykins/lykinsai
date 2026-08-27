@@ -43,9 +43,9 @@ test('API responses carry the hardened security headers and no x-powered-by', as
 test('/oauth/* paths get the relaxed popup CSP (COOP unsafe-none)', async () => {
   // Must hit a REAL /oauth/ route: for unrouted paths Express 5's final 404
   // handler overwrites Content-Security-Policy with its own `default-src
-  // 'none'` (COOP survives). /oauth/callback/:provider 404s in the route
-  // handler for an unknown provider, keeping the middleware-set headers.
-  const res = await get('/oauth/callback/zz-fake-provider');
+  // 'none'` (COOP survives). The MCP callback rejects missing state while
+  // retaining the popup middleware headers.
+  const res = await get('/oauth/mcp/callback');
   assert.equal(res.headers.get('cross-origin-opener-policy'), 'unsafe-none');
   assert.match(res.headers.get('content-security-policy') || '', /script-src 'unsafe-inline'/);
 });
@@ -176,7 +176,10 @@ test('critical authenticated routes 401 without an Authorization header', async 
     ['GET', '/api/billing/me'],
     ['GET', '/api/usage/me'],
     ['GET', '/api/admin/usage/overview'],
-    ['GET', '/api/connections'],
+    ['GET', '/api/mcp/connections'],
+    ['GET', '/api/mcp/catalog'],
+    ['GET', '/api/mcp/attention'],
+    ['POST', '/api/mcp/connections'],
     ['POST', '/api/ai/vault-search'],
     ['POST', '/api/storage/signed-url'],
     ['GET', '/api/youtube/search'],
@@ -256,8 +259,8 @@ test('every non-public billing route 401s without an Authorization header', asyn
 
 // ── Secret-gated cron endpoints ─────────────────────────────────────────────
 
-test('poll-due cron trio 401s without the shared secret', async () => {
-  for (const path of ['/api/feeds/poll-due', '/api/connections/poll-due', '/api/ai/cursor-builds/poll-due']) {
+test('poll-due cron endpoints 401 without the shared secret', async () => {
+  for (const path of ['/api/feeds/poll-due', '/api/ai/cursor-builds/poll-due']) {
     const res = await postJson(path, {});
     assert.equal(res.status, 401, `${path} without secret → 401`);
   }

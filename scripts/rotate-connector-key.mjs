@@ -1,13 +1,11 @@
 #!/usr/bin/env node
 // ============================================================================
-// scripts/rotate-connector-key.mjs — re-encrypt connector tokens in place
+// scripts/rotate-connector-key.mjs — re-encrypt shared credentials in place
 // ============================================================================
-// LYKN encrypts every stored connector OAuth token (access + refresh) at
-// rest with AES-256-GCM keyed on CONNECTOR_TOKEN_KEY (64 hex chars / 32
-// bytes). Rotating that key naively makes every stored token unreadable —
-// every user would have to reconnect every connector. This script avoids
-// that by decrypting each row with the OLD key and re-encrypting with the
-// NEW key in a single pass.
+// LYKN encrypts trusted-runtime credentials with AES-256-GCM keyed on
+// CONNECTOR_TOKEN_KEY (64 hex chars / 32 bytes). Rotating that key naively
+// makes every stored credential unreadable. This script covers generic,
+// MCP, custom REST, and retained legacy credential stores.
 //
 // USAGE (dry-run first, ALWAYS):
 //   OLD_CONNECTOR_TOKEN_KEY=<old-64-hex> \
@@ -51,7 +49,7 @@ import { createClient } from '@supabase/supabase-js';
 import {
   encryptTokenWithKey,
   decryptTokenWithKey,
-} from '../connectors-service.js';
+} from '../lib/security/credentialStore.js';
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const BATCH_SIZE = 100;
@@ -66,12 +64,34 @@ function die(msg, code = 1) {
   process.exit(code);
 }
 
-function logTokenSummary(row, accessOk, refreshOk) {
-  // Only opaque identifiers — never any token material.
-  console.log(
-    `  ${DRY_RUN ? '[dry-run] ' : ''}${row.id} (provider=${row.provider}, user=${row.user_id})` +
-    ` access=${accessOk ? 'ok' : 'fail'} refresh=${refreshOk}`,
-  );
+const TARGETS = Object.freeze([
+  {
+    table: 'lykn_credentials',
+    columns: ['secret_encrypted'],
+    context: 'credential_type',
+  },
+  {
+    table: 'lykn_mcp_connections',
+    columns: ['secret_encrypted', 'oauth_encrypted'],
+    context: 'name',
+  },
+  {
+    table: 'lykn_custom_connections',
+    columns: ['secret_encrypted'],
+    context: 'slug',
+  },
+  {
+    table: 'social_connections',
+    columns: ['access_token', 'refresh_token'],
+    context: 'provider',
+  },
+]);
+
+function isMissingTable(error) {
+  const message = String(error?.message || '');
+  return error?.code === '42P01'
+    || /relation .* does not exist/i.test(message)
+    || /could not find the table/i.test(message);
 }
 
 // ---------------------------------------------------------------------------
@@ -98,115 +118,90 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
 
 async function rotate() {
   console.log(`Mode: ${DRY_RUN ? 'DRY RUN (no DB writes)' : 'LIVE (will rewrite rows)'}`);
-  console.log(`Target table: social_connections`);
+  console.log(`Target tables: ${TARGETS.map((target) => target.table).join(', ')}`);
   console.log('');
 
-  // Pull just the columns we need; in particular, NO non-token metadata
-  // beyond ids/provider so the log output is forensically safe to keep.
-  // No LIMIT — paginate by id so the rotation tolerates table growth
-  // during the run.
-  let lastId = null;
   let totalRows = 0;
-  let successAccess = 0;
-  let successRefresh = 0;
-  let skippedRefresh = 0;
-  let failedAccess = 0;
-  let failedRefresh = 0;
+  let rotatedBlobs = 0;
+  let skippedBlobs = 0;
+  let failedBlobs = 0;
   const failureSummaries = [];
 
-  while (true) {
-    let q = supabase
-      .from('social_connections')
-      .select('id, user_id, provider, access_token, refresh_token')
-      .order('id', { ascending: true })
-      .limit(BATCH_SIZE);
-    if (lastId) q = q.gt('id', lastId);
+  for (const target of TARGETS) {
+    console.log(`[${target.table}]`);
+    let lastId = null;
+    let tableRows = 0;
 
-    const { data: rows, error } = await q;
-    if (error) die(`failed to fetch batch after id=${lastId}: ${error.message}`);
-    if (!rows || rows.length === 0) break;
+    while (true) {
+      const selected = ['id', 'user_id', target.context, ...target.columns].join(', ');
+      let query = supabase
+        .from(target.table)
+        .select(selected)
+        .order('id', { ascending: true })
+        .limit(BATCH_SIZE);
+      if (lastId) query = query.gt('id', lastId);
 
-    for (const row of rows) {
-      totalRows += 1;
-      lastId = row.id;
-
-      // ── 1. Decrypt access_token with OLD key.
-      let plaintextAccess;
-      let accessOk = false;
-      if (!row.access_token) {
-        // No token stored — nothing to migrate for this column.
-        accessOk = true;
-      } else {
-        try {
-          plaintextAccess = decryptTokenWithKey(row.access_token, OLD_KEY);
-          accessOk = true;
-        } catch (err) {
-          failedAccess += 1;
-          failureSummaries.push(
-            `decrypt access on id=${row.id} (provider=${row.provider}, user=${row.user_id}): ${err.message}`,
-          );
+      const { data: rows, error } = await query;
+      if (error) {
+        if (isMissingTable(error)) {
+          console.log('  skipped (table not deployed)');
+          break;
         }
+        die(`failed to fetch ${target.table} after id=${lastId}: ${error.message}`);
       }
+      if (!rows || rows.length === 0) break;
 
-      // ── 2. Decrypt refresh_token with OLD key (may be null).
-      let plaintextRefresh = null;
-      let refreshOk = 'n/a';
-      if (row.refresh_token) {
-        try {
-          plaintextRefresh = decryptTokenWithKey(row.refresh_token, OLD_KEY);
-          refreshOk = 'ok';
-        } catch (err) {
-          refreshOk = 'fail';
-          failedRefresh += 1;
-          failureSummaries.push(
-            `decrypt refresh on id=${row.id} (provider=${row.provider}, user=${row.user_id}): ${err.message}`,
-          );
-        }
-      } else {
-        skippedRefresh += 1;
-      }
-
-      logTokenSummary(row, accessOk, refreshOk);
-
-      // ── 3. Re-encrypt with NEW key and write back (live mode only).
-      if (!DRY_RUN && accessOk) {
-        const newAccess = row.access_token
-          ? encryptTokenWithKey(plaintextAccess, NEW_KEY)
-          : null;
-        const newRefresh = (row.refresh_token && refreshOk === 'ok')
-          ? encryptTokenWithKey(plaintextRefresh, NEW_KEY)
-          : row.refresh_token; // preserve OLD-encrypted blob if decrypt failed (don't corrupt)
-
+      for (const row of rows) {
+        totalRows += 1;
+        tableRows += 1;
+        lastId = row.id;
         const update = {};
-        if (row.access_token) update.access_token = newAccess;
-        // Only re-encrypt refresh if the decrypt actually succeeded — we
-        // never want to overwrite a decryptable blob with garbage from a
-        // failed re-encrypt path.
-        if (row.refresh_token && refreshOk === 'ok') update.refresh_token = newRefresh;
+        const outcomes = [];
 
-        if (Object.keys(update).length > 0) {
-          const { error: updErr } = await supabase
-            .from('social_connections')
-            .update(update)
-            .eq('id', row.id);
-          if (updErr) {
+        for (const column of target.columns) {
+          const blob = row[column];
+          if (!blob) {
+            skippedBlobs += 1;
+            outcomes.push(`${column}=empty`);
+            continue;
+          }
+          try {
+            const plaintext = decryptTokenWithKey(blob, OLD_KEY);
+            update[column] = encryptTokenWithKey(plaintext, NEW_KEY);
+            outcomes.push(`${column}=ok`);
+          } catch (error) {
+            failedBlobs += 1;
+            outcomes.push(`${column}=fail`);
             failureSummaries.push(
-              `update row id=${row.id}: ${updErr.message}`,
+              `${target.table}.${column} id=${row.id} user=${row.user_id} context=${row[target.context] || ''}: ${error.message}`,
             );
-            failedAccess += 1;
-          } else {
-            successAccess += row.access_token ? 1 : 0;
-            successRefresh += (row.refresh_token && refreshOk === 'ok') ? 1 : 0;
           }
         }
-      } else if (accessOk) {
-        // Dry-run accounting.
-        successAccess += row.access_token ? 1 : 0;
-        successRefresh += (row.refresh_token && refreshOk === 'ok') ? 1 : 0;
-      }
-    }
 
-    if (rows.length < BATCH_SIZE) break;
+        console.log(
+          `  ${DRY_RUN ? '[dry-run] ' : ''}${row.id} (${outcomes.join(', ')})`,
+        );
+
+        if (Object.keys(update).length === 0) continue;
+        if (!DRY_RUN) {
+          const { error: updateError } = await supabase
+            .from(target.table)
+            .update(update)
+            .eq('id', row.id);
+          if (updateError) {
+            failedBlobs += Object.keys(update).length;
+            failureSummaries.push(
+              `${target.table} update id=${row.id}: ${updateError.message}`,
+            );
+            continue;
+          }
+        }
+        rotatedBlobs += Object.keys(update).length;
+      }
+
+      if (rows.length < BATCH_SIZE) break;
+    }
+    if (tableRows === 0) console.log('  no rows');
   }
 
   // ---------------------------------------------------------------------------
@@ -214,9 +209,8 @@ async function rotate() {
   // ---------------------------------------------------------------------------
   console.log('');
   console.log('─────────────────────────────────────────────');
-  console.log(`Rows processed:      ${totalRows}`);
-  console.log(`  access decrypted:  ${successAccess} ok, ${failedAccess} fail`);
-  console.log(`  refresh decrypted: ${successRefresh} ok, ${failedRefresh} fail, ${skippedRefresh} skipped (null)`);
+  console.log(`Rows processed:       ${totalRows}`);
+  console.log(`Credential blobs:     ${rotatedBlobs} ok, ${failedBlobs} fail, ${skippedBlobs} empty`);
   console.log('─────────────────────────────────────────────');
 
   if (failureSummaries.length > 0) {
@@ -232,7 +226,7 @@ async function rotate() {
         'Common causes:\n' +
         '  • OLD_CONNECTOR_TOKEN_KEY does not match the key the row was encrypted with.\n' +
         '  • The row predates AES-256-GCM (legacy plaintext) — these should be re-connected by hand.\n' +
-        '  • The row was previously corrupted; remove it via the Connections UI to force re-auth.',
+        '  • The row was previously corrupted; reconnect the affected credential.',
       );
       process.exit(1);
     } else {
@@ -252,7 +246,7 @@ async function rotate() {
     console.log('Next steps (per ROTATION_RUNBOOK.md):');
     console.log('  1. Swap CONNECTOR_TOKEN_KEY in Render to the NEW value.');
     console.log('  2. Redeploy.');
-    console.log('  3. Smoke-test a connector sync (e.g. trigger /api/connections/poll-due).');
+    console.log('  3. Smoke-test MCP, Calendar, Cursor Cloud, and Custom API credentials.');
     console.log('  4. Remove the OLD key from any operator notes.');
   }
 }

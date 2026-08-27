@@ -32,6 +32,7 @@ function makeWorld({ executeTask } = {}) {
   const world = {
     executions,
     emitted,
+    entries: [],
     openGate: () => resolveGate?.(),
   };
   const runtime = createRoutineRuntime({
@@ -41,7 +42,7 @@ function makeWorld({ executeTask } = {}) {
     // test here; the trigger→run→task seam is.
     monitorDeps: {
       watchDir: () => ({ close: () => {} }),
-      listMatches: async () => [],
+      listMatches: async () => world.entries || [],
       processRunning: async () => false,
     },
     emit: (channel, payload) => emitted.push({ channel, payload }),
@@ -328,4 +329,32 @@ test("routine definitions survive a runtime restart with history intact", async 
   assert.equal(loaded[0].id, routine.id);
   assert.equal(world2.runtime.listRuns(routine.id).length, 1);
   await world2.runtime.shutdown();
+});
+
+test("notify-only monitor trigger does not present as a running Task", async () => {
+  const world = makeWorld();
+  const routine = world.runtime.createRoutine({
+    botId: BOT.id,
+    bot: BOT,
+    name: "Downloads ping",
+    instructions: "Tell me when a new PDF appears.",
+    trigger: {
+      type: "filesystem",
+      path: "~/Downloads",
+      event: "created",
+      pattern: "*.pdf",
+      notifyOnly: true,
+    },
+  });
+  world.entries = [{ name: "old.pdf", size: 10, mtimeMs: 1 }];
+  await world.runtime.evaluateFilesystem(routine.id);
+  world.entries = [
+    { name: "old.pdf", size: 10, mtimeMs: 1 },
+    { name: "new.pdf", size: 20, mtimeMs: 2 },
+  ];
+  await world.runtime.evaluateFilesystem(routine.id);
+  assert.equal(world.executions.length, 0);
+  const listed = world.runtime.listRoutines({})[0];
+  assert.equal(listed.running, false);
+  assert.equal(listed.watching, true);
 });

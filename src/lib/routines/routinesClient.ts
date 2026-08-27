@@ -32,6 +32,7 @@ export type BotRoutine = {
   trigger: { type: string; [k: string]: unknown };
   triggerLabel?: string;
   capabilities: string[];
+  connectionIds?: string[];
   notificationPolicy: string;
   concurrencyPolicy: string;
   enabled: boolean;

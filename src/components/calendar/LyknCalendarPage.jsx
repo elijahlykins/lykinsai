@@ -261,6 +261,7 @@ export default function LyknCalendarPage({ windowed = false }) {
   // calendar widget's + button). The value changes per click so re-entry
   // works even when the surface is already on /calendar.
   const newParam = searchParams.get("new");
+  const syncParam = searchParams.get("sync");
   useEffect(() => {
     if (!newParam) return;
     setForm({
@@ -301,7 +302,7 @@ export default function LyknCalendarPage({ windowed = false }) {
   const refreshConnections = useCallback(async () => {
     setConnLoading(true);
     try {
-      const res = await authedFetch("/api/connections");
+      const res = await authedFetch("/api/calendar/connections");
       if (res.ok) {
         const data = await res.json();
         setConnections(data.connections || []);
@@ -313,6 +314,12 @@ export default function LyknCalendarPage({ windowed = false }) {
     }
   }, []);
 
+  useEffect(() => {
+    if (!syncParam) return;
+    setView("sync");
+    void refreshConnections();
+  }, [syncParam, refreshConnections]);
+
   const openSyncView = useCallback(() => {
     setView("sync");
     void refreshConnections();
@@ -321,7 +328,7 @@ export default function LyknCalendarPage({ windowed = false }) {
   const handleGoogleConnect = useCallback(async () => {
     setConnectingGoogle(true);
     try {
-      const res = await authedFetch(`/api/connections/${GOOGLE_PROVIDER}/start`, {
+      const res = await authedFetch("/api/calendar/connections/google/start", {
         method: "POST",
         body: JSON.stringify({}),
       });
@@ -354,7 +361,7 @@ export default function LyknCalendarPage({ windowed = false }) {
     const onMessage = (event) => {
       if (expectedOrigin && event.origin !== expectedOrigin) return;
       const msg = event?.data;
-      if (!msg || msg.type !== "lykn:oauth" || msg.provider !== GOOGLE_PROVIDER) return;
+      if (!msg || msg.type !== "lykn:calendar-oauth" || msg.provider !== GOOGLE_PROVIDER) return;
       setConnectingGoogle(false);
       if (msg.ok) {
         toast({ title: "Google Calendar connected", description: "Importing your events…" });
@@ -379,7 +386,7 @@ export default function LyknCalendarPage({ windowed = false }) {
       }
       setAppleSaving(true);
       try {
-        const res = await authedFetch(`/api/connections/${APPLE_PROVIDER}/connect-token`, {
+        const res = await authedFetch("/api/calendar/connections/apple", {
           method: "POST",
           body: JSON.stringify({ email, password }),
         });
@@ -407,7 +414,7 @@ export default function LyknCalendarPage({ windowed = false }) {
     async (id) => {
       setSyncingId(id);
       try {
-        const res = await authedFetch(`/api/connections/${id}/sync`, { method: "POST" });
+        const res = await authedFetch(`/api/calendar/connections/${id}/sync`, { method: "POST" });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         if (data.status === "reauth") {
@@ -435,7 +442,7 @@ export default function LyknCalendarPage({ windowed = false }) {
       const label = conn.provider === APPLE_PROVIDER ? "Apple" : "Google";
       if (!window.confirm(`Disconnect ${label} Calendar? Events already imported stay on your LYKN calendar.`)) return;
       try {
-        const res = await authedFetch(`/api/connections/${conn.id}`, { method: "DELETE" });
+        const res = await authedFetch(`/api/calendar/connections/${conn.id}`, { method: "DELETE" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         toast({ title: `${label} Calendar disconnected` });
         await refreshConnections();
@@ -454,7 +461,7 @@ export default function LyknCalendarPage({ windowed = false }) {
     try {
       let conns = [];
       try {
-        const res = await authedFetch("/api/connections");
+        const res = await authedFetch("/api/calendar/connections");
         if (res.ok) conns = (await res.json()).connections || [];
       } catch {
         /* offline / not signed in — still reload the grid below */
@@ -467,7 +474,7 @@ export default function LyknCalendarPage({ windowed = false }) {
       let anyReauth = false;
       for (const c of external) {
         try {
-          const res = await authedFetch(`/api/connections/${c.id}/sync`, { method: "POST" });
+          const res = await authedFetch(`/api/calendar/connections/${c.id}/sync`, { method: "POST" });
           const data = await res.json();
           if (res.ok) {
             totalSaved += data.saved || 0;

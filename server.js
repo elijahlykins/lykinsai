@@ -74,7 +74,10 @@ import { registerStripeWebhook } from './server/routes/stripeWebhook.routes.js';
 import { registerAssistRoutes } from './server/routes/assist.routes.js';
 import { registerCustomConnectionsRoutes } from './server/routes/connections.routes.js';
 import { registerConnectionsOAuthRoutes } from './server/routes/connectionsOAuth.routes.js';
+import { registerCalendarConnectionRoutes } from './server/routes/calendarConnections.routes.js';
+import { registerCursorCredentialRoutes } from './server/routes/cursorCredentials.routes.js';
 import { registerMcpRoutes, getMcpManager } from './server/routes/mcp.routes.js';
+import { pollDueCalendarConnections } from './lib/calendar/calendarService.js';
 import {
   registerDesktopRoutes,
   getBrowserControlProvider,
@@ -6187,6 +6190,8 @@ const PROJECT_WRITE_TOOLS = new Set([
 // ── Custom connections — extracted to server/routes/connections.routes.js (Wave 2)
 // 5 routes register here, in their original order.
 registerCustomConnectionsRoutes(app, { requireAuth, supabaseAdmin, invalidateConnectedToolsCache });
+registerCalendarConnectionRoutes(app, { requireAuth, supabaseAdmin, PORT });
+registerCursorCredentialRoutes(app, { requireAuth, supabaseAdmin });
 registerMcpRoutes(app, { requireAuth, supabaseAdmin, PORT });
 
 registerCustomModelRoutes(app, { requireAuth, supabaseAdmin });
@@ -12968,6 +12973,29 @@ if (process.env.NODE_ENV !== 'test') {
     } else {
       console.log(
         '→ Connector poller: ⚪ disabled (set CONNECTOR_POLLER_ENABLED=1 or schedule a cron against POST /api/connections/poll-due)',
+      );
+    }
+
+    const calendarPollerOn = process.env.CALENDAR_POLLER_ENABLED === '1'
+      ? true
+      : process.env.CALENDAR_POLLER_ENABLED === '0'
+        ? false
+        : !isServerless;
+    if (calendarPollerOn && supabaseAdmin) {
+      const calendarIntervalMs = Math.max(
+        15_000,
+        Number(process.env.CALENDAR_POLLER_INTERVAL_MS) || 60_000,
+      );
+      const calendarTick = () => {
+        pollDueCalendarConnections(supabaseAdmin)
+          .catch((error) => console.warn('⚠️ calendar poller:', error?.message || error));
+      };
+      setTimeout(calendarTick, 9_000);
+      setInterval(calendarTick, calendarIntervalMs);
+      console.log(`→ Calendar poller: ✅ every ${Math.round(calendarIntervalMs / 1000)}s`);
+    } else {
+      console.log(
+        '→ Calendar poller: ⚪ disabled (set CALENDAR_POLLER_ENABLED=1 to enable)',
       );
     }
 

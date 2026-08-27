@@ -33,6 +33,8 @@ function attachOverlaySatellites(d) {
     OVERLAY_ACTIVATABLE_FOR_DROPS, MENU_WIDTH, MENU_GAP, MENU_MIN_HEIGHT, MENU_MAX_HEIGHT,
     PICKER_WIDTH, PICKER_MIN_HEIGHT, PICKER_MAX_HEIGHT, LIVE_WIDTH, LIVE_HEIGHT,
     PANEL_MIN_HEIGHT, PANEL_MAX_HEIGHT, UPDATE_REPROMPT_MS,
+    LANG_PICKER_WIDTH, LANG_PICKER_MIN_HEIGHT, LANG_PICKER_MAX_HEIGHT, LANG_PICKER_GAP,
+    AGENT_SIDEBAR_WIDTH,
   } = overlayConstants;
   const ELECTRON_DIR = path.join(__dirname, "..");
   const agentSidebarWindowVisible = (...a) => d.agentSidebarWindowVisible(...a);

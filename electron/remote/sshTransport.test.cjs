@@ -146,6 +146,9 @@ test("exec builds strict, batch-mode ssh argv with our known_hosts anchor", asyn
   assert.match(joined, /StrictHostKeyChecking=yes/);
   assert.match(joined, /NumberOfPasswordPrompts=0/);
   assert.match(joined, /UserKnownHostsFile=\/tmp\/lykn-known-hosts/);
+  assert.match(joined, /-F \/dev\/null/);
+  assert.match(joined, /HostName=dev.example.com/);
+  assert.equal(joined.includes(".ssh/config"), false);
   // Destination then `--` then the remote command as ONE argv element.
   assert.equal(args[args.length - 3], "deploy@dev.example.com");
   assert.equal(args[args.length - 2], "--");
@@ -189,6 +192,21 @@ test("output beyond the byte cap is truncated, with byte accounting", async () =
   assert.equal(out.truncated, true);
   assert.ok(out.stdout.length <= 256 * 1024);
   assert.equal(out.bytesOut, big.length);
+});
+
+test("LYKN does not write the user's SSH config", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lykn-ssh-home-"));
+  const userConfig = path.join(dir, "config");
+  const spawn = fakeSpawn({ ssh: () => fakeChild({ stdout: "ok\n" }) });
+  const transport = createSshTransport({
+    target: target(),
+    spawn,
+    knownHostsFile: path.join(dir, "lykn-known-hosts"),
+  });
+  await transport.exec("true");
+  assert.equal(fs.existsSync(userConfig), false);
+  const sshArgs = spawn.calls.find((call) => call.bin === "ssh").args.join(" ");
+  assert.match(sshArgs, /-F \/dev\/null/);
 });
 
 test("runProcess reports spawn failure without throwing", async () => {

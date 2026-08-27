@@ -97,6 +97,20 @@ test("an armed daily routine fires at its local time, exactly once", () => {
   assert.equal(world.fires.length, 2);
 });
 
+test("setSchedulingState is on disk before fire continues", () => {
+  const store = createRoutineStore({ userDataPath: dir, now: () => localMs(8, 0) });
+  store.load();
+  const routine = dailyRoutine(store);
+  store.setSchedulingState(routine.id, {
+    lastFiredOccurrence: localMs(8, 0),
+    nextRunAt: localMs(8, 0, 1),
+  });
+  const restarted = createRoutineStore({ userDataPath: dir, now: () => localMs(8, 1) });
+  restarted.load();
+  assert.equal(restarted.get(routine.id).lastFiredOccurrence, localMs(8, 0));
+  assert.equal(restarted.get(routine.id).nextRunAt, localMs(8, 0, 1));
+});
+
 test("restart mid-day: an occurrence that already fired is not replayed", () => {
   const world = makeWorld();
   const routine = dailyRoutine(world.store);

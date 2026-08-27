@@ -40,6 +40,14 @@ class BotExecutor {
       onProgress({ phase: "acting", tool: "reply", narration: "Replying…" });
       const result = await reply({ instruction: task.objective, signal: runtime.signal });
       if (runtime.signal?.aborted) return { ok: false, status: "cancelled" };
+      if (result?.status === "waiting_for_approval" || result?.status === "waiting_for_user") {
+        return {
+          ...result,
+          status: result.status,
+          question: String(result.question || result.output || result.answer || ""),
+          executor: "reply",
+        };
+      }
       const output = String(result?.output || result?.answer || "");
       if (result?.ok === false || !output.trim()) {
         return {
@@ -90,7 +98,29 @@ class BotExecutor {
         narration: "Finishing with the direct path…",
       });
       const fallbackResult = await fallback({ instruction: task.objective, signal: runtime.signal });
-      if (fallbackResult?.status === "waiting_for_user" || fallbackResult?.status === "waiting_for_approval") {
+      if (runtime.signal?.aborted) {
+        return { ok: false, status: "cancelled", output: "", executor: `bot-${primaryTool || "reply"}-fallback` };
+      }
+      if (fallbackResult?.status === "waiting_for_approval") {
+        return {
+          ...fallbackResult,
+          status: "waiting_for_approval",
+          question: String(fallbackResult?.question || fallbackResult?.output || ""),
+          executor: `bot-${primaryTool || "reply"}-fallback`,
+        };
+      }
+      const output = String(fallbackResult?.output || fallbackResult?.answer || "");
+      if (/^\s*\[\[ask\s+[^:\]]+:/i.test(output)) {
+        return {
+          ...fallbackResult,
+          ok: false,
+          status: "waiting_for_user",
+          waitingKind: "teammate_handoff",
+          question: output,
+          executor: `bot-${primaryTool || "reply"}-fallback`,
+        };
+      }
+      if (fallbackResult?.status === "waiting_for_user") {
         return {
           ...fallbackResult,
           status: "waiting_for_user",
@@ -98,7 +128,6 @@ class BotExecutor {
           executor: `bot-${primaryTool || "reply"}-fallback`,
         };
       }
-      const output = String(fallbackResult?.output || fallbackResult?.answer || "");
       if (fallbackResult?.ok === false || !output.trim()) throw error;
       return {
         ok: true,

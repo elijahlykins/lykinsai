@@ -26,6 +26,7 @@ function attachLiveWatch(d) {
   const ownedBrowserAct = d.ownedBrowserAct;
   const agentRecentVisits = d.agentRecentVisits;
   const { broadcastToAllWindows } = require("../services/initializeElectronServices.cjs");
+  const { screenFingerprint } = require("../browserAct.cjs");
   const overlayConstants = d.constants;
   const {
     OVERLAY_WIDTH, OVERLAY_SIDE_WIDTH, OVERLAY_WATCH_SIDE_WIDTH, OVERLAY_MAX_WIDTH,

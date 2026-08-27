@@ -362,6 +362,8 @@ const ROUTINE_DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
  */
 function compileRoutineTask(input = {}, options = {}) {
   const routine = input.routine && typeof input.routine === "object" ? input.routine : {};
+  const directWorkflowRun =
+    String(routine.kind || "") === "learned_workflow" && String(routine.workflowId || "").trim();
   const instructions = String(routine.instructions || "").trim();
   if (!instructions) throw new TypeError("Routine task requires routine.instructions");
   if (!String(routine.id || "").trim()) throw new TypeError("Routine task requires routine.id");
@@ -403,6 +405,7 @@ function compileRoutineTask(input = {}, options = {}) {
     },
     doNot: [
       "Modify this routine's own definition, schedule, or permissions.",
+      ...(routine.workflowId ? ["Modify the learned workflow definition while executing it."] : []),
       DEFAULT_DO_NOT,
     ],
     capabilities: cleanList(routine.capabilities, 20),
@@ -428,16 +431,36 @@ function compileRoutineTask(input = {}, options = {}) {
     origin: {
       type: "bot",
       bot,
-      routine: {
-        id: String(routine.id),
-        name: String(routine.name || "").slice(0, 80),
-        triggerType: String(routine.trigger?.type || ""),
-      },
+      ...(directWorkflowRun
+        ? {
+            workflow: {
+              id: String(routine.workflowId).trim().slice(0, 120),
+              name: String(routine.name || "").slice(0, 80),
+              version: Math.max(1, Number(routine.workflowVersion) || 1),
+            },
+          }
+        : {
+            routine: {
+              id: String(routine.id),
+              name: String(routine.name || "").slice(0, 80),
+              triggerType: String(routine.trigger?.type || ""),
+              ...(routine.workflowId
+                ? { workflowId: String(routine.workflowId).trim().slice(0, 120) }
+                : {}),
+            },
+          }),
     },
     association: {
       botId: String(routine.botId || bot?.id || "").trim(),
-      routineId: String(routine.id),
-      routineRunId: String(input.runId || "").trim(),
+      ...(!directWorkflowRun
+        ? {
+            routineId: String(routine.id),
+            routineRunId: String(input.runId || "").trim(),
+          }
+        : {}),
+      ...(routine.workflowId
+        ? { workflowId: String(routine.workflowId).trim().slice(0, 120) }
+        : {}),
       chatId: String(routine.bot?.chatId || "").trim(),
       agentId: String(input.agentId || "").trim(),
       ...(intersectConnectionIds(

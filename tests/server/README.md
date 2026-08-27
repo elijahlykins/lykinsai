@@ -8,7 +8,12 @@ Wave 3 extracted three long-term live domains (voice, desktop, files — 26 rout
 Wave 4 extracted three more moderate live domains (account, storage, assist — 21 routes), again with zero drift; 101 of the 161 routes now live in `server/routes/`.
 Wave 5 extracted the auth-flow and connector-OAuth boundaries (authFlows, platform, connectionsOAuth — 17 routes), again with zero drift; 118 of the 161 routes now live in `server/routes/`, leaving billing, chat core, the pre-limiter platform routes, the learning/user-model band, and discover inline.
 Wave 6 extracted the billing boundary (billing — 9 routes), again with zero drift; 127 of the 161 routes now live in `server/routes/`. The Stripe webhook and all shared billing infra (plan caches, `resolveUserPlan`, `requireAppAccess`, `handleStripeEvent`) stayed in server.js; billing 401/stripe-config characterization tests were added to `serverCriticalRoutes.test.mjs`.
-Wave 7 extracted the five pre-limiter platform routes (stripeWebhook + preLimiterPlatform — webhook, client-error, health, `/f/:token`, artifacts rebuild), again with zero drift; 132 of the 161 routes now live in `server/routes/`, leaving only chat core (5), the learning/user-model band (21), and discover (2) inline. Each registrar is called at the route's exact original bootstrap position (webhook before the JSON parser; client-error/health before the auth core; file-proxy/rebuild before the global limiter), and a rebuild limiter-exemption characterization test was added to `serverCriticalRoutes.test.mjs`.
+Wave 7 extracted the five pre-limiter platform routes (stripeWebhook + preLimiterPlatform — webhook, client-error, health, `/f/:token`, artifacts rebuild), again with zero drift; 132 of the 161 routes now live in `server/routes/`.
+C2 extracted Chat/AI infrastructure out of `server.js` into `server/ai/*` (guidance, retrieval, context, billing helpers, then route registrars for models/guest/feedback/invoke/stream).
+`server.js` is now the composition root.
+Route order is unchanged: each `registerAi*Route` call stays at the original bootstrap position.
+`lib/securityRegressions.test.mjs` now also scans `server/ai` and `server/services`.
+Stream byte contracts are characterized in `chatStreamCharacterization.test.mjs`; `localToolStreams` ownership is characterized in `localToolBridge.test.mjs`.
 Note: Synthesis is planned legacy infrastructure pending Memory Architecture Replacement; `synthesis.routes.js` is retained as an isolation boundary, not as a commitment to the architecture, and the learning/user-model route band stays inline as a MEMORY-REPLACEMENT CANDIDATE.
 
 Companion planning document: `docs/refactor/server-decomposition-plan.md`.
@@ -23,6 +28,9 @@ Companion planning document: `docs/refactor/server-decomposition-plan.md`.
 | `serverRouteManifest.test.mjs` | Diffs the live app against the manifest: lost/renamed/new routes, method changes, duplicates, registration order, middleware chains, ordering hazards. |
 | `serverMiddlewareOrder.test.mjs` | Named assertions for the security-critical ordering invariants (webhook-before-parser, limiter exemptions, error handler last, auth chains). |
 | `serverCriticalRoutes.test.mjs` | HTTP smoke over a loopback listener: auth 401/503 contracts, webhook signature rejection, parser limits and the image-route parser branch, CORS, security headers, secret-gated cron 401s, guest-stream validation, file-proxy token gate. |
+| `localToolBridge.test.mjs` | Process-singleton `localToolStreams` register / resolve / release / ownership. |
+| `chatStreamCharacterization.test.mjs` | Source guards for SSE framing, abort/disconnect, tool-call events, usage, Memory, `returnActions`. |
+| `chatModuleCycles.test.mjs` | Extracted `server/ai` and `server/services` modules must not import `server.js`. |
 
 Run everything with:
 

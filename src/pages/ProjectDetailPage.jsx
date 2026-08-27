@@ -73,11 +73,9 @@ import {
   setTodoPosition,
   setTodoPriority,
   setTodoStatus,
-  todoDueLabel,
 } from "@/lib/projectWorkspace";
 import {
   ActivityChart,
-  ChartTooltip,
   CompositionChart,
   KIND_META,
   SectionLabel,

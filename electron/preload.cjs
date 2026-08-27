@@ -281,6 +281,37 @@ contextBridge.exposeInMainWorld("lykn", {
     ipcRenderer.on("lykn:routines-changed", fn);
     return () => ipcRenderer.removeListener("lykn:routines-changed", fn);
   },
+  // Explicit Teach-by-Demonstration sessions and Bot-owned learned workflows.
+  // Main owns capture, scrubbing, compilation, persistence, and execution.
+  teachStart: (input) => ipcRenderer.invoke("lykn:teach-start", input || {}),
+  teachFinish: (input) => ipcRenderer.invoke("lykn:teach-finish", input || {}),
+  teachCancel: () => ipcRenderer.invoke("lykn:teach-cancel"),
+  teachStatus: () => ipcRenderer.invoke("lykn:teach-status"),
+  teachRecordEvent: (event) => ipcRenderer.invoke("lykn:teach-record-event", event || {}),
+  workflowsList: (botId) => ipcRenderer.invoke("lykn:workflows-list", botId ? { botId } : {}),
+  workflowCreate: (input) => ipcRenderer.invoke("lykn:workflow-create", input || {}),
+  workflowUpdate: (workflowId, patch) =>
+    ipcRenderer.invoke("lykn:workflow-update", { workflowId, patch: patch || {} }),
+  workflowDelete: (workflowId) => ipcRenderer.invoke("lykn:workflow-delete", { workflowId }),
+  workflowRun: (workflowId, input) =>
+    ipcRenderer.invoke("lykn:workflow-run", { workflowId, input: input || {} }),
+  workflowCreateRoutine: (workflowId, input) =>
+    ipcRenderer.invoke("lykn:workflow-create-routine", { workflowId, input: input || {} }),
+  workflowApplyRecoveredUpdate: (workflowId, recoveredUpdateId) =>
+    ipcRenderer.invoke("lykn:workflow-apply-recovered-update", {
+      workflowId,
+      recoveredUpdateId,
+    }),
+  onTeachingChanged: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:teaching-changed", fn);
+    return () => ipcRenderer.removeListener("lykn:teaching-changed", fn);
+  },
+  onWorkflowsChanged: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:workflows-changed", fn);
+    return () => ipcRenderer.removeListener("lykn:workflows-changed", fn);
+  },
   onActivityNotification: (cb) => {
     const fn = (_e, p) => cb(p || {});
     ipcRenderer.on("lykn:activity-notification", fn);

@@ -777,7 +777,23 @@ function runCommand(args = {}, { signal } = {}) {
       cwd,
       env: { ...process.env, LYKN_LOCAL_MODE: "1" },
       stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     });
+    const killTree = () => {
+      if (child.pid && process.platform !== "win32") {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+          return;
+        } catch {
+          /* fall through to the zsh handle */
+        }
+      }
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* already dead */
+      }
+    };
     const append = (chunk) => {
       if (outBytes >= OUTPUT_CAP_BYTES) return;
       const s = chunk.toString("utf8");
@@ -798,11 +814,7 @@ function runCommand(args = {}, { signal } = {}) {
       resolve(payload);
     };
     const onAbort = () => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        /* already dead */
-      }
+      killTree();
       finish({
         ok: false,
         command,
@@ -813,11 +825,7 @@ function runCommand(args = {}, { signal } = {}) {
       });
     };
     const timer = setTimeout(() => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        /* already dead */
-      }
+      killTree();
       finish({
         ok: false,
         command,

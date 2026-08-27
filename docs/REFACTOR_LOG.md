@@ -609,3 +609,52 @@ were already unreachable and are gone. `actionJsonRescue` strip remains.
 - abort + stream cursor still minted only in `useChatEngine.handleChatSend`
 - `handleActionPath` / `organizeIdeas` / `addChatResponseToGrid` absent
 - attachment types share `FocusedChatAttachment` as the canonical object
+
+---
+
+## C3A — 2026-08-26 — Vault frontend controller decomposition
+
+`src/pages/Vault.jsx` decomposed by state ownership: 3,744 → 1,536 lines, 39 → 10 useState, 47 → 7 useCallback, 29 → 8 useRef, 27 → 7 effects.
+The page is now route/surface detection, hook assembly, top-level event wiring (`handleCardPress`, pick delivery), and the major visual sections.
+No runtime behavior change intended.
+
+### What moved where
+
+- `src/lib/vault/vaultCardModel.js` (710) — pure notes → cards → visible → filtered pipeline: `buildVaultCards`, `resolveSourceFolder` (+ legacy source recovery from tags/URLs), `buildGhostCards`, `deriveVisibleCards` (connector collapse, AI Drive folders), `filterVisibleCards` (tags/concept/plain search), `buildEmbeddedVaultPayload`.
+- `src/hooks/useVaultNotesData.js` (307) — data plane: `useInfiniteQuery` notes feed, notes/error/pagination state, `refreshNotes`/`loadMoreNotes`, upload merge + ghost cards, variant-ready cache patching, projects query.
+- `src/hooks/useVaultReadyGate.js` (246) — LoadingScreen gate, initial-card snapshot for first-paint animation suppression, eager image preload pass.
+- `src/hooks/useVaultSelection.js` (286) — multi-select set + anchor, shift-range/cmd-toggle, picker-mode note selection, parent-window pick sync, stale-selection pruning.
+- `src/hooks/useVaultDragTrash.jsx` (299) — card drag lifecycle, drag-to-trash hold-to-delete with undo grace, chat-chunk drop → quick note.
+- `src/hooks/useVaultFoldersViews.js` (237) — connector folder / AI Drive folder navigation, view mode with per-surface persistence, vault/embedded/concept search state, visible/filtered derivations, note deep-link.
+- `src/hooks/useVaultPreview.js` (483) — preview open state (card itself stays page-owned), details/share/comments substate, full-res upgrade, external open + HTML artifact proxy, share actions, chat-about handoff.
+- `src/hooks/useVaultPopovers.js` (322) — card menu / comment composer / view dropdown, capture-phase click-away, Escape, scroll/resize dismissal, non-passive wheel traps (`trapPopoverWheel` exported).
+- `src/hooks/useVaultAiDescribeBackfill.js` (136) — background attachment description backfill with lost-update guard.
+
+Cross-hook seams are two page-owned refs (`resetLoadGateRef`, `mediaBridgeRef`) plus page-owned `previewCard` and the shared pending-delete set (drag-trash and bulk delete both feed it).
+
+### Dead UI deleted (audit-proven, no importers at HEAD)
+
+`FeedbackModal`, `PlanGate`, `ChatThreadSidebarGroups`, `StewardKanban`, `MorningBriefCard`, `RichTextRenderer`, `ZoomTrafficLight` (stub), wake shells (`WakeAppShellPreview`, `WakeChatSubwindow`, `WakeVoiceSubwindow`), unused shadcn (`ui/hint`, `ui/label`, `ui/progress`, `ui/scroll-area`, `ui/sheet`).
+15 files, 1,330 lines.
+
+Deferred (Chat overlap, do-not-touch in this stream): `handleOrganizeIdeas` trio and `handleActionPath` in `LyknChat.tsx`, `GridIcon`/add-to-grid branch in `LyknChatView.tsx`, `organizeIdeas` in `aiStore.ts`.
+
+### Dedup
+
+`vaultContentsForAi.ts` now imports `formatDate` / `extractYouTubeLinks` from `vaultCardHelpers.js` instead of redefining them (audit item 6).
+
+### Characterization tests added
+
+- `src/lib/vault/vaultCardModel.test.js` (28 tests) — card building (attachments, quick notes, YouTube links, dedupe, ghost cards, wake comments), source-folder collapse + legacy source recovery, folder/search/type-view visibility, tag/concept/plain filtering, pending-delete hiding, embedded payloads.
+- Wired into `npm run test:vault` (79 tests total).
+
+### Behavior changes
+
+None intended.
+State/ref/callback name parity against HEAD verified mechanically (zero missing, only the two documented bridge refs added).
+
+### Validation
+
+`test:vault` 79 pass, `test:memory` 83 pass, `test:drag` 36 pass; build passes; lint 0 errors (also fixed two pre-existing unused-import errors in `ProjectDetailPage.jsx` / `TasksBoard.jsx`); typecheck 801 → 795 errors (all remaining pre-existing classes).
+Pre-existing, untouched: `lib/training/cleanConversationPairs.test.js` strip-attachments failure (chat/training scope).
+Headed: bundle boots in Electron/Chromium against the dev server with zero console errors; signed-in grid not exercised (no credentials).

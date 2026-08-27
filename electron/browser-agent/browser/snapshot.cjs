@@ -281,9 +281,9 @@ function formatSnapshotForModel(snapshot, { maxElements = 90, maxTextChars = 500
     }
     if (el.frameHost) line += ` [embedded: ${el.frameHost}]`;
     if (!el.inView) line += " (below fold)";
-    // The durable handle. Refs die with the document; this survives a reload,
-    // so the model can re-aim after a navigation without another observe round.
-    if (el.loc) line += ` loc=${el.loc}`;
+    // Generation-stamped locator. After navigation the previous generation is
+    // stale even if the same CSS still matches a different control.
+    if (el.loc) line += ` loc=g${snapshot.generation}:${el.loc}`;
     lines.push(line);
   }
   if (elements.length > chosen.length) {

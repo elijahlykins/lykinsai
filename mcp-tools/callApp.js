@@ -1,6 +1,11 @@
 // ============================================================================
-// mcp-tools/callApp.js — call ANY app the user connected (bring-your-own key)
+// mcp-tools/callApp.js — LEGACY custom-connection HTTP dispatch
 // ============================================================================
+// Isolated / legacy. Confused-deputy risk remains on this path. Universal
+// external tools now go through MCP (lib/mcp + ExternalToolResolver).
+// Do not treat lykn_call_app as the future action layer. Not deleted until
+// MCP parity is proven.
+
 // The universal action tool. The user attaches an app under Connections →
 // Custom API (base URL + their API key + how to send it). This tool makes an
 // HTTP request to that app, with the credential INJECTED server-side — the

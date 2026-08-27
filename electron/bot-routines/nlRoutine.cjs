@@ -330,6 +330,10 @@ function compileRoutineCapabilities(instructions, trigger, { explicit } = {}) {
     caps.add("files.write");
     caps.add("local.shell.execute");
   }
+  if (/\b(gmail|e-?mail|inbox)\b/.test(text)) {
+    caps.add("communication.email.search");
+    caps.add("communication.email.read");
+  }
   if (/\b(run|rerun|re-run)\b.*\btests?\b/.test(text) || /\btests?\b.*\b(run|fail)/.test(text)) {
     caps.add("local.shell.execute");
   }
@@ -373,6 +377,11 @@ function resolveRoutineSpec(instruction, context = {}) {
         instructions: String(parsed.instructions || "").trim(),
         trigger: parsed.trigger,
         capabilities: Array.isArray(parsed.capabilities) ? parsed.capabilities : undefined,
+        connectionIds: Array.isArray(parsed.connectionIds)
+          ? parsed.connectionIds
+          : parsed.connectionId
+            ? [parsed.connectionId]
+            : undefined,
         notificationPolicy: parsed.notificationPolicy,
         concurrencyPolicy: parsed.concurrencyPolicy,
       },

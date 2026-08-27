@@ -121,3 +121,48 @@ test("harness failure degrades within BotExecutor before TaskRuntime settles", a
   assert.equal(out.task.status, "completed");
   assert.match(out.result.output, /espresso/);
 });
+
+test("fallback preserves waiting_for_approval instead of collapsing it", async () => {
+  const runtime = new TaskRuntime();
+  const task = makeTask(runtime, "email Sarah");
+  const executor = new BotExecutor({
+    runBotTask: async () => {
+      throw new Error("model unavailable");
+    },
+  });
+  const out = await runtime.execute(task.id, executor, {
+    model: {},
+    primaryTool: "research_report",
+    executors: {
+      research_report: async () => ({
+        ok: false,
+        status: "waiting_for_approval",
+        question: "Send the email?",
+      }),
+    },
+  });
+  assert.equal(out.task.status, "waiting_for_approval");
+  assert.match(out.result.question, /Send the email/);
+});
+
+test("fallback teammate handoff pauses instead of completing", async () => {
+  const runtime = new TaskRuntime();
+  const task = makeTask(runtime, "compare launch plans");
+  const executor = new BotExecutor({
+    runBotTask: async () => {
+      throw new Error("model unavailable");
+    },
+  });
+  const out = await runtime.execute(task.id, executor, {
+    model: {},
+    primaryTool: "research_report",
+    executors: {
+      research_report: async () => ({
+        ok: true,
+        output: "[[ask Pepper: Which launch window works?]]",
+      }),
+    },
+  });
+  assert.equal(out.task.status, "waiting_for_user");
+  assert.match(out.result.question, /ask Pepper/);
+});
