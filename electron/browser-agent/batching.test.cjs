@@ -261,6 +261,30 @@ test("a batch reports how far it got", async () => {
   assert.equal(out.ran, 1);
 });
 
+test("Stop between batch steps prevents later actions", async () => {
+  let clicks = 0;
+  const controller = {
+    scroll: async () => {
+      clicks += 1;
+      return { ok: true };
+    },
+    screenshot: async () => {
+      clicks += 1;
+      return { ok: true };
+    },
+    settle: async () => {},
+  };
+  const out = await executeBatch(
+    controller,
+    [{ type: "scroll" }, { type: "screenshot" }, { type: "scroll" }],
+    { aborted: () => clicks >= 1 },
+  );
+  assert.equal(out.ok, false);
+  assert.equal(out.error, "aborted");
+  assert.equal(out.ran, 1);
+  assert.equal(clicks, 1);
+});
+
 test("a throwing step is caught, not propagated", async () => {
   const controller = {
     scroll: async () => {

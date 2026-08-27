@@ -364,7 +364,12 @@ function createRoutineStore({ userDataPath, now = () => Date.now(), onChange = (
     if (nextRunAt !== undefined) routine.nextRunAt = nextRunAt;
     if (lastFiredOccurrence !== undefined) routine.lastFiredOccurrence = lastFiredOccurrence;
     if (lastRunAt !== undefined) routine.lastRunAt = lastRunAt;
-    changed({ immediate: true });
+    persistNowSync();
+    try {
+      onChange(list());
+    } catch {
+      /* observers must not break the store */
+    }
     return { ...routine };
   }
 

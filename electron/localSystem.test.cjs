@@ -289,6 +289,22 @@ test("a traversal out of a synced folder is rejected", async () => {
   assert.match(result.error, /not synced/i);
 });
 
+test("abort kills the shell process group, not only zsh", async () => {
+  write({ syncAll: true, syncedFolders: [] });
+  const marker = path.join(userData, "grandchild-still-running");
+  const controller = new AbortController();
+  const pending = localSystem.run(
+    "local_run_command",
+    { command: `(sleep 20; touch "${marker}") & echo $!` },
+    { userDataPath: userData, approved: true, signal: controller.signal },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  controller.abort();
+  await pending;
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(fs.existsSync(marker), false);
+});
+
 test("an aborted shell command is killed instead of running to timeout", async () => {
   write({ syncAll: true, syncedFolders: [] });
   const controller = new AbortController();

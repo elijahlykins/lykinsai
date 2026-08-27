@@ -1363,7 +1363,7 @@ async function runTask({
     }
     const actionResult = await timer.time("actuate", () =>
       batched
-        ? executeBatch(controller, decision.steps)
+        ? executeBatch(controller, decision.steps, { aborted })
         : executeAction(controller, decision.action)).catch((e) => ({
       ok: false,
       error: e?.message || String(e),
@@ -1735,11 +1735,21 @@ async function executeAction(controller, action) {
  * guaranteed they are ref-free and non-committing, and duplicating that rule
  * is how the two copies drift apart.
  */
-async function executeBatch(controller, steps) {
+async function executeBatch(controller, steps, { aborted } = {}) {
   const list = Array.isArray(steps) ? steps : [];
   const results = [];
   let lastType = "";
   for (let i = 0; i < list.length; i += 1) {
+    if (typeof aborted === "function" && aborted()) {
+      return {
+        ok: false,
+        error: "aborted",
+        ran: i,
+        total: list.length,
+        results,
+        lastType,
+      };
+    }
     const step = list[i];
     lastType = String(step?.type || "");
     let res;
