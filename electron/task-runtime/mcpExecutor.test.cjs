@@ -17,6 +17,43 @@ test("Bot connectionIds are copied onto the Task association and secrets are dro
   assert.ok(!JSON.stringify(task).includes("supersecret"));
 });
 
+test("request connectionIds cannot expand a Bot allowlist", () => {
+  const task = compileBotTask({
+    objective: "Find Sarah's email",
+    bot: { id: "bot-1", name: "Scout", connectionIds: ["conn_work"] },
+    connectionIds: ["conn_personal", "conn_work"],
+    capabilities: ["reply", "communication.email.search"],
+  });
+  assert.deepEqual(task.association.connectionIds, ["conn_work"]);
+});
+
+test("forged request connectionIds cannot inherit another Bot connection", () => {
+  const task = compileBotTask({
+    objective: "Send mail",
+    bot: { id: "bot-work", name: "Work", connectionIds: ["conn_work"] },
+    connectionIds: ["conn_personal"],
+    capabilities: ["communication.email.send"],
+  });
+  assert.deepEqual(task.association.connectionIds, []);
+});
+
+test("Routine request connectionIds cannot expand the persisted allowlist", () => {
+  const task = compileRoutineTask({
+    routine: {
+      id: "routine-1",
+      botId: "bot-1",
+      bot: { id: "bot-1", name: "Scout", connectionIds: ["conn_work"] },
+      name: "Morning mail",
+      instructions: "Check Work Gmail.",
+      capabilities: ["communication.email.search"],
+      connectionIds: ["conn_work"],
+      approvalPolicy: "standing_authorization",
+    },
+    connectionIds: ["conn_personal"],
+  });
+  assert.deepEqual(task.association.connectionIds, []);
+});
+
 test("Routine occurrence keeps connectionIds and never stores a token", () => {
   const task = compileRoutineTask({
     routine: {

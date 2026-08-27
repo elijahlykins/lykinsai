@@ -90,6 +90,19 @@ function cleanConnectionIds(value) {
 }
 
 /**
+ * Trusted Bot/Routine allowlists are the authority.
+ * Request-supplied ids may only narrow; they cannot expand.
+ */
+function intersectConnectionIds(trusted, requested) {
+  const trustedIds = cleanConnectionIds(trusted);
+  const requestedIds = cleanConnectionIds(requested);
+  if (trustedIds === undefined) return requestedIds;
+  if (requestedIds === undefined) return trustedIds;
+  const allowed = new Set(trustedIds);
+  return requestedIds.filter((id) => allowed.has(id));
+}
+
+/**
  * Compile facts already known at the Bot invocation boundary.
  * This compiler does no model call and performs no semantic expansion.
  */
@@ -140,8 +153,8 @@ function compileBotTask(input = {}, options = {}) {
       chatId: String(input.chatId || "").trim(),
       agentId: String(input.agentId || "").trim(),
       parentTaskId: String(input.parentTaskId || "").trim(),
-      ...(cleanConnectionIds(input.connectionIds ?? bot?.connectionIds) !== undefined
-        ? { connectionIds: cleanConnectionIds(input.connectionIds ?? bot?.connectionIds) }
+      ...(intersectConnectionIds(bot?.connectionIds, input.connectionIds) !== undefined
+        ? { connectionIds: intersectConnectionIds(bot?.connectionIds, input.connectionIds) }
         : {}),
     },
     collaborators: (Array.isArray(input.teammates) ? input.teammates : [])
@@ -450,8 +463,16 @@ function compileRoutineTask(input = {}, options = {}) {
         : {}),
       chatId: String(routine.bot?.chatId || "").trim(),
       agentId: String(input.agentId || "").trim(),
-      ...(cleanConnectionIds(routine.connectionIds ?? input.connectionIds) !== undefined
-        ? { connectionIds: cleanConnectionIds(routine.connectionIds ?? input.connectionIds) }
+      ...(intersectConnectionIds(
+        routine.connectionIds ?? bot?.connectionIds,
+        input.connectionIds,
+      ) !== undefined
+        ? {
+            connectionIds: intersectConnectionIds(
+              routine.connectionIds ?? bot?.connectionIds,
+              input.connectionIds,
+            ),
+          }
         : {}),
     },
     status: TASK_STATUSES.CREATED,

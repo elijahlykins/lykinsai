@@ -11,6 +11,7 @@ import {
   createMemoryMcpStore,
   resolveExternalTools,
   executeMcpTool,
+  resolveHttpMcpCallAuthority,
   searchMcpCatalog,
   MCP_TRUST_LEVELS,
   MCP_STATUSES,
@@ -343,13 +344,14 @@ export function registerMcpRoutes(app, { requireAuth, supabaseAdmin, PORT }) {
       const classifiedByConnectionId = Object.fromEntries(
         connections.map((row) => [row.id, row.classifiedTools || []]),
       );
+      const incoming = task && typeof task === 'object' ? task : {};
+      const authority = resolveHttpMcpCallAuthority({ incoming, connectionId, body: req.body });
       const resolution = resolveExternalTools({
-        task: task || { objective: toolName, capabilities: req.body?.capabilities || [] },
+        task: task || { objective: toolName, capabilities: authority.capabilities },
         connections,
         classifiedByConnectionId,
-        botConnectionIds: req.body?.botConnectionIds,
+        botConnectionIds: authority.botConnectionIds,
       });
-      const incoming = task && typeof task === 'object' ? task : {};
       const executed = await executeMcpTool({
         userId,
         approvalToken: req.body?.approvalToken,
@@ -359,20 +361,9 @@ export function registerMcpRoutes(app, { requireAuth, supabaseAdmin, PORT }) {
           runId: incoming.runId || incoming.id || `http_${userId}`,
           userId,
           objective: incoming.objective || toolName,
-          capabilities: incoming.capabilities || req.body?.capabilities || [],
-          approval: {
-            policy:
-              incoming.association?.routineId && incoming.approval?.policy === 'standing_authorization'
-                ? 'standing_authorization'
-                : 'preserve_executor_security_gates',
-            state: 'not_requested',
-          },
-          association: {
-            ...(incoming.association || {}),
-            connectionIds: Array.isArray(incoming.association?.connectionIds)
-              ? incoming.association.connectionIds
-              : [connectionId],
-          },
+          capabilities: authority.capabilities,
+          approval: authority.approval,
+          association: authority.association,
           cancellation: {
             ...(incoming.cancellation || {}),
             signal: req.abortSignal || null,

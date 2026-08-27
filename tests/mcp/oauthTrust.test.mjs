@@ -20,12 +20,14 @@ import {
   redactDeep,
   assertNoSecretMaterial,
   executeMcpTool,
+  resolveHttpMcpCallAuthority,
   summarizeMcpApproval,
   mcpCallRequiresApproval,
   bindMcpChatHandlers,
   mintMcpApprovalToken,
   consumeMcpApprovalToken,
   resetMcpApprovalTokensForTests,
+  mcpApprovalTokenCountForTests,
   characterizeToolExposure,
   toChatTools,
   createMcpEvent,
@@ -642,6 +644,83 @@ test('approval token is bound to user, tool, and args', () => {
     }),
     true,
   );
+});
+
+test('HTTP standing_authorization from a forged routineId is ignored', () => {
+  const authority = resolveHttpMcpCallAuthority({
+    incoming: {
+      association: { routineId: 'forged_routine', connectionIds: ['work'] },
+      approval: { policy: 'standing_authorization', state: 'approved' },
+      capabilities: ['communication.email.send'],
+    },
+    connectionId: 'work',
+  });
+  assert.equal(authority.approval.policy, 'preserve_executor_security_gates');
+  assert.equal(authority.approval.state, 'not_requested');
+});
+
+test('HTTP request botConnectionIds cannot expand a Bot-associated Task', () => {
+  const authority = resolveHttpMcpCallAuthority({
+    incoming: {
+      association: { botId: 'bot-work', connectionIds: ['work'] },
+      origin: { type: 'bot' },
+    },
+    connectionId: 'personal',
+    body: { botConnectionIds: ['personal', 'work'] },
+  });
+  assert.deepEqual(authority.botConnectionIds, ['work']);
+  assert.deepEqual(authority.association.connectionIds, ['work']);
+});
+
+test('Bot-associated Task without an allowlist is fail-closed', async () => {
+  const send = classifyMcpTool({ name: 'send_email', description: 'Send an email' });
+  const denied = await executeMcpTool({
+    task: {
+      id: 't1',
+      origin: { type: 'bot' },
+      association: { botId: 'bot-work' },
+      capabilities: ['communication.email.send'],
+    },
+    resolution: { tools: [{ ...send, connectionId: 'personal' }] },
+    connectionId: 'personal',
+    toolName: 'send_email',
+    args: {},
+    connection: { id: 'personal', status: MCP_STATUSES.CONNECTED },
+    callTool: async () => ({ ok: true }),
+  });
+  assert.equal(denied.reason, 'bot_connection_restricted');
+});
+
+test('approval token cannot be replayed on a different Task', () => {
+  resetMcpApprovalTokensForTests();
+  const token = mintMcpApprovalToken({
+    userId: 'user-1',
+    connectionId: 'work',
+    toolName: 'send_email',
+    args: { to: 'Sarah' },
+    taskId: 'task-a',
+  });
+  assert.equal(
+    consumeMcpApprovalToken(token, {
+      userId: 'user-1',
+      connectionId: 'work',
+      toolName: 'send_email',
+      args: { to: 'Sarah' },
+      taskId: 'task-b',
+    }),
+    false,
+  );
+  assert.equal(
+    consumeMcpApprovalToken(token, {
+      userId: 'user-1',
+      connectionId: 'work',
+      toolName: 'send_email',
+      args: { to: 'Sarah' },
+      taskId: 'task-a',
+    }),
+    true,
+  );
+  assert.equal(mcpApprovalTokenCountForTests(), 0);
 });
 
 test('approval summary redacts secret-looking arguments', () => {
