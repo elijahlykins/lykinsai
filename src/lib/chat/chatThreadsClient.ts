@@ -296,12 +296,6 @@ export async function beginThreadFromBoard(
   return { threadId: linkThreadId || threadId, chatId };
 }
 
-/** @deprecated Use createNewChat — threads are opt-in from the chat UI. */
-export async function createChatThreadWithBoard(userId: string): Promise<{ threadId: string; chatId: string }> {
-  const { chatId } = await createNewChat(userId);
-  return { threadId: "", chatId };
-}
-
 export async function createChatInThread(
   userId: string,
   threadId: string,

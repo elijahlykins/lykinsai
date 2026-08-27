@@ -10,8 +10,8 @@ import {
   chatAttachmentLabel,
   chatAttachmentText,
   downloadChatAttachment,
-  type ChatAttachmentLike,
 } from "@/lib/chat/chatAttachmentFile";
+import type { FocusedChatAttachment } from "@/lib/lyknChat/chatTurnTypes";
 
 // ============================================================================
 // SentChatAttachment — an attachment as it appears after the prompt is sent
@@ -21,17 +21,9 @@ import {
 // file lives in the small menu under it — save it to the vault, download it,
 // copy its link or its text — so the transcript isn't a column of Save buttons.
 
-export type SentChatAttachmentData = ChatAttachmentLike & {
-  id: string;
-  linkTitle?: string;
-  linkDescription?: string;
-  linkImage?: string;
-  linkSiteName?: string;
-  linkFavicon?: string;
-  oembedType?: string;
-  authorName?: string;
-  authorHandle?: string;
-};
+/** Same object as `FocusedChatAttachment` after send. Distinct alias so the
+ *  chip contract stays explicit at the render boundary. */
+export type SentChatAttachmentData = FocusedChatAttachment;
 
 type MenuRow =
   | { separator: true }

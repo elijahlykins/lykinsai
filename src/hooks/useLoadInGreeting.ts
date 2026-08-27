@@ -16,8 +16,6 @@ export function useLoadInGreeting({
   chatMessages,
   chatMessagesRef,
   setChatMessages,
-  setChatRailOpen,
-  setChatRailVisible,
 }: {
   user: {
     id?: string;
@@ -29,8 +27,6 @@ export function useLoadInGreeting({
   chatMessages: PromptMessage[];
   chatMessagesRef: React.MutableRefObject<PromptMessage[]>;
   setChatMessages: React.Dispatch<React.SetStateAction<PromptMessage[]>>;
-  setChatRailOpen: (open: boolean) => void;
-  setChatRailVisible: (visible: boolean) => void;
 }) {
   const loadInGreetingSeededRef = useRef<Set<string>>(new Set());
 
@@ -120,8 +116,6 @@ export function useLoadInGreeting({
 
     timeouts.push(
       window.setTimeout(() => {
-        setChatRailOpen(true);
-        setChatRailVisible(true);
         setChatMessages((prev) =>
           prev.length > 0
             ? prev

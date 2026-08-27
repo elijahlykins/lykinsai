@@ -1,16 +1,12 @@
-import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import type { FocusedChatAttachment } from "@/lib/lyknChat/chatTurnTypes";
-import type { ChatSendParams } from "@/lib/ai/chatSendOrchestrator";
 
 // ============================================================================
-// chatTranscription — attachment / YouTube / uploaded-media transcription
+// chatTranscription — attachment / YouTube transcription + grounding
 // ============================================================================
-// The transcription + media-grounding phases of the chat send pipeline,
-// extracted VERBATIM from chatSendOrchestrator.ts (Wave 3B decomposition,
-// see docs/REFACTOR_LOG.md). orchestrateChatSend calls these in the same
-// order as before: transcribeAttachments → fetchYouTubeGrounding →
-// transcribeUploadedVideos, after buildAttachmentContext and before
-// request-body construction.
+// The transcription + media-grounding phases of the chat send pipeline.
+// orchestrateChatSend calls these in the same order as always:
+// transcribeAttachments → fetchYouTubeGrounding, after buildAttachmentContext
+// and before request-body construction.
 //
 // LOAD-BEARING CONTRACTS — do not "improve" these:
 //   • Attachments are mutated IN PLACE (`att.transcript = …`). The engine's
@@ -20,6 +16,94 @@ import type { ChatSendParams } from "@/lib/ai/chatSendOrchestrator";
 //     timers abort the WHOLE send on timeout (not just transcription).
 //   • Failures are swallowed and the send continues without a transcript.
 //   • Status strings/timing are UI-visible; keep them exactly as-is.
+
+/** One cached full-transcript fetch, keyed by videoId in the engine's
+ *  per-session cache so repeat questions about the same video skip the
+ *  network round-trip. */
+export type CachedYouTubeTranscript = {
+  fetchedAt: number;
+  title: string;
+  url: string;
+  transcript: string;
+  segments: Array<{ startSec: number; endSec: number; text: string }>;
+  source?: string;
+};
+
+/* ------------------------------------------------------------------ */
+/*  Shared caption → Whisper retry policy                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Fetch a YouTube transcript, retrying once with `retryWhisper=1` when the
+ * server could only return the video description (`source:
+ * "description_fallback"`). Both transcription flows (per-attachment and
+ * send-level grounding) share this policy so caption→Whisper fallback
+ * behavior can never drift between them again.
+ *
+ * The flows intentionally differ in two ways, surfaced as options:
+ *   • `retryRequiresTranscript` — the attachment flow only retries when the
+ *     first response actually carried description text; grounding retries on
+ *     the fallback source alone.
+ *   • `timeoutMs`/`onTimeout` — grounding arms a hard timer around each fetch
+ *     that aborts the WHOLE send; the attachment flow has no timer.
+ *
+ * Network errors are swallowed (res → null) so callers always get a result
+ * object; a failed fetch just means no transcript.
+ */
+export async function fetchYouTubeTranscriptWithWhisperRetry(opts: {
+  apiBase: string;
+  videoId: string;
+  signal: AbortSignal;
+  /** Fired just before the Whisper retry — callers show different copy. */
+  onRetryStatus?: () => void;
+  /** Only retry when the first response carried a non-empty transcript. */
+  retryRequiresTranscript?: boolean;
+  timeoutMs?: number;
+  onTimeout?: () => void;
+}): Promise<{ json: any; source: string; whisperAttempted: boolean }> {
+  const { apiBase, videoId, signal } = opts;
+  const arm = () =>
+    opts.timeoutMs
+      ? setTimeout(() => { if (!signal.aborted) opts.onTimeout?.(); }, opts.timeoutMs)
+      : null;
+
+  let timer = arm();
+  const res = await fetch(
+    `${apiBase}/api/youtube/transcript?id=${encodeURIComponent(videoId)}`,
+    { signal },
+  ).catch(() => null);
+  if (timer) clearTimeout(timer);
+
+  let json: any = res && res.ok ? await res.json().catch(() => ({})) : {};
+  let source = String(json?.source || "").toLowerCase();
+  let whisperAttempted = Boolean(json?.whisperAttempted);
+  const firstTranscript = String(json?.transcript || "").trim();
+
+  const shouldRetry =
+    source === "description_fallback" &&
+    !signal.aborted &&
+    (!opts.retryRequiresTranscript || Boolean(firstTranscript));
+  if (shouldRetry) {
+    opts.onRetryStatus?.();
+    timer = arm();
+    const retryRes = await fetch(
+      `${apiBase}/api/youtube/transcript?id=${encodeURIComponent(videoId)}&retryWhisper=1`,
+      { signal },
+    ).catch(() => null);
+    if (timer) clearTimeout(timer);
+    if (retryRes && retryRes.ok) {
+      const retryJson: any = await retryRes.json().catch(() => ({}));
+      const retrySource = String(retryJson?.source || "").toLowerCase();
+      whisperAttempted = whisperAttempted || Boolean(retryJson?.whisperAttempted);
+      if (retrySource !== "description_fallback" && String(retryJson?.transcript || "").trim()) {
+        json = retryJson;
+        source = retrySource;
+      }
+    }
+  }
+
+  return { json, source, whisperAttempted };
+}
 
 /* ------------------------------------------------------------------ */
 /*  Phase 1: Transcribe attachments                                    */
@@ -40,33 +124,18 @@ export async function transcribeAttachments(
       try {
         if (signal.aborted) break;
         onStatus(isBrickAction ? "Transcribing video..." : "Fetching video transcript...");
-        const attTimeout = setTimeout(() => { /* caller owns abort */ }, 120000);
-        const tRes = await fetch(`${apiBase}/api/youtube/transcript?id=${encodeURIComponent(att.videoId)}`, { signal });
-        clearTimeout(attTimeout);
-        if (tRes.ok) {
-          const tData = await tRes.json() as any;
-          const t = String(tData?.transcript || "").trim();
-          const tSource = String(tData?.source || "").toLowerCase();
-          if (t && tSource === "description_fallback") {
-            if (!signal.aborted) {
-              onStatus("No captions, transcribing audio...");
-              const retryRes = await fetch(`${apiBase}/api/youtube/transcript?id=${encodeURIComponent(att.videoId)}&retryWhisper=1`, { signal }).catch(() => null);
-              if (retryRes && retryRes.ok) {
-                const retryData = await retryRes.json() as any;
-                const retrySource = String(retryData?.source || "").toLowerCase();
-                const retryT = String(retryData?.transcript || "").trim();
-                if (retryT && retrySource !== "description_fallback") {
-                  att.transcript = retryT;
-                } else {
-                  att.transcript = `[VIDEO DESCRIPTION — not a transcript of spoken audio]\n${t}`;
-                }
-              } else {
-                att.transcript = `[VIDEO DESCRIPTION — not a transcript of spoken audio]\n${t}`;
-              }
-            }
-          } else if (t) {
-            att.transcript = t;
-          }
+        const { json, source } = await fetchYouTubeTranscriptWithWhisperRetry({
+          apiBase,
+          videoId: att.videoId,
+          signal,
+          onRetryStatus: () => onStatus("No captions, transcribing audio..."),
+          retryRequiresTranscript: true,
+        });
+        const t = String(json?.transcript || "").trim();
+        if (t && source === "description_fallback") {
+          att.transcript = `[VIDEO DESCRIPTION — not a transcript of spoken audio]\n${t}`;
+        } else if (t) {
+          att.transcript = t;
         }
       } catch { /* continue without transcript */ }
       continue;
@@ -112,51 +181,37 @@ export async function transcribeAttachments(
 }
 
 /* ------------------------------------------------------------------ */
-/*  Phase 2: YouTube grounding for board videos                        */
+/*  Phase 2: YouTube grounding for attached videos                     */
 /* ------------------------------------------------------------------ */
 
-export async function fetchYouTubeGrounding(
-  p: ChatSendParams,
-  apiBase: string,
-  isBrickAction: boolean,
-  earlyFocusedIds: string[],
-  hasFocusedVideo: boolean,
-): Promise<{ youtubeGrounding: string; youtubeTranscriptSource: string }> {
-  const { text, abortController, youtube, analysis, state, context } = p;
+/**
+ * Fetch the full transcript for the first YouTube video attached to this
+ * turn (when the turn needs one) and build the grounding block the request
+ * builder injects into the prompt. Successful fetches are written to the
+ * per-session `transcriptCache` so later turns about the same video skip
+ * the network.
+ *
+ * The 120s timers here abort the WHOLE send on timeout — that is the
+ * long-standing contract, not a bug.
+ */
+export async function fetchYouTubeGrounding(args: {
+  apiBase: string;
+  /** The turn asks about a video (or is a brick action) — fetch in full. */
+  needsFullTranscript: boolean;
+  sentAttachments: FocusedChatAttachment[];
+  abortController: AbortController;
+  transcriptCache: Record<string, CachedYouTubeTranscript>;
+  setChatStatusText: (s: string) => void;
+}): Promise<{ youtubeGrounding: string; youtubeTranscriptSource: string }> {
+  const { apiBase, needsFullTranscript, sentAttachments, abortController, transcriptCache, setChatStatusText } = args;
   const signal = abortController.signal;
-  const asksAboutVideo = !isBrickAction && analysis.isVideoQuestion(text);
-  const needsFullTranscript = asksAboutVideo || isBrickAction || hasFocusedVideo;
 
-  const boardVideos = youtube.getAllYouTubeBlocks();
-  const attachedYouTubeVideos = p.sentAttachments
+  const attachedYouTubeVideos = sentAttachments
     .filter((a) => a.type?.toLowerCase() === "youtube" && a.videoId)
     .map((a) => ({ videoId: a.videoId!, url: a.url, title: a.name || `YouTube ${a.videoId}` }));
   const seen = new Set<string>();
   const allYouTubeVideos: Array<{ videoId: string; url: string; title: string }> = [];
-
-  if (hasFocusedVideo) {
-    const st = p.canvas.getCanvasState();
-    for (const fid of earlyFocusedIds) {
-      const blk: any = st.blocks?.[fid];
-      if (!blk) continue;
-      const t = String(blk.type || "").toLowerCase();
-      const m = String(blk.mode || blk.data?.mode || "").toLowerCase();
-      if (t !== "youtube" && !(t === "create" && m === "video")) continue;
-      const vid = String(blk.videoId || blk.data?.videoId || "");
-      const rawUrl = String(blk.url || blk.data?.url || "");
-      const resolvedVid = vid || extractYouTubeVideoId(rawUrl) || "";
-      if (resolvedVid && !seen.has(resolvedVid)) {
-        seen.add(resolvedVid);
-        allYouTubeVideos.push({
-          videoId: resolvedVid,
-          url: rawUrl || `https://www.youtube.com/watch?v=${resolvedVid}`,
-          title: String(blk.data?.title || blk.data?.name || "").trim(),
-        });
-      }
-    }
-  }
-
-  for (const v of [...attachedYouTubeVideos, ...boardVideos]) {
+  for (const v of attachedYouTubeVideos) {
     if (seen.has(v.videoId)) continue;
     seen.add(v.videoId);
     allYouTubeVideos.push(v);
@@ -167,41 +222,22 @@ export async function fetchYouTubeGrounding(
 
   if (needsFullTranscript && allYouTubeVideos.length > 0 && !signal.aborted) {
     const targetVideo = allYouTubeVideos[0];
-    state.setChatStatusText("Fetching video transcript...");
+    setChatStatusText("Fetching video transcript...");
     try {
-      const tTimeout = setTimeout(() => { if (!signal.aborted) abortController.abort(); }, 120000);
-      let tRes = await fetch(
-        `${apiBase}/api/youtube/transcript?id=${encodeURIComponent(targetVideo.videoId)}`,
-        { signal }
-      ).catch(() => null);
-      clearTimeout(tTimeout);
-      let tJson: any = tRes && tRes.ok ? await tRes.json().catch(() => ({})) : {};
-      let transcriptSource = String(tJson?.source || "").toLowerCase();
-
-      let whisperWasAttempted = Boolean(tJson?.whisperAttempted);
-      if (transcriptSource === "description_fallback" && !signal.aborted) {
-        state.setChatStatusText("No captions found, transcribing video audio...");
-        const retryTimeout = setTimeout(() => { if (!signal.aborted) abortController.abort(); }, 120000);
-        const retryRes = await fetch(
-          `${apiBase}/api/youtube/transcript?id=${encodeURIComponent(targetVideo.videoId)}&retryWhisper=1`,
-          { signal }
-        ).catch(() => null);
-        clearTimeout(retryTimeout);
-        if (retryRes && retryRes.ok) {
-          const retryJson: any = await retryRes.json().catch(() => ({}));
-          const retrySource = String(retryJson?.source || "").toLowerCase();
-          whisperWasAttempted = whisperWasAttempted || Boolean(retryJson?.whisperAttempted);
-          if (retrySource !== "description_fallback" && String(retryJson?.transcript || "").trim()) {
-            tJson = retryJson;
-            transcriptSource = retrySource;
-          }
-        }
-      }
+      const { json: tJson, source: transcriptSource, whisperAttempted } =
+        await fetchYouTubeTranscriptWithWhisperRetry({
+          apiBase,
+          videoId: targetVideo.videoId,
+          signal,
+          onRetryStatus: () => setChatStatusText("No captions found, transcribing video audio..."),
+          timeoutMs: 120000,
+          onTimeout: () => abortController.abort(),
+        });
 
       youtubeTranscriptSource = transcriptSource;
       const fullTranscript = String(tJson?.transcript || "").trim();
       if (fullTranscript) {
-        youtube.youtubeTranscriptCache[targetVideo.videoId] = {
+        transcriptCache[targetVideo.videoId] = {
           fetchedAt: Date.now(),
           title: targetVideo.title || `YouTube ${targetVideo.videoId}`,
           url: targetVideo.url,
@@ -214,105 +250,27 @@ export async function fetchYouTubeGrounding(
             ? fullTranscript.slice(0, 10000) + "\n...[transcript truncated — " + Math.round(fullTranscript.length / 1000) + "k total chars]"
             : fullTranscript;
         if (transcriptSource === "description_fallback") {
-          const whisperNote = whisperWasAttempted
+          const whisperNote = whisperAttempted
             ? "Audio transcription was attempted using Whisper speech-to-text but the audio could not be downloaded from YouTube."
             : "No audio transcription was attempted.";
           youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId}\n${whisperNote}\nVideo description (this is NOT a transcript of spoken audio — it is only the video's description/metadata):\n${safeTranscript}`;
-          state.setChatStatusText("Transcription failed, only description available...");
+          setChatStatusText("Transcription failed, only description available...");
         } else {
           youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId}\nFull transcript:\n${safeTranscript}`;
-          state.setChatStatusText("Transcript ready, generating response...");
+          setChatStatusText("Transcript ready, generating response...");
         }
       } else {
-        const whisperNote = whisperWasAttempted ? " Audio transcription was attempted but failed." : "";
-        state.setChatStatusText("No transcript available, answering from metadata...");
+        const whisperNote = whisperAttempted ? " Audio transcription was attempted but failed." : "";
+        setChatStatusText("No transcript available, answering from metadata...");
         youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId} (${targetVideo.url})\n(No transcript or description available.${whisperNote})`;
       }
     } catch {
       if (!signal.aborted) {
-        state.setChatStatusText("Transcript fetch failed, answering from metadata...");
+        setChatStatusText("Transcript fetch failed, answering from metadata...");
         youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId} (${targetVideo.url})\n(Transcript fetch failed)`;
       }
-    }
-  } else if (!isBrickAction && allYouTubeVideos.length > 0 && !signal.aborted) {
-    const hasAnyCachedTranscript = allYouTubeVideos.some(
-      (v) => youtube.youtubeTranscriptCache[v.videoId]?.transcript,
-    );
-    if (hasAnyCachedTranscript) {
-      state.setChatStatusText("Analyzing visible YouTube videos...");
-      youtubeGrounding = await youtube.buildYouTubeGrounding(apiBase, text, signal);
     }
   }
 
   return { youtubeGrounding, youtubeTranscriptSource };
-}
-
-/* ------------------------------------------------------------------ */
-/*  Phase 3: Whisper for uploaded video/audio canvas blocks            */
-/* ------------------------------------------------------------------ */
-
-export async function transcribeUploadedVideos(
-  p: ChatSendParams,
-  apiBase: string,
-  earlyFocusedIds: string[],
-  needsFullTranscript: boolean,
-): Promise<string> {
-  const signal = p.abortController.signal;
-  if (signal.aborted) return "";
-
-  const focusedSet = new Set(earlyFocusedIds);
-  const st = p.canvas.getCanvasState();
-  const allBlockIds: string[] = Array.isArray(st.blockOrder) ? st.blockOrder : [];
-  const scanIds = needsFullTranscript
-    ? [...earlyFocusedIds, ...allBlockIds.filter((id: string) => !focusedSet.has(id))]
-    : earlyFocusedIds;
-  const transcribedUrls = new Set<string>();
-  const MAX_WHISPER_BLOCKS = 3;
-  let whisperCount = 0;
-  let uploadedVideoTranscript = "";
-
-  for (const fid of scanIds) {
-    if (signal.aborted || whisperCount >= MAX_WHISPER_BLOCKS) break;
-    const blk: any = st.blocks?.[fid];
-    if (!blk) continue;
-    const t = String(blk.type || "").toLowerCase();
-    const m = String(blk.mode || blk.data?.mode || "").toLowerCase();
-    const isUploadedVideo = (t === "create" && m === "video") || t === "video";
-    const isUploadedAudio = (t === "create" && m === "audio") || t === "audio";
-    if (!isUploadedVideo && !isUploadedAudio) continue;
-    const vid = String(blk.videoId || blk.data?.videoId || "");
-    const rawUrl = String(blk.url || blk.data?.url || "");
-    const resolvedVid = vid || extractYouTubeVideoId(rawUrl) || "";
-    if (resolvedVid) continue;
-    if (!rawUrl || transcribedUrls.has(rawUrl)) continue;
-    transcribedUrls.add(rawUrl);
-    try {
-      p.state.setChatStatusText("Transcribing uploaded video...");
-      const resp = await fetch(rawUrl, { signal });
-      if (!resp.ok) continue;
-      const blob = await resp.blob();
-      const mimeType = String(blk.data?.mime || blk.mime || blob.type || "video/mp4");
-      const ext = mimeType.split("/")[1] || "mp4";
-      const fileName = String(blk.data?.name || `video.${ext}`);
-      const formData = new FormData();
-      formData.append("file", blob, fileName);
-      const wRes = await fetch(`${apiBase}/api/whisper/transcribe`, {
-        method: "POST",
-        body: formData,
-        signal,
-      });
-      if (wRes.ok) {
-        const wData = await wRes.json();
-        const tr = String(wData?.transcript || "").trim();
-        if (tr) {
-          whisperCount++;
-          const safeTr = tr.length > 10000
-            ? tr.slice(0, 10000) + "\n...[transcript truncated]"
-            : tr;
-          uploadedVideoTranscript += `\nUploaded video "${fileName}":\n${safeTr}`;
-        }
-      }
-    } catch { /* continue without transcript */ }
-  }
-  return uploadedVideoTranscript;
 }

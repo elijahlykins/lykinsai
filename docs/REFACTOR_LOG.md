@@ -556,3 +556,56 @@ stable identity, so memoization is unchanged).
 - build passes; `test:agent` 642+29 pass; orphan AI/chat tests 53 pass
   (chatArtifacts/researchReportFinalize test files import vitest, which
   is not installed — pre-existing, unrelated)
+
+---
+
+## C3B — 2026-08-26 — Decompose Chat frontend / client orchestration
+
+### Change
+Split remaining Chat god-components by ownership, not line count.
+
+Send pipeline (already staged in the working tree, finished here):
+- `chatSendOrchestrator.ts` is a sequencing facade
+- stages: `chatTurnPreparation`, `chatTranscription`, `chatRequestBuilder`,
+  `chatStreamRunner`, `chatResultReconciliation`
+
+Engine facade:
+- `useChatComposerAttachments` owns staged composer attachments
+- `useChatThreadProjection` owns snapshot→React projection + typewriter
+- `useChatEngine` remains the only send/stop/stream owner
+
+LyknChat route shell:
+- `useChatModelSelection` — model picker / custom-model hydration
+- `useChatAttachmentIngress` — page-level file/link/vault/Mac ingress
+- `useStudioChatSession` — Studio/Home surface + Imagine/Build session
+- `FocusedAttachmentPreview` — composer chip presentation
+
+LyknChatView presentation:
+- `ChatMessageItem` + `LoadInGreetingBlocks`
+- historical load-in / legacy assistant / neuron / artifact renderers kept
+
+### Reason
+LyknChat and LyknChatView were the frontend change-collision core.
+The send orchestrator was a multi-phase blob. Ownership is now one
+reason to change per module.
+
+### Behavioral change
+None intended. Permanently-true `chatMode` and always-false `notesOpen`
+dead branches were deleted rather than preserved as fiction.
+`handleActionPath` / organize-ideas / add-to-grid creation paths
+were already unreachable and are gone. `actionJsonRescue` strip remains.
+
+### Deliberately left behind
+- `StudioImagineMode.tsx` (~2.1k) — cohesive Imagine product, not this
+  ownership problem
+- `useLyknChatPersistence.ts` — already a single domain
+- `chatStreamRunner.ts` (637) — SSE + tool events stay together so
+  stream completion has one owner
+- Server invoke `returnActions` public contract
+- ChatNeuron belief/fact/concept renderers
+
+### References checked
+- no second Chat engine / runtime / manager
+- abort + stream cursor still minted only in `useChatEngine.handleChatSend`
+- `handleActionPath` / `organizeIdeas` / `addChatResponseToGrid` absent
+- attachment types share `FocusedChatAttachment` as the canonical object

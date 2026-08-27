@@ -117,12 +117,10 @@ export interface UseLyknChatPersistenceParams {
   chatMessages: any[];
   chatMessagesRef: MutableRefObject<any[]>;
   aiThreadRef: MutableRefObject<Array<{ role: "user" | "assistant"; content: string }>>;
+  /** Legacy snapshot field — the notes rail UI is gone, but old chats still
+   *  carry `notesPages`, so hydration keeps restoring it into this ref. */
   notesPagesRef: MutableRefObject<NotePage[]>;
-  setNotesPages: Dispatch<SetStateAction<NotePage[]>>;
-  setActiveNotePageId: Dispatch<SetStateAction<string>>;
   setChatMessages: Dispatch<SetStateAction<any[]>>;
-  setChatRailOpen: Dispatch<SetStateAction<boolean>>;
-  setChatRailVisible: Dispatch<SetStateAction<boolean>>;
   reSignChatAttachments: (messages?: any[]) => void;
   restoreSavedToVaultState: (bid: string | null) => void;
   onDraftEffectCleanup?: () => void;
@@ -141,8 +139,8 @@ export interface UseLyknChatPersistenceParams {
 export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
   const {
     routeChatId, userId,
-    chatMessages, chatMessagesRef, aiThreadRef, notesPagesRef, setNotesPages, setActiveNotePageId,
-    setChatMessages, setChatRailOpen, setChatRailVisible,
+    chatMessages, chatMessagesRef, aiThreadRef, notesPagesRef,
+    setChatMessages,
     reSignChatAttachments, restoreSavedToVaultState,
     onDraftEffectCleanup,
     savedMediaUrls, savedYouTubeIds,
@@ -305,8 +303,6 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
 
         if (loadedChatMessages.length > 0) {
           setChatMessages(loadedChatMessages);
-          setChatRailOpen(true);
-          setChatRailVisible(true);
         }
         if (loadedThread.length > 0) {
           aiThreadRef.current = loadedThread;
@@ -322,8 +318,6 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
 
       const restoredPages = migrateNotesContent(snapshot);
       notesPagesRef.current = restoredPages;
-      setNotesPages(restoredPages);
-      setActiveNotePageId(restoredPages[0].id);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [chatId]
@@ -848,8 +842,6 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
           chatMessagesRef.current = rtSnap.chatMessages;
           aiThreadRef.current = [...rtSnap.aiThread];
           setChatMessages(rtSnap.chatMessages);
-          setChatRailOpen(true);
-          setChatRailVisible(true);
           // Persist the recovered conversation so it survives a reload
           // (a background stream's completion saves under whichever board
           // was active at the time, not necessarily this one).
@@ -940,8 +932,6 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
         if (shouldRestorePendingChat && pendingChat.length > 0 && !remoteHasChat) {
           setChatMessages(pendingChat);
           aiThreadRef.current = pendingThread;
-          setChatRailOpen(true);
-          setChatRailVisible(true);
           queueMicrotask(() => saveSnapshotRef.current());
         }
 
@@ -994,8 +984,6 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
         if (shouldRestorePendingChat && pendingChat.length > 0) {
           setChatMessages(pendingChat);
           aiThreadRef.current = pendingThread;
-          setChatRailOpen(true);
-          setChatRailVisible(true);
           queueMicrotask(() => saveSnapshotRef.current());
         }
         restorePreferredRuntimeChat(id, []);

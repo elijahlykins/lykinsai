@@ -5,7 +5,6 @@ import {
 
 interface LyknChatToolbarProps {
   isMobilePhone?: boolean;
-  notesOpen: boolean;
   /** Right inset so the toolbar isn't buried under a fixed right column. */
   rightInset?: string;
   // Voice Mode: a Chat ⇆ Voice switch. Only shown when the active model is
@@ -17,7 +16,6 @@ interface LyknChatToolbarProps {
 
 const LyknChatToolbar = React.memo(function LyknChatToolbar({
   isMobilePhone = false,
-  notesOpen,
   rightInset,
   voiceModeEligible = false,
   voiceModeOn = false,
@@ -30,7 +28,7 @@ const LyknChatToolbar = React.memo(function LyknChatToolbar({
   if (isMobilePhone) {
     return (
       <div
-        className={`lykn-voice-toolbar fixed top-2 right-0 left-0 px-3 flex items-center justify-end pointer-events-none ${notesOpen ? "z-[235]" : "z-[70]"}`}
+        className="lykn-voice-toolbar fixed top-2 right-0 left-0 px-3 flex items-center justify-end pointer-events-none z-[70]"
       >
         <div className="pointer-events-auto flex items-center gap-1 p-1 rounded-full bg-background/85 backdrop-blur-md border border-black/8 dark:border-white/10 shadow-sm">
           <button
@@ -52,7 +50,7 @@ const LyknChatToolbar = React.memo(function LyknChatToolbar({
     <>
       {/* Top-right toolbar */}
       <div
-        className={`lykn-voice-toolbar fixed top-3 px-3 flex items-center justify-end pointer-events-none ${notesOpen ? "z-[235]" : "z-[70]"}`}
+        className="lykn-voice-toolbar fixed top-3 px-3 flex items-center justify-end pointer-events-none z-[70]"
         style={{
           left: "var(--sidebar-offset, 0px)",
           right: rightInset || 0,

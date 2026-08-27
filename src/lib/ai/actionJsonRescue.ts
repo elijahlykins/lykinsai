@@ -369,7 +369,14 @@ export function rescueXmlTagActions(text: string): { actions: CreateAction[]; cl
   return { actions, cleaned };
 }
 
-export function rescueInlineBlockMarkup(text: string, applyActions: (actions: CreateAction[]) => any): string {
+/**
+ * Strip leaked action markup from the FINAL reply text. `applyActions` is
+ * optional compatibility plumbing: the canvas that once executed rescued
+ * actions is gone, so production callers omit it and this is sanitation
+ * only. Tests (and any future grid revival) may still pass a handler to
+ * receive the recovered actions.
+ */
+export function rescueInlineBlockMarkup(text: string, applyActions?: (actions: CreateAction[]) => any): string {
   let working = text;
   const rescued: CreateAction[] = [];
 
@@ -465,8 +472,8 @@ export function rescueInlineBlockMarkup(text: string, applyActions: (actions: Cr
     working = out;
   }
 
-  if (rescued.length) {
-    try { applyActions(rescued); } catch { /* applyProjectActions failures are non-fatal */ }
+  if (rescued.length && applyActions) {
+    try { applyActions(rescued); } catch { /* apply failures are non-fatal */ }
   }
 
   return working

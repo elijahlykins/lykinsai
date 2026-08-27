@@ -19,25 +19,12 @@ import { supabase } from "@/lib/supabase";
 import { triggerBlobDownload } from "@/lib/lyknChat/downloadArtifact";
 import { localBlobUrl } from "@/lib/vault/repository/mediaUrl";
 import { LOCAL_BUCKET } from "@/lib/vault/repository/types";
+import type { FocusedChatAttachment } from "@/lib/lyknChat/chatTurnTypes";
 
-export type ChatAttachmentLike = {
-  id?: string;
-  type?: string;
-  url?: string;
-  name?: string;
-  mime?: string;
-  size?: number;
-  videoId?: string;
-  vaultTitle?: string;
-  vaultContent?: string;
-  transcript?: string;
-  pdfText?: string;
-  extractedText?: string;
-  ocrText?: string;
-  storagePath?: string;
-  storageBucket?: string;
-  rawFile?: File;
-};
+/** File-I/O subset of the canonical composer/persisted attachment.
+ *  Fields are optional because download/open helpers accept any stage of
+ *  the same object (composer chip, sent bubble, vault drop). */
+export type ChatAttachmentLike = Partial<FocusedChatAttachment>;
 
 export type ChatAttachmentKind =
   | "image"
