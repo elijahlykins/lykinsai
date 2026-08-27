@@ -39,7 +39,7 @@
     "test": "node --test",
     "test:server": "node --test tests/server/serverRouteManifest.test.mjs tests/server/serverMiddlewareOrder.test.mjs tests/server/serverCriticalRoutes.test.mjs",
     "test:server:update-manifest": "node scripts/server/update-route-manifest.mjs",
-    "test:vault": "node --import ./scripts/test-alias-loader.mjs --test src/lib/vault/attachmentsMarker.test.ts src/lib/synthesis/sourceText.test.ts src/lib/vaultContent.test.ts src/lib/vault/repository/repository.test.ts src/lib/vault/aiDriveContents.test.ts src/lib/vault/insertWithSchemaFallback.test.ts",
+    "test:vault": "node --import ./scripts/test-alias-loader.mjs --test src/lib/vault/attachmentsMarker.test.ts src/lib/synthesis/sourceText.test.ts src/lib/vaultContent.test.ts src/lib/vault/repository/repository.test.ts src/lib/vault/aiDriveContents.test.ts src/lib/vault/insertWithSchemaFallback.test.ts src/lib/vault/vaultCardModel.test.js",
     "test:drag": "node --import ./scripts/test-alias-loader.mjs --test src/components/macfiles/filesDrag.test.mjs src/components/macfiles/preview.test.mjs src/lib/drag/dragEngine.test.mjs src/components/macdesktop/desktopGrid.test.mjs src/components/macdesktop/desktopOrder.test.mjs",
     "test:folders": "node --test src/lib/lyknFolders.test.mjs",
     "test:rag": "node --test lib/rag/rag.test.mjs",

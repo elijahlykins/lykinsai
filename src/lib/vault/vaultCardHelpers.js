@@ -4,10 +4,10 @@
 // docs/REFACTOR_LOG.md). Every function here is a deterministic function of
 // its arguments — no React state, refs, network, Supabase, or lifecycle.
 //
-// Note: src/lib/vault/vaultContentsForAi.ts still carries older private
-// copies of several of these helpers (buildTextExcerpt, extractChatPreview,
-// formatDate, …). Consolidating those is a separate, future batch — diff the
-// implementations before unifying.
+// Note: src/lib/vault/vaultContentsForAi.ts imports formatDate and
+// extractYouTubeLinks from here, but still carries older private copies of
+// buildTextExcerpt / extractChatPreview whose behavior intentionally differs
+// slightly — diff the implementations before unifying those.
 import {
   stripAttachmentsMarker,
   withAttachmentsMarker,

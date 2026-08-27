@@ -8,6 +8,7 @@ import {
   parseAttachmentsFromNote,
   stripAttachmentsMarker,
 } from "@/lib/vault/attachmentsMarker";
+import { extractYouTubeLinks, formatDate } from "@/lib/vault/vaultCardHelpers";
 
 export const VAULT_AI_NOTES_LIMIT = 100;
 export const VAULT_AI_MAX_CARD_LINES = 40;
@@ -140,22 +141,6 @@ function extractChatPreview(content = "") {
     question: first.q || "Chat message",
     answer: first.a || "",
   };
-}
-
-function extractYouTubeLinks(content = "") {
-  const text = String(content || "");
-  if (!text) return [];
-  const regex =
-    /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=[\w-]+(?:[^\s<)]*)?|youtu\.be\/[\w-]+(?:[^\s<)]*)?)/gi;
-  const matches = text.match(regex) || [];
-  return [...new Set(matches)];
-}
-
-function formatDate(value: unknown) {
-  if (!value) return "No date";
-  const date = new Date(value as string);
-  if (Number.isNaN(date.getTime())) return "No date";
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 function parseAttachmentNotes(attachment: Record<string, unknown> = {}) {
