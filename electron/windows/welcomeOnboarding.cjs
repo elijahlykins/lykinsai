@@ -26,6 +26,8 @@ function attachWelcomeOnboarding(d) {
   const ownedBrowserAct = d.ownedBrowserAct;
   const agentRecentVisits = d.agentRecentVisits;
   const { broadcastToAllWindows } = require("../services/initializeElectronServices.cjs");
+  const { getUserExtensionDir } = require("../extensionInstaller.cjs");
+  const { buildDiagnosticsReport } = require("../diagnostics.cjs");
   const overlayConstants = d.constants;
   const {
     OVERLAY_WIDTH, OVERLAY_SIDE_WIDTH, OVERLAY_WATCH_SIDE_WIDTH, OVERLAY_MAX_WIDTH,

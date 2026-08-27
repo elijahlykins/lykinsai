@@ -30,6 +30,15 @@ function registerExtensionInstallIpc(d) {
     MENU_MIN_HEIGHT, MENU_MAX_HEIGHT, PICKER_WIDTH, PICKER_MIN_HEIGHT, PICKER_MAX_HEIGHT,
   } = overlayConstants;
   const createExtensionInstallWindow = (...a) => d.createExtensionInstallWindow(...a);
+  const {
+    installExtensionOneClick,
+    revealExtensionInstallFolder,
+    getExtensionInstallMode,
+    prepareExtensionInstallDir,
+  } = require("../extensionInstaller.cjs");
+  // This module lives in electron/ipc. Extension installer still treats appDir
+  // as the electron/ folder so unpackaged copies resolve to repo/extensions.
+  const ELECTRON_DIR = path.join(__dirname, "..");
 
   ipcMain.handle("lykn:open-extension-install", () => {
     createExtensionInstallWindow();
@@ -44,7 +53,7 @@ function registerExtensionInstallIpc(d) {
           userDataPath: app.getPath("userData"),
           packaged: app.isPackaged,
           resourcesPath: process.resourcesPath,
-          appDir: __dirname,
+          appDir: ELECTRON_DIR,
           shell,
           clipboard,
           dialog,
@@ -62,7 +71,7 @@ function registerExtensionInstallIpc(d) {
         userDataPath: app.getPath("userData"),
         packaged: app.isPackaged,
         resourcesPath: process.resourcesPath,
-        appDir: __dirname,
+        appDir: ELECTRON_DIR,
         writeBridgeConfig: (dir) => d.extensionBridge?.writeBridgeConfigToExtensionDir?.(dir),
       });
       clipboard.writeText(extPath);

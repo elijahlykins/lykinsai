@@ -19,6 +19,7 @@ function attachAgentBrowser(d) {
   const { IS_MAC, IS_WIN, APP_URL, APP_ORIGIN, API_BASE } = d.env;
   const overlayConstants = d.constants;
   const { AGENT_SIDEBAR_WIDTH } = overlayConstants;
+  const { screenFingerprint } = require("../browserAct.cjs");
   const ownedBrowserAct = d.ownedBrowserAct;
   const agentRecentVisits = d.agentRecentVisits;
   const localStore = d.localStore;

@@ -37,6 +37,81 @@ function attachDesktopAuth(d) {
   const ELECTRON_DIR = path.join(__dirname, "..");
   const createMainWindow = (...a) => d.createMainWindow(...a);
 
+  // OAuth provider origins we allow to open in-app (rather than the external
+  // browser) so the redirect can return to lykn.io with the session intact.
+  const AUTH_HOST_SUFFIXES = [
+    "accounts.google.com",
+    "appleid.apple.com",
+    "login.microsoftonline.com",
+  ];
+
+  // Pin Supabase auth hosts to THIS project when VITE_SUPABASE_URL is known —
+  // a blanket *.supabase.co allowlist let any tenant's project stay inside the
+  // app chrome. Fall back to the suffix only when the env isn't baked in.
+  const SUPABASE_AUTH_HOST = (() => {
+    try {
+      const raw = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "";
+      if (!raw) return null;
+      return new URL(raw).hostname.toLowerCase();
+    } catch {
+      return null;
+    }
+  })();
+
+  // GitHub needs path-level treatment: its OAuth surface must open in-app for
+  // the sign-in redirect to work, but the rest of github.com must NOT — the Mac
+  // release downloads live on github.com, and allowlisting the whole host let a
+  // "Download for Mac" click hijack the app window into GitHub instead of
+  // triggering a clean external download.
+  const GITHUB_AUTH_PATH_RE = /^\/(login|sessions?)(\/|$)/;
+
+  const DESKTOP_AUTH_STATE_TTL_MS = 15 * 60 * 1000;
+
+  // Loopback auth handoff: after Google finishes in the system browser,
+  // /desktop-auth POSTs tokens to 127.0.0.1 so the Mac app can sign in without
+  // requiring a click on "Open LYKN". lykn://auth remains a manual fallback.
+  const AUTH_HANDOFF_PORT = Number(process.env.LYKN_DEV_AUTH_PORT || 38472);
+  // A second LYKN can already own the default port — typically the installed
+  // LYKN.app while a dev shell runs. Posting tokens to a port we don't own hands
+  // them to the OTHER instance, which rejects them as bad_state (it never minted
+  // that desktop_state), so each instance needs a port of its own.
+  const AUTH_HANDOFF_PORT_CANDIDATES = [
+    AUTH_HANDOFF_PORT,
+    AUTH_HANDOFF_PORT + 10,
+    AUTH_HANDOFF_PORT + 11,
+    AUTH_HANDOFF_PORT + 12,
+  ];
+
+  const LYKN_PROTOCOL = "lykn";
+  const LYKN_BUNDLE_ID = "ai.lykn.desktop";
+
+  // Reads the Supabase access token straight from the web app's localStorage.
+  const READ_SUPABASE_TOKEN_JS = `(function () {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('sb-') && k.endsWith('-auth-token')) {
+        const v = JSON.parse(localStorage.getItem(k) || 'null');
+        const tok = v && (v.access_token || (v.currentSession && v.currentSession.access_token));
+        if (tok) return tok;
+      }
+    }
+  } catch (e) {}
+  return null;
+})()`;
+
+  // Distinguishes "signed out" (no sb- key at all → give up fast) from "session
+  // stored but access token stale" (keep polling while Supabase refreshes it).
+  const HAS_SUPABASE_SESSION_JS = `(function () {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('sb-') && k.endsWith('-auth-token')) return true;
+    }
+  } catch (e) {}
+  return false;
+})()`;
+
 function isAuthNavigation(url) {
   try {
     const parsed = new URL(url);
