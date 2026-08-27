@@ -171,11 +171,13 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
       });
       const data = await res.json().catch(() => ({}));
       const incoming = Array.isArray(data?.tools) ? data.tools : [];
+      const next = new Map<string, Record<string, unknown>>();
       for (const tool of incoming) {
         const name = typeof tool?.name === "string" ? tool.name : "";
-        if (name) voiceToolDefsRef.current.set(name, tool as Record<string, unknown>);
+        if (name) next.set(name, tool as Record<string, unknown>);
       }
-      const tools = [...voiceToolDefsRef.current.values()];
+      voiceToolDefsRef.current = next;
+      const tools = [...next.values()];
       dc.send(JSON.stringify({
         type: "session.update",
         session: { tools, tool_choice: "auto" },

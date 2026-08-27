@@ -236,7 +236,7 @@ export function formatMemoryForPrompt(
 
   const lines: string[] = [
     "[EPISODIC]",
-    "Past chats that may be relevant. When one clearly fits, you may briefly reference it (\"Last time we talked about…\") — do not invent episodes. Prefer User Facts for durable identity.",
+    "Past chats that may be relevant. When one clearly fits, you may briefly reference it (\"Last time we talked about…\") — do not invent episodes. Prefer Markdown Memory for durable identity.",
     "",
   ];
   let chars = lines.join("\n").length;

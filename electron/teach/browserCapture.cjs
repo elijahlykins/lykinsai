@@ -35,20 +35,20 @@ function attachBrowserTeachingCapture({ webContents, onEvent = () => {}, debounc
         A: "link", BUTTON: "button", SELECT: "combobox", TEXTAREA: "textbox",
         INPUT: ["button", "submit"].includes(String(el.type || "").toLowerCase()) ? "button" : "textbox"
       }[el.tagName] || String(el.tagName || "").toLowerCase())).slice(0, 40);
-      const name = (
+      const labeledName = (
         el.getAttribute("aria-label") ||
         (labelEl && labelEl.innerText) ||
         el.getAttribute("placeholder") ||
         el.getAttribute("title") ||
         el.innerText ||
-        el.value ||
         ""
       ).replace(/\\s+/g, " ").trim().slice(0, 160);
       const autocomplete = String(el.getAttribute("autocomplete") || "").toLowerCase();
       const type = String(el.getAttribute("type") || "").toLowerCase();
       const sensitive = type === "password" ||
         /current-password|new-password|one-time-code|cc-|webauthn/.test(autocomplete) ||
-        /password|passcode|pin|otp|verification code|2fa|mfa|passkey|card number|cvv|cvc|api key|token/i.test(name);
+        /password|passcode|pin|otp|verification code|2fa|mfa|passkey|card number|cvv|cvc|api key|token/i.test(labeledName);
+      const name = sensitive ? (labeledName || role || "password") : labeledName;
       const href = el.href && /^https?:/i.test(el.href) ? String(el.href).slice(0, 500) : "";
       return {
         target: {

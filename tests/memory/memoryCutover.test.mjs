@@ -259,6 +259,23 @@ test('retained project-neuron product paths expose Vault membership only', () =>
   assert.match(read, /\.like\('node_id', 'vault_%'\)/);
 });
 
+test('episodic prompt copy does not revive User Facts', () => {
+  const src = readFileSync(join(HERE, '../../src/lib/conversationMemory.ts'), 'utf8');
+  assert.equal(/User Facts|get_facts|get_beliefs/.test(src), false);
+  assert.match(src, /Markdown Memory/);
+});
+
+test('chat load-in calendar greeting reads lykn_events', () => {
+  const src = readFileSync(join(HERE, '../../src/lib/synthesis/loadInUpdates.ts'), 'utf8');
+  assert.match(src, /\.from\("lykn_events"\)/);
+  assert.doesNotMatch(src, /\.eq\("source", "gcal_event"\)/);
+});
+
+test('stopped chat send does not clobber a successor stream', () => {
+  const src = readFileSync(join(HERE, '../../src/hooks/useChatEngine.ts'), 'utf8');
+  assert.match(src, /activeAiAbortRef\.current !== sendAbort/);
+});
+
 test('getMemoryThreadState starts empty so a missing chatId still works', () => {
   resetMemoryThreadCache();
   const state = getMemoryThreadState(USER, '');

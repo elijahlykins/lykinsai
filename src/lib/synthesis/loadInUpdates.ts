@@ -241,11 +241,10 @@ function relativeTime(when: string): string {
 // --------------------------------------------------------------------------
 // Connector activity fetching
 // --------------------------------------------------------------------------
-// Two parallel Supabase queries against the `notes` table:
-//   • Upcoming calendar events — `source=gcal_event` whose `created_at`
-//     (which the calendar adapter sets to the event's start time) is
-//     in the next 7 days. This gives the user a real "what's on your
-//     calendar" view rather than a list of historical events.
+// Two parallel Supabase queries:
+//   • Upcoming calendar events — `lykn_events.starts_at` in the next 7 days.
+//     Live Google/Apple sync writes that table; vault `gcal_event` mirrors
+//     are historical leftover and must not be the greeting source.
 //   • Everything else recently synced — items with a source slug we
 //     recognise in SOURCE_CATEGORY, ordered by `updated_at` desc.
 //     `updated_at` tracks when LYKN last touched the row, so it
@@ -304,13 +303,13 @@ async function fetchConnectorActivity(): Promise<ConnectorActivity | null> {
 
     const [calendarRes, recentRes] = await Promise.allSettled([
       supabase
-        .from("vault_items")
-        .select("id, title, source, created_at, updated_at, content")
+        .from("lykn_events")
+        .select("id, title, starts_at, updated_at, status")
         .eq("user_id", userId)
-        .eq("source", "gcal_event")
-        .gte("created_at", nowIso)
-        .lte("created_at", lookaheadIso)
-        .order("created_at", { ascending: true })
+        .neq("status", "cancelled")
+        .gte("starts_at", nowIso)
+        .lte("starts_at", lookaheadIso)
+        .order("starts_at", { ascending: true })
         .limit(8),
       supabase
         .from("vault_items")
@@ -324,7 +323,18 @@ async function fetchConnectorActivity(): Promise<ConnectorActivity | null> {
 
     const upcomingCalendar: ConnectorNote[] =
       calendarRes.status === "fulfilled" && Array.isArray(calendarRes.value.data)
-        ? (calendarRes.value.data as ConnectorNote[])
+        ? (calendarRes.value.data as Array<{
+            id: string;
+            title: string | null;
+            starts_at: string;
+            updated_at?: string;
+          }>).map((row) => ({
+            id: row.id,
+            title: row.title,
+            source: "lykn_event",
+            created_at: row.starts_at,
+            updated_at: row.updated_at || row.starts_at,
+          }))
         : [];
 
     const byCategory: Record<ConnectorCategory, ConnectorNote[]> = {

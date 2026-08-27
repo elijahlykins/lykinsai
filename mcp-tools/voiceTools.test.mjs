@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 import { CHAT_TOOL_NAMES, runChatTool } from './chatTools.js';
 import {
@@ -171,6 +174,15 @@ test('static Chat tool guidance is far smaller than the old 6K menu', () => {
   ));
   assert.ok(generic.approxTokens < 500, `generic ${generic.approxTokens}`);
   assert.ok(vaultTurn.approxTokens < 700, `vault guidance ${vaultTurn.approxTokens}`);
+});
+
+test('Voice session replaces tools each turn instead of accumulating', () => {
+  const src = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../src/hooks/useRealtimeVoice.ts'),
+    'utf8',
+  );
+  assert.match(src, /voiceToolDefsRef\.current = next/);
+  assert.doesNotMatch(src, /voiceToolDefsRef\.current\.set\(name, tool/);
 });
 
 test('deleted runtime tools cannot execute from Chat', async () => {

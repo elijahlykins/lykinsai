@@ -34,6 +34,15 @@ test("browser capture records semantic navigation and clicks, then detaches", as
   assert.equal(events.length, 2);
 });
 
+test("inspect script never uses field value as the target name", () => {
+  const src = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "../../electron/teach/browserCapture.cjs"),
+    "utf8",
+  );
+  assert.doesNotMatch(src, /el\.innerText \|\s*\n\s*el\.value/);
+  assert.match(src, /sensitive \? \(labeledName \|\| role \|\| "password"\)/);
+});
+
 test("sensitive fields emit only a human takeover boundary", async () => {
   const wc = browserFixture([{
     target: { role: "textbox", name: "Password" },

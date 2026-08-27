@@ -710,6 +710,9 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       threadState.setChatStatusText(errMsg);
       threadState.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: errMsg } : m)));
     } finally {
+      if (activeAiAbortRef.current && activeAiAbortRef.current !== sendAbort) {
+        return;
+      }
       threadState.setIsChatLoading(false);
       patchThreadSnapshot(streamChatId, { abortController: null, isChatLoading: false });
       sendingBoardsRef.current.delete(streamChatId);
