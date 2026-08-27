@@ -1,0 +1,3 @@
+// Shared Chat greeting / chitchat patterns. Leaf module.
+export const GREETING_PATTERN = /^(?:(?:hi|hello|hey|yo|sup|good\s+(?:morning|afternoon|evening)|thanks|thank\s*you|ok(?:ay)?|sure|yes|no|yep|nope|got\s*it|cool|nice|great|awesome|perfect|sounds?\s*good|never\s*mind|nvm|lol|haha|hmm+|wow|bye|gn|gm|there|friend|buddy|man|dude|please|all\s+good|np)[\s,!.?…-]*)+$/i;
+export const CASUAL_CHITCHAT_PATTERN = /^(?:how(?:'?s|'?ve|\s+(?:is|are|was|have|'?ve|you|ya|r))?\s+(?:it|you|u|ya|things|life|been|going|doing|your\s+day)\b|what(?:'?s|s)?\s+up(?:\s+with\s+you)?\b|wassup\b|hru\b|how\s+goes(?:\s+it)?\b|long\s+time\s+no\s+see\b|you\s+(?:there|good|alright|okay|ok|up)(?:\s|\?|$|!))/i;
