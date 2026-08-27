@@ -152,7 +152,7 @@ test("the rendered element line carries the locator", () => {
     .split("\n")
     .find((l) => l.startsWith(`[${ref}]`));
   assert.ok(line, "the element line must lead with its ref");
-  assert.match(line, /button "Pay".*loc=css:#pay-now/);
+  assert.match(line, new RegExp(`button "Pay".*loc=g${snap.generation}:css:#pay-now`));
 });
 
 const { createBrowserController } = require("./browser/controller.cjs");
@@ -180,10 +180,27 @@ function makeHarness(catalog) {
 
 test("a loc= target resolves to the element carrying that locator", async () => {
   const { calls, controller } = makeHarness([item({ uid: 7, selector: "#pay-now", label: "Pay" })]);
-  await controller.getPageState();
-  const res = await controller.click("loc=css:#pay-now");
+  const state = await controller.getPageState();
+  const res = await controller.click(`loc=g${state.generation}:css:#pay-now`);
   assert.equal(res.ok, true);
   assert.equal(calls[0].label, "Pay");
+});
+
+test("a loc= from a previous generation is stale after navigation even if CSS matches", async () => {
+  const { calls, controller } = makeHarness([item({ uid: 7, selector: "#pay-now", label: "Pay" })]);
+  const first = await controller.getPageState();
+  const oldLoc = `loc=g${first.generation}:css:#pay-now`;
+  controller.__setCatalog([item({ uid: 22, selector: "#pay-now", label: "Pay later" })]);
+  const second = await controller.getPageState();
+  assert.notEqual(second.generation, first.generation);
+  const stale = await controller.click(oldLoc);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.error, "stale_reference");
+  const bare = await controller.click("loc=css:#pay-now");
+  assert.equal(bare.error, "stale_reference");
+  const current = await controller.click(`loc=g${second.generation}:css:#pay-now`);
+  assert.equal(current.ok, true);
+  assert.equal(calls.at(-1).label, "Pay later");
 });
 
 test("a ref from the current snapshot still resolves normally", async () => {

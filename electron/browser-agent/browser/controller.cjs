@@ -214,7 +214,19 @@ function createBrowserController({
     // this is how the model re-aims after a reload without another observe.
     if (wanted.startsWith("loc=")) {
       const loc = wanted.slice(4).trim();
-      const hit = currentSnapshot.byLoc?.get(loc);
+      const gen = currentSnapshot.generation;
+      const prefix = `g${gen}:`;
+      if (!loc.startsWith(prefix)) {
+        return {
+          error: "stale_reference",
+          hint:
+            `${wanted} came from an earlier page generation. ` +
+            "loc= handles are valid only for the snapshot they were issued with. " +
+            "Re-read the element list and use a locator from the CURRENT observation.",
+        };
+      }
+      const key = loc.slice(prefix.length);
+      const hit = currentSnapshot.byLoc?.get(key);
       if (hit) return { el: hit };
       return { error: "unknown_reference", hint: `No element on this page matches ${wanted}.` };
     }
