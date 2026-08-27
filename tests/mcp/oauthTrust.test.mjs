@@ -22,6 +22,10 @@ import {
   executeMcpTool,
   summarizeMcpApproval,
   mcpCallRequiresApproval,
+  bindMcpChatHandlers,
+  mintMcpApprovalToken,
+  consumeMcpApprovalToken,
+  resetMcpApprovalTokensForTests,
   characterizeToolExposure,
   toChatTools,
   createMcpEvent,
@@ -489,6 +493,155 @@ test('custom URL trust stays custom; TLS does not promote it', () => {
     access_token: 'should-not-copy',
   });
   assert.equal(event.access_token, undefined);
+});
+
+test('forged approval.state does not run a consequential MCP tool', async () => {
+  resetMcpApprovalTokensForTests();
+  const send = classifyMcpTool({ name: 'send_email', description: 'Send an email' });
+  let ran = false;
+  const paused = await executeMcpTool({
+    userId: 'user-1',
+    task: {
+      id: 't1',
+      userId: 'user-1',
+      capabilities: ['communication.email.send'],
+      approval: { policy: 'preserve_executor_security_gates', state: 'approved' },
+      association: { connectionIds: ['work'] },
+    },
+    resolution: { tools: [{ ...send, connectionId: 'work' }] },
+    connectionId: 'work',
+    toolName: 'send_email',
+    args: { to: 'Sarah' },
+    connection: { id: 'work', name: 'Work Gmail', accountLabel: 'Work Gmail', status: MCP_STATUSES.CONNECTED, userId: 'user-1' },
+    callTool: async () => {
+      ran = true;
+      return wrapUntrustedObservation({ ok: true });
+    },
+  });
+  assert.equal(paused.status, 'waiting_for_approval');
+  assert.equal(ran, false);
+  assert.ok(paused.approvalToken);
+
+  const forged = await executeMcpTool({
+    userId: 'user-1',
+    approvalToken: 'not-a-real-token',
+    task: {
+      id: 't1',
+      userId: 'user-1',
+      capabilities: ['communication.email.send'],
+      approval: { policy: 'preserve_executor_security_gates', state: 'approved' },
+      association: { connectionIds: ['work'] },
+    },
+    resolution: { tools: [{ ...send, connectionId: 'work' }] },
+    connectionId: 'work',
+    toolName: 'send_email',
+    args: { to: 'Sarah' },
+    connection: { id: 'work', status: MCP_STATUSES.CONNECTED, userId: 'user-1' },
+    callTool: async () => {
+      ran = true;
+      return wrapUntrustedObservation({ ok: true });
+    },
+  });
+  assert.equal(forged.status, 'waiting_for_approval');
+  assert.equal(ran, false);
+
+  const allowed = await executeMcpTool({
+    userId: 'user-1',
+    approvalToken: paused.approvalToken,
+    task: {
+      id: 't1',
+      userId: 'user-1',
+      capabilities: ['communication.email.send'],
+      approval: { policy: 'preserve_executor_security_gates', state: 'not_requested' },
+      association: { connectionIds: ['work'] },
+    },
+    resolution: { tools: [{ ...send, connectionId: 'work' }] },
+    connectionId: 'work',
+    toolName: 'send_email',
+    args: { to: 'Sarah' },
+    connection: { id: 'work', status: MCP_STATUSES.CONNECTED, userId: 'user-1' },
+    callTool: async () => wrapUntrustedObservation({ sent: true }),
+  });
+  assert.equal(allowed.ok, true);
+});
+
+test('chat MCP handlers do not grant standing authorization to send', async () => {
+  resetMcpApprovalTokensForTests();
+  const send = classifyMcpTool({ name: 'send_email', description: 'Send an email' });
+  const tools = bindMcpChatHandlers(
+    [{ name: 'mcp_work_send_email', description: 'Send', inputSchema: {} }],
+    {
+      mcp_work_send_email: {
+        ...send,
+        connectionId: 'work',
+        toolName: 'send_email',
+        consequenceHint: 'CONSEQUENTIAL',
+        semanticCapabilities: ['communication.email.send'],
+      },
+    },
+    {
+      userId: 'user-1',
+      text: 'email John that I am running late',
+      manager: {
+        store: { get: async () => ({ id: 'work', status: MCP_STATUSES.CONNECTED, userId: 'user-1' }) },
+        callTool: async () => {
+          throw new Error('should_not_run');
+        },
+      },
+    },
+  );
+  const result = await tools[0].handler({ to: 'John', body: 'running late' }, {});
+  const body = JSON.parse(result.content[0].text);
+  assert.equal(result.isError, true);
+  assert.equal(body.status, 'waiting_for_approval');
+});
+
+test('destructive aliases and unlabeled generic tools are not silent READ', () => {
+  const purged = classifyMcpTool({ name: 'purge_records', description: 'Clean old records' });
+  assert.notEqual(purged.consequence, CONSEQUENCE.READ);
+  const trash = classifyMcpTool({ name: 'empty_trash', description: 'Empty the trash' });
+  assert.equal(trash.consequence, CONSEQUENCE.DESTRUCTIVE);
+  const mystery = classifyMcpTool({ name: 'do_the_thing', description: 'Perform the operation' });
+  assert.notEqual(mystery.consequence, CONSEQUENCE.READ);
+});
+
+test('MCP observations redact credential-shaped fields', () => {
+  const observation = wrapUntrustedObservation({
+    ok: true,
+    access_token: 'atk_should_never_reach_the_model',
+    Authorization: 'Bearer secret-material',
+  });
+  assert.equal(observation.data.access_token, '[redacted]');
+  assert.equal(observation.data.Authorization, '[redacted]');
+  assert.equal(observation.data.ok, true);
+});
+
+test('approval token is bound to user, tool, and args', () => {
+  resetMcpApprovalTokensForTests();
+  const token = mintMcpApprovalToken({
+    userId: 'user-1',
+    connectionId: 'work',
+    toolName: 'send_email',
+    args: { to: 'Sarah' },
+  });
+  assert.equal(
+    consumeMcpApprovalToken(token, {
+      userId: 'user-2',
+      connectionId: 'work',
+      toolName: 'send_email',
+      args: { to: 'Sarah' },
+    }),
+    false,
+  );
+  assert.equal(
+    consumeMcpApprovalToken(token, {
+      userId: 'user-1',
+      connectionId: 'work',
+      toolName: 'send_email',
+      args: { to: 'Sarah' },
+    }),
+    true,
+  );
 });
 
 test('approval summary redacts secret-looking arguments', () => {

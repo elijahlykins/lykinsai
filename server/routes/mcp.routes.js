@@ -179,20 +179,21 @@ export function registerMcpRoutes(app, { requireAuth, supabaseAdmin, PORT }) {
         req.body?.transport === MCP_TRANSPORTS.STDIO || req.body?.command || req.body?.commandLine
           ? MCP_TRANSPORTS.STDIO
           : MCP_TRANSPORTS.STREAMABLE_HTTP;
+      // LOCAL_TRUSTED is a desktop/stdio opt-in. A client must not use it
+      // to make the API process fetch loopback or private HTTP targets.
+      const requestedTrust = req.body?.trustLevel;
       const trustLevel =
-        req.body?.trustLevel === MCP_TRUST_LEVELS.LOCAL_TRUSTED
+        transport === MCP_TRANSPORTS.STDIO
           ? MCP_TRUST_LEVELS.LOCAL_TRUSTED
-          : req.body?.trustLevel === MCP_TRUST_LEVELS.ENTERPRISE
+          : requestedTrust === MCP_TRUST_LEVELS.ENTERPRISE
             ? MCP_TRUST_LEVELS.ENTERPRISE
-            : req.body?.trustLevel === MCP_TRUST_LEVELS.OFFICIAL
+            : requestedTrust === MCP_TRUST_LEVELS.OFFICIAL
               ? MCP_TRUST_LEVELS.OFFICIAL
-              : req.body?.trustLevel === MCP_TRUST_LEVELS.VERIFIED
+              : requestedTrust === MCP_TRUST_LEVELS.VERIFIED
                 ? MCP_TRUST_LEVELS.VERIFIED
-                : req.body?.trustLevel === MCP_TRUST_LEVELS.COMMUNITY
+                : requestedTrust === MCP_TRUST_LEVELS.COMMUNITY
                   ? MCP_TRUST_LEVELS.COMMUNITY
-                  : transport === MCP_TRANSPORTS.STDIO
-                    ? MCP_TRUST_LEVELS.LOCAL_TRUSTED
-                    : MCP_TRUST_LEVELS.CUSTOM;
+                  : MCP_TRUST_LEVELS.CUSTOM;
       if (transport !== MCP_TRANSPORTS.STDIO) {
         const serverUrl = String(req.body?.serverUrl || req.body?.url || '').trim();
         const urlCheck = await assertMcpUrlSafe(serverUrl, { trustLevel });
@@ -348,43 +349,53 @@ export function registerMcpRoutes(app, { requireAuth, supabaseAdmin, PORT }) {
         classifiedByConnectionId,
         botConnectionIds: req.body?.botConnectionIds,
       });
-      if (task) {
-        const executed = await executeMcpTool({
-          task: {
-            ...task,
-            cancellation: {
-              ...(task.cancellation || {}),
-              signal: req.abortSignal || null,
-            },
-          },
-          resolution,
-          connectionId,
-          toolName,
-          args: req.body?.arguments || req.body?.args || {},
-          connection: owned,
-          currentTool: (owned.classifiedTools || []).find((t) => t.toolName === toolName),
-          callTool: (opts) =>
-            manager.callTool({
-              userId,
-              connectionId: opts.connectionId,
-              toolName: opts.toolName,
-              args: opts.args,
-              signal: opts.signal,
-              taskId: opts.taskId,
-              runId: opts.runId,
-            }),
-        });
-        return res.json(executed);
-      }
-      const result = await manager.callTool({
+      const incoming = task && typeof task === 'object' ? task : {};
+      const executed = await executeMcpTool({
         userId,
+        approvalToken: req.body?.approvalToken,
+        task: {
+          ...incoming,
+          id: incoming.id || `http_${userId}`,
+          runId: incoming.runId || incoming.id || `http_${userId}`,
+          userId,
+          objective: incoming.objective || toolName,
+          capabilities: incoming.capabilities || req.body?.capabilities || [],
+          approval: {
+            policy:
+              incoming.association?.routineId && incoming.approval?.policy === 'standing_authorization'
+                ? 'standing_authorization'
+                : 'preserve_executor_security_gates',
+            state: 'not_requested',
+          },
+          association: {
+            ...(incoming.association || {}),
+            connectionIds: Array.isArray(incoming.association?.connectionIds)
+              ? incoming.association.connectionIds
+              : [connectionId],
+          },
+          cancellation: {
+            ...(incoming.cancellation || {}),
+            signal: req.abortSignal || null,
+          },
+        },
+        resolution,
         connectionId,
         toolName,
         args: req.body?.arguments || req.body?.args || {},
-        taskId: req.body?.taskId,
-        runId: req.body?.runId,
+        connection: owned,
+        currentTool: (owned.classifiedTools || []).find((t) => t.toolName === toolName),
+        callTool: (opts) =>
+          manager.callTool({
+            userId,
+            connectionId: opts.connectionId,
+            toolName: opts.toolName,
+            args: opts.args,
+            signal: opts.signal,
+            taskId: opts.taskId,
+            runId: opts.runId,
+          }),
       });
-      return res.json({ ok: true, observation: result });
+      return res.json(executed);
     } catch (e) {
       const { status, body } = mcpErr(e);
       return res.status(status).json(body);

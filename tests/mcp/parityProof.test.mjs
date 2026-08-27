@@ -336,6 +336,7 @@ test('consequential send: approval pauses, same Task resumes, MCP executes to fi
       classifiedByConnectionId: { [row.id]: row.classifiedTools },
     });
     const paused = await executeMcpTool({
+      userId: 'user-1',
       task,
       resolution,
       connectionId: row.id,
@@ -347,10 +348,12 @@ test('consequential send: approval pauses, same Task resumes, MCP executes to fi
     assert.equal(paused.ok, false);
     assert.equal(paused.status, 'waiting_for_approval');
     assert.equal(paused.reason, 'approval_required');
+    assert.ok(paused.approvalToken);
     assert.equal(world.email.some((item) => item.subject === 'Thanks' && item.draft === false), false);
 
-    task.approval = { policy: 'preserve_executor_security_gates', state: 'approved' };
     const sent = await executeMcpTool({
+      userId: 'user-1',
+      approvalToken: paused.approvalToken,
       task,
       resolution,
       connectionId: row.id,

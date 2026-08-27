@@ -5314,7 +5314,7 @@ function createAgentRuntime(deps) {
 
     const executeMcp = async (task, context) => {
       const token = await getAuthToken();
-      const call = (approvalState) =>
+      const call = (approvalToken) =>
         fetch(
           `${apiBase}/api/mcp/connections/${encodeURIComponent(context.connectionId)}/tools/call`,
           {
@@ -5328,12 +5328,13 @@ function createAgentRuntime(deps) {
             toolName: context.toolName,
             arguments: context.args || {},
             botConnectionIds: mcpAccess.connectionIds,
+            approvalToken: approvalToken || undefined,
             task: {
               id: task.id,
               runId: task.runId,
               objective: task.objective,
               capabilities: task.capabilities,
-              approval: { ...task.approval, state: approvalState || task.approval?.state },
+              approval: { ...task.approval, state: "not_requested" },
               association: task.association,
               cancellation: { state: task.cancellation?.state || "active" },
             },
@@ -5372,7 +5373,7 @@ function createAgentRuntime(deps) {
             reason: "approval_declined",
           };
         }
-        response = await call("approved");
+        response = await call(payload.approvalToken);
         payload = await response.json().catch(() => ({}));
       }
       return response.ok
