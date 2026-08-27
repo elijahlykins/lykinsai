@@ -73,6 +73,18 @@ function normalizeTarget(kind, raw = {}) {
   return {};
 }
 
+function consequentialClick(action, target = {}) {
+  if (!/^(?:click|press|tap)$/i.test(String(action || ""))) return false;
+  const blob = [
+    target.name,
+    target.label,
+    target.text,
+    target.ariaLabel,
+    target.role,
+  ].filter(Boolean).join(" ");
+  return /(?:send|submit|publish|pay|purchase|transfer|deploy|delete|confirm)/i.test(blob);
+}
+
 function normalizeCommandInput(kind, action, input) {
   if (
     !["local", "remote"].includes(kind) ||
@@ -134,7 +146,8 @@ function normalizeRawEvent(raw, { now = () => new Date().toISOString() } = {}) {
       command.humanTakeover,
     approvalRequired:
       raw.approvalRequired === true ||
-      /(?:create|update|delete|send|submit|purchase|pay|transfer|publish|deploy|write|execute|install)/i.test(action),
+      /(?:create|update|delete|send|submit|purchase|pay|transfer|publish|deploy|write|execute|install)/i.test(action) ||
+      consequentialClick(action, raw.target || clean.target),
   });
 }
 

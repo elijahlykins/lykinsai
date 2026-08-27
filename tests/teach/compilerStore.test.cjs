@@ -271,3 +271,17 @@ test("routine helper stores only a versioned workflow reference and safe binding
     parameterBindings: { query: "trigger.payload.query" },
   });
 });
+
+test("clicking Send compiles approvalRequired without standing authorization", async () => {
+  const workflow = await compileWorkflow({
+    ...OWNER,
+    name: "Send mail",
+    events: [
+      { kind: "browser", action: "navigate", target: { url: "https://mail.test" } },
+      { kind: "browser", action: "click", target: { role: "button", name: "Send" } },
+    ],
+  });
+  assert.equal(workflow.steps[1].action, "click");
+  assert.equal(workflow.steps[1].approvalRequired, true);
+  assert.equal(workflow.approvalPolicy, "preserve_executor_security_gates");
+});

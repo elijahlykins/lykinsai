@@ -154,6 +154,21 @@ class WorkflowExecutor {
       }
       let result;
       let verification;
+      const verbAlreadyGates = /(?:create|update|delete|send|submit|purchase|pay|transfer|publish|deploy|write|execute|install)/i.test(step.action);
+      if (
+        step.approvalRequired &&
+        step.kind !== "mcp" &&
+        !verbAlreadyGates &&
+        task.approval?.policy !== "standing_authorization"
+      ) {
+        return {
+          ok: false,
+          status: "waiting_for_approval",
+          reason: "approval_required",
+          question: `Approve ${step.action} (${step.target?.name || step.target?.label || step.target?.text || "this action"})?`,
+          completed,
+        };
+      }
       while (true) {
         const childTask = {
           ...task,

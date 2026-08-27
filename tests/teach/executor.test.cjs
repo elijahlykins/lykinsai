@@ -326,3 +326,19 @@ test("production replay consumes canonical MCP execution and leaves Routine appr
   assert.match(source, /if \(!interactiveApproval\) \{\s*return \{\s*ok: false,\s*status: "waiting_for_approval"/);
   assert.match(hostSource, /runLearnedWorkflow\(\{[\s\S]*?interactiveApproval: false,/);
 });
+
+test("future replay of a demonstrated Send click requires approval", async () => {
+  const workflow = await compileWorkflow({
+    ...OWNER,
+    name: "Send",
+    events: [{ kind: "browser", action: "click", target: { role: "button", name: "Send" } }],
+  });
+  let calls = 0;
+  const outcome = await new WorkflowExecutor({
+    taskRuntime: new TaskRuntime(),
+    adapters: { browser: async () => { calls += 1; return { ok: true }; } },
+  }).execute(workflow);
+  assert.equal(calls, 0);
+  assert.equal(outcome.task.status, "waiting_for_approval");
+  assert.equal(outcome.result.reason, "approval_required");
+});
