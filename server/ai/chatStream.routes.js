@@ -130,6 +130,8 @@ import {
 import {
   hasExplicitUrlScrapeIntent,
   scrapeUrlsFromText,
+  formatUntrustedWebObservation,
+  attachUntrustedWebObservation,
   classifyEnrichment,
   shouldEmbedWorkspaceContext,
   isTrivialTurn,
@@ -1084,8 +1086,8 @@ export function registerAiStreamRoutes(app, {
             manager: getMcpManager(supabaseAdmin),
             userId: req.user.id,
             text: String(text || ''),
-            botConnectionIds: req.body?.botConnectionIds,
-            connectionIds: req.body?.connectionIds,
+            botConnectionIds: undefined,
+            connectionIds: undefined,
           });
           if (mcpTurn.tools.length) {
             const bound = bindMcpChatHandlers(mcpTurn.tools, mcpTurn.bindings, {
@@ -1936,9 +1938,9 @@ export function registerAiStreamRoutes(app, {
       else if (streamWantsUserRecall) prompt += "\n\n" + USER_RECALL_TURN_PROMPT;
       if (streamCustomModelKnowledge) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(streamCustomModelKnowledge);
       if (vaultUrlMatches) prompt += "\n\n" + vaultUrlMatches;
-      if (scrapedContent) prompt += "\n\n" + scrapedContent;
-      if (searchResults) prompt += "\n\n" + searchResults;
-      if (youtubeResults) prompt += "\n\n" + youtubeResults;
+      const webObservation = formatUntrustedWebObservation(scrapedContent, searchResults, youtubeResults);
+      const splitPromptForProviderWithWeb = (nextPrompt) =>
+        attachUntrustedWebObservation(splitPromptForProvider(nextPrompt), webObservation);
       if (streamCustomModelCtx.overlay) {
         prompt = applyCustomModelOverlayToPrompt(prompt, streamCustomModelCtx.overlay);
       }
@@ -2477,7 +2479,7 @@ export function registerAiStreamRoutes(app, {
       );
       let streamTogetherLoraMessages = null;
       if (streamCustomModelCtx.overlay?.useTogetherMultiTurn) {
-        const { system: tSys, user: tUser } = splitPromptForProvider(prompt);
+        const { system: tSys, user: tUser } = splitPromptForProviderWithWeb(prompt);
         streamTogetherLoraMessages = buildTogetherLoraMessages({
           system: tSys,
           conversation,
@@ -2511,7 +2513,7 @@ export function registerAiStreamRoutes(app, {
         const ab = makeProviderAbort();
         let togetherRes;
         try {
-          const { system: tSys, user: tUser } = splitPromptForProvider(prompt);
+          const { system: tSys, user: tUser } = splitPromptForProviderWithWeb(prompt);
           const tMessages = streamTogetherLoraMessages?.length
             ? streamTogetherLoraMessages
             : (() => {
@@ -2637,7 +2639,7 @@ export function registerAiStreamRoutes(app, {
         const ab = makeProviderAbort();
         let openaiRes;
         try {
-          const { system: oaiSys, user: oaiUser } = splitPromptForProvider(prompt);
+          const { system: oaiSys, user: oaiUser } = splitPromptForProviderWithWeb(prompt);
           const oaiMessages = [];
           if (oaiSys) oaiMessages.push({ role: 'system', content: oaiSys });
           const userContent = imageUrls.length > 0
@@ -2731,7 +2733,7 @@ export function registerAiStreamRoutes(app, {
         const ab = makeProviderAbort();
         let anthropicRes;
         try {
-          const { system: strmClaudeSys, user: strmClaudeUser } = splitPromptForProvider(prompt);
+          const { system: strmClaudeSys, user: strmClaudeUser } = splitPromptForProviderWithWeb(prompt);
           let claudeContent = strmClaudeUser;
           if (imageUrls.length > 0) {
             const parts = [{ type: 'text', text: strmClaudeUser }];
@@ -2841,7 +2843,7 @@ export function registerAiStreamRoutes(app, {
         // cap, and a `const` inside the try block would be out of scope there.
         let _strmGemCap = 0;
         try {
-          const { system: strmGemSys, user: strmGemUser } = splitPromptForProvider(prompt);
+          const { system: strmGemSys, user: strmGemUser } = splitPromptForProviderWithWeb(prompt);
           const geminiParts = [{ text: strmGemUser }];
           for (const url of imageUrls) {
             try {
@@ -3030,7 +3032,7 @@ export function registerAiStreamRoutes(app, {
         let grokRes;
         try {
           console.log(`📡 Calling xAI Grok: ${actualModel}...`);
-          const { system: strmGrokSys, user: strmGrokUser } = splitPromptForProvider(prompt);
+          const { system: strmGrokSys, user: strmGrokUser } = splitPromptForProviderWithWeb(prompt);
           const strmGrokMsgs = [];
           if (strmGrokSys) strmGrokMsgs.push({ role: 'system', content: strmGrokSys });
           let grokContent = strmGrokUser;
@@ -3156,7 +3158,7 @@ export function registerAiStreamRoutes(app, {
       }
       if (useTools && toolProvider) {
         _ck(`entering agent loop (${toolProvider})`);
-        const { system: rawAgentSys, user: agentUser } = splitPromptForProvider(prompt);
+        const { system: rawAgentSys, user: agentUser } = splitPromptForProviderWithWeb(prompt);
         // Local Mode system guidance. Without this the model has the local_*
         // schemas but nothing in the prompt saying access is LIVE — and if an
         // earlier turn errored (e.g. a declined permission prompt), the
