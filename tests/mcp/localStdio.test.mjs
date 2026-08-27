@@ -145,6 +145,48 @@ test('cancelling a stdio tool call aborts', async () => {
   await runtime.close();
 });
 
+test('failed stdio connect kills the child process', async () => {
+  let closed = 0;
+  const processManager = createLocalMcpProcessManager({
+    createTransport: async () => ({
+      pid: 4242,
+      process: {
+        pid: 4242,
+        kill() {
+          closed += 1;
+        },
+        on() {},
+      },
+      on() {},
+      async close() {
+        closed += 1;
+      },
+      async start() {
+        throw new Error('initialize_failed');
+      },
+      async send() {
+        throw new Error('initialize_failed');
+      },
+    }),
+  });
+  const mgr = createMcpConnectionManager({
+    store: createMemoryMcpStore(),
+    processManager,
+  });
+  const started = await mgr.connect('user-1', {
+    name: 'Broken local',
+    transport: MCP_TRANSPORTS.STDIO,
+    command: process.execPath,
+    args: [fixturePath],
+    confirmInstall: true,
+    trustLevel: MCP_TRUST_LEVELS.LOCAL_TRUSTED,
+  });
+  assert.equal(started.ok, false);
+  assert.deepEqual(processManager.listLive(), []);
+  assert.ok(closed >= 1);
+  await processManager.stopAll();
+});
+
 test('local MCP is lazy: manager construction does not spawn', () => {
   let created = 0;
   const processManager = createLocalMcpProcessManager({
