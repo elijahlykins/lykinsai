@@ -1,0 +1,93 @@
+{
+  "reviewThreshold": 1500,
+  "failThreshold": 2500,
+  "maxDirectServerRoutes": 4,
+  "importantFiles": {
+    "server.js": {
+      "maxLines": 2200,
+      "owner": "composition-root",
+      "reason": "Server construction and registration only."
+    },
+    "electron/main.cjs": {
+      "maxLines": 6500,
+      "owner": "composition-root",
+      "reason": "Electron construction and lifecycle. Residual forwarders still live here."
+    },
+    "electron/agentRuntime.cjs": {
+      "maxLines": 14000,
+      "owner": "TaskRuntime host",
+      "reason": "Agent session host. Task lifecycle authority lives in TaskRuntime."
+    },
+    "src/pages/Vault.jsx": {
+      "maxLines": 1750,
+      "owner": "Vault page composition",
+      "reason": "Vault route composition after C3A controller extraction."
+    },
+    "src/pages/LyknChat.tsx": {
+      "maxLines": 1800,
+      "owner": "Chat page composition",
+      "reason": "Chat route composition after C3B extraction."
+    },
+    "src/components/lyknChat/LyknChatView.tsx": {
+      "maxLines": 850,
+      "owner": "Chat presentation",
+      "reason": "LyknChat view composition after message-item extraction."
+    },
+    "src/lib/ai/chatSendOrchestrator.ts": {
+      "maxLines": 600,
+      "owner": "Chat send pipeline",
+      "reason": "Sequencing facade over turn/transcription/request/stream stages."
+    },
+    "src/hooks/useChatEngine.ts": {
+      "maxLines": 1050,
+      "owner": "Chat send/stop/stream",
+      "reason": "Only Chat engine that mints abort and stream cursors."
+    },
+    "server/ai/chatStream.routes.js": {
+      "maxLines": 4000,
+      "owner": "Chat SSE stream",
+      "reason": "Extracted stream owner. Keep implementation out of server.js."
+    }
+  },
+  "exceptions": {
+    "electron/ownedBrowserAct.cjs": {
+      "maxLines": 12500,
+      "owner": "BrowserExecutor actuator",
+      "reason": "Cohesive low-level browser actuator and DOM catalog. Lifecycle authority lives in BrowserExecutor."
+    },
+    "electron/agentRuntime.cjs": {
+      "maxLines": 14000,
+      "owner": "TaskRuntime host",
+      "reason": "Remaining Electron agent host. Do not add a second task lifecycle or executor here."
+    },
+    "electron/overlay.js": {
+      "maxLines": 7000,
+      "owner": "Glass overlay renderer",
+      "reason": "Cohesive overlay document renderer. Not an Electron main-process composition-root regression."
+    },
+    "electron/main.cjs": {
+      "maxLines": 6500,
+      "owner": "composition-root",
+      "reason": "Electron construction and lifecycle. This is a ratchet, not a redesign of residual forwarders."
+    },
+    "server/ai/chatStream.routes.js": {
+      "maxLines": 4000,
+      "owner": "Chat SSE stream",
+      "reason": "Cohesive extracted stream handler. Must not be inlined back into server.js."
+    }
+  },
+  "retiredFiles": [
+    "connectors-service.js",
+    "server/routes/connectionsOAuth.routes.js",
+    "connectors/_save.js"
+  ],
+  "forbiddenIdentifiers": [
+    "browser_legacy_fallback",
+    "LYKN_BROWSER_AGENT",
+    "LYKN_BOT_HARNESS",
+    "executeOwnedAdaptiveTask",
+    "CONNECTOR_REGISTRY",
+    "pollDueConnections",
+    "makeConnectorPoller"
+  ]
+}
