@@ -74,11 +74,40 @@ function sanitizeBotSnapshot(raw) {
   return snapshot.id || snapshot.name ? snapshot : null;
 }
 
+function cleanConnectionIds(value) {
+  if (value === undefined || value === null) return undefined;
+  const list = Array.isArray(value) ? value : [value];
+  return [
+    ...new Set(
+      list
+        .map((item) => String(item || "").trim())
+        .filter((id) => {
+          if (!id || id.length > 80) return false;
+          if (/token|secret|bearer|password/i.test(id)) return false;
+          if (id.includes(".")) return false;
+          return /^[a-zA-Z0-9_-]+$/.test(id);
+        }),
+    ),
+  ].slice(0, 20);
+}
+
 function cleanCapabilities(value) {
   return [...new Set((Array.isArray(value) ? value : []).map((c) => String(c || "").trim()).filter(Boolean))].slice(
     0,
     20,
   );
+}
+
+function cleanWorkflowId(value) {
+  const id = String(value || "").trim();
+  if (!id) return "";
+  if (id.length > 120 || /token|secret|bearer|password/i.test(id)) return "";
+  return /^[a-zA-Z0-9_-]+$/.test(id) ? id : "";
+}
+
+function cleanWorkflowVersion(value) {
+  const version = Number(value);
+  return Number.isInteger(version) && version > 0 ? version : 0;
 }
 
 function oneOf(value, allowed, fallback) {
@@ -234,8 +263,13 @@ function createRoutineStore({ userDataPath, now = () => Date.now(), onChange = (
       bot: sanitizeBotSnapshot(input.bot) || { id: botId, name: "", role: "", persona: "" },
       name: name || instructions.slice(0, 60),
       instructions,
+      ...(cleanWorkflowId(input.workflowId) ? { workflowId: cleanWorkflowId(input.workflowId) } : {}),
+      ...(cleanWorkflowId(input.workflowId) && cleanWorkflowVersion(input.workflowVersion)
+        ? { workflowVersion: cleanWorkflowVersion(input.workflowVersion) }
+        : {}),
       trigger,
       capabilities: cleanCapabilities(input.capabilities),
+      connectionIds: cleanConnectionIds(input.connectionIds),
       approvalPolicy: oneOf(input.approvalPolicy, APPROVAL_POLICIES, "standing_authorization"),
       notificationPolicy: oneOf(input.notificationPolicy, NOTIFICATION_POLICIES, "always"),
       concurrencyPolicy: oneOf(input.concurrencyPolicy, CONCURRENCY_POLICIES, "skip"),
@@ -260,6 +294,19 @@ function createRoutineStore({ userDataPath, now = () => Date.now(), onChange = (
       const instructions = String(patch.instructions || "").trim().slice(0, 4000);
       if (instructions) routine.instructions = instructions;
     }
+    if (patch.workflowId !== undefined) {
+      const workflowId = cleanWorkflowId(patch.workflowId);
+      if (workflowId) routine.workflowId = workflowId;
+      else {
+        delete routine.workflowId;
+        delete routine.workflowVersion;
+      }
+    }
+    if (patch.workflowVersion !== undefined && routine.workflowId) {
+      const workflowVersion = cleanWorkflowVersion(patch.workflowVersion);
+      if (workflowVersion) routine.workflowVersion = workflowVersion;
+      else delete routine.workflowVersion;
+    }
     if (patch.trigger !== undefined) {
       routine.trigger = normalizeTrigger(patch.trigger);
       // A different trigger invalidates armed occurrences and monitor state.
@@ -268,6 +315,7 @@ function createRoutineStore({ userDataPath, now = () => Date.now(), onChange = (
       monitors.delete(routine.id);
     }
     if (patch.capabilities !== undefined) routine.capabilities = cleanCapabilities(patch.capabilities);
+    if (patch.connectionIds !== undefined) routine.connectionIds = cleanConnectionIds(patch.connectionIds);
     if (patch.notificationPolicy !== undefined) {
       routine.notificationPolicy = oneOf(patch.notificationPolicy, NOTIFICATION_POLICIES, routine.notificationPolicy);
     }

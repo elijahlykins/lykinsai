@@ -372,45 +372,6 @@ interface ConnectorStatusMap {
   configured: Set<ConnectorCategory>;
 }
 
-const PROVIDER_TO_CATEGORY: Record<string, ConnectorCategory> = {
-  // social
-  x: "social",
-  twitter: "social",
-  bluesky: "social",
-  mastodon: "social",
-  youtube: "social",
-  // productivity
-  notion: "productivity",
-  linear: "productivity",
-  trello: "productivity",
-  todoist: "productivity",
-  slack: "productivity",
-  github: "productivity",
-  gmail: "productivity",
-  outlook: "productivity",
-  "outlook-365": "productivity",
-  "google-drive": "productivity",
-  "google-docs": "productivity",
-  "google-sheets": "productivity",
-  // reading
-  readwise: "reading",
-  raindrop: "reading",
-  // media
-  canva: "media",
-  dribbble: "media",
-  // health & activity
-  oura: "health",
-  whoop: "health",
-  fitbit: "health",
-  garmin: "health",
-  withings: "health",
-  strava: "health",
-  // calendar — Google Calendar uses google-sso so a `google-calendar`
-  // provider row may or may not exist, but if it does we honour it.
-  "google-calendar": "calendar",
-  gcal: "calendar",
-};
-
 async function fetchConnectorStatus(): Promise<ConnectorStatusMap> {
   const configured = new Set<ConnectorCategory>();
   try {
@@ -418,45 +379,15 @@ async function fetchConnectorStatus(): Promise<ConnectorStatusMap> {
     const userId = session?.session?.user?.id;
     if (!userId) return { configured };
 
-    const [connectionsRes, calendarProbeRes] = await Promise.allSettled([
-      // Active providers in `social_connections` — RLS scopes this to
-      // the current user. We treat "active" as the only status that
-      // counts as "configured"; paused/errored rows still show empty
-      // prompts so the user is nudged to re-auth.
-      supabase
-        .from("social_connections")
-        .select("provider, status")
-        .eq("user_id", userId)
-        .eq("status", "active"),
-      // Calendar inference fallback — any historical gcal_event row
-      // means the GCal pipeline has run at least once, which we read
-      // as "calendar is connected" even if the social_connections row
-      // is missing (Google Calendar piggybacks on the SSO session).
-      supabase
-        .from("vault_items")
-        .select("id")
-        .eq("user_id", userId)
-        .eq("source", "gcal_event")
-        .limit(1),
-    ]);
-
-    if (
-      connectionsRes.status === "fulfilled" &&
-      Array.isArray(connectionsRes.value.data)
-    ) {
-      for (const row of connectionsRes.value.data as Array<{
-        provider: string;
-      }>) {
-        const cat = PROVIDER_TO_CATEGORY[row.provider];
-        if (cat) configured.add(cat);
-      }
-    }
-    if (
-      calendarProbeRes.status === "fulfilled" &&
-      Array.isArray(calendarProbeRes.value.data) &&
-      calendarProbeRes.value.data.length > 0
-    ) {
-      configured.add("calendar");
+    const calendarConnectionsRes = await fetch(
+      `${API_BASE_URL}/api/calendar/connections`,
+      { method: "GET" },
+    );
+    if (calendarConnectionsRes.ok) {
+      const body = await calendarConnectionsRes.json().catch(() => null);
+      const hasActive = Array.isArray(body?.connections)
+        && body.connections.some((connection: { status?: string }) => connection.status === "active");
+      if (hasActive) configured.add("calendar");
     }
   } catch {
     // Swallow — an empty configured set just means we'll show every
@@ -1908,35 +1839,32 @@ async function kickConnectorSync(
   timeoutMs = 6000,
 ): Promise<void> {
   try {
-    // First fetch the user's wired-up connections so we can map
-    // each desired `provider` to its row id (the sync endpoint
-    // takes a connection id, not a provider slug). Auth header is
-    // attached automatically by the fetch interceptor.
-    const listRes = await fetch(`${API_BASE_URL}/api/connections`, {
-      method: "GET",
-    });
-    if (!listRes.ok) return;
-    const body = await listRes.json().catch(() => null);
-    const conns: Array<{ id: string; provider: string; status: string }> =
-      Array.isArray(body?.connections) ? body.connections : [];
-    const targets = conns.filter(
-      (c) => providers.includes(c.provider) && c.status === "active",
-    );
-    if (targets.length === 0) return;
-    // Fire every relevant connection's sync in parallel; race the
-    // group against a hard timeout so the welcome message never
-    // sits forever waiting on a slow provider.
-    const work = Promise.allSettled(
-      targets.map((t) =>
-        fetch(`${API_BASE_URL}/api/connections/${t.id}/sync`, {
-          method: "POST",
-        }).catch(() => null),
-      ),
-    );
-    await Promise.race([
-      work,
-      new Promise((resolve) => setTimeout(resolve, timeoutMs)),
-    ]);
+    const calendarProviders = new Set(["google-calendar", "apple-calendar"]);
+    if (providers.some((provider) => calendarProviders.has(provider))) {
+      const calendarList = await fetch(`${API_BASE_URL}/api/calendar/connections`, {
+        method: "GET",
+      });
+      if (calendarList.ok) {
+        const body = await calendarList.json().catch(() => null);
+        const calendarTargets = Array.isArray(body?.connections)
+          ? body.connections.filter(
+              (connection: { id: string; provider: string; status: string }) =>
+                providers.includes(connection.provider) && connection.status === "active",
+            )
+          : [];
+        const calendarWork = Promise.allSettled(
+          calendarTargets.map((target: { id: string }) =>
+            fetch(`${API_BASE_URL}/api/calendar/connections/${target.id}/sync`, {
+              method: "POST",
+            }).catch(() => null),
+          ),
+        );
+        await Promise.race([
+          calendarWork,
+          new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+        ]);
+      }
+    }
   } catch {
     // Swallow — a failed sync just means the welcome bubble might
     // be one polling cycle behind. Not worth surfacing.
@@ -1951,22 +1879,7 @@ export async function fetchLoadInUpdatesMessage(
   // up). The 6s timeout caps the worst-case latency added to the
   // welcome bubble — anything that hasn't responded by then will
   // still land in time for the *next* refresh.
-  await kickConnectorSync(
-    [
-      "notion",
-      "slack",
-      "github",
-      "linear",
-      "todoist",
-      "trello",
-      "raindrop",
-      "gmail",
-      "google-drive",
-      "google-calendar",
-      "youtube",
-    ],
-    6000,
-  );
+  await kickConnectorSync(["google-calendar", "apple-calendar"], 6000);
   const [connectorResp, statusResp, userSections, docket] =
     await Promise.all([
       fetchConnectorActivity(),

@@ -53,15 +53,6 @@ import {
 } from './lib/billing/creditWallet.js';
 import { compressConversation as compressConversationForPrompt } from './src/lib/ai/conversationFormat.js';
 import { makeRssPoller } from './rss-service.js';
-import {
-  CONNECTOR_REGISTRY,
-  isProviderConfigured,
-  envPrefixFor,
-  makeConnectorPoller,
-} from './connectors-service.js';
-import {
-  listOAuthBackedApps,
-} from './lib/customConnections/customConnections.js';
 import { registerCustomModelRoutes } from './custom-models-routes.js';
 import { registerAccountRoutes } from './server/routes/account.routes.js';
 import { registerAdminRoutes } from './server/routes/admin.routes.js';
@@ -72,7 +63,10 @@ import { registerClientErrorRoute, registerHealthRoute, registerFileProxyAndArti
 import { registerStripeWebhook } from './server/routes/stripeWebhook.routes.js';
 import { registerAssistRoutes } from './server/routes/assist.routes.js';
 import { registerCustomConnectionsRoutes } from './server/routes/connections.routes.js';
-import { registerConnectionsOAuthRoutes } from './server/routes/connectionsOAuth.routes.js';
+import { registerCalendarConnectionRoutes } from './server/routes/calendarConnections.routes.js';
+import { registerCursorCredentialRoutes } from './server/routes/cursorCredentials.routes.js';
+import { registerMcpRoutes } from './server/routes/mcp.routes.js';
+import { pollDueCalendarConnections } from './lib/calendar/calendarService.js';
 import {
   registerDesktopRoutes,
   getBrowserControlProvider,
@@ -1290,6 +1284,9 @@ registerAiFeedbackRoute(app, { requireAuth, supabaseAdmin });
 // ── Custom connections — extracted to server/routes/connections.routes.js (Wave 2)
 // 5 routes register here, in their original order.
 registerCustomConnectionsRoutes(app, { requireAuth, supabaseAdmin, invalidateConnectedToolsCache });
+registerCalendarConnectionRoutes(app, { requireAuth, supabaseAdmin, PORT });
+registerCursorCredentialRoutes(app, { requireAuth, supabaseAdmin });
+registerMcpRoutes(app, { requireAuth, supabaseAdmin, PORT });
 
 registerCustomModelRoutes(app, { requireAuth, supabaseAdmin });
 
@@ -1614,17 +1611,9 @@ registerFeedsRoutes(app, {
   isUrlSafe,
 });
 
-// ── Connector OAuth framework — extracted to
-// server/routes/connectionsOAuth.routes.js (Wave 5). 8 routes (OAuth
-// start, /oauth/callback/:provider, connect-info, connect-token,
-// connections list/sync/patch/delete) register here, in their original
-// order — still the last routes before the global error handler.
-registerConnectionsOAuthRoutes(app, {
-  requireAuth,
-  supabaseAdmin,
-  PORT,
-  invalidateConnectedToolsCache,
-});
+// Universal MCP, calendar connections, and Cursor credentials register
+// above with custom connections. Legacy connector-OAuth / Vault-sync
+// routes are retired.
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1637,8 +1626,8 @@ registerConnectionsOAuthRoutes(app, {
 // route would silently bypass error handling for that route.
 //
 // THIS HANDLER MUST STAY BELOW:
-//   • Every app.<method>(...) call in this file (the last is the
-//     `app.delete('/api/connections/:id', ...)` block above this comment.
+//   • Every app.<method>(...) call in this file (MCP/calendar/cursor
+//     connection routes register with custom connections, before feeds).
 //     Agent 06 added `app.get('/api/health', ...)` near the top + the
 //     `app.get('/api/admin/security/audit', ...)` endpoint earlier in
 //     the admin section — both registered BEFORE this handler).
@@ -1771,36 +1760,27 @@ if (process.env.NODE_ENV !== 'test') {
       console.log('→ RSS poller: ⚪ disabled (set RSS_POLLER_ENABLED=1 to enable)');
     }
 
-    // Connector poller — same on/off rules as RSS. Polls /user/starred
-    // (GitHub), /saved (Reddit), Notion pages, Gmail inbox, Calendar,
-    // etc. on each connection's configured interval. On serverless,
-    // schedule a 1-minute cron against
-    //   POST /api/connections/poll-due
-    // with `Authorization: Bearer ${ADMIN_INGEST_SECRET}`.
-    const explicitConnToggle = process.env.CONNECTOR_POLLER_ENABLED;
-    const connectorPollerOn =
-      explicitConnToggle === '1' || explicitConnToggle === 'true'
+    const explicitCalendarToggle = process.env.CALENDAR_POLLER_ENABLED;
+    const calendarPollerOn =
+      explicitCalendarToggle === '1' || explicitCalendarToggle === 'true'
         ? true
-        : explicitConnToggle === '0' || explicitConnToggle === 'false'
+        : explicitCalendarToggle === '0' || explicitCalendarToggle === 'false'
           ? false
           : !isServerless;
-    if (connectorPollerOn && supabaseAdmin) {
-      // 60s default tick (was 90s). The per-connection
-      // `sync_interval_minutes` floor is 5 minutes, so a faster tick
-      // doesn't burn provider quota — it just reduces the lag between
-      // a connection becoming due and the next sync running. Combined
-      // with the 15-minute default interval set in saveConnection, a
-      // newly-connected provider should see new mail / docs in the
-      // vault within ~15 minutes of it landing upstream.
+    if (calendarPollerOn && supabaseAdmin) {
       const intervalMs = Math.max(
         15_000,
-        Number(process.env.CONNECTOR_POLLER_INTERVAL_MS) || 60_000,
+        Number(process.env.CALENDAR_POLLER_INTERVAL_MS) || 60_000,
       );
-      const poller = makeConnectorPoller({ supabaseAdmin, intervalMs });
-      poller.start();
+      const calendarTick = () => {
+        pollDueCalendarConnections(supabaseAdmin)
+          .catch((error) => console.warn('⚠️ calendar poller:', error?.message || error));
+      };
+      setTimeout(calendarTick, 9_000);
+      setInterval(calendarTick, intervalMs);
     } else {
       console.log(
-        '→ Connector poller: ⚪ disabled (set CONNECTOR_POLLER_ENABLED=1 or schedule a cron against POST /api/connections/poll-due)',
+        '→ Calendar poller: ⚪ disabled (set CALENDAR_POLLER_ENABLED=1 to enable)',
       );
     }
 
@@ -1823,32 +1803,10 @@ if (process.env.NODE_ENV !== 'test') {
       console.log('→ Cursor build poller: ⚪ disabled (set CONNECTOR_TOKEN_KEY to enable; unset CURSOR_BUILDS_DISABLED. Builds run on each user\'s own connected Cursor account.)');
     }
 
-    // Quick boot summary of which providers are wired up.
-    const providers = Object.keys(CONNECTOR_REGISTRY);
-    if (providers.length) {
-      console.log('→ Connectors:');
-      for (const id of providers) {
-        const ok = isProviderConfigured(id);
-        const adapter = CONNECTOR_REGISTRY[id];
-        const hint = envPrefixFor(id);
-        // Token-mode adapters with an envHint print the full var name;
-        // OAuth adapters get the standard `<PREFIX>_CLIENT_ID/_SECRET` form.
-        const missingMsg = adapter?.envHint
-          ? `set ${hint}`
-          : adapter?.authMode === 'token'
-            ? `(uses user-supplied credentials)`
-            : adapter?.authMode === 'per-instance'
-              ? `(registers per-instance at connect time)`
-              : `set ${hint}_CLIENT_ID/_SECRET`;
-        console.log(
-          `   - ${id}: ${ok ? '✅ configured' : `⚪ not configured (${missingMsg})`}`,
-        );
-      }
-      if (!process.env.CONNECTOR_TOKEN_KEY) {
-        console.log(
-          '   ⚠️  CONNECTOR_TOKEN_KEY missing. Generate with: openssl rand -hex 32',
-        );
-      }
+    if (!process.env.CONNECTOR_TOKEN_KEY) {
+      console.log(
+        '   ⚠️  CONNECTOR_TOKEN_KEY missing. Generate with: openssl rand -hex 32',
+      );
     }
   });
 }

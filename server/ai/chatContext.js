@@ -9,7 +9,6 @@ import {
 } from '../../lib/projectContext.js';
 import { loadCustomModelVaultKnowledgeSection } from '../../lib/modelBuilder/customModelKnowledge.js';
 import { resolveCustomModelChatContext } from '../../lib/modelBuilder/customModelChat.js';
-import { listOAuthBackedApps } from '../../lib/customConnections/customConnections.js';
 import { isTogetherInferenceModel } from '../../lib/lora/togetherLora.js';
 import { isModelAllowedForPlan } from '../../src/lib/modelTiers.js';
 import { createSynthesisUserClient } from './chatRetrieval.js';
@@ -49,12 +48,8 @@ export function invalidateConnectedToolsCache(userId) {
   if (userId) connectedToolsSectionCache.delete(userId);
 }
 
-// Provider id → { name, hint }. `name` is the human label we surface
-// to the model; `hint` is a short verb phrase the AI can fold into a
-// suggestion. Keep aligned with CONNECTOR_REGISTRY in
-// connectors-service.js; missing entries fall back to a title-cased
-// version of the provider id so a new adapter never silently breaks
-// the section.
+// Provider id → { name, hint } for any leftover display labels.
+// External live data now comes from Universal MCP, not connector sync.
 export const CONNECTED_TOOL_DESCRIPTORS = {
   notion: { name: 'Notion', hint: 'save pages, notes, or docs into their Notion workspace' },
   gmail: { name: 'Gmail', hint: 'draft an email or reference inbox / starred messages' },
@@ -90,11 +85,9 @@ export const CONNECTED_TOOL_DESCRIPTORS = {
 };
 
 /**
- * Build a `[CONNECTED_TOOLS]` prompt block listing the user's active
- * connector OAuths (Notion, Gmail, Linear, …) so the chat model can
- * tailor suggestions to the tools they actually use. Returns empty
- * string when the user has none — the block is omitted entirely so
- * the prompt stays clean for fresh accounts.
+ * Build a `[CONNECTED_TOOLS]` prompt block for remaining custom API
+ * connections. Live Gmail/Slack/etc. access is Universal MCP, not
+ * connector-to-Vault sync. Returns empty string when the user has none.
  */
 export async function fetchConnectedToolsSection(authHeader, userId) {
   if (!userId) return '';
@@ -109,25 +102,10 @@ export async function fetchConnectedToolsSection(authHeader, userId) {
     return '';
   }
 
-  let rows = [];
-  try {
-    const { data, error } = await client
-      .from('social_connections')
-      .select('provider, account_handle, account_display_name, account_email, status')
-      .eq('user_id', userId)
-      .in('status', ['active', 'paused']);
-    if (error) {
-      console.warn('⚠️ fetchConnectedToolsSection query:', error?.message || error);
-    } else if (Array.isArray(data)) {
-      rows = data;
-    }
-  } catch (e) {
-    console.warn('⚠️ fetchConnectedToolsSection:', e?.message || e);
-  }
+  const rows = [];
 
   // Custom API connections (universal bring-your-own-key apps). These are
-  // ACTIONABLE via lykn_call_app, not just synced sources, so they get their
-  // own block + explicit call guidance.
+  // ACTIONABLE via lykn_call_app, not connector-synced sources.
   let customConns = [];
   try {
     const { data } = await client
@@ -140,18 +118,7 @@ export async function fetchConnectedToolsSection(authHeader, userId) {
     console.warn('⚠️ fetchConnectedToolsSection custom:', e?.message || e);
   }
 
-  // OAuth-backed action apps (e.g. Slack connected via one-click OAuth) the
-  // agent can ALSO call through lykn_call_app — surfaced in the actionable
-  // block so the model knows it can act, not just that the tool is "connected".
-  let oauthActionApps = [];
-  try {
-    oauthActionApps = await listOAuthBackedApps(client, userId);
-  } catch (e) {
-    console.warn('⚠️ fetchConnectedToolsSection oauth-action:', e?.message || e);
-  }
-  // A custom connection with the same slug wins (it's the user's explicit BYO).
-  const customSlugs = new Set(customConns.map((c) => c.slug));
-  oauthActionApps = oauthActionApps.filter((a) => !customSlugs.has(a.slug));
+  const oauthActionApps = [];
 
   if (rows.length === 0 && customConns.length === 0 && oauthActionApps.length === 0) {
     connectedToolsSectionCache.set(userId, { text: '', at: Date.now() });

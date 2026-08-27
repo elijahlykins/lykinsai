@@ -2,25 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronRight, Plug, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
-import { API_BASE_URL } from "@/lib/api-config";
 import { CONNECTORS } from "@/lib/connectors/catalog";
-import { toast } from "@/components/ui/use-toast";
-import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-A-Squircle/PNGs/LYKN-Icon-A-Squircle-BLUE-master.png";
 
 // Floating macOS-style dock for the Vault page and a vertical variant
 // rendered along the left edge of the focused-chat surface.
 //
-// LAUNCHER, not a management surface. Each icon is a connected input
-// tool (Gmail, Slack, Notion…). Clicking an icon opens that app's web
-// surface in a new tab so the user can just start working; the adapter
-// is already feeding Vault retrieval in the background.
-//
-// Management (sync now / pause / disconnect / reconnect) lives on
-// the Connections page. The trailing plug button in the dock + the
-// Vault↔Connections toggle at the top both get the user there in one
-// click. A red dot on a tile means "needs reconnect — open Connections
-// to fix it."
+// Historical source launcher, not a connection-management surface. Icons are
+// derived from content already retained in Vault, so retiring a live connector
+// never hides or deletes the user's imported content.
 //
 // Positioning:
 //   horizontal (default) — `fixed bottom-6 left-1/2 -translate-x-1/2`,
@@ -46,13 +36,6 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const [connections, setConnections] = useState([]);
-  // Provider whose OAuth popup we just launched from a reauth tile. While
-  // non-null we listen for the /oauth/callback postMessage so we can toast +
-  // refresh in-place instead of routing the user to /connections. Scoped to
-  // the dock-initiated flow so we don't double-toast OAuth handshakes that
-  // the OAuthConnectDialog on /connections initiates (it owns its own
-  // listener and toasts for those).
-  const [reconnectingProvider, setReconnectingProvider] = useState(null);
   // Persist the user's "hide this dock" choice across reloads. SSR-safe
   // (window check) and lazy so we never paint the dock for a frame
   // before remembering it was dismissed.
@@ -81,11 +64,26 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
       return;
     }
     try {
-      const connRes = await authedFetch("/api/connections");
-      if (connRes.ok) {
-        const data = await connRes.json();
-        setConnections(data.connections || []);
+      const { data, error } = await supabase
+        .from("notes")
+        .select("source, created_at")
+        .not("source", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(5000);
+      if (error) throw error;
+      const bySource = new Map();
+      for (const note of data || []) {
+        const provider = String(note?.source || "").trim();
+        if (!provider) continue;
+        const existing = bySource.get(provider) || {
+          provider,
+          total_synced_count: 0,
+          last_synced_at: note.created_at,
+        };
+        existing.total_synced_count += 1;
+        bySource.set(provider, existing);
       }
+      setConnections([...bySource.values()]);
     } catch {
       // Silent — the dock keeps the LYKN anchor + whatever previous
       // connection state we already had. A transient fetch failure
@@ -123,7 +121,6 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
     const inputTiles = [];
     const seenProviders = new Set();
     for (const conn of connections) {
-      if (conn.status !== "active" && conn.status !== "paused" && conn.status !== "reauth") continue;
       const provider = conn.provider;
       if (!provider || seenProviders.has(provider)) continue;
       seenProviders.add(provider);
@@ -132,16 +129,6 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
       const metaBits = [];
       if (conn.total_synced_count) metaBits.push(`${conn.total_synced_count} item${conn.total_synced_count === 1 ? "" : "s"}`);
       if (conn.last_synced_at) metaBits.push(`synced ${relativeTime(conn.last_synced_at)}`);
-      if (conn.status === "paused") metaBits.push("paused");
-      if (conn.status === "reauth") metaBits.push("reconnect needed");
-      // `requiresPrefields` flags connectors that can't start OAuth
-      // blind from the dock (Mastodon needs an instance URL first).
-      // Those still get routed to /connections so the user can fill
-      // the form. Everything else (Google, Notion, GitHub, …) can
-      // reauth in one click from here.
-      const requiresPrefields = (connector.oauthPrefields || []).some(
-        (f) => f.required !== false,
-      );
       inputTiles.push({
         key: `input:${provider}`,
         kind: "input",
@@ -150,9 +137,8 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
         domain: connector.domain,
         iconUrl: connector.iconUrl || null,
         launchUrl: resolveLaunchUrl(connector.domain),
-        meta: metaBits.join(" · ") || "Connected",
-        needsAttention: conn.status === "reauth",
-        requiresPrefields,
+        meta: metaBits.join(" · ") || "Saved in Vault",
+        needsAttention: false,
       });
     }
 
@@ -164,142 +150,13 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
   // connections list is still loading. Showing the dock
   // immediately also avoids a layout flash where it pops in late.
 
-  // Kick off an OAuth re-handshake directly from the dock. Same shape as
-  // OAuthConnectDialog.handleConnect — POST /api/connections/{provider}/start,
-  // open the returned URL in a centered popup, let the postMessage listener
-  // below pick up the result. Falls back to /connections on any failure so
-  // the user always has a recovery surface.
-  const handleReconnect = useCallback(
-    async (tile) => {
-      if (tile.kind !== "input" || !tile.provider || tile.requiresPrefields) {
-        navigate("/settings?section=connections");
-        return;
-      }
-      setReconnectingProvider(tile.provider);
-      try {
-        const res = await authedFetch(`/api/connections/${tile.provider}/start`, {
-          method: "POST",
-          body: JSON.stringify({}),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-
-        const w = 620;
-        const h = 760;
-        const left = Math.max(0, (window.screen.width - w) / 2);
-        const top = Math.max(0, (window.screen.height - h) / 2);
-        const popup = window.open(
-          data.url,
-          "lyknOauth",
-          `width=${w},height=${h},left=${left},top=${top},popup=1`,
-        );
-        if (!popup) {
-          // Popup blocked — fall back to a same-tab navigation so the
-          // handshake still completes. The callback page will redirect
-          // back to LYKN when done.
-          window.location.href = data.url;
-          return;
-        }
-        // Backstop for "user closed the popup without finishing OAuth"
-        // (cancelled, browser killed it, network error inside the
-        // callback page). We don't toast here — silent failures
-        // shouldn't surface as toasts.
-        //
-        // We deliberately do NOT poll popup.closed: the opener has
-        // COOP same-origin-allow-popups (vercel.json), and once the
-        // popup navigates to the provider (Google, GitHub, …) every
-        // popup.closed read logs a "Cross-Origin-Opener-Policy policy
-        // would block the window.closed call" warning. At 500ms ticks
-        // that's tens of warnings per OAuth flow.
-        //
-        // Instead we check popup.closed exactly once, when focus
-        // returns to the opener — which happens both when the callback
-        // page closes itself (happy path) and when the user X-es the
-        // popup (cancel). On the happy path the postMessage listener
-        // below has already cleared `reconnectingProvider` by the time
-        // focus fires, so this is a no-op.
-        const onFocus = () => {
-          setTimeout(() => {
-            let closed = true;
-            try {
-              closed = popup.closed;
-            } catch {
-              closed = true;
-            }
-            if (closed) {
-              window.removeEventListener("focus", onFocus);
-              setReconnectingProvider((p) => (p === tile.provider ? null : p));
-            }
-          }, 100);
-        };
-        window.addEventListener("focus", onFocus);
-      } catch (err) {
-        setReconnectingProvider(null);
-        toast({
-          title: "Couldn't start reconnect",
-          description: toUserFacingError(err),
-          variant: "destructive",
-        });
-        navigate("/settings?section=connections");
-      }
-    },
-    [navigate],
-  );
-
   const handleLaunch = (tile) => {
-    // reauth tiles open the OAuth popup in place so the user can
-    // reconnect in one click — the previous behavior bounced them
-    // to /connections and made them hunt for the "Add another …"
-    // button. Everything else opens in a new tab.
-    if (tile.needsAttention) {
-      handleReconnect(tile);
-      return;
-    }
     if (!tile.launchUrl) {
       navigate("/settings?section=connections");
       return;
     }
     window.open(tile.launchUrl, "_blank", "noopener,noreferrer");
   };
-
-  // Listen for the /oauth/callback handshake message while a dock-initiated
-  // reconnect is in flight. Mirrors OAuthConnectDialog's listener (origin
-  // checked against API_BASE_URL because the callback page renders on the
-  // API host) but scoped to the provider we just launched so we don't
-  // double-toast when the user has the Connections page open in the
-  // background.
-  useEffect(() => {
-    if (!reconnectingProvider) return;
-    const expectedOrigin = (() => {
-      try {
-        return new URL(API_BASE_URL).origin;
-      } catch {
-        return "";
-      }
-    })();
-    const onMessage = (event) => {
-      if (expectedOrigin && event.origin !== expectedOrigin) return;
-      const msg = event?.data;
-      if (!msg || msg.type !== "lykn:oauth") return;
-      if (msg.provider !== reconnectingProvider) return;
-      if (msg.ok) {
-        toast({
-          title: "Reconnected",
-          description: "Sync is back on. Give it a moment to catch up.",
-        });
-      } else {
-        toast({
-          title: "Reconnection failed",
-          description: "The provider rejected the request or you cancelled.",
-          variant: "destructive",
-        });
-      }
-      setReconnectingProvider(null);
-      refresh();
-    };
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [reconnectingProvider, refresh]);
 
   // Vertical variant anchors itself just inside the chat column, using
   // the same sidebar offset every other chat chrome consumes. The icons
@@ -543,19 +400,6 @@ function resolveLaunchUrl(domain) {
   if (!domain) return null;
   if (domain.startsWith("http://") || domain.startsWith("https://")) return domain;
   return `https://${domain}`;
-}
-
-async function authedFetch(path, init = {}) {
-  const { data: sess } = await supabase.auth.getSession();
-  const token = sess?.session?.access_token || "";
-  return fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init.headers || {}),
-      Authorization: `Bearer ${token}`,
-    },
-  });
 }
 
 function relativeTime(iso) {

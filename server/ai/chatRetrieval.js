@@ -514,75 +514,11 @@ export function extractNotionPageIdFromUrl(url) {
 // fetchPageBody helper. Returns the flattened text body (possibly empty).
 // Bounded at 6s wall clock — anything longer would tank chat latency.
 export const LIVE_REFETCH_TIMEOUT_MS = 6000;
-let _connectorTokenHelpers = null;
-let _notionFetchPageBody = null;
 
-export async function loadConnectorTokenHelpers() {
-  if (_connectorTokenHelpers) return _connectorTokenHelpers;
-  const mod = await import('./connectors-service.js');
-  _connectorTokenHelpers = { decryptToken: mod.decryptToken };
-  return _connectorTokenHelpers;
-}
-
-export async function loadNotionFetchPageBody() {
-  if (_notionFetchPageBody) return _notionFetchPageBody;
-  const mod = await import('./connectors/notion.js');
-  _notionFetchPageBody = mod.fetchPageBody;
-  return _notionFetchPageBody;
-}
-
-export async function liveRefetchNotionPageBody(userId, url) {
-  if (!supabaseAdmin || !userId || !url) return '';
-  const pageId = extractNotionPageIdFromUrl(url);
-  if (!pageId) {
-    console.warn(`📡 live-refetch: could not parse Notion page id from ${url}`);
-    return '';
-  }
-  // Find the user's active Notion connection. There can technically be
-  // multiple (different workspaces); pick the most recently synced.
-  const { data: conns, error } = await supabaseAdmin
-    .from('social_connections')
-    .select('id, access_token, status')
-    .eq('user_id', userId)
-    .eq('provider', 'notion')
-    .order('last_synced_at', { ascending: false, nullsFirst: false })
-    .limit(3);
-  if (error) {
-    console.warn(`📡 live-refetch: connection lookup failed:`, error.message);
-    return '';
-  }
-  const active = (conns || []).find((c) => c.status !== 'reauth' && c.status !== 'error') || (conns || [])[0];
-  if (!active?.access_token) {
-    console.warn(`📡 live-refetch: no active Notion connection for user ${userId}`);
-    return '';
-  }
-  let accessToken;
-  try {
-    const { decryptToken } = await loadConnectorTokenHelpers();
-    accessToken = decryptToken(active.access_token);
-  } catch (e) {
-    console.warn(`📡 live-refetch: token decrypt failed:`, e?.message || e);
-    return '';
-  }
-  if (!accessToken) return '';
-  let fetchPageBodyFn;
-  try {
-    fetchPageBodyFn = await loadNotionFetchPageBody();
-  } catch (e) {
-    console.warn(`📡 live-refetch: could not load notion connector:`, e?.message || e);
-    return '';
-  }
-  // Wall-clock bound so a slow Notion API can't hang the chat turn.
-  try {
-    const result = await Promise.race([
-      fetchPageBodyFn({ accessToken, pageId }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('live-refetch timed out')), LIVE_REFETCH_TIMEOUT_MS)),
-    ]);
-    return String(result || '').trim();
-  } catch (e) {
-    console.warn(`📡 live-refetch threw:`, e?.message || e);
-    return '';
-  }
+export async function liveRefetchNotionPageBody() {
+  // Connector-to-Vault Notion sync is retired. Live Notion access is
+  // Universal MCP, not a first-party connector refetch.
+  return '';
 }
 
 // Cache the freshly fetched body back into the vault note so future turns

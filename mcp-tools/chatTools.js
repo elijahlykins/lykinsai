@@ -306,9 +306,9 @@ export function toGeminiToolDeclaration(tool) {
  * Resolve the in-app tool list for a turn.
  * @param {string[] | null | undefined} toolNames — undefined = full CHAT_TOOLS whitelist; [] = none
  */
-export function resolveChatTools(toolNames) {
+export function resolveChatTools(toolNames, extraTools = []) {
   if (toolNames === undefined || toolNames === null) {
-    return CHAT_TOOLS;
+    return extraTools.length ? [...CHAT_TOOLS, ...extraTools] : CHAT_TOOLS;
   }
   if (!Array.isArray(toolNames) || toolNames.length === 0) {
     return [];
@@ -320,26 +320,28 @@ export function resolveChatTools(toolNames) {
   const order = set.size && LOCAL_TOOL_NAMES.some((n) => set.has(n))
     ? [...CHAT_TOOL_NAMES, ...LOCAL_TOOL_NAMES]
     : CHAT_TOOL_NAMES;
-  return order
+  const core = order
     .filter((n) => set.has(n))
     .map((n) => ALL_CHAT_TOOLS_BY_NAME[n] || LOCAL_CHAT_TOOLS_BY_NAME[n])
     .filter(Boolean);
+  const extras = (Array.isArray(extraTools) ? extraTools : []).filter((tool) => set.has(tool.name));
+  return [...core, ...extras];
 }
 
-export function buildOpenAiTools(toolNames) {
-  const tools = resolveChatTools(toolNames);
+export function buildOpenAiTools(toolNames, extraTools) {
+  const tools = resolveChatTools(toolNames, extraTools);
   if (!tools.length) return null;
   return tools.map(toOpenAIToolSchema);
 }
 
-export function buildAnthropicTools(toolNames) {
-  const tools = resolveChatTools(toolNames);
+export function buildAnthropicTools(toolNames, extraTools) {
+  const tools = resolveChatTools(toolNames, extraTools);
   if (!tools.length) return null;
   return tools.map(toAnthropicToolSchema);
 }
 
-export function buildGeminiTools(toolNames) {
-  const tools = resolveChatTools(toolNames);
+export function buildGeminiTools(toolNames, extraTools) {
+  const tools = resolveChatTools(toolNames, extraTools);
   if (!tools.length) return null;
   return [{ functionDeclarations: tools.map(toGeminiToolDeclaration) }];
 }
@@ -378,7 +380,7 @@ export async function runChatTool(toolName, args, ctx, options = {}) {
       latencyMs: 0,
     };
   }
-  const tool = CHAT_TOOLS_BY_NAME[toolName];
+  const tool = CHAT_TOOLS_BY_NAME[toolName] || ctx?.extraChatToolsByName?.[toolName];
   if (!tool) {
     return {
       ok: false,

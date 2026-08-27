@@ -37,6 +37,11 @@ export type Bot = {
   face: string;
   eyes: string;
   color: string;
+  /**
+   * Optional MCP connection allowlist. Missing/undefined = all user connections.
+   * Empty array = no external connections. Never stores secrets.
+   */
+  connectionIds?: string[];
   /** Paired worker agent in the runtime; null until first hire/dispatch. */
   agentId: string | null;
   /** The bot's own chat board — every conversation with it lives there. */
@@ -149,7 +154,9 @@ export function createBot(input: {
   face?: string;
   eyes?: string;
   color?: string;
+  connectionIds?: string[];
 }): Bot {
+  const connectionIds = cleanConnectionIds(input.connectionIds);
   return {
     id: newId("bot"),
     name: clean(input.name).slice(0, 40) || "Bot",
@@ -158,12 +165,40 @@ export function createBot(input: {
     face: botFaceId(input.face),
     eyes: botEyesId(input.eyes),
     color: botColorId(input.color),
+    ...(connectionIds !== undefined ? { connectionIds } : {}),
     agentId: null,
     chatId: newChatBoardId(),
     chatStartedAt: "",
     createdAt: new Date().toISOString(),
     tasks: [],
   };
+}
+
+export function assignBotConnections(bot: Bot, connectionIds: string[] | undefined): Bot {
+  const cleaned = cleanConnectionIds(connectionIds);
+  if (cleaned === undefined) {
+    const next = { ...bot };
+    delete next.connectionIds;
+    return next;
+  }
+  return { ...bot, connectionIds: cleaned };
+}
+
+export function cleanConnectionIds(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  const list = Array.isArray(value) ? value : [value];
+  return [
+    ...new Set(
+      list
+        .map((item) => String(item || "").trim())
+        .filter((id) => {
+          if (!id || id.length > 80) return false;
+          if (/token|secret|bearer|password/i.test(id)) return false;
+          if (id.includes(".")) return false;
+          return /^[a-zA-Z0-9_-]+$/.test(id);
+        }),
+    ),
+  ].slice(0, 20);
 }
 
 /** True when the bot's CURRENT chat board has conversation on it. */
@@ -394,6 +429,9 @@ export function parseBots(raw: string | null | undefined): Bot[] {
         // "" = every task counts as this board's — right for older bots that
         // were never re-homed.
         chatStartedAt: typeof b.chatStartedAt === "string" ? b.chatStartedAt : "",
+        ...(Array.isArray((b as Bot).connectionIds)
+          ? { connectionIds: cleanConnectionIds((b as Bot).connectionIds) }
+          : {}),
         tasks: (Array.isArray(b.tasks) ? b.tasks : [])
           // A task caught mid-run by a reload ends right there — no silent
           // retry on the next dispatch, no half-remembered work. The chat row

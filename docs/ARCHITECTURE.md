@@ -2,7 +2,9 @@
 
 Audit date: 2026-08-25. Describes the system **as it exists**, plus the dependency
 rules we want to preserve. Companion docs: `LEGACY_CODE.md` (suspicious code),
-`REFACTOR_LOG.md` (structural change history).
+`REFACTOR_LOG.md` (structural change history),
+`docs/architecture/memory-vault-connections.md` (Memory vs Vault vs Connections),
+`docs/architecture/universal-mcp.md` (LYKN as MCP client).
 
 ## The four runtime surfaces
 

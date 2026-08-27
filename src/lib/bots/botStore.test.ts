@@ -14,6 +14,7 @@ import {
   botHasBoardActivity,
   botSeed,
   bindRuntimeTask,
+  assignBotConnections,
   createBot,
   enqueueTask,
   finishTask,
@@ -49,6 +50,26 @@ test("a new hire is a durable persona with an empty desk", () => {
   // Every bot gets its own chat board the moment it's hired.
   assert.ok(bot.chatId.length >= 8);
   assert.notEqual(createBot({ name: "Y" }).chatId, bot.chatId);
+});
+
+test("Bot connectionIds are an allowlist and never keep secrets", () => {
+  const bot = createBot({
+    name: "Mailer",
+    connectionIds: ["conn_work", "sk-secret.token", "Bearer abc"],
+  });
+  assert.deepEqual(bot.connectionIds, ["conn_work"]);
+  const revived = parseBots(serializeBots([bot]));
+  assert.deepEqual(revived[0].connectionIds, ["conn_work"]);
+  assert.ok(!serializeBots([bot]).includes("sk-secret"));
+});
+
+test("undefined Bot connections mean all; empty means none", () => {
+  const open = createBot({ name: "Open" });
+  assert.equal(open.connectionIds, undefined);
+  const none = assignBotConnections(open, []);
+  assert.deepEqual(none.connectionIds, []);
+  const subset = assignBotConnections(none, ["conn_work"]);
+  assert.deepEqual(subset.connectionIds, ["conn_work"]);
 });
 
 test("an unknown face part or color falls back instead of breaking the avatar", () => {

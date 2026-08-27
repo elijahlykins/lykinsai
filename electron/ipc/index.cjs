@@ -6,6 +6,7 @@ const { registerOnboardingIpc } = require("./onboarding.cjs");
 const { registerExtensionInstallIpc } = require("./extensionInstall.cjs");
 const { registerRoutinesIpc } = require("./routines.cjs");
 const { registerRemoteTargetsIpc } = require("./remoteTargets.cjs");
+const { registerWorkflowsIpc } = require("./workflows.cjs");
 
 function registerAllIpc(d) {
   registerOverlayIpc(d);
@@ -14,6 +15,7 @@ function registerAllIpc(d) {
   registerExtensionInstallIpc(d);
   registerRoutinesIpc(d);
   registerRemoteTargetsIpc(d);
+  registerWorkflowsIpc(d);
 }
 
 module.exports = {
@@ -24,4 +26,5 @@ module.exports = {
   registerExtensionInstallIpc,
   registerRoutinesIpc,
   registerRemoteTargetsIpc,
+  registerWorkflowsIpc,
 };

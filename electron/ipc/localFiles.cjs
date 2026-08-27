@@ -180,6 +180,16 @@ function registerLocalFilesIpc(d) {
     resolvePlanActions,
     userWantsSearchOrType
   } = bindOverlayIpcContext(d);
+  const recordTeach = (event) => {
+    try {
+      d.recordTeachEventIfActive?.({
+        ...event,
+        metadata: { ...(event.metadata || {}), actor: "user" },
+      });
+    } catch {
+      /* passive observation must never block the file operation */
+    }
+  };
 
     ipcMain.handle("lykn:mac-sync-get", () =>
       macSyncState(localSystem.readLocalMode(app.getPath("userData")))
@@ -226,9 +236,11 @@ function registerLocalFilesIpc(d) {
       try {
         if (reveal) {
           shell.showItemInFolder(abs);
+          recordTeach({ kind: "local", action: "reveal", target: { path: abs } });
           return { ok: true };
         }
         const err = await shell.openPath(abs);
+        if (!err) recordTeach({ kind: "local", action: "open", target: { path: abs } });
         return err ? { ok: false, error: err } : { ok: true };
       } catch (err) {
         return { ok: false, error: err?.message || "open failed" };
@@ -241,12 +253,24 @@ function registerLocalFilesIpc(d) {
     ipcMain.handle("lykn:files-list", (_e, args = {}) => macFiles.list(args));
     ipcMain.handle("lykn:files-thumbnail", (_e, args = {}) => macFiles.thumbnail(args));
     ipcMain.handle("lykn:files-roots", () => macFiles.roots());
-    ipcMain.handle("lykn:files-mkdir", (_e, args = {}) => macFiles.mkdir(args));
-    ipcMain.handle("lykn:files-rename", (_e, args = {}) => macFiles.rename(args));
-    ipcMain.handle("lykn:files-move", (_e, args = {}) => macFiles.move(args));
-    ipcMain.handle("lykn:files-copy", (_e, args = {}) => macFiles.copy(args));
-    ipcMain.handle("lykn:files-duplicate", (_e, args = {}) => macFiles.duplicate(args));
-    ipcMain.handle("lykn:files-trash", (_e, args = {}) => macFiles.trash(args));
+    const teachFileOperation = (action, operation) => async (_e, args = {}) => {
+      const result = await operation(args);
+      if (result?.ok !== false) {
+        recordTeach({
+          kind: "local",
+          action,
+          target: { path: args.path || args.sourcePath || args.from || args.directory },
+          input: args,
+        });
+      }
+      return result;
+    };
+    ipcMain.handle("lykn:files-mkdir", teachFileOperation("create_directory", (args) => macFiles.mkdir(args)));
+    ipcMain.handle("lykn:files-rename", teachFileOperation("rename", (args) => macFiles.rename(args)));
+    ipcMain.handle("lykn:files-move", teachFileOperation("move", (args) => macFiles.move(args)));
+    ipcMain.handle("lykn:files-copy", teachFileOperation("copy", (args) => macFiles.copy(args)));
+    ipcMain.handle("lykn:files-duplicate", teachFileOperation("duplicate", (args) => macFiles.duplicate(args)));
+    ipcMain.handle("lykn:files-trash", teachFileOperation("trash", (args) => macFiles.trash(args)));
     ipcMain.handle("lykn:files-watch", (_e, args = {}) => macFiles.watch(args));
     ipcMain.handle("lykn:files-unwatch", (_e, args = {}) => macFiles.unwatch(args));
   
@@ -266,6 +290,7 @@ function registerLocalFilesIpc(d) {
         if (!buf.length) return { ok: false, error: "empty" };
         const target = uniqueDownloadPath(name);
         await fs.writeFile(target, buf);
+        recordTeach({ kind: "local", action: "save", target: { path: target } });
         return { ok: true, path: target };
       } catch (err) {
         return { ok: false, error: err?.message || "write failed" };
@@ -292,6 +317,7 @@ function registerLocalFilesIpc(d) {
         });
         if (res.canceled || !res.filePath) return { ok: false, canceled: true };
         await fs.writeFile(res.filePath, buf);
+        recordTeach({ kind: "local", action: "save", target: { path: res.filePath } });
         return { ok: true, path: res.filePath };
       } catch (err) {
         return { ok: false, error: err?.message || "write failed" };
@@ -323,9 +349,13 @@ function registerLocalFilesIpc(d) {
         return { ok: false, error: err?.message || "app scan failed", apps: [] };
       }
     });
-    ipcMain.handle("lykn:mac-app-launch", (_e, { path: bundlePath } = {}) =>
-      appDock.launchApp(bundlePath)
-    );
+    ipcMain.handle("lykn:mac-app-launch", async (_e, { path: bundlePath } = {}) => {
+      const result = await appDock.launchApp(bundlePath);
+      if (result?.ok !== false) {
+        recordTeach({ kind: "app", action: "launch", target: { app: bundlePath } });
+      }
+      return result;
+    });
     ipcMain.handle("lykn:mac-app-quit", (_e, { path: bundlePath } = {}) =>
       appDock.quitApp(bundlePath)
     );

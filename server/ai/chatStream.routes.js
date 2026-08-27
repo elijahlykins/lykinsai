@@ -72,8 +72,10 @@ import {
   messageWantsSavedRecall,
   messageWantsWebTools,
 } from '../../mcp-tools/chatIntentSignals.js';
-import { resolveChatTurnDisclosure } from '../../mcp-tools/firstPartyCapabilities.js';
+import { resolveChatTurnDisclosure, composeWithExternalTools } from '../../mcp-tools/firstPartyCapabilities.js';
 import { buildSlimChatToolGuidance } from '../../mcp-tools/chatToolGuidance.js';
+import { getMcpManager } from '../routes/mcp.routes.js';
+import { resolveMcpToolsForTurn, bindMcpChatHandlers } from '../../lib/mcp/chatTurn.js';
 import {
   formatBoundProjectGuidance,
   loadWritableProject,
@@ -815,6 +817,8 @@ export function registerAiStreamRoutes(app, {
       /** True when first-party disclosure attached a small tool set (slim guidance). */
       let streamLeanToolSet = false;
       let streamDisclosure = null;
+      let mcpChatTools = [];
+      let mcpTurn = null;
       let model = normalizedModel;
       console.log('[LYKN-STREAM] workspaceContext received:', workspaceContext ? `${String(workspaceContext).length} chars` : 'EMPTY/MISSING');
 
@@ -1065,6 +1069,48 @@ export function registerAiStreamRoutes(app, {
               ? ` fallback=${streamDisclosure.fallback}`
               : ''),
         );
+      }
+
+      if (
+        req.user?.id &&
+        streamDisclosure &&
+        !forceImage &&
+        !translateMode &&
+        exclusiveComposerMode !== 'image' &&
+        exclusiveComposerMode !== 'translate'
+      ) {
+        try {
+          mcpTurn = await resolveMcpToolsForTurn({
+            manager: getMcpManager(supabaseAdmin),
+            userId: req.user.id,
+            text: String(text || ''),
+            botConnectionIds: req.body?.botConnectionIds,
+            connectionIds: req.body?.connectionIds,
+          });
+          if (mcpTurn.tools.length) {
+            const bound = bindMcpChatHandlers(mcpTurn.tools, mcpTurn.bindings, {
+              manager: getMcpManager(supabaseAdmin),
+              userId: req.user.id,
+              text: String(text || ''),
+            });
+            const composed = composeWithExternalTools(
+              Array.isArray(streamChatToolNames) ? streamChatToolNames : [],
+              bound,
+            );
+            mcpChatTools = composed.externalTools;
+            streamChatToolNames = composed.toolNames;
+            streamDisclosure = {
+              ...streamDisclosure,
+              externalTools: composed.externalTools,
+              toolNames: composed.toolNames,
+              keepToolsOn: composed.firstPartyToolNames.length > 0 || composed.externalTools.length > 0,
+            };
+            if (streamDisclosure.keepToolsOn) useTools = true;
+            console.log(`🔌 Stream: MCP tools (${mcpChatTools.length}): ${mcpChatTools.map((t) => t.name).join(', ')}`);
+          }
+        } catch (e) {
+          console.warn('⚠️ mcp turn resolve skipped:', e?.message || e);
+        }
       }
 
       // Custom AI instructions are Studio+. Strip them for basic-tier callers.
@@ -2025,6 +2071,33 @@ export function registerAiStreamRoutes(app, {
       // request as `tools[]` / `functionDeclarations` — that's the schema;
       // this is the policy.
       if (useTools) {
+        if (
+          mcpTurn?.resolution?.ambiguous
+        ) {
+          prompt +=
+            '\n\n[MCP CONNECTIONS — AMBIGUOUS ACCOUNT]\n' +
+            'Multiple equivalent external accounts could perform this write. Ask the user which connection to use. Do not pick one arbitrarily. Candidates: ' +
+            (mcpTurn.resolution.candidates || [])
+              .map((c) => `${c.connectionName} (${c.connectionId})`)
+              .join(', ') +
+            '.';
+        } else if (mcpTurn?.resolution?.reason === 'missing_capability') {
+          const names = (mcpTurn.suggestions || []).map((item) => item.name).filter(Boolean);
+          try {
+            getMcpManager(supabaseAdmin).noteAttention(req.user.id, {
+              type: 'missing_capability',
+              title: names[0] ? `Connect ${names[0]}` : 'Connect a service',
+              catalogId: mcpTurn.suggestions?.[0]?.catalogId || null,
+              needs: mcpTurn.resolution.needs || [],
+            });
+          } catch {
+            /* attention is best effort */
+          }
+          prompt +=
+            '\n\n[MCP CONNECTIONS — NEEDS CONNECTION]\n' +
+            'This task needs an external connection the user does not have yet. Tell them which service to connect. Do not invent OAuth URLs. Do not browse or install MCP servers. ' +
+            (names.length ? `Suggested services: ${names.join(', ')}.` : '');
+        }
         const turnCapabilities = streamDisclosure?.capabilities || [];
         if (streamLeanToolSet) {
           prompt += '\n\n' + buildSlimChatToolGuidance(streamChatToolNames, turnCapabilities);
@@ -3333,6 +3406,10 @@ export function registerAiStreamRoutes(app, {
                 allowStyleChange:
                   redesignArtifactAsk || buildModeFresh || styleChangeArtifactAsk,
               });
+              if (mcpChatTools.length) {
+                base.extraChatTools = mcpChatTools;
+                base.extraChatToolsByName = Object.fromEntries(mcpChatTools.map((t) => [t.name, t]));
+              }
               // Remotion renders (lykn_render_video) run 1-4 real minutes with
               // no provider stream — ping the stall watchdog on every frame and
               // surface throttled percent updates so the client sees progress.

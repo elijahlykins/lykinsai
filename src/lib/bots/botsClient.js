@@ -9,6 +9,7 @@
 import { useEffect, useState } from "react";
 import {
   BOTS_STORAGE_KEY,
+  assignBotConnections,
   bindRuntimeTask,
   botForAgent,
   createBot,
@@ -88,6 +89,7 @@ function botRuntimeIdentity(bot) {
     eyes: bot.eyes,
     color: bot.color,
     chatId: bot.chatId,
+    ...(Array.isArray(bot.connectionIds) ? { connectionIds: bot.connectionIds } : {}),
   };
 }
 
@@ -97,6 +99,7 @@ function canonicalTaskInput(bot, task, teammates = []) {
     botTaskId: task.id,
     botId: bot.id,
     chatId: bot.chatId,
+    ...(Array.isArray(bot.connectionIds) ? { connectionIds: bot.connectionIds } : {}),
     teammates: teammates.map((teammate) => ({
       id: teammate.id,
       name: teammate.name,
@@ -199,6 +202,11 @@ export function addBot(draft) {
   const bot = createBot(draft);
   setBots([...load(), bot]);
   return bot;
+}
+
+/** Missing/undefined = all connections. Empty array = none. */
+export function setBotConnectionIds(botId, connectionIds) {
+  patchBot(botId, (b) => assignBotConnections(b, connectionIds));
 }
 
 /**

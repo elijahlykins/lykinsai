@@ -1,5 +1,4 @@
-// Vault note enrichment + on-save index. Re-exported from server.js for
-// connectors/notion.js until that lazy import is repointed.
+// Vault note enrichment + on-save index.
 import fetch from 'node-fetch';
 import { chunkTextForSynthesis } from '../../synthesis-service.js';
 import { replaceSynthesisChunks } from './chatRetrieval.js';
@@ -17,11 +16,8 @@ export function bindVaultEnrichment(deps) {
 // Lifted out of the HTTP endpoint so it can be called from anywhere the
 // server has a (userId, noteId) and we want a summary on the row — namely:
 //   • POST /api/vault/enrich-note  (frontend-triggered, debounced after save)
-//   • connectors/notion.js → savePageAsNote (sync-time backfill so synced
-//     pages get a usable summary the first time they show up in the vault)
 //   • fetchVaultNotesByUrls fallback enqueue (catches anything that slipped
-//     past both other paths — older rows from before the connector wired
-//     into this helper)
+//     past both other paths — older rows from before enrichment was wired)
 //
 // Returns { ok, skipped?, reason?, summary?, signals? }. Never throws —
 // connector sync and chat retrieval both treat enrichment as best-effort.

@@ -4,13 +4,13 @@
     "Ordered registration surface of server.js (Express app). Entry order IS the contract:",
     "Express matches in registration order, so any reordering here is a behavior change."
   ],
-  "routeCount": 128,
+  "routeCount": 148,
   "middlewareCount": 6,
   "byMethod": {
-    "DELETE": 4,
-    "GET": 38,
-    "PATCH": 5,
-    "POST": 81
+    "DELETE": 6,
+    "GET": 47,
+    "PATCH": 7,
+    "POST": 88
   },
   "byDomain": {
     "account": 8,
@@ -20,12 +20,13 @@
     "billing": 10,
     "chatCore": 5,
     "connections": 5,
-    "connectors": 8,
+    "connectors": 3,
     "customModels": 1,
     "desktop": 9,
-    "feeds": 9,
+    "feeds": 8,
     "files": 6,
     "learning": 1,
+    "other": 26,
     "platform": 4,
     "synthesis": 5,
     "usage": 3,
@@ -431,6 +432,432 @@
         "<anonymous>"
       ],
       "domain": "connections",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/calendar/connections",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/calendar/connections/google/start",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/oauth/calendar/google/callback",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/calendar/connections/apple",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/calendar/connections/:id/sync",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "path": "/api/calendar/connections/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "path": "/api/calendar/connections/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/cursor/credentials/connect-info",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/cursor/credentials",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/cursor/credentials",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/cursor/credentials/:id/validate",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "path": "/api/cursor/credentials/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "path": "/api/cursor/credentials/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/oauth/mcp/client-metadata",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/oauth/mcp/callback",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/mcp/catalog",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/mcp/suggestions",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/mcp/attention",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/mcp/connections",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/mcp/connections",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/mcp/connections/:id/authorize",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "path": "/api/mcp/connections/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/mcp/connections/:id/refresh",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/mcp/connections/:id/reconnect",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/mcp/connections/:id/detail",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/mcp/connections/:id/health",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/mcp/connections/:id/disconnect",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "path": "/api/mcp/connections/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/mcp/connections/:id/tools/call",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
       "flags": [
         "auth"
       ]
@@ -2030,21 +2457,6 @@
       "methods": [
         "POST"
       ],
-      "path": "/api/connections/poll-due",
-      "chain": [
-        "<anonymous>"
-      ],
-      "domain": "feeds",
-      "flags": [
-        "secretGated",
-        "externalContract"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "POST"
-      ],
       "path": "/api/ai/cursor-builds/poll-due",
       "chain": [
         "<anonymous>"
@@ -2053,128 +2465,6 @@
       "flags": [
         "secretGated",
         "externalContract"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "POST"
-      ],
-      "path": "/api/connections/:provider/start",
-      "chain": [
-        "requireAuth",
-        "<anonymous>"
-      ],
-      "domain": "connectors",
-      "flags": [
-        "auth"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "GET"
-      ],
-      "path": "/oauth/callback/:provider",
-      "chain": [
-        "<anonymous>"
-      ],
-      "domain": "connectors",
-      "flags": [
-        "externalContract"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "GET"
-      ],
-      "path": "/api/connections/:provider/connect-info",
-      "chain": [
-        "requireAuth",
-        "<anonymous>"
-      ],
-      "domain": "connectors",
-      "flags": [
-        "auth"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "POST"
-      ],
-      "path": "/api/connections/:provider/connect-token",
-      "chain": [
-        "requireAuth",
-        "<anonymous>",
-        "<anonymous>",
-        "<anonymous>"
-      ],
-      "domain": "connectors",
-      "flags": [
-        "auth"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "GET"
-      ],
-      "path": "/api/connections",
-      "chain": [
-        "requireAuth",
-        "<anonymous>"
-      ],
-      "domain": "connectors",
-      "flags": [
-        "auth"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "POST"
-      ],
-      "path": "/api/connections/:id/sync",
-      "chain": [
-        "requireAuth",
-        "<anonymous>"
-      ],
-      "domain": "connectors",
-      "flags": [
-        "auth"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "PATCH"
-      ],
-      "path": "/api/connections/:id",
-      "chain": [
-        "requireAuth",
-        "<anonymous>",
-        "<anonymous>"
-      ],
-      "domain": "connectors",
-      "flags": [
-        "auth"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "DELETE"
-      ],
-      "path": "/api/connections/:id",
-      "chain": [
-        "requireAuth",
-        "<anonymous>"
-      ],
-      "domain": "connectors",
-      "flags": [
-        "auth"
       ]
     },
     {
