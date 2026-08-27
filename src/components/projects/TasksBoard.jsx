@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { CalendarClock, CheckCircle2, Circle, Flag, Trash2 } from "lucide-react";
+import { CalendarClock, CheckCircle2, Circle, Trash2 } from "lucide-react";
 
 // A Kanban view over the project's tasks (lykn_todos) that maps onto the
 // existing schema — no new status value. Columns are the three priority
