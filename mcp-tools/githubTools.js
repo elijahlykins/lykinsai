@@ -111,7 +111,7 @@ function boundText(value, max = 4000) {
  * in an error. On any failure the caller gets a status + a short, token-free
  * message.
  */
-async function githubRequest({ path, method = "GET", body, resolveToken, authRef, fetchImpl }) {
+async function githubRequest({ path, method = "GET", body, resolveToken, authRef, fetchImpl, signal }) {
   const doFetch = fetchImpl || fetch;
   let token = null;
   try {
@@ -119,6 +119,7 @@ async function githubRequest({ path, method = "GET", body, resolveToken, authRef
   } catch {
     token = null;
   }
+  if (signal?.aborted) return { ok: false, status: 0, error: "cancelled", cancelled: true };
   if (!token) return { ok: false, status: 401, error: "github_not_connected" };
   const headers = {
     Accept: "application/vnd.github+json",
@@ -133,11 +134,16 @@ async function githubRequest({ path, method = "GET", body, resolveToken, authRef
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
+      signal,
     });
   } catch (e) {
+    if (signal?.aborted || e?.name === "AbortError") {
+      return { ok: false, status: 0, error: "cancelled", cancelled: true };
+    }
     // Never let a thrown error carry the header/token; report shape only.
     return { ok: false, status: 0, error: "github_request_failed" };
   }
+  if (signal?.aborted) return { ok: false, status: 0, error: "cancelled", cancelled: true };
   const status = res.status;
   let data = null;
   try {
@@ -177,7 +183,8 @@ function parseRepo(args) {
  * @returns {Promise<object>}
  */
 async function runGithubTool(tool, args = {}, deps = {}) {
-  const { capabilities = [], resolveToken, authRef, fetchImpl, onApproval, approved } = deps;
+  const { capabilities = [], resolveToken, authRef, fetchImpl, onApproval, approved, signal } = deps;
+  if (signal?.aborted) return { ok: false, status: "cancelled", error: "cancelled", ignored: true };
   const meta = GITHUB_TOOLS[tool];
   if (!meta) return { ok: false, error: "unknown_tool", tool };
 
@@ -207,8 +214,17 @@ async function runGithubTool(tool, args = {}, deps = {}) {
     }
   }
 
-  const call = (path, method, body) =>
-    githubRequest({ path, method, body, resolveToken, authRef, fetchImpl });
+  const call = async (path, method, body) => {
+    const result = await githubRequest({ path, method, body, resolveToken, authRef, fetchImpl, signal });
+    if (signal?.aborted || result.cancelled) {
+      return { ok: false, status: 0, error: "cancelled", cancelled: true };
+    }
+    return result;
+  };
+  const finish = (value) =>
+    signal?.aborted
+      ? { ok: false, status: "cancelled", error: "cancelled", ignored: true }
+      : value;
 
   switch (tool) {
     case "github_get_repo": {
@@ -362,7 +378,7 @@ async function runGithubTool(tool, args = {}, deps = {}) {
         sha: fromSha,
       });
       if (!r.ok) return r;
-      return { ok: true, branch, ref: r.data?.ref };
+      return finish({ ok: true, branch, ref: r.data?.ref });
     }
     case "github_create_issue": {
       const { owner, repo, valid } = parseRepo(args);
@@ -374,7 +390,7 @@ async function runGithubTool(tool, args = {}, deps = {}) {
         body: String(args.body || ""),
       });
       if (!r.ok) return r;
-      return { ok: true, number: r.data?.number, url: r.data?.html_url };
+      return finish({ ok: true, number: r.data?.number, url: r.data?.html_url });
     }
     case "github_comment": {
       const { owner, repo, valid } = parseRepo(args);
@@ -386,7 +402,7 @@ async function runGithubTool(tool, args = {}, deps = {}) {
         body: bodyText,
       });
       if (!r.ok) return r;
-      return { ok: true, id: r.data?.id, url: r.data?.html_url };
+      return finish({ ok: true, id: r.data?.id, url: r.data?.html_url });
     }
     case "github_create_pull_request": {
       const { owner, repo, valid } = parseRepo(args);
@@ -402,7 +418,7 @@ async function runGithubTool(tool, args = {}, deps = {}) {
         body: String(args.body || ""),
       });
       if (!r.ok) return r;
-      return { ok: true, number: r.data?.number, url: r.data?.html_url };
+      return finish({ ok: true, number: r.data?.number, url: r.data?.html_url });
     }
     case "github_merge_pull_request": {
       const { owner, repo, valid } = parseRepo(args);
@@ -414,7 +430,7 @@ async function runGithubTool(tool, args = {}, deps = {}) {
         merge_method: method,
       });
       if (!r.ok) return r;
-      return { ok: true, merged: r.data?.merged === true, sha: r.data?.sha };
+      return finish({ ok: true, merged: r.data?.merged === true, sha: r.data?.sha });
     }
     default:
       return { ok: false, error: "unknown_tool", tool };
