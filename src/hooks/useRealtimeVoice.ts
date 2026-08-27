@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE_URL } from "@/lib/api-config";
 import { TUNE_VOICE_TOOL, applyVoiceInstructionTune } from "@/lib/voice/tuneInstructions";
 import { micErrorMessage, requestMicStream } from "@/lib/voice/micAccess";
+import { claimVoiceReplyPersist } from "@/lib/lyknChat/voiceReplyPersist";
 
 export type RealtimeVoiceState =
   | "idle"
@@ -74,6 +75,8 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
   // know which tool to run when its arguments finish streaming.
   const toolNamesRef = useRef<Map<string, string>>(new Map());
   const voiceToolDefsRef = useRef<Map<string, Record<string, unknown>>>(new Map());
+  const persistedReplyIdsRef = useRef<Set<string>>(new Set());
+  const persistedThisResponseRef = useRef(false);
 
   useEffect(() => { buildInstructionsRef.current = buildInstructions; }, [buildInstructions]);
   useEffect(() => { chatIdRef.current = chatId ?? null; }, [chatId]);
@@ -284,6 +287,7 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
         break;
       case "response.created":
         replyRef.current = "";
+        persistedThisResponseRef.current = false;
         setReply("");
         setVoiceState("thinking");
         break;
@@ -302,6 +306,12 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
         const full = evt.transcript ? String(evt.transcript) : replyRef.current;
         if (evt.transcript) { replyRef.current = full; setReply(full); }
         const finalReply = String(full || "").trim();
+        const responseId = String(evt.response_id || evt.response?.id || "").trim();
+        const claimed = responseId
+          ? claimVoiceReplyPersist(persistedReplyIdsRef.current, responseId)
+          : !persistedThisResponseRef.current;
+        if (!claimed) break;
+        persistedThisResponseRef.current = true;
         if (finalReply) { try { onAssistantReplyRef.current?.(finalReply); } catch { /* ignore */ } }
         break;
       }
