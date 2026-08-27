@@ -192,14 +192,27 @@ function normalizeTrigger(spec) {
     }
     const pattern = String(input.pattern || "").trim();
     if (pattern) globToRegExp(pattern); // validate now, not at watch time
-    return Object.freeze({ type, path: watchPath, event, ...(pattern ? { pattern } : {}) });
+    const notifyOnly = optionalBool(input.notifyOnly);
+    return Object.freeze({
+      type,
+      path: watchPath,
+      event,
+      ...(pattern ? { pattern } : {}),
+      ...(notifyOnly !== undefined ? { notifyOnly } : {}),
+    });
   }
   if (type === "process") {
     const name = String(input.name || "").trim().slice(0, 200);
     if (!name) throw new TypeError("Process trigger requires a 'name'");
     const event = String(input.event || "exited").trim();
     if (!PROCESS_EVENTS.includes(event)) throw new TypeError(`Unknown process event: ${event}`);
-    return Object.freeze({ type, name, event });
+    const notifyOnly = optionalBool(input.notifyOnly);
+    return Object.freeze({
+      type,
+      name,
+      event,
+      ...(notifyOnly !== undefined ? { notifyOnly } : {}),
+    });
   }
   if (type === "browser") return normalizeBrowserTrigger(input);
   return normalizeScreenTrigger(input);
