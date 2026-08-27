@@ -9,12 +9,12 @@
       "reason": "Server construction and registration only."
     },
     "electron/main.cjs": {
-      "maxLines": 6500,
+      "maxLines": 2000,
       "owner": "composition-root",
-      "reason": "Electron construction and lifecycle. Residual forwarders still live here."
+      "reason": "Electron construction and lifecycle. Subsystems attach via bindShellContext."
     },
     "electron/agentRuntime.cjs": {
-      "maxLines": 14000,
+      "maxLines": 11000,
       "owner": "TaskRuntime host",
       "reason": "Agent session host. Task lifecycle authority lives in TaskRuntime."
     },
@@ -56,19 +56,24 @@
       "reason": "Cohesive low-level browser actuator and DOM catalog. Lifecycle authority lives in BrowserExecutor."
     },
     "electron/agentRuntime.cjs": {
-      "maxLines": 14000,
+      "maxLines": 11000,
       "owner": "TaskRuntime host",
       "reason": "Remaining Electron agent host. Do not add a second task lifecycle or executor here."
     },
     "electron/overlay.js": {
-      "maxLines": 7000,
+      "maxLines": 4500,
       "owner": "Glass overlay renderer",
-      "reason": "Cohesive overlay document renderer. Not an Electron main-process composition-root regression."
+      "reason": "Overlay renderer bootstrap. Feature UI lives in electron/overlay-ui."
     },
     "electron/main.cjs": {
-      "maxLines": 6500,
+      "maxLines": 2000,
       "owner": "composition-root",
-      "reason": "Electron construction and lifecycle. This is a ratchet, not a redesign of residual forwarders."
+      "reason": "Electron construction and lifecycle after host/window extraction."
+    },
+    "electron/agent-browser/host.cjs": {
+      "maxLines": 4300,
+      "owner": "Agent browser windows/views",
+      "reason": "Cohesive Agent Mode sidebar, stage, tab views, artifacts, and runtime wiring. Not Task execution authority."
     },
     "server/ai/chatStream.routes.js": {
       "maxLines": 4000,

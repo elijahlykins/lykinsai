@@ -316,13 +316,13 @@ test("production replay consumes canonical MCP execution and leaves Routine appr
     path.join(__dirname, "../../electron/agentRuntime.cjs"),
     "utf8",
   );
-  const mainSource = fs.readFileSync(
-    path.join(__dirname, "../../electron/main.cjs"),
+  const hostSource = fs.readFileSync(
+    path.join(__dirname, "../../electron/agent-browser/host.cjs"),
     "utf8",
   );
   assert.match(source, /require\("\.\/task-runtime\/executors\/mcpExecutor\.cjs"\)/);
   assert.match(source, /const mcpExecutor = new McpExecutor\(/);
   assert.match(source, /mcp: \(task, context\) => mcpExecutor\.execute\(task, context\)/);
   assert.match(source, /if \(!interactiveApproval\) \{\s*return \{\s*ok: false,\s*status: "waiting_for_approval"/);
-  assert.match(mainSource, /runLearnedWorkflow\(\{[\s\S]*?interactiveApproval: false,/);
+  assert.match(hostSource, /runLearnedWorkflow\(\{[\s\S]*?interactiveApproval: false,/);
 });

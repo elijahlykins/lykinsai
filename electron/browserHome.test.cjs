@@ -59,8 +59,8 @@ test("the start page uses desktop dictation and a search button", () => {
 });
 
 test("the start page stays at full size instead of shrinking with the pane", () => {
-  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
-  const apply = main.slice(main.indexOf("function applyAgentTabZoom"), main.indexOf("function fitAgentTabsToPane"));
+  const host = fs.readFileSync(path.join(__dirname, "agent-browser/host.cjs"), "utf8");
+  const apply = host.slice(host.indexOf("function applyAgentTabZoom"), host.indexOf("function fitAgentTabsToPane"));
   assert.match(apply, /isAgentBrowserHomeUrl/);
   assert.match(apply, /isPlaceholderAgentUrl/);
   assert.match(apply, /home \? 1 : agentTabZoomForWidth/);

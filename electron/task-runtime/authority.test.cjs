@@ -32,6 +32,10 @@ const OWNED_BROWSER = fs.readFileSync(
   "utf8",
 );
 const MAIN = fs.readFileSync(path.join(__dirname, "../main.cjs"), "utf8");
+const AGENT_BROWSER_HOST = fs.readFileSync(
+  path.join(__dirname, "../agent-browser/host.cjs"),
+  "utf8",
+);
 
 test("compileBrowserTask is the canonical browse envelope and never grants eval", () => {
   const task = compileBrowserTask({
@@ -126,4 +130,6 @@ test("the owned adaptive decision loop is gone; the actuator remains", () => {
 test("main.cjs no longer hosts the legacy browse planner", () => {
   assert.doesNotMatch(MAIN, /planOwnedBrowserNext/);
   assert.doesNotMatch(MAIN, /executeOwnedAdaptiveTask/);
+  assert.doesNotMatch(AGENT_BROWSER_HOST, /planOwnedBrowserNext/);
+  assert.doesNotMatch(AGENT_BROWSER_HOST, /executeOwnedAdaptiveTask/);
 });

@@ -66,6 +66,12 @@ server.js
 electron/main.cjs
 → Electron construction/lifecycle only
 
+electron/agentRuntime.cjs
+→ Agent session host (routing and projection only; Task lifecycle stays in TaskRuntime)
+
+electron/overlay.js
+→ Glass overlay renderer bootstrap
+
 LyknChat.tsx
 → Chat page composition
 
