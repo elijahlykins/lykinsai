@@ -1,11 +1,12 @@
 "use strict";
 
 /**
- * End-to-end: a task-shaped Bot turn runs through the Bot harness — the
- * persona rides the decide call's system prompt, the routed tool's doc is
- * pre-loaded, the capability streams through the legacy pipeline, and the
- * delivery closes the turn. Also: the harness degrades to the legacy
- * single-shot path when the model endpoint cannot serve it.
+ * End-to-end: a task-shaped Bot turn runs through TaskRuntime -> BotExecutor
+ * -> Bot harness. The persona rides the decide call's system prompt, the
+ * routed tool's doc is pre-loaded, the capability streams, and delivery
+ * closes the turn. If decide cannot run, BotExecutor degrades to the
+ * capability stream inside the same Task. There is no host-level kill-switch
+ * path around BotExecutor.
  *
  * Run: node --test electron/botHarnessIntegration.test.cjs
  */
@@ -82,7 +83,6 @@ function newRuntime() {
     hideAllBrowserWindows: () => {},
     browserWindowExists: () => false,
     getBrowserWebContents: () => null,
-    planOwnedBrowserNext: async () => ({}),
     isContentProtectionEnabled: () => false,
     openStageArtifact: () => {},
     destroyOwnedArtifactTabs: () => {},
@@ -154,7 +154,7 @@ test("bot identity passed on send() refreshes an agent that predates the profile
   assert.match(String(decideBodies[0]?.system || ""), /Your name is Pepper/);
 });
 
-test("when the harness cannot decide at all, the turn degrades to the legacy single-shot path", async (t) => {
+test("when the harness cannot decide at all, BotExecutor degrades inside the same Task", async (t) => {
   failDecides = true;
   t.after(() => {
     failDecides = false;
@@ -165,6 +165,6 @@ test("when the harness cannot decide at all, the turn degrades to the legacy sin
     text: "[You are Scout, my researcher.]\n\nresearch the best espresso machines under $500 and give me a report",
   });
   assert.ok(out?.ok, "turn still completes");
-  // The legacy path streams the capability directly — the report text arrives.
+  // The in-executor fallback streams the capability directly - the report text arrives.
   assert.match(String(out.text || ""), /espresso/i);
 });

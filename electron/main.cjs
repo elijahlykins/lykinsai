@@ -4363,189 +4363,6 @@ function notifyStudioShowBrowser(detail = {}) {
   } catch (_) {}
 }
 
-async function planOwnedBrowserNext(ctx) {
-  const token = await getAuthToken().catch(() => null);
-  if (!token) {
-    return {
-      done: false,
-      stuck: true,
-      answer: "Sign in to LYKN to use agent browsing.",
-    };
-  }
-  // 110-item budget (server accepts 130): on-screen elements first, so the
-  // planner always sees what the user (and the screenshot) sees; below-fold
-  // items fill the remainder.
-  const rawCatalog = Array.isArray(ctx.catalog) ? ctx.catalog : [];
-  const catalog = [
-    ...rawCatalog.filter((it) => it && it.inView !== false),
-    ...rawCatalog.filter((it) => it && it.inView === false),
-  ].slice(0, 110);
-  // Keep enough of the goal that trailing "…and complete it" clauses survive.
-  const rawGoalFull = String(ctx.goal || "").trim();
-  const rawGoal =
-    rawGoalFull.length <= 1200
-      ? rawGoalFull
-      : `${rawGoalFull.slice(0, 900)} … ${rawGoalFull.slice(-280)}`;
-  const items = catalog.map((it) => ({
-    id: it.id,
-    tag: it.tag,
-    type: it.type,
-    role: it.role,
-    label: it.label,
-    selector: it.selector,
-    href: it.href,
-    // Viewport coords so the planner / actuator can send real mouse events
-    // (Gmail and other SPAs often ignore element.click()).
-    clientX: it.clientX,
-    clientY: it.clientY,
-    // false = below the fold / offscreen right now (actuator scrolls to it).
-    inView: it.inView !== false,
-  }));
-  const conversationHistory = Array.isArray(ctx.conversationHistory)
-    ? ctx.conversationHistory.slice(-10).map((m) => ({
-        role: m?.role === "assistant" ? "assistant" : "user",
-        content: String(m?.content || "").slice(0, 900),
-      }))
-    : [];
-  const body = {
-    intent: rawGoal,
-    pageText: String(ctx.pageText || "").slice(0, 9000),
-    url: String(ctx.url || ""),
-    title: String(ctx.title || ""),
-    // API contract: plan-next requires `items` (not interactables).
-    items,
-    interactables: items,
-    // Per-round screenshot so the planner can see icons/canvas/iframe targets
-    // and click them via click_coord.
-    imageUrl: String(ctx.imageUrl || ""),
-    conversationHistory,
-    // Slim {action, result} entries — the planner needs what was tried and
-    // whether it worked, not full selectors/payloads.
-    history: (Array.isArray(ctx.history) ? ctx.history.slice(-12) : []).map((h) => ({
-      action: {
-        type: h?.action?.type || "",
-        label: String(h?.action?.label || "").slice(0, 80),
-        value: String(h?.action?.value || "").slice(0, 60),
-        key: h?.action?.key || undefined,
-        url: String(h?.action?.url || "").slice(0, 120) || undefined,
-      },
-      result: {
-        ok: h?.result?.ok !== false,
-        error: h?.result?.ok === false ? String(h?.result?.error || "").slice(0, 80) : undefined,
-        hitTest: h?.result?.hitTest,
-      },
-    })),
-    round: ctx.round || 0,
-    ownedBrowser: true,
-    // Progressive WORKING PLAN — rewritten each round from the visible screen.
-    taskPlan: String(ctx.taskPlan || "").slice(0, 2000),
-    // Holo pipeline memory: steps taken so far (screen reader) + the running
-    // agent conversation (Holo) so each round builds on the last one.
-    completedSteps: (Array.isArray(ctx.history) ? ctx.history.slice(-25) : []).map((h) => ({
-      type: h?.action?.type || "step",
-      label: String(h?.action?.label || h?.action?.value || h?.action?.url || "").slice(0, 80),
-      ok: h?.result?.ok !== false,
-      // Prefer real post-action observation — result.ok alone is not a screen change.
-      screenChanged:
-        h?.screenChanged === true ||
-        h?.result?.screenChanged === true ||
-        false,
-    })),
-  };
-  if (Array.isArray(ctx.holoMessages) && ctx.holoMessages.length) {
-    body.holoMessages = ctx.holoMessages;
-  }
-  if (ctx.toolName && ctx.toolOutput != null) {
-    body.toolName = String(ctx.toolName);
-    body.toolOutput = String(ctx.toolOutput).slice(0, 2000);
-  }
-  if (ctx.lastActionDiff) {
-    // Rich post-click diffs list NEW controls — keep enough for the planner.
-    body.lastActionDiff = String(ctx.lastActionDiff).slice(0, 1200);
-  }
-  // Stall escalation from the adaptive loop — server renders it as MANDATORY.
-  if (ctx.stuckHint) {
-    body.stuckHint = String(ctx.stuckHint).slice(0, 500);
-    body.forceAction = true;
-  }
-  try {
-    const res = await fetch(`${API_BASE}/api/desktop/browser-plan-next`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      // Fallback: one-shot prose plan over catalog when plan-next rejects owned mode.
-      // Always forward the screenshot — holo/screen-reader requires it.
-      const res2 = await fetch(`${API_BASE}/api/desktop/browser-plan`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          intent: body.intent,
-          pageText: body.pageText,
-          url: body.url,
-          title: body.title,
-          items: body.items,
-          interactables: body.interactables,
-          conversationHistory: body.conversationHistory,
-          imageUrl: body.imageUrl,
-        }),
-      });
-      const data2 = await res2.json().catch(() => ({}));
-      const actions = Array.isArray(data2.actions) ? data2.actions : [];
-      if (!actions.length) {
-        // Empty fallback ≠ finished — surface planner failure so the loop can stop.
-        return {
-          done: false,
-          stuck: true,
-          plannerFailed: true,
-          answer: data2.message || data2.summary || data2.error || "Could not plan the next browser step.",
-          actions: [],
-        };
-      }
-      return { done: false, actions };
-    }
-    const data = await res.json().catch(() => ({}));
-    const nextPlan = String(data.taskPlan || ctx.taskPlan || "").slice(0, 2000);
-    if (data.done || data.answer) {
-      return {
-        done: true,
-        answer:
-          data.answer || data.agentResult || data.explanation || data.summary || "Done.",
-        forceContinue: !!data.forceContinue,
-        taskPlan: nextPlan || undefined,
-      };
-    }
-    return {
-      done: false,
-      actions: Array.isArray(data.actions) ? data.actions : [],
-      holoMessages: Array.isArray(data.holoMessages) ? data.holoMessages : undefined,
-      holoToolName: data.holoToolName || undefined,
-      forceContinue: !!data.forceContinue,
-      taskPlan: nextPlan || undefined,
-      // Keep explanation for rejection hints — do NOT set answer (that means done).
-      explanation: data.forceContinue
-        ? data.explanation || data.reasoning || ""
-        : undefined,
-      reasoning: data.reasoning || data.explanation || undefined,
-    };
-  } catch (e) {
-    return {
-      done: false,
-      stuck: true,
-      plannerFailed: true,
-      answer: e?.message || "Browser planning failed.",
-      actions: [],
-    };
-  }
-}
-
 let agentRuntimeLoadPromise = null;
 
 function whenAgentRuntimeLoaded() {
@@ -4656,7 +4473,6 @@ function initAgentRuntime() {
     hideAllBrowserWindows: hideAllAgentBrowserWindows,
     browserWindowExists: agentBrowserWindowExists,
     getBrowserWebContents: getAgentBrowserWebContents,
-    planOwnedBrowserNext,
     isContentProtectionEnabled,
     openStageArtifact: openAgentStageArtifact,
     destroyOwnedArtifactTabs: destroyAgentOwnedArtifactTabs,
@@ -5858,7 +5674,6 @@ function bindShellContext() {
   d.resolveAgentBrowseTargetId = resolveAgentBrowseTargetId;
   d.openUrlPreferAgentBrowser = openUrlPreferAgentBrowser;
   d.notifyStudioShowBrowser = notifyStudioShowBrowser;
-  d.planOwnedBrowserNext = planOwnedBrowserNext;
   d.whenAgentRuntimeLoaded = whenAgentRuntimeLoaded;
   d.initAgentRuntime = initAgentRuntime;
   d.getRoutineRuntime = initRoutineRuntime;

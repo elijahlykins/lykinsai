@@ -9,15 +9,13 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const ownedBrowserAct = require("./ownedBrowserAct.cjs");
 // Modular browser-agent runtime (plan → decide → act → observe → verify →
-// recover). Default path for adaptive browsing; the legacy monolithic loop in
-// ownedBrowserAct stays available via LYKN_BROWSER_AGENT=legacy or when the
-// server does not expose /api/desktop/agent-model yet.
+// recover). The only browser brain. ownedBrowserAct is the actuator it drives.
 const browserAgent = require("./browser-agent/index.cjs");
 // Bot harness (electron/bot-harness): the decide → act → verify loop every
 // headless Bot task runs through. Same layered-markdown prompt architecture
 // as the browser agent — persona in the system prompt, tools disclosed
-// progressively, verification per tool, one terminal delivery. Falls back to
-// the legacy single-shot streamChat path when the model endpoint is down.
+// progressively, verification per tool, one terminal delivery. Always reached
+// through TaskRuntime → BotExecutor; there is no host-level kill-switch path.
 const botHarness = require("./bot-harness/index.cjs");
 const { TaskRuntime } = require("./task-runtime/taskRuntime.cjs");
 const { isTerminalTaskStatus } = require("./task-runtime/task.cjs");
@@ -32,8 +30,10 @@ const {
 } = require("./task-runtime/executors/localExecutor.cjs");
 const {
   compileLocalTask,
+  compileBrowserTask,
   compileRemoteTask,
   compileRoutineTask,
+  defaultBotCapabilities,
 } = require("./task-runtime/taskCompiler.cjs");
 const { createBrowserObserveHost } = require("./bot-routines/browserObserveHost.cjs");
 // Local Mode task runner (files + terminal on the user's machine). Only used
@@ -129,21 +129,6 @@ const { buildAgentPlan } = require("../lib/agentMultiStep.cjs");
 // allowed to see, and that rule deserves its own tests.
 const { formatBrowseWorkLog, humanLabel, verbFor } = require("../lib/browseWorkLog.cjs");
 const diagnostics = require("./diagnostics.cjs");
-
-/**
- * App version for diagnostics records.
- *
- * Read from package.json rather than electron's `app`, because this module is
- * deliberately electron-free — everything it needs from the shell arrives
- * through `deps`, which is what lets the test suite drive it in plain node.
- */
-function getAppVersion() {
-  try {
-    return String(require("../package.json").version || "");
-  } catch {
-    return "";
-  }
-}
 
 /**
  * Compact Agent Mode doctrine — invent steps, use full chat + open app,
@@ -948,7 +933,6 @@ function createAgentRuntime(deps) {
     hideAllBrowserWindows,
     browserWindowExists,
     getBrowserWebContents,
-    planOwnedBrowserNext,
     isContentProtectionEnabled,
     openStageArtifact,
     destroyOwnedArtifactTabs,
@@ -3804,36 +3788,8 @@ function createAgentRuntime(deps) {
       // Every Bot turn enters TaskRuntime -> BotExecutor. Casual chat selects
       // the deterministic reply-only branch (one stream, no decide/verify
       // rounds); task-shaped work keeps the existing Bot Harness core.
-      if (botHarnessEnabled()) {
-        try {
-          return await runBotHarnessTask(agent, fullAsk, attachments, gen, {
-            primaryTool: BOT_SKILL_TO_TOOL[botSkill] || "reply",
-          });
-        } catch (e) {
-          diagnostics.recordRouteDecision?.({
-            userDataPath,
-            ask: fullAsk.slice(0, 120),
-            route: "bot:harness-fallback",
-            reason: String(e?.message || e).slice(0, 200),
-          });
-        }
-      }
-      if (botSkill === "browser") {
-        // Harness unavailable — park the plain opt-in it would have parked,
-        // so the errand still reaches the browser on a yes.
-        agent.pendingBotBrowse = { ask: fullAsk, at: Date.now() };
-        return offerAgentQuestion(
-          agent,
-          "This looks like something I'd need the browser for — want me to open it up and take care of it?",
-          ["Yes, use the browser", "No, just answer here"],
-          { ask: "" },
-        );
-      }
-      if (botSkill === "local") {
-        return runLocalTaskViaExecutor(agent, fullAsk, gen);
-      }
-      return streamChat(agent, rawStep, attachments, botSkill, gen, {
-        suppressDone: multiActive,
+      return await runBotHarnessTask(agent, fullAsk, attachments, gen, {
+        primaryTool: BOT_SKILL_TO_TOOL[botSkill] || "reply",
       });
     }
     const liveForStep = agent.url || "";
@@ -7202,13 +7158,8 @@ function createAgentRuntime(deps) {
   // persona in the system prompt, tools disclosed progressively (index line →
   // full doc on first selection → call), verification per tool, safety gate
   // on consequential rounds, and one terminal delivery that summarizes the
-  // run. Casual chat keeps the fast streaming path; the legacy single-shot
-  // dispatch remains the fallback when the harness cannot run at all.
-
-  /** Kill switch: LYKN_BOT_HARNESS=0 restores the legacy single-shot path. */
-  function botHarnessEnabled() {
-    return String(process.env.LYKN_BOT_HARNESS || "").trim() !== "0";
-  }
+  // run. Casual chat keeps the fast streaming path through BotExecutor's
+  // reply-only branch. TaskRuntime remains the terminal authority.
 
   /** Routing verdicts / legacy skills → the harness tool whose doc preloads. */
   const BOT_SKILL_TO_TOOL = {
@@ -7363,7 +7314,7 @@ function createAgentRuntime(deps) {
       )
       .join("\n");
 
-    // Capability tools delegate to the same pipelines the legacy path used —
+    // Capability tools delegate to the same pipelines the host already owns —
     // the harness owns the loop and the prompts, not the capability. Streamed
     // output reaches the user live (suppressDone: the harness delivers the
     // closing message itself).
@@ -7520,11 +7471,16 @@ function createAgentRuntime(deps) {
       routine.trigger?.notifyOnly === true && String(triggerContext.reason || "") !== "manual";
     if (notifyOnly) {
       const output = String(triggerContext.summary || "Watched condition matched.").slice(0, 2000);
-      taskRuntime.complete(canonicalTask.id, { output, executor: "monitor" });
+      const execution = await taskRuntime.execute(canonicalTask.id, async () => ({
+        ok: true,
+        status: "completed",
+        output,
+        executor: "monitor",
+      }));
       agent.activeTaskId = "";
       return {
         taskId: canonicalTask.id,
-        status: "completed",
+        status: execution.task?.status || "completed",
         output,
         error: "",
         usage: { calls: 0, inputTokens: 0, outputTokens: 0, byStage: {} },
@@ -7725,7 +7681,7 @@ function createAgentRuntime(deps) {
 
   /**
    * Run one browse task through the modular browser-agent runtime and map the
-   * result onto the legacy adaptive-loop result shape so downstream handling
+   * result onto the browse-pipeline shape so downstream handling
    * (finishBrowseResult, needs-help surfacing, history) works unchanged.
    */
   async function runModularBrowserAgent(agent, browseGoal, gen, wc, {
@@ -7733,9 +7689,8 @@ function createAgentRuntime(deps) {
     maxRounds,
     userAsk = "",
     sendPolicy = "auto",
-    // Capability strings from the canonical Task. Null keeps the legacy
-    // blanket grant for the few compatibility callers not yet running under
-    // the BrowserExecutor.
+    // Capability strings from the canonical Task. BrowserExecutor always
+    // supplies them; a missing list means no browser capability.
     capabilities = null,
     // The canonical Task's cancellation signal, composed with the agent's own
     // abort below so either one stops the run.
@@ -8153,7 +8108,7 @@ function createAgentRuntime(deps) {
       // The modular loop does not report completion lightly: it requires
       // evidence for the answer, pushes back on a finish with plan steps still
       // open, and verifies each action against the page. Record that, because
-      // the legacy gap-checker downstream reads the page text and second-
+      // the gap-checker downstream reads the page text and second-
       // guesses it — after a successful share the dialog closes and the
       // recipient is no longer written anywhere on screen, which it read as
       // "not shared yet" and answered by starting the whole task again.
@@ -8235,9 +8190,9 @@ function createAgentRuntime(deps) {
       const { agent, gen, wc, browseGoal, convHistory, maxRounds, sendPolicy, userAsk } =
         context.browse;
       // One transient retry inside the SAME execution: an upstream blip (rate
-      // limit, 5xx) must not fail the Task or swap the engine — the legacy
-      // loop verifies and gates differently — so the run waits out the hiccup
-      // and goes again with everything the browser already did intact.
+      // limit, 5xx) must not fail the Task or swap the engine, so the run
+      // waits out the hiccup and goes again with everything the browser
+      // already did intact.
       for (let attempt = 0; ; attempt += 1) {
         try {
           return await runModularBrowserAgent(agent, browseGoal, gen, wc, {
@@ -8262,9 +8217,7 @@ function createAgentRuntime(deps) {
             continue;
           }
           // Structural: the agent-model endpoint is missing. Fail the Task
-          // truthfully; runAdaptiveBrowse records the fallback and runs the
-          // legacy engine (a documented compatibility path outside the
-          // runtime, kept only until it is retired).
+          // truthfully. There is no second browser engine.
           return {
             ok: false,
             status: "failed",
@@ -8292,23 +8245,21 @@ function createAgentRuntime(deps) {
       if (agent.headless || active.objective === objective) return active;
       taskRuntime.cancel(active.id, "superseded_by_new_task");
     }
-    const task = taskRuntime.register({
-      id: `task_${crypto.randomBytes(12).toString("hex")}`,
-      objective,
-      capabilities: ["browser.read", "browser.navigate", "browser.interact"],
-      budgets: { maxRounds: maxRounds || 18 },
-      origin: { type: "agent" },
-      association: { agentId: agent.id },
-    });
+    const task = taskRuntime.register(
+      compileBrowserTask({
+        objective,
+        agentId: agent.id,
+        budgets: { maxRounds: maxRounds || 18 },
+        origin: { type: "agent" },
+      }),
+    );
     agent.activeTaskId = task.id;
     return task;
   }
 
   /**
    * Run one browse through TaskRuntime -> BrowserExecutor and hand back the
-   * legacy-shaped result the browse pipeline downstream already understands.
-   * Model-endpoint unavailability re-surfaces as AgentModelUnavailableError so
-   * the caller's engine-fallback ladder keeps working unchanged.
+   * result shape the browse pipeline downstream already understands.
    */
   async function runBrowserTaskViaExecutor(agent, browseGoal, gen, wc, opts = {}) {
     const task = ensureBrowserTask(agent, browseGoal, { maxRounds: opts.maxRounds });
@@ -8330,8 +8281,15 @@ function createAgentRuntime(deps) {
     if (execution?.error) throw execution.error;
     const result = execution?.result || null;
     const mapped = result?.browserResult || null;
-    if (mapped?.error === "agent_model_unavailable") {
-      throw new browserAgent.AgentModelUnavailableError(mapped.detail || "");
+    if (mapped?.error === "agent_model_unavailable" || result?.reason === "agent_model_unavailable") {
+      return {
+        ok: false,
+        error: "agent_model_unavailable",
+        answer:
+          "I couldn't reach the browser agent right now — try again in a moment.",
+        history: mapped?.history || [],
+        url: mapped?.url || agent.url || "",
+      };
     }
     if (execution?.task?.status === "cancelled" || result?.status === "cancelled") {
       return {
@@ -8384,40 +8342,8 @@ function createAgentRuntime(deps) {
       skill: "browse",
     });
     sendToAgentChannels(agent.id, "lykn:agent-status", { status: "Working on this page…" });
-    // The legacy sign-in pre-gate scrapes whatever page the tab happens to be
-    // on BEFORE the task runs — and a marketing homepage always carries "Log
-    // in" / "Sign up" links, so it parked signed-in tasks on a heuristic
-    // ("go to mailchimp.com and…" died on mailchimp.com's own front page while
-    // the admin session was live underneath). The modular runtime needs none
-    // of it: it navigates itself, its verifier detects real sign-in walls by
-    // where they actually are, and its hand-over waits and resumes on its own.
-    // The gate now runs only for the path it was written for — the legacy
-    // adaptive loop.
-    const useLegacyBrowseLoop =
-      String(process.env.LYKN_BROWSER_AGENT || "").trim().toLowerCase() === "legacy";
-    const legacySignInGate = async () => {
-      const pause = await pauseForUserSignIn(agent, gen, wc, {
-        context: "working on this page",
-      });
-      if (pause.blocked && !pause.cleared) {
-        return opts.returnRaw
-          ? {
-              ok: false,
-              stuck: true,
-              error: "sign_in_required",
-              answer: pause.message || "Sign-in needed.",
-              url: agent.url,
-            }
-          : pause.message || "";
-      }
-      return null;
-    };
     for (let attempt = 0; attempt < 3; attempt += 1) {
       if (gen !== agent.generation) return opts.returnRaw ? { ok: false, error: "aborted" } : "";
-      if (useLegacyBrowseLoop) {
-        const gated = await legacySignInGate();
-        if (gated !== null) return gated;
-      }
 
       emitProgress(agent.id, {
         status: "running",
@@ -8427,109 +8353,19 @@ function createAgentRuntime(deps) {
       });
       sendToAgentChannels(agent.id, "lykn:agent-status", { status: "Clicking around…" });
 
-      // Modular runtime first (plan/decide/verify with structured state);
-      // legacy monolithic loop only on explicit opt-out or when the server
-      // does not expose the agent-model endpoint yet.
-      result = null;
-      if (!useLegacyBrowseLoop) {
-        // The canonical path: this browse executes its Task through the
-        // BrowserExecutor under TaskRuntime. A transient upstream blip is
-        // retried INSIDE that execution (the Task stays running and the
-        // engine never swaps); only a structural failure — the agent-model
-        // endpoint missing entirely — surfaces here as unavailability.
-        try {
-          result = await runBrowserTaskViaExecutor(agent, browseGoal, gen, wc, {
-            convHistory,
-            maxRounds,
-            // Run the whole task through, but never deliver anything to
-            // other people without a yes: the agent prepares the send and
-            // confirms, wherever it is working. Only a reply that approves
-            // the send it just prepared skips the second ask.
-            sendPolicy: looksLikeSendApprovalFollowUp(text) ? "approved" : "auto",
-            userAsk: text,
-          });
-        } catch (e) {
-          if (!(e instanceof browserAgent.AgentModelUnavailableError)) throw e;
-          // Falling back is right — the user's task should still run — but it
-          // used to happen in total silence, which made a version-skewed
-          // deploy (app shipped ahead of the server route) indistinguishable
-          // from a healthy one. Record it so it is answerable after the fact.
-          diagnostics.recordRuntimeFallback({
-            userDataPath,
-            surface: "browse",
-            reason: e?.message,
-            appVersion: getAppVersion(),
-          });
-          result = null; // graceful fallback to the legacy loop below
-        }
-      }
-
-      // The modular engine could not run (opt-out, or a structural failure
-      // above) — the legacy loop is about to drive, so it gets the sign-in
-      // pre-check it was built around.
-      if (!result && !useLegacyBrowseLoop) {
-        const gated = await legacySignInGate();
-        if (gated !== null) return gated;
-      }
-      if (!result) result = await ownedBrowserAct.executeOwnedAdaptiveTask({
-        webContents: wc,
-        goal: browseGoal,
-        conversationHistory: convHistory,
-        signal: agent.abort?.signal,
+      // Canonical path: TaskRuntime -> BrowserExecutor -> browser-agent.
+      // A transient upstream blip is retried inside that execution (the Task
+      // stays running and the engine never swaps). Structural model-endpoint
+      // unavailability fails the Task; there is no second browser engine.
+      result = await runBrowserTaskViaExecutor(agent, browseGoal, gen, wc, {
+        convHistory,
         maxRounds,
-        onProgress: (p) => {
-          if (gen !== agent.generation) return;
-          const status =
-            humanizeBrowseStatus(p.status) || "Working on the page…";
-          agent.step = status;
-          if (Array.isArray(p.history)) agent.lastAdaptiveHistory = p.history;
-          emitProgress(agent.id, {
-            status: "running",
-            step: status,
-            url: p.url || wc.getURL(),
-            skill: "browse",
-          });
-          sendToAgentChannels(agent.id, "lykn:agent-status", { status });
-          sendToAgentChannels(agent.id, "lykn:agent-browser", {
-            url: p.url || wc.getURL(),
-            title: wc.getTitle?.() || "",
-          });
-          narrateBrowseProgress(agent, status, {
-            url: p.url || wc.getURL?.() || agent.url || "",
-            history: Array.isArray(p.history)
-              ? p.history
-              : agent.lastAdaptiveHistory || [],
-          });
-        },
-        planNext: async (ctx) => {
-          // Fresh screenshot each round: lets the planner SEE the page and use
-          // click_coord on icons/canvases/iframe content the DOM catalog misses.
-          let imageUrl = "";
-          for (let shotTry = 0; shotTry < 2 && !imageUrl; shotTry += 1) {
-            try {
-              imageUrl =
-                (await ownedBrowserAct.screenshotDataUrl(wc, {
-                  maxWidth: 1200,
-                  jpegQuality: 70,
-                })) || "";
-            } catch {
-              /* screenshot is best-effort */
-            }
-            if (!imageUrl) {
-              await new Promise((r) => setTimeout(r, 250));
-            }
-          }
-          if (!imageUrl) {
-            sendToAgentChannels(agent.id, "lykn:agent-status", {
-              status: "Re-reading screen…",
-            });
-          }
-          return planOwnedBrowserNext({
-            ...ctx,
-            imageUrl,
-            conversationHistory: ctx.conversationHistory || convHistory,
-          });
-        },
+        // Run the whole task through, but never deliver anything to
+        // other people without a yes: the agent prepares the send and
+        // confirms, wherever it is working. Only a reply that approves
+        // the send it just prepared skips the second ask.
+        sendPolicy: looksLikeSendApprovalFollowUp(text) ? "approved" : "auto",
+        userAsk: text,
       });
 
       agent.url = result.url || wc.getURL() || agent.url;
@@ -8539,8 +8375,14 @@ function createAgentRuntime(deps) {
       if (!result.ok && result.error === "aborted") {
         return opts.returnRaw ? result : "";
       }
+      if (!result.ok && result.error === "agent_model_unavailable") {
+        if (opts.returnRaw) return result;
+        return String(
+          result.answer ||
+            "I couldn't reach the browser agent right now — try again in a moment.",
+        );
+      }
       if (!result.ok && result.error === "sign_in_required") {
-        // Loop: pauseForUserSignIn at the top of the next attempt.
         continue;
       }
       if (!result.ok) throw new Error(result.error || "Browse failed");
@@ -8604,9 +8446,9 @@ function createAgentRuntime(deps) {
       }
       const asked = String(result?.answer || "").trim();
       // A yes/no belongs on buttons. Some paths still surface a permission
-      // ask here (a legacy loop, or a model that phrased one as a question),
-      // and a text box is the wrong shape for it — the user types "yes" and
-      // that answer has to be re-interpreted as an instruction.
+      // ask here (a model that phrased one as a question), and a text box is
+      // the wrong shape for it — the user types "yes" and that answer has to
+      // be re-interpreted as an instruction.
       //
       // Except a recipient ask: "Who should I send this to?" carries both
       // "should I" and "send", but its only real answer is a typed name — on
@@ -9201,40 +9043,11 @@ function createAgentRuntime(deps) {
   }
 
   async function runMailCompose(agent, text, gen, wc, opts = {}) {
-    // Email compose/reply/revision runs through the modular browser agent
+    // Email compose/reply/revision runs through TaskRuntime -> BrowserExecutor
     // (communication skill, editing rules, send-approval gate, deterministic
-    // attach). The old compose-deep-link + selector pipeline is gone. If the
-    // server lacks the agent-model endpoint, or legacy mode is forced, fall
-    // back to the generic adaptive browse loop (which has its own legacy
-    // fallback built in).
-    const forceLegacy =
-      String(process.env.LYKN_BROWSER_AGENT || "").trim().toLowerCase() === "legacy";
-    if (!forceLegacy) {
-      // Same policy as the browse surface: a transient upstream blip gets one
-      // modular retry after a short wait, so a rate limit doesn't swap a
-      // compose mid-flight onto an engine with different send-approval
-      // behavior. Structural failures still fall back.
-      for (let modularTry = 0; modularTry < 2; modularTry += 1) {
-        try {
-          return await runMailComposeModular(agent, text, gen, wc, opts);
-        } catch (e) {
-          if (!(e instanceof browserAgent.AgentModelUnavailableError)) throw e;
-          const transient = /\((?:408|429|500|502|503|504)\)/.test(String(e?.message || ""));
-          if (transient && modularTry === 0 && !agent.abort?.signal?.aborted && gen === agent.generation) {
-            await new Promise((r) => setTimeout(r, 4000));
-            continue;
-          }
-          diagnostics.recordRuntimeFallback({
-            userDataPath,
-            surface: "mail",
-            reason: e?.message,
-            appVersion: getAppVersion(),
-          });
-          break;
-        }
-      }
-    }
-    return runAdaptiveBrowse(agent, text, gen, wc, { maxRounds: 18 });
+    // attach). Transient retries live inside that execution. There is no
+    // second compose engine.
+    return runMailComposeModular(agent, text, gen, wc, opts);
   }
 
   function isGmailThreadUrl(url) {
@@ -11293,15 +11106,7 @@ function createAgentRuntime(deps) {
         }
         canonicalTask = taskRuntime.createBotTask({
           objective: String(request.objective || botAskCore(q) || q).trim(),
-          capabilities: [
-            "reply",
-            "research_report",
-            "edit_report",
-            "build_artifact",
-            "generate_image",
-            ...(localModeEnabled() ? ["local_computer"] : []),
-            "browser",
-          ],
+          capabilities: defaultBotCapabilities({ localMode: localModeEnabled() }),
           bot: { ...agent.botProfile, ...(bot || {}) },
           botId: request.botId || bot?.id || agent.botProfile.id,
           botTaskId,
@@ -12788,34 +12593,9 @@ function createAgentRuntime(deps) {
           : [];
       agent.lastSuggestions = finishSuggestions;
 
-      // BotExecutor and BrowserExecutor settle the Task before this host
-      // formatting layer, so a Task still open here means the turn finished
-      // on a path outside the runtime (a chat answer to a parked question,
-      // or the legacy browse engine). Record that result against the same
-      // Task id rather than leaving it dangling.
-      const runtimeTask = taskRuntime.get(agent.activeTaskId);
-      if (agent.headless && runtimeTask && !isTerminalTaskStatus(runtimeTask.status)) {
-        if (
-          waitingUser ||
-          waitingChoice ||
-          runtimeTask.status === "waiting_for_user" ||
-          runtimeTask.status === "waiting_for_approval"
-        ) {
-          if (runtimeTask.status !== "waiting_for_approval" && runtimeTask.status !== "waiting_for_user") {
-            taskRuntime.waitForUser(runtimeTask.id, {
-              question: String(agent.waitingUserAction || doneText || ""),
-            });
-          }
-        } else {
-          taskRuntime.complete(runtimeTask.id, {
-            executor:
-              lastSkill === "browse" || lastSkill === "browse-summary"
-                ? "browser_legacy_fallback"
-                : "bot",
-            output: String(doneText || answer || ""),
-          });
-        }
-      }
+      // TaskRuntime already owns terminal state from execute(). This host
+      // tail formats Glass output and projects UI events. It must not
+      // independently complete, fail, or convert a waiting Task into success.
 
       if (answer) {
         agent.history.push({

@@ -5,16 +5,11 @@
  *
  * RECORDING A FALLBACK
  * --------------------
- * The browser agent has two implementations: the modular runtime (plan → decide
- * → act → observe → verify) and the legacy monolithic loop it replaced. When
- * the server does not answer the modular runtime's model endpoint, the client
- * raises AgentModelUnavailableError and the caller quietly drops to the legacy
- * loop. That fallback is correct — a task the user asked for should still run —
- * but it was completely silent: no log, no event, no difference the user or we
- * could see. A version-skewed deploy, where the desktop app ships before the
- * server route exists, would therefore look exactly like a successful rollout
- * while not one user was running the new code. `recordRuntimeFallback` is what
- * makes that visible.
+ * Older desktop builds could drop from the modular browser-agent runtime to a
+ * second browse engine when `/api/desktop/agent-model` was missing.
+ * That second engine is retired. `recordRuntimeFallback` remains so existing
+ * on-disk records and tests can still be read; production execution no longer
+ * calls it as an engine swap.
  *
  * BUILDING A REPORT
  * -----------------
@@ -103,7 +98,7 @@ function recordRuntimeFallback({ userDataPath, surface, reason, appVersion = "" 
   fallbacksThisSession += 1;
   // Visible in `npm run dev:overlay`, where the console is actually read.
   console.warn(
-    `[browser-agent] modular runtime unavailable (${surface}) — running the legacy loop instead: ${String(
+    `[browser-agent] agent-model unavailable (${surface}): ${String(
       reason || "",
     ).slice(0, 200)}`,
   );
@@ -247,8 +242,8 @@ function buildDiagnosticsReport({ userDataPath, env = {} } = {}) {
       );
     }
     out("");
-    out("  A fallback means the modular runtime could not reach the server's");
-    out("  agent-model endpoint and the task ran on the legacy loop instead.");
+    out("  These records are historical. Current builds fail the Task when the");
+    out("  agent-model endpoint is missing; they do not swap to a second engine.");
     out("  A status of 404 usually means the app is newer than the server.");
   }
   out("");

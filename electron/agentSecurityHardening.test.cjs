@@ -49,7 +49,6 @@ function runtimeForChoiceTests() {
     hideAllBrowserWindows: () => {},
     browserWindowExists: () => false,
     getBrowserWebContents: () => null,
-    planOwnedBrowserNext: async () => ({}),
     isContentProtectionEnabled: () => false,
     openStageArtifact: () => {},
     destroyOwnedArtifactTabs: () => {},

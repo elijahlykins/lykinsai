@@ -138,6 +138,40 @@ test("executor failure and budget exhaustion become failed terminal Tasks", asyn
   assert.match(exhaustedOut.task.completion.reason, /round_budget_exhausted/);
 });
 
+test("a waiting Task stays waiting until execute resumes it", async () => {
+  const { runtime } = runtimeWithEvents();
+  const task = runtime.createBotTask(botInput());
+  const first = await runtime.execute(task.id, async () => ({
+    status: "waiting_for_user",
+    question: "Which inbox?",
+  }));
+  assert.equal(first.task.status, TASK_STATUSES.WAITING_FOR_USER);
+  assert.equal(runtime.get(task.id).status, TASK_STATUSES.WAITING_FOR_USER);
+});
+
+test("late complete() cannot turn a failed Task into a success", async () => {
+  const { runtime } = runtimeWithEvents();
+  const task = runtime.createBotTask(botInput());
+  await runtime.execute(task.id, async () => ({
+    ok: false,
+    status: "failed",
+    reason: "browser_task_incomplete",
+    output: "I couldn't complete this task.",
+  }));
+  const late = runtime.complete(task.id, { output: "late success" });
+  assert.equal(late.ignored, true);
+  assert.equal(runtime.get(task.id).status, TASK_STATUSES.FAILED);
+});
+
+test("late complete() cannot turn a cancelled Task into a success", async () => {
+  const { runtime } = runtimeWithEvents();
+  const task = runtime.createBotTask(botInput());
+  runtime.cancel(task.id, "user_stop");
+  const late = runtime.complete(task.id, { output: "late success" });
+  assert.equal(late.ignored, true);
+  assert.equal(runtime.get(task.id).status, TASK_STATUSES.CANCELLED);
+});
+
 test("events are attributable to the exact renderer BotTask", async () => {
   const { runtime, events } = runtimeWithEvents();
   const a = runtime.createBotTask(botInput({ botTaskId: "ui-a" }));
