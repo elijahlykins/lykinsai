@@ -108,6 +108,7 @@
     "eval:m2w:report": "node scripts/eval/report-mind2web.mjs"
   },
   "dependencies": {
+    "@apple/app-store-server-library": "^3.1.0",
     "@babel/parser": "^7.29.8",
     "@base44/sdk": "^0.8.3",
     "@base44/vite-plugin": "^0.2.5",

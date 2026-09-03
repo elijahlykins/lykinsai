@@ -42,6 +42,7 @@ export function registerBillingRoutes(app, deps) {
     appUrlFromReq,
     billingMePayload,
     hasSubscriptionAccess,
+    channelConflict,
     hasEstablishedStripeCustomer,
     resolveUserPlan,
     buildStripeCheckoutIdentity,
@@ -119,6 +120,41 @@ export function registerBillingRoutes(app, deps) {
     }
   });
 
+  // ── /api/billing/iap-eligibility ────────────────────────────────────────────
+  // The Apple-side half of the one-channel rule. The iOS app calls this BEFORE
+  // presenting the StoreKit purchase sheet: once Apple has taken the money the
+  // only remedies are a refund or a double-billed user, so the block has to
+  // happen before the sheet, not after the transaction.
+  //
+  // Deliberately a plain GET with no side effects — it is safe to call on every
+  // presentation of the upgrade sheet.
+  app.get('/api/billing/iap-eligibility', requireAuth, async (req, res) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+
+      // Comped accounts have no subscription to conflict with, but also nothing
+      // to sell — report ineligible so the app doesn't offer a pointless purchase.
+      if (isCompedProEmail(req.user?.email)) {
+        return res.json({
+          eligible: false,
+          reason: 'comped_account',
+          message: 'Your account already has full access.',
+        });
+      }
+
+      const row = await loadBillingRow(userId);
+      const conflict = channelConflict(row, 'apple');
+      if (conflict) {
+        return res.json({ eligible: false, reason: conflict.code, message: conflict.message });
+      }
+      return res.json({ eligible: true, reason: null, message: null });
+    } catch (err) {
+      console.error('❌ /api/billing/iap-eligibility error:', err);
+      return res.status(500).json({ error: 'Failed to check eligibility' });
+    }
+  });
+
   // ── /api/billing/checkout (subscription) ────────────────────────────────────
   // SECURITY (Agent 04): Zod-narrow planId + period to the declared sets BEFORE
   // the handler runs. PLAN_IDS / BILLING_PERIODS are still consulted below as
@@ -156,6 +192,19 @@ export function registerBillingRoutes(app, deps) {
       }
 
       const row = await loadBillingRow(user.id);
+
+      // Cross-channel guard FIRST. An App Store subscriber also trips the
+      // already_subscribed branch below, but that reply tells them to open the
+      // Stripe billing portal — which cannot manage an Apple subscription and
+      // would strand them. Answer with the channel-correct instruction instead.
+      const conflict = channelConflict(row, 'stripe');
+      if (conflict) {
+        return res.status(409).json({
+          error: conflict.code,
+          use_portal: false,
+          message: conflict.message,
+        });
+      }
 
       // A user with a live subscription must change plans through the Stripe
       // billing portal (prorated update on the EXISTING subscription). Letting
@@ -402,6 +451,13 @@ export function registerBillingRoutes(app, deps) {
       }
 
       const row = await loadBillingRow(user.id);
+      const trialConflict = channelConflict(row, 'stripe');
+      if (trialConflict) {
+        return res.status(409).json({
+          error: trialConflict.code,
+          message: trialConflict.message,
+        });
+      }
       if (hasSubscriptionAccess(row)) {
         return res.status(400).json({ error: 'already_subscribed' });
       }

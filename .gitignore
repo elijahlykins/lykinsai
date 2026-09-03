@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 
+# Apple signing keys must never be committed.
+*.p8
+
 # esbuild scratch/dump files
 .esb.txt
 .esbuild-check.txt

@@ -327,11 +327,13 @@ import {
   hasEstablishedStripeCustomer,
   requireAppAccess,
   billingMePayload,
+  channelConflict,
   rejectIneligibleStudentCheckout,
   buildStripeCheckoutIdentity,
   handleStripeEvent,
   availableCreditPacks,
 } from './server/services/billingService.js';
+import { registerAppleNotificationRoutes } from './server/routes/appleNotifications.routes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -1645,6 +1647,7 @@ registerBillingRoutes(app, {
   appUrlFromReq,
   billingMePayload,
   hasSubscriptionAccess,
+  channelConflict,
   hasAppAccessRow,
   hasEstablishedStripeCustomer,
   resolveUserPlan,
@@ -1662,6 +1665,12 @@ registerBillingRoutes(app, {
   STRIPE_TRIAL_DAYS,
   trialCheckoutCustomText,
 });
+
+// App Store Server Notifications V2 — Apple's Stripe-webhook analogue. Unlike
+// Stripe it does not need the raw body (the signature travels as a JWS string
+// inside ordinary JSON), so it registers here with the JSON-parsed routes. It
+// shares the webhook perimeter limiter because it is an unauthenticated POST.
+registerAppleNotificationRoutes(app, { webhookLimiter: stripeWebhookLimiter });
 
 // ============================================
 // RSS / ATOM FEEDS — extracted to server/routes/feeds.routes.js (Wave 1)
