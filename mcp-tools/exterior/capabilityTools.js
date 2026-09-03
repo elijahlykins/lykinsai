@@ -17,13 +17,21 @@ import { translateText } from '../../lib/exterior/capabilities/translate.js';
 import { httpRequest } from '../../lib/exterior/capabilities/httpRequest.js';
 import { capabilityCtx } from '../../lib/exterior/capabilityStorage.js';
 import { logAiUsage } from '../../usageTracking.js';
+import { authorizeImageUsage } from '../../lib/billing/usageBalance.js';
 import { jsonContent, errorContent } from '../index.js';
 
 function withCtx(fn) {
   return async (args = {}, ctx = {}) => {
-    const c = capabilityCtx({ ...ctx, logUsage: (info) => logAiUsage(info) });
+    const c = capabilityCtx({
+      ...ctx,
+      logUsage: (info) => logAiUsage(info),
+      authorizeUsage: ({ actionType } = {}) => authorizeImageUsage(ctx.userId, ctx.planId, actionType || 'image_gen'),
+    });
     const result = await fn(args, c);
     if (result?.ok === false && result.error) {
+      if (result.error === 'insufficient_usage_balance') {
+        return errorContent(result.message || 'Add funds to continue with this action.');
+      }
       // Surface `hint` so scope-guard / edit retries actually see the recovery
       // instructions (edits path vs full_rewrite) instead of just the error code.
       const hint = typeof result.hint === 'string' && result.hint.trim()

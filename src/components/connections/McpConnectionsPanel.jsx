@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useLocation } from "react-router-dom";
-import { Loader2, Plug, RefreshCw, Unplug, Pencil, Search } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Loader2, Plug, RefreshCw, Unplug, Pencil } from "lucide-react";
 import { mcpFetch, openMcpOAuth } from "@/lib/mcp/mcpApi";
 import McpTrustBadge from "@/components/connections/McpTrustBadge";
 
@@ -15,40 +14,21 @@ function statusLabel(status) {
   return "Disconnected";
 }
 
-const CATEGORIES = [
-  { id: "", label: "All" },
-  { id: "communication", label: "Communication" },
-  { id: "documents", label: "Documents" },
-  { id: "productivity", label: "Productivity" },
-  { id: "development", label: "Development" },
-  { id: "crm", label: "CRM" },
-  { id: "calendar", label: "Calendar" },
-  { id: "finance", label: "Finance" },
-];
-
+/**
+ * MCP servers card: connect any MCP server by URL. Discovery for mainstream
+ * apps lives in the managed Apps directory above — this card is the open
+ * escape hatch. The URL is enforced server-side by lib/mcp/urlPolicy.js:
+ * HTTPS-only for remote servers, SSRF guard against private/metadata
+ * addresses, loopback only behind the explicit local-trusted opt-in, and
+ * every redirect hop re-validated.
+ */
 export default function McpConnectionsPanel({ user, embedded = false }) {
-  const location = useLocation();
-  const preset = useMemo(() => {
-    const params = new URLSearchParams(location.search || "");
-    return {
-      search: params.get("q") || "",
-      catalogId: params.get("catalog") || "",
-    };
-  }, [location.search]);
-
   const [connections, setConnections] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [query, setQuery] = useState(preset.search);
-  const [category, setCategory] = useState("");
-  const [results, setResults] = useState([]);
-  const [searching, setSearching] = useState(false);
-  const [mode, setMode] = useState("discover");
   const [url, setUrl] = useState("");
   const [name, setName] = useState("");
   const [token, setToken] = useState("");
   const [localTrusted, setLocalTrusted] = useState(false);
-  const [commandLine, setCommandLine] = useState("");
-  const [confirmInstall, setConfirmInstall] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [renaming, setRenaming] = useState(null);
@@ -85,69 +65,6 @@ export default function McpConnectionsPanel({ user, embedded = false }) {
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, [refresh]);
-
-  useEffect(() => {
-    if (preset.search) setQuery(preset.search);
-  }, [preset.search]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const run = async () => {
-      setSearching(true);
-      try {
-        const params = new URLSearchParams();
-        if (query.trim()) params.set("q", query.trim());
-        if (category) params.set("category", category);
-        const res = await mcpFetch(`/api/mcp/catalog?${params.toString()}`);
-        const data = await res.json().catch(() => ({}));
-        if (!cancelled) setResults(Array.isArray(data.entries) ? data.entries : []);
-      } catch {
-        if (!cancelled) setResults([]);
-      } finally {
-        if (!cancelled) setSearching(false);
-      }
-    };
-    const timer = setTimeout(run, query.trim() ? 180 : 0);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [query, category]);
-
-  const connectCatalog = async (entry) => {
-    if (!entry.remoteUrlTemplate) {
-      setQuery(entry.name);
-      setMode("discover");
-      setError(`No hosted URL for ${entry.name} yet. Search for a community server, or add an MCP URL.`);
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      const res = await mcpFetch("/api/mcp/connections", {
-        method: "POST",
-        body: JSON.stringify({
-          name: entry.name,
-          serverUrl: entry.remoteUrlTemplate,
-          trustLevel: entry.trust,
-          catalogId: entry.id,
-          catalogSource: entry.source,
-          providedThrough: entry.providedThrough,
-          accountLabel: entry.name,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (data.authorizationUrl) openMcpOAuth(data.authorizationUrl);
-      else if (!res.ok || data.ok === false) {
-        setError(data.message || data.error || "Could not connect");
-      }
-      await refresh();
-    } catch {
-      setError("Could not connect");
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const addUrl = async (event) => {
     event.preventDefault();
@@ -190,39 +107,6 @@ export default function McpConnectionsPanel({ user, embedded = false }) {
     }
   };
 
-  const addLocal = async (event) => {
-    event.preventDefault();
-    if (!commandLine.trim() || !confirmInstall) return;
-    setBusy(true);
-    setError("");
-    try {
-      const res = await mcpFetch("/api/mcp/connections", {
-        method: "POST",
-        body: JSON.stringify({
-          name: name.trim() || undefined,
-          transport: "stdio",
-          commandLine: commandLine.trim(),
-          confirmInstall: true,
-          trustLevel: "local_trusted",
-          accountLabel: name.trim() || undefined,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data.ok === false) {
-        setError(data.message || data.error || "Could not start local MCP");
-      } else {
-        setCommandLine("");
-        setName("");
-        setConfirmInstall(false);
-      }
-      await refresh();
-    } catch {
-      setError("Could not start local MCP");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const act = async (id, path, method = "POST", body) => {
     setBusy(true);
     setError("");
@@ -260,183 +144,49 @@ export default function McpConnectionsPanel({ user, embedded = false }) {
           <div className="min-w-0">
             <h2 className="text-[13.5px] font-semibold text-black/85 dark:text-white/90 flex items-center gap-1.5">
               <Plug className="w-3.5 h-3.5" strokeWidth={1.75} />
-              Apps / MCP
+              MCP servers
             </h2>
             <p className="mt-0.5 text-[11.5px] leading-snug text-black/55 dark:text-white/55">
-              Search a service, add an MCP URL, or run a local MCP. Marketplace listings are discovery only - they do not sync into Vault.
+              Connect any MCP server by URL. Remote servers must use HTTPS on a public
+              address; sign-in happens through the server&apos;s own OAuth when it asks for it.
             </p>
           </div>
         </div>
 
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          {[
-            ["discover", "Discover"],
-            ["url", "Add MCP URL"],
-            ["local", "Add Local MCP"],
-          ].map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setMode(id)}
-              className={`h-7 rounded-full px-2.5 text-[11px] font-medium ${
-                mode === id
-                  ? "bg-black text-white dark:bg-white dark:text-black"
-                  : "border border-black/10 text-black/60 dark:border-white/15 dark:text-white/60"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {mode === "discover" && (
-          <div className="mt-3 space-y-2">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-black/35 dark:text-white/35" />
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search Gmail, Slack, GitHub…"
-                className="h-8 w-full rounded-md border border-black/10 bg-transparent pl-8 pr-2.5 text-[12.5px] outline-none focus:border-black/25 dark:border-white/10 dark:focus:border-white/25"
-              />
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {CATEGORIES.map((cat) => (
-                <button
-                  key={cat.id || "all"}
-                  type="button"
-                  onClick={() => setCategory(cat.id)}
-                  className={`h-6 rounded-full px-2 text-[10.5px] ${
-                    category === cat.id
-                      ? "bg-black/80 text-white dark:bg-white dark:text-black"
-                      : "text-black/45 dark:text-white/45"
-                  }`}
-                >
-                  {cat.label}
-                </button>
-              ))}
-            </div>
-            <div className="divide-y divide-black/[0.05] dark:divide-white/[0.07]">
-              {searching && (
-                <div className="py-2 text-[11.5px] text-black/45 dark:text-white/45 flex items-center gap-1.5">
-                  <Loader2 className="w-3 h-3 animate-spin" /> Searching
-                </div>
-              )}
-              {!searching && results.length === 0 && (
-                <p className="py-2 text-[11.5px] text-black/45 dark:text-white/45">
-                  No marketplace matches. Try Add MCP URL or Add Local MCP.
-                </p>
-              )}
-              {results.map((entry) => (
-                <div key={entry.id} className="py-2.5 flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[12.5px] font-medium text-black/85 dark:text-white/90 truncate">
-                        {entry.name}
-                      </span>
-                      <McpTrustBadge trust={entry.trust} />
-                    </div>
-                    <p className="mt-0.5 text-[11px] leading-snug text-black/50 dark:text-white/50 line-clamp-2">
-                      {entry.description}
-                    </p>
-                    {entry.providedThrough && (
-                      <p className="mt-0.5 text-[10.5px] text-black/40 dark:text-white/40">
-                        Provided through {entry.providedThrough}
-                      </p>
-                    )}
-                    {entry.source?.kind === "official_registry" && entry.trust === "community" && (
-                      <p className="mt-0.5 text-[10.5px] text-black/40 dark:text-white/40">
-                        Community listing. LYKN has not audited this server.
-                      </p>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    disabled={busy || !user}
-                    onClick={() => connectCatalog(entry)}
-                    className="h-7 shrink-0 rounded-md bg-black px-2 text-[11px] font-medium text-white disabled:opacity-50 dark:bg-white dark:text-black"
-                  >
-                    {entry.remoteUrlTemplate ? "Connect" : "Details"}
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {mode === "url" && (
-          <form onSubmit={addUrl} className="mt-3 grid gap-2">
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Label (e.g. Work Google)"
-              className="h-8 rounded-md border border-black/10 bg-transparent px-2.5 text-[12.5px] outline-none dark:border-white/10"
-            />
-            <input
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://mcp.example.com/mcp"
-              required
-              className="h-8 rounded-md border border-black/10 bg-transparent px-2.5 text-[12.5px] outline-none dark:border-white/10"
-            />
-            <input
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="Bearer token (optional)"
-              type="password"
-              autoComplete="off"
-              className="h-8 rounded-md border border-black/10 bg-transparent px-2.5 text-[12.5px] outline-none dark:border-white/10"
-            />
-            <label className="flex items-center gap-2 text-[11.5px] text-black/55 dark:text-white/55">
-              <input type="checkbox" checked={localTrusted} onChange={(e) => setLocalTrusted(e.target.checked)} />
-              Local trusted server (loopback only)
-            </label>
-            <button
-              type="submit"
-              disabled={busy || !user}
-              className="h-8 rounded-md bg-black text-[12px] font-medium text-white disabled:opacity-50 dark:bg-white dark:text-black"
-            >
-              {busy ? "Connecting…" : "Connect"}
-            </button>
-          </form>
-        )}
-
-        {mode === "local" && (
-          <form onSubmit={addLocal} className="mt-3 grid gap-2">
-            <p className="text-[11px] leading-snug text-black/50 dark:text-white/50">
-              This starts a program on this computer. LYKN stores command + args, never a raw shell string or environment secrets.
-            </p>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Label (e.g. Filesystem)"
-              className="h-8 rounded-md border border-black/10 bg-transparent px-2.5 text-[12.5px] outline-none dark:border-white/10"
-            />
-            <input
-              value={commandLine}
-              onChange={(e) => setCommandLine(e.target.value)}
-              placeholder="npx @modelcontextprotocol/server-everything"
-              required
-              className="h-8 rounded-md border border-black/10 bg-transparent px-2.5 text-[12.5px] outline-none dark:border-white/10"
-            />
-            <label className="flex items-start gap-2 text-[11.5px] text-black/55 dark:text-white/55">
-              <input
-                type="checkbox"
-                className="mt-0.5"
-                checked={confirmInstall}
-                onChange={(e) => setConfirmInstall(e.target.checked)}
-              />
-              I understand this may download and run local code.
-            </label>
-            <button
-              type="submit"
-              disabled={busy || !user || !confirmInstall}
-              className="h-8 rounded-md bg-black text-[12px] font-medium text-white disabled:opacity-50 dark:bg-white dark:text-black"
-            >
-              {busy ? "Starting…" : "Connect Local MCP"}
-            </button>
-          </form>
-        )}
+        <form onSubmit={addUrl} className="mt-3 grid gap-2">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Label (e.g. Work Google)"
+            className="h-8 rounded-md border border-black/10 bg-transparent px-2.5 text-[12.5px] outline-none dark:border-white/10"
+          />
+          <input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://mcp.example.com/mcp"
+            required
+            className="h-8 rounded-md border border-black/10 bg-transparent px-2.5 text-[12.5px] outline-none dark:border-white/10"
+          />
+          <input
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="Bearer token (optional)"
+            type="password"
+            autoComplete="off"
+            className="h-8 rounded-md border border-black/10 bg-transparent px-2.5 text-[12.5px] outline-none dark:border-white/10"
+          />
+          <label className="flex items-center gap-2 text-[11.5px] text-black/55 dark:text-white/55">
+            <input type="checkbox" checked={localTrusted} onChange={(e) => setLocalTrusted(e.target.checked)} />
+            Local trusted server (loopback only)
+          </label>
+          <button
+            type="submit"
+            disabled={busy || !user}
+            className="h-8 rounded-md bg-black text-[12px] font-medium text-white disabled:opacity-50 dark:bg-white dark:text-black"
+          >
+            {busy ? "Connecting…" : "Connect"}
+          </button>
+        </form>
 
         {error && <p className="mt-2 text-[11.5px] text-red-600 dark:text-red-400">{error}</p>}
 

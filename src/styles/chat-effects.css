@@ -139,7 +139,8 @@
   will-change: background-position;
 }
 
-.dark .lykn-chat-thinking-text {
+.dark .lykn-chat-thinking-text,
+.lykn-mark-inherit .lykn-chat-thinking-text {
   --lykn-chat-thinking-dim: rgba(255, 255, 255, 0.40);
   --lykn-chat-thinking-bright: rgba(255, 255, 255, 0.90);
 }

@@ -307,7 +307,7 @@ const MessageActions: React.FC<{ enter: number }> = ({ enter }) => {
   );
 };
 
-/** Suggestions strip above the composer — same pattern as StudioFollowUpSuggestions. */
+/** Suggestions strip above the composer — same pattern as StudioComposerStrip. */
 const SuggestionsStrip: React.FC<{ enter: number }> = ({ enter }) => (
   <div
     style={{

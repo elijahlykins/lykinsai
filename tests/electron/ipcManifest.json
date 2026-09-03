@@ -1,8 +1,8 @@
 {
   "generatedBy": "tests/electron/ipcSurface.cjs",
-  "channelCount": 245,
-  "uniqueChannelCount": 245,
-  "handleCount": 184,
+  "channelCount": 253,
+  "uniqueChannelCount": 253,
+  "handleCount": 192,
   "onCount": 61,
   "duplicateCount": 0,
   "entries": [
@@ -293,6 +293,21 @@
     },
     {
       "mode": "handle",
+      "channel": "lykn:auth-clear-desktop-session",
+      "file": "auth/desktopAuth.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:auth-persist-session",
+      "file": "auth/desktopAuth.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:auth-remembered-session",
+      "file": "auth/desktopAuth.cjs"
+    },
+    {
+      "mode": "handle",
       "channel": "lykn:background-clear",
       "file": "ipc/welcome.cjs"
     },
@@ -345,6 +360,11 @@
       "mode": "handle",
       "channel": "lykn:browser-plan",
       "file": "ipc/overlayAi.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:browser-tab-page-context",
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
@@ -998,6 +1018,11 @@
     },
     {
       "mode": "handle",
+      "channel": "lykn:studio-bind-tab-chat",
+      "file": "ipc/agentBridge.cjs"
+    },
+    {
+      "mode": "handle",
       "channel": "lykn:studio-browser-close",
       "file": "ipc/agentBridge.cjs"
     },
@@ -1009,6 +1034,11 @@
     {
       "mode": "on",
       "channel": "lykn:studio-browser-warm",
+      "file": "ipc/agentBridge.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:studio-clear-tab-chats",
       "file": "ipc/agentBridge.cjs"
     },
     {
@@ -1085,6 +1115,16 @@
       "mode": "handle",
       "channel": "lykn:transcribe",
       "file": "ipc/overlayAi.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:update-install",
+      "file": "updater/autoUpdate.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:update-status",
+      "file": "updater/autoUpdate.cjs"
     },
     {
       "mode": "handle",

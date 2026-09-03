@@ -30,6 +30,11 @@ const { createScheduler } = require("./scheduler.cjs");
 const { createMonitorRuntime } = require("./monitors.cjs");
 const { createNotificationService } = require("./notificationService.cjs");
 const { compileRoutineCapabilities, resolveRoutineSpec } = require("./nlRoutine.cjs");
+const {
+  looksLikeInboxWatch,
+  watchedAccountFromInstructions,
+  bindInboxInstructions,
+} = require("./inboxWatch.cjs");
 const { describeTrigger, isMonitorTrigger } = require("./triggers.cjs");
 const { describeBrowserTarget, describeBrowserCondition } = require("./browserObservation.cjs");
 const { describeScreenTarget, describeScreenCondition } = require("./screenObservation.cjs");
@@ -86,14 +91,22 @@ function createRoutineRuntime({
     const active = activeRuns.get(routine.id);
     const running = Boolean(active && (active.taskId || !routine.trigger?.notifyOnly));
     const capacityBlocked = monitor.status === "capacity_reached";
+    const inboxWatch = looksLikeInboxWatch(routine.instructions);
     const watching =
       routine.enabled === true &&
-      isMonitorTrigger(routine.trigger) &&
+      (isMonitorTrigger(routine.trigger) || inboxWatch) &&
       !running &&
       !capacityBlocked;
     let watchingTarget = "";
     let watchingCondition = "";
-    if (routine.trigger?.type === "browser") {
+    if (inboxWatch) {
+      watchingTarget =
+        watchedAccountFromInstructions(routine.instructions) ||
+        (Array.isArray(routine.connectionIds) && routine.connectionIds.length
+          ? "connected inbox"
+          : "Gmail in the browser");
+      watchingCondition = "new messages";
+    } else if (routine.trigger?.type === "browser") {
       watchingTarget = describeBrowserTarget(routine.trigger);
       watchingCondition = describeBrowserCondition(routine.trigger);
     } else if (routine.trigger?.type === "screen") {
@@ -207,7 +220,11 @@ function createRoutineRuntime({
     const botName = routine.bot?.name || "Bot";
     // A monitor occurrence IS the change: policy on_change means "tell me
     // when the condition fires", which is exactly this notification.
-    const changed = triggerContext?.reason ? triggerContext.reason !== "manual" && routine.trigger?.type !== "schedule" : false;
+    const changed =
+      outcome?.changed === true ||
+      (triggerContext?.reason
+        ? triggerContext.reason !== "manual" && routine.trigger?.type !== "schedule"
+        : false);
 
     let result;
     if (waiting) {
@@ -340,12 +357,23 @@ function createRoutineRuntime({
    * Deterministic; returns { ok:false, error } when the trigger is ambiguous
    * so the Bot can ask instead of guessing.
    */
-  function createRoutineFromInstruction(instruction, { bot, botId, notificationPolicy, browserContext, windowContext } = {}) {
+  function createRoutineFromInstruction(instruction, { bot, botId, notificationPolicy, browserContext, windowContext, connectionIds, inboxIdentity } = {}) {
     const resolved = resolveRoutineSpec(instruction, { browserContext, windowContext });
     if (!resolved.ok) return resolved;
-    const spec = resolved.spec;
+    const spec = {
+      ...resolved.spec,
+      ...(connectionIds !== undefined ? { connectionIds } : {}),
+    };
+    if (inboxIdentity) {
+      spec.instructions = bindInboxInstructions(spec.instructions || String(instruction || "").trim(), {
+        accountLabel: inboxIdentity,
+        name: inboxIdentity,
+      });
+      if (!spec.name) spec.name = "Gmail new email alerts";
+    }
     try {
       const notifyOnly = spec.trigger?.notifyOnly === true;
+      const inboxWatch = looksLikeInboxWatch(spec.instructions || instruction);
       const routine = createRoutine({
         botId: botId || bot?.id,
         bot,
@@ -353,8 +381,11 @@ function createRoutineRuntime({
         instructions: spec.instructions || String(instruction || "").trim(),
         trigger: spec.trigger,
         capabilities: spec.capabilities,
+        connectionIds: spec.connectionIds,
         notificationPolicy:
-          spec.notificationPolicy || notificationPolicy || (notifyOnly ? "on_change" : undefined),
+          spec.notificationPolicy ||
+          notificationPolicy ||
+          (notifyOnly || inboxWatch ? "on_change" : undefined),
         concurrencyPolicy: spec.concurrencyPolicy,
       });
       return { ok: true, routine };

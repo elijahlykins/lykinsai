@@ -192,7 +192,7 @@ export default function InstalledAppsSettings() {
 
       {apps.length === 0 ? (
         <div className="rounded-xl border border-dashed border-black/12 p-6 text-center text-[13px] text-black/50 dark:border-white/15 dark:text-white/50">
-          No apps yet. Ask LYKN to build one in Build mode — say what you want, then choose
+          No apps yet. Ask LYKN to build one in Build mode: say what you want, then choose
           Install when it's ready.
         </div>
       ) : (

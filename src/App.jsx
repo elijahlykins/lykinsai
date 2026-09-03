@@ -9,9 +9,12 @@ import { API_BASE_URL } from '@/lib/api-config';
 import { hasAppAccess, isSubscriptionGateExempt } from '@/lib/billingAccess';
 import { canUseWebApp } from '@/lib/webAppAccess';
 import { BrowserRouter as Router, Route, Routes, useLocation, Navigate } from 'react-router-dom';
+import { legacySettingsRedirectPath } from '@/lib/settingsDeepLink';
 import PageNotFound from './lib/PageNotFound';
-import FreeCreditsNudge from '@/components/billing/FreeCreditsNudge';
+import UsageNudge from '@/components/billing/UsageNudge';
+import OutOfUsageCard from '@/components/billing/OutOfUsageCard';
 import LyknMediaPopHost from '@/components/lyknChat/LyknMediaPopHost';
+import { WrittenDocumentDriveSync } from '@/hooks/useWrittenDocumentDriveSync';
 import FileWindowHost from '@/components/files/FileWindowHost';
 import { SupabaseAuthProvider, useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
@@ -26,7 +29,6 @@ import ResetPassword from "./pages/ResetPassword";
 import StartTrial from "./pages/StartTrial";
 import GlassLanding from "./pages/GlassLanding";
 import LyknChat from "./pages/LyknChat";
-import Settings from "./pages/Settings";
 // LYKN Studio: the liquid-glass workspace (widget dashboard + embedded
 // product surfaces). Primary post-login shell; lazy so it doesn't weigh
 // down marketing / auth routes.
@@ -44,6 +46,7 @@ import {
 import { applyTheme, readSavedTheme } from "@/lib/theme";
 import ShareReceiver from "./pages/ShareReceiver";
 import Pricing from "./pages/Pricing";
+import Security from "./pages/Security";
 import DownloadLykn from "./pages/DownloadLykn";
 import CapabilityPage from "./pages/CapabilityPage";
 import News, { NewsArticle } from "./pages/News";
@@ -69,6 +72,11 @@ function DesktopProductOnly({ children }) {
     return <Navigate to="/download" replace />;
   }
   return children;
+}
+
+function SettingsToStudioRedirect() {
+  const location = useLocation();
+  return <Navigate to={legacySettingsRedirectPath(location.search, location.hash)} replace />;
 }
 
 // The desktop welcome walkthrough deliberately ends in a usable Studio
@@ -176,11 +184,12 @@ async function fetchBillingMeForGate() {
   return res.json();
 }
 
-// Every signed-in user must have passed trial checkout (card on file) before
-// using the app. Marketing/legal/auth routes are exempt; everyone else gets
-// bounced to the /start-trial plan picker until the server says they have
-// access. The server enforces the same rule on metered endpoints
-// (requireAppAccess), so this is UX, not the security boundary.
+// Legacy trial-checkout gate. Under usage-based billing every account gets in
+// with its $10 signup usage, and the server reports needs_trial_checkout=false
+// unconditionally — so this never redirects for current payloads. It stays as
+// a fail-closed backstop for cached/legacy responses. Metered endpoints are
+// enforced server-side (requireAppAccess + usage balance), which is the real
+// security boundary.
 function useSubscriptionGate() {
   const { user, loading: authLoading } = useAuth();
   const location = useLocation();
@@ -259,6 +268,7 @@ function AppShell() {
     location.pathname === "/landing" ||
     location.pathname === "/glass" ||
     location.pathname === "/pricing" ||
+    location.pathname === "/security" ||
     location.pathname === "/download" ||
     location.pathname === "/privacy" ||
     location.pathname === "/terms" ||
@@ -324,6 +334,7 @@ function AppShell() {
     location.pathname === "/landing" ||
     location.pathname === "/glass" ||
     location.pathname === "/pricing" ||
+    location.pathname === "/security" ||
     location.pathname === "/download" ||
     location.pathname === "/privacy" ||
     location.pathname === "/terms" ||
@@ -422,6 +433,7 @@ function AppShell() {
             <Route path="/billing/success" element={<BillingSuccess />} />
             <Route path="/billing/cancel" element={<BillingCancel />} />
             <Route path="/pricing" element={<Pricing />} />
+            <Route path="/security" element={<Security />} />
             <Route path="/download" element={<DownloadLykn />} />
             {/* Capability product pages: Chat / Build / Imagine / Voice /
                 Research / Browser / Drive / Glass. */}
@@ -429,7 +441,7 @@ function AppShell() {
             <Route path="/news" element={<News />} />
             <Route path="/news/:slug" element={<NewsArticle />} />
             <Route path="/templates" element={<Templates />} />
-            {/* LYKN Glass is now the primary landing page. "/glass" stays as an
+            {/* LYKN desktop is now the primary landing page. "/glass" stays as an
                 alias; "/" and "/landing" serve the same page so every home /
                 logo link lands on the Glass hero. */}
             <Route path="/glass" element={<GuestOnly><GlassLanding /></GuestOnly>} />
@@ -464,9 +476,7 @@ function AppShell() {
               path="/settings"
               element={
                 <ProtectedRoute>
-                  <LegacyProductToStudio>
-                    <Settings />
-                  </LegacyProductToStudio>
+                  <SettingsToStudioRedirect />
                 </ProtectedRoute>
               }
             />
@@ -585,9 +595,12 @@ function AppShell() {
           </Routes>
         </RouteErrorBoundary>
       </div>
-      {/* Free-plan upgrade nudge (90% of signup credits used). Skipped on
+      {/* Prepaid-account upgrade nudge (usage balance nearly spent). Skipped on
           embedded/glass surfaces where a floating card would cover the UI. */}
-      {!isEmbeddedRoute && !isGlassSurface && <FreeCreditsNudge />}
+      {!isEmbeddedRoute && !isGlassSurface && <UsageNudge />}
+      {/* Hard-stop card when a request fails on an empty usage balance. */}
+      {!isEmbeddedRoute && !isGlassSurface && <OutOfUsageCard />}
+      <WrittenDocumentDriveSync />
       {!isEmbeddedRoute && <LyknMediaPopHost />}
       {/* Only renders the file windows the Studio desktop didn't claim. */}
       {!isEmbeddedRoute && <FileWindowHost />}

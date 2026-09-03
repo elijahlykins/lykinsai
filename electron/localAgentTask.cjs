@@ -70,7 +70,7 @@ const DECISION_SCHEMA = decisionSchemaFor(null);
 const TOOL_LINES = {
   local_list_dir: "- local_list_dir { path } — list a folder (read-only).",
   local_read_file:
-    "- local_read_file { path } — read a file (read-only). Text files return as-is; documents — PDF, Word (docx/doc/rtf/odt), Excel (xlsx), PowerPoint (pptx) — are extracted to text, page by page or sheet by sheet.",
+    "- local_read_file { path } — read a file (read-only). Text files return as-is; documents — PDF, Word (docx/doc/rtf/odt), Excel (xlsx), PowerPoint (pptx) — are extracted to text, page by page or sheet by sheet; images (png/jpeg/gif/webp/heic) and screen recordings (mp4/mov/webm) are looked at with vision so you can see what is on screen. Do not ask the user to describe a screenshot you can read.",
   local_search_files:
     "- local_search_files { path, namePattern, query } — find files or folders by name, or files by text (read-only).",
   local_write_file: "- local_write_file { path, content } — create/overwrite a file (asks the user first).",
@@ -89,7 +89,15 @@ const TOOL_LINES = {
     "- local_open_path { path } — open a file in LYKN's preview pop, or a folder in the Vault Finder.",
 };
 
-function buildSystemPrompt(allowedTools) {
+const DELETE_COMMAND = /\b(rm|rmdir|unlink|shred|srm|trash)\b/i;
+const GIT_CLEAN_FORCE = /\bgit\s+clean\s+-[a-z]*f/i;
+
+function looksLikeDeleteCommand(command) {
+  const cmd = String(command || "");
+  return DELETE_COMMAND.test(cmd) || GIT_CLEAN_FORCE.test(cmd);
+}
+
+function buildSystemPrompt(allowedTools, { forbidDeletes = false } = {}) {
   const tools = TOOL_ENUM.filter((name) => !allowedTools || allowedTools.has(name));
   const lines = [
     "You are LYKN operating directly on the user's Mac in Local Mode.",
@@ -103,18 +111,39 @@ function buildSystemPrompt(allowedTools) {
     "- Paths may be absolute, start with ~, or be relative to the home folder.",
     "- File access is limited to the user's synced folders — check local_synced_folders if a path is refused.",
     "- Use local_open_path for files and folders. Never open Finder as a substitute for opening a path.",
+    "- When they name a folder without a path (\"my LYKN folder\"), search for that name with local_search_files, then list or read the match. Never ask them to open Finder or give you a path first.",
     "- When the goal is done, return kind=finish with a concise summary of what you did.",
     "- If you truly cannot proceed without the user, return kind=ask_user with a specific question.",
+    "- If they asked what is in a folder or file, finish with the listing. Do not ask which part they want.",
     "- Do not keep looking for extra work after the requested result is in hand.",
   ];
+  if (forbidDeletes) {
+    lines.push("- You cannot delete files. Never run rm, rmdir, unlink, trash, or git clean -f. Tell the user you cannot delete.");
+  }
   return lines.join("\n");
 }
 
 const SYSTEM_PROMPT = buildSystemPrompt(null);
 
+function collectImageUrls(result, into = []) {
+  if (!result || typeof result !== "object") return into;
+  const add = (url) => {
+    const u = String(url || "").trim();
+    if (u.startsWith("data:image/") && !into.includes(u)) into.push(u);
+  };
+  add(result.imageDataUrl);
+  if (Array.isArray(result.imageUrls)) result.imageUrls.forEach(add);
+  if (into.length > 6) into.splice(0, into.length - 6);
+  return into;
+}
+
 function summariseResult(result) {
   if (!result || typeof result !== "object") return String(result || "");
   const clone = { ...result };
+  // Pixel payloads belong on the next model call, not in the text history.
+  delete clone.imageDataUrl;
+  delete clone.imageUrls;
+  delete clone.dataBase64;
   // Trim large fields so the running history stays small.
   if (typeof clone.content === "string" && clone.content.length > 1500) {
     clone.content = clone.content.slice(0, 1500) + "\n…[truncated]";
@@ -166,9 +195,56 @@ function progressEventForTool(tool, args = {}, result = null) {
   return { event: "local.progress", tool };
 }
 
+const WELL_KNOWN_FOLDERS = Object.freeze({
+  downloads: "~/Downloads",
+  download: "~/Downloads",
+  documents: "~/Documents",
+  docs: "~/Documents",
+  desktop: "~/Desktop",
+  pictures: "~/Pictures",
+  photos: "~/Pictures",
+  movies: "~/Movies",
+  music: "~/Music",
+  home: "~",
+  applications: "/Applications",
+});
+
+const NAMED_FOLDER_SKIP = new Set([
+  "this",
+  "that",
+  "it",
+  "here",
+  "there",
+  "same",
+  "other",
+  "approved",
+  "synced",
+  "local",
+  "current",
+  "selected",
+  "attached",
+  "open",
+]);
+
+function extractNamedFolder(text) {
+  const m = String(text || "").match(
+    /\b(?:my|the|our)\s+([A-Za-z0-9][\w .'+-]{0,40}?)\s+folders?\b/i,
+  );
+  if (!m) return null;
+  const name = m[1].replace(/[.,;:]+$/, "").trim();
+  if (!name || NAMED_FOLDER_SKIP.has(name.toLowerCase())) return null;
+  return name;
+}
+
+function looksLikeFolderInspect(text) {
+  return /\b(list|ls|what's in|whats in|what is in|what.?s inside|whats inside|show (me )?the (folder|directory|contents)|read|check|look|see)\b/i.test(
+    text,
+  );
+}
+
 /**
- * An explicit path plus a read-only ask can skip the planner loop.
- * Returns null when the work is not obviously a single read/list.
+ * An explicit path or a named folder plus a read-only ask can skip the planner loop.
+ * Returns null when the work is not obviously a single read/list/search.
  */
 function tryDeterministicLocalAction(goal, allowedTools) {
   const text = String(goal || "").trim();
@@ -179,24 +255,42 @@ function tryDeterministicLocalAction(goal, allowedTools) {
     );
   if (writeish) return null;
   const pathMatch = text.match(/(~\/[^\s"'`]+|\/(?:Users|users|home)\/[^\s"'`]+)/);
-  if (!pathMatch) return null;
-  const target = pathMatch[1].replace(/[.,;:]+$/, "");
-  const looksLikeList =
-    /\b(list|ls|what's in|whats in|show (me )?the (folder|directory|contents))\b/i.test(text);
-  if (looksLikeList && allowedTools.has("local_list_dir")) {
-    return { tool: "local_list_dir", args: { path: target } };
+  if (pathMatch) {
+    const target = pathMatch[1].replace(/[.,;:]+$/, "");
+    const looksLikeList =
+      /\b(list|ls|what's in|whats in|show (me )?the (folder|directory|contents))\b/i.test(text);
+    if (looksLikeList && allowedTools.has("local_list_dir")) {
+      return { tool: "local_list_dir", args: { path: target } };
+    }
+    if (allowedTools.has("local_read_file")) {
+      return { tool: "local_read_file", args: { path: target } };
+    }
+    return null;
   }
-  if (allowedTools.has("local_read_file")) {
-    return { tool: "local_read_file", args: { path: target } };
+  const folderName = extractNamedFolder(text);
+  if (!folderName || !looksLikeFolderInspect(text)) return null;
+  const known = WELL_KNOWN_FOLDERS[folderName.toLowerCase()];
+  if (known && allowedTools.has("local_list_dir")) {
+    return { tool: "local_list_dir", args: { path: known } };
+  }
+  if (allowedTools.has("local_search_files")) {
+    return {
+      tool: "local_search_files",
+      args: { path: "~", namePattern: `*${folderName}*` },
+      thenList: true,
+    };
   }
   return null;
 }
 
-async function callModel({ apiBase, getAuthToken, fetchImpl, onUsage }, { system, user, schema, signal }) {
+async function callModel({ apiBase, getAuthToken, fetchImpl, onUsage }, { system, user, schema, signal, imageUrls }) {
   const doFetch = fetchImpl || fetch;
   const token = await getAuthToken?.().catch(() => null);
   if (!token) throw new Error("not signed in");
   const started = Date.now();
+  const images = Array.isArray(imageUrls)
+    ? imageUrls.filter((u) => String(u || "").startsWith("data:image/")).slice(0, 6)
+    : [];
   const res = await doFetch(`${apiBase}/api/desktop/agent-model`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -206,6 +300,7 @@ async function callModel({ apiBase, getAuthToken, fetchImpl, onUsage }, { system
       user,
       schema: schema || DECISION_SCHEMA,
       maxTokens: 900,
+      ...(images.length ? { imageUrls: images } : {}),
     }),
     signal,
   });
@@ -287,8 +382,12 @@ async function runLocalAgentTask({
   // commands, credentials, external pushes — classifyRisk's risky tier for
   // commands) still pause for live approval regardless of this flag.
   standingAuthorization = false,
+  // Bot agents may write and run commands after the same approval LYKN uses,
+  // but they must never delete files - even if the user would approve.
+  forbidDeletes = false,
 }) {
   const history = [];
+  const seenImages = [];
   const usage = emptyUsage();
   const aborted = () => signal?.aborted === true;
   const tools =
@@ -296,18 +395,9 @@ async function runLocalAgentTask({
       ? allowedTools
       : allowedToolNames(capabilities) || new Set(ALL_LOCAL_TOOLS);
   const schema = decisionSchemaFor(tools);
-  const system = buildSystemPrompt(tools);
+  const system = buildSystemPrompt(tools, { forbidDeletes });
   const executeTool = typeof runTool === "function" ? runTool : localSystem.run;
   const rounds = Math.max(1, Math.min(LOCAL_SAFETY_CEILING, Number(maxRounds) || DEFAULT_MAX_ROUNDS));
-  // Read-class tools ask once per task before the first file access; the
-  // grant then covers the rest of this task. Writes/commands ask per action.
-  const READ_TOOLS = new Set([
-    "local_list_dir",
-    "local_read_file",
-    "local_search_files",
-    "local_pull_file",
-  ]);
-  let readAccessGranted = false;
   const declined = new Set();
 
   const recordUsage = (entry) => {
@@ -347,6 +437,9 @@ async function runLocalAgentTask({
       return { blocked: true, summary: "tool not permitted for this task" };
     }
     if (tool === "local_run_command") {
+      if (forbidDeletes && looksLikeDeleteCommand(args.command)) {
+        return { blocked: true, summary: "Bots cannot delete files." };
+      }
       const risk = localSystem.classifyRisk(tool, args);
       if (!commandPermitted(args.command, capabilities || ["local"], risk)) {
         return { blocked: true, summary: "shell command not permitted for this task" };
@@ -355,35 +448,6 @@ async function runLocalAgentTask({
     const key = declineKey(tool, args);
     if (declined.has(key)) {
       return { blocked: true, summary: "previously declined — not retried" };
-    }
-
-    if (READ_TOOLS.has(tool) && !readAccessGranted && standingAuthorization) {
-      // files.read inside the routine's envelope IS the standing grant.
-      readAccessGranted = true;
-    }
-    if (READ_TOOLS.has(tool) && !readAccessGranted) {
-      onProgress({ phase: "awaiting_approval", tool, summary: "Look through your files" });
-      let allowed = false;
-      if (typeof onApprovalNeeded === "function") {
-        const where = String(args.path || "").trim();
-        allowed = await onApprovalNeeded({
-          question: `Allow LYKN to look through your files${where ? ` (starting with ${where})` : ""} for this task?`,
-          summary: `Browse your files${where ? `: ${where}` : ""}`,
-          tool,
-          args,
-        }).catch(() => false);
-      }
-      if (aborted()) return { cancelled: true };
-      if (!allowed) {
-        declined.add(key);
-        return {
-          waiting: true,
-          needsApproval: true,
-          answer: "I need your permission to look through your files before I can do this.",
-          historyItem: { tool, args, approved: false, summary: "file access declined" },
-        };
-      }
-      readAccessGranted = true;
     }
 
     const risk = localSystem.classifyRisk(tool, args);
@@ -456,6 +520,31 @@ async function runLocalAgentTask({
         approved: ran.approved,
         summary: summariseResult(ran.result),
       });
+      if (deterministic.thenList && ran.result?.ok && tools.has("local_list_dir")) {
+        const dirs = (ran.result.results || []).filter((r) => r && r.type === "dir" && r.path);
+        if (dirs.length === 1) {
+          const listed = await maybeApproveAndRun("local_list_dir", { path: dirs[0].path });
+          if (listed.cancelled) return cancelled();
+          if (listed.waiting) {
+            return finishWith("waiting_for_user", listed.answer, {
+              needsUser: true,
+              needsApproval: listed.needsApproval === true,
+              history: [...history, listed.historyItem],
+            });
+          }
+          if (!listed.blocked) {
+            history.push({
+              tool: "local_list_dir",
+              args: { path: dirs[0].path },
+              approved: listed.approved,
+              summary: summariseResult(listed.result),
+            });
+            const listedRaw =
+              listed.result?.content || listed.result?.output || summariseResult(listed.result);
+            return finishWith("completed", String(listedRaw || "Done.").trim() || "Done.");
+          }
+        }
+      }
       const wantsSummary = /\b(summar(y|ise|ize)|explain|what does|tell me about)\b/i.test(
         String(goal || ""),
       );
@@ -473,6 +562,7 @@ async function runLocalAgentTask({
             user: `Goal: ${goal}\n\nResult:\n${summariseResult(ran.result)}`,
             schema,
             signal,
+            imageUrls: collectImageUrls(ran.result, seenImages),
           },
         );
         if (aborted()) return cancelled();
@@ -522,7 +612,7 @@ async function runLocalAgentTask({
     try {
       decision = await callModel(
         { apiBase, getAuthToken, fetchImpl, onUsage: recordUsage },
-        { system, user, schema, signal },
+        { system, user, schema, signal, imageUrls: seenImages },
       );
     } catch (e) {
       if (aborted()) return cancelled();
@@ -582,6 +672,7 @@ async function runLocalAgentTask({
       history.push({ tool, args, summary: ran.summary });
       continue;
     }
+    collectImageUrls(ran.result, seenImages);
     history.push({
       tool,
       args,
@@ -637,9 +728,29 @@ function looksLikeLocalSystemAsk(text) {
     return true;
   }
   if (/\bdesktop\b[^.?!]*\b(into|in|on)\s+(a\s+)?grid\b/.test(t)) return true;
+  // Named-file peek after a folder drop ("what's in agents.md").
+  if (
+    /\.(txt|md|markdown|js|jsx|ts|tsx|mjs|cjs|py|json|csv|html|css|rs|go|rb|yml|yaml|toml|sh|env|sql|xml)\b/.test(t) &&
+    /\b(what('| i)?s|whats|what is|read|open|show|check|look|see|list)\b/.test(t)
+  ) {
+    return true;
+  }
+  if (/\b(what('| i)?s|whats|what is)\s+in\b/.test(t) && /\b(this|that|the)\s+file\b/.test(t)) {
+    return true;
+  }
+  // Named folder without a path ("read my LYKN folder").
+  if (
+    /\b(my|the|our)\s+(?!this\b|that\b|same\b)[\w.+' -]{1,40}\s+folders?\b/.test(t) &&
+    /\b(read|open|list|show|check|look|see|search|find|what.?s in|whats in|what is in)\b/.test(t)
+  ) {
+    return true;
+  }
+  if (/\b(list|show|check|look|see|read)\b.{0,32}\b(what.?s|whats|what is)\s+inside\b/.test(t)) {
+    return true;
+  }
   // Local file operations with a path-ish reference.
   if (
-    /\b(read|open|edit|create|write|delete|rename|move|search|find|list)\b/.test(t) &&
+    /\b(read|open|edit|create|write|delete|rename|move|search|find|list|show|check)\b/.test(t) &&
     /\b(file|files|folder|folders|directory|directories|script|\.txt|\.md|\.js|\.ts|\.py|\.json|\.csv|~\/|\/users\/)\b/.test(t) &&
     // Don't hijack "create a document/deck/presentation" artifact builds.
     !/\b(document|doc|deck|slides?|presentation|spreadsheet|report|artifact|image|video|website|landing page)\b/.test(t)
@@ -656,6 +767,7 @@ function looksLikeLocalSystemAsk(text) {
 module.exports = {
   runLocalAgentTask,
   looksLikeLocalSystemAsk,
+  looksLikeDeleteCommand,
   DECISION_SCHEMA,
   tryDeterministicLocalAction,
   LOCAL_SAFETY_CEILING,

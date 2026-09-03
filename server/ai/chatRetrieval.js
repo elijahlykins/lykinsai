@@ -6,12 +6,20 @@ import { chunkTextForSynthesis } from '../../synthesis-service.js';
 import { contextualizeChunks } from '../../lib/rag/contextualize.js';
 import { logAiUsage, estimateTokens } from '../../usageTracking.js';
 import { memCache, sha256 } from './promptUtils.js';
+import { updateUserRowById, userOwnedTable } from '../../lib/security/userOwnedAccess.js';
 
 let supabaseAdmin = null;
 
 export function bindChatRetrieval(deps) {
   supabaseAdmin = deps.supabaseAdmin;
 }
+
+// These lived in server.js scope before this module was extracted; the
+// references came along but the definitions did not, so every caller of
+// createSynthesisUserClient / the REST paths threw ReferenceError
+// ("Synthesis reindex: SUPABASE_URL is not defined" in the server logs).
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
 
 // ============================================
 // VAULT RETRIEVAL — legacy-named synthesis chunk index
@@ -234,7 +242,7 @@ export function formatWhatIveSavedHitLabel(row, titleBySourceId = null) {
     meta.title || meta.note_title || meta.name || titleBySourceId?.get(sourceId) || '',
   ).replace(/\s+/g, ' ').trim().slice(0, 120);
   const origin = labelForWhatIveSavedSource(row?.source_type || meta.source || meta.connector);
-  // Always include vault_<uuid> so the model can lykn_loadNeuron without inventing an id.
+  // Always include vault_<uuid> so Voice read_document can hydrate without inventing an id.
   const nodeId =
     String(row?.source_type || '').toLowerCase() === 'vault_note' && sourceId
       ? `vault_${sourceId}`
@@ -262,11 +270,10 @@ export async function lookupVaultTitlesForSynthesisRows(authHeader, userId, rows
   }
   const unique = [...new Set(ids)].slice(0, 24);
   if (!unique.length) return map;
-  const client = supabaseAdmin || (authHeader ? createSynthesisUserClient(authHeader) : null);
-  if (!client) return map;
+  const client = createSynthesisUserClient(authHeader) || supabaseAdmin;
+  if (!userId || !client) return map;
   try {
-    let q = client.from('notes').select('id, title').in('id', unique);
-    if (userId) q = q.eq('user_id', userId);
+    const q = userOwnedTable(client, 'notes', userId).select('id, title').in('id', unique);
     const { data, error } = await q;
     if (error || !Array.isArray(data)) return map;
     for (const n of data) {
@@ -535,11 +542,10 @@ export async function persistLiveFetchedBody({ userId, noteId, content, freshBod
   } else {
     nextContent = `${raw.trim()}\n\n${freshBody}`.trim();
   }
-  await supabaseAdmin
-    .from('vault_items')
-    .update({ content: nextContent, updated_at: new Date().toISOString() })
-    .eq('id', noteId)
-    .eq('user_id', userId);
+  await updateUserRowById(supabaseAdmin, 'vault_items', userId, noteId, {
+    content: nextContent,
+    updated_at: new Date().toISOString(),
+  }, 'id');
   // Reindex synthesis chunks + regenerate summary so the next semantic
   // retrieval / drag-in uses the fresh content. Fire-and-forget.
   enrichVaultNoteSummary({ userId, noteId }).catch(() => {});
@@ -632,7 +638,7 @@ export async function fetchVaultNotesByUrls(userId, urlMatches) {
       const row = (data || [])[0];
       if (!row) {
         out.push(
-          `URL: ${url}\nMATCH: none\nNOTE: This ${label} URL is NOT currently in the user's synced vault. Either the user hasn't connected ${label}, the integration wasn't granted access to this specific page, or it was created/shared after the last sync. Tell them this concretely and offer to fix it via the Connections page — do NOT claim you can read the URL.`,
+          `URL: ${url}\nMATCH: none\nNOTE: This ${label} URL is not in the user's synced vault. Possible reasons: ${label} is not connected, the integration was not granted access to this page, or it was created/shared after the last sync.`,
         );
         continue;
       }
@@ -692,7 +698,7 @@ export async function fetchVaultNotesByUrls(userId, urlMatches) {
 
       const trimmed = body.slice(0, VAULT_URL_LOOKUP_PER_NOTE_CHARS);
       const truncatedNote = body.length > VAULT_URL_LOOKUP_PER_NOTE_CHARS
-        ? `\n\n…(BODY truncated to fit the prompt budget; the source page is ${body.length} chars total. Answer from this excerpt + SUMMARY. If the user asks about a section we didn't include, say so and ask them to narrow.)`
+        ? `\n\n…(BODY truncated to fit the prompt budget; the source page is ${body.length} chars total.)`
         : '';
 
       // Block layout (in order of cheapness for the model to consume):
@@ -724,7 +730,7 @@ export async function fetchVaultNotesByUrls(userId, urlMatches) {
         : `synced into vault`;
       if (body.length === 0) {
         parts.push(
-          `BODY: (empty — we tried both the synced cache and a live re-fetch from ${label}; neither returned text content. This usually means the page contains only databases, embeds, images, sub-pages, or other non-text blocks that we can't transcribe. The SUMMARY above is the only textual content available. Tell the user honestly: "the page exists in your vault but has no flattened text body — it's likely all databases/embeds/images. Want me to work from the title, or paste the relevant section?")`,
+          `BODY: (empty — synced cache and a live re-fetch from ${label} both returned no text. The page is likely databases, embeds, images, or other non-text blocks. SUMMARY is the only textual content available.)`,
         );
       } else if (body.length < 200) {
         parts.push(
@@ -740,7 +746,7 @@ export async function fetchVaultNotesByUrls(userId, urlMatches) {
 
       const block = parts.join('\n');
       if (totalChars + block.length > VAULT_URL_LOOKUP_TOTAL_CHARS) {
-        out.push(`URL: ${url}\nMATCH: found (id=${row.id}) but omitted from this prompt to stay under context budget. Ask the user to narrow to one URL at a time.`);
+        out.push(`URL: ${url}\nMATCH: found (id=${row.id}) but omitted from this prompt to stay under context budget.`);
         continue;
       }
       out.push(block);
@@ -766,7 +772,7 @@ export async function fetchVaultNotesByUrls(userId, urlMatches) {
 
   return [
     '[VAULT_URL_MATCHES]',
-    "The user's latest message contains URLs from services we sync into their Vault. For each URL below, we did an exact lookup against their synced notes. When MATCH says 'found', you have the SUMMARY (2-5 sentence AI-generated overview) and the BODY (full flattened page text). ANSWERING RULE: try the SUMMARY first — if it answers the user's question, quote/paraphrase from it and stop. If the question needs specifics the summary doesn't cover (a particular section, exact quote, specific number, sub-page detail), drop into the BODY and answer from there. Never claim you can't access the page when MATCH=found — the content IS in this prompt. When MATCH=none, say so concretely and offer the Connections-page fix; do NOT ask the user to paste the content.",
+    "The user's latest message contains URLs from services we sync into their Vault. For each URL below, we did an exact lookup against their synced notes. MATCH=found includes SUMMARY (2-5 sentence overview) and BODY (flattened page text). MATCH=none means the URL is not in the vault.",
     '',
     out.join('\n\n---\n\n'),
   ].join('\n');

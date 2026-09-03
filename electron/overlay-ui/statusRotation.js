@@ -2,9 +2,11 @@
 // Conversation nodes and building-under chrome stay on the overlay host.
 
 export const GENERIC_THINK_RE =
-  /^(thinking|working(?:\son\sit)?|loading|please\swait|one\smoment|responding)[\s.…]*$/i;
+  /^(thinking|working(?:\son\sit)?|loading|please\swait|one\smoment|responding|running\stools)(?:[\s.…]*|\s+[—–\-].*)$/i;
 export const GENERIC_BUILD_RE =
-  /^(building(?:\sthe\s(?:app|page|artifact|sections))?|running\stools|designing\sthe\sbuild|sketching\sthe\slayout|building\sout\sthe\ssections|writing\sthe\scode|wiring\sthe\sinteractions|assembling\sthe\spieces|drafting\sthe\sdocument|composing\sthe\svideo|laying\sout\sthe\sspreadsheet|almost\sready|putting\son\sthe\sfinishing\stouches)[\s.…]*$/i;
+  /^(building(?:\sthe\s(?:app|page|artifact|sections))?|designing\sthe\sbuild|sketching\sthe\slayout|building\sout\sthe\ssections|writing\sthe\s(code|components)|wiring\sthe\sinteractions|assembling\sthe\spieces|laying\sout\sthe\sscreens|filling\sin\sthe\sdetails|checking\sthe\slayout|drafting\sthe\sdocument|composing\sthe\svideo|laying\sout\sthe\sspreadsheet|almost\sready|putting\son\sthe\sfinishing\stouches)[\s.…]*$/i;
+const LIVE_BUILD_STATUS_RE =
+  /^(building(?:\s|$)|designing the|drafting the|composing the|writing the (code|document|animation|components)|laying\sout|wiring|assembling|sketching|polishing|almost ready|putting (on the finishing|together)|creating the|rendering|filling in|figuring out|updating |patching )/i;
 
 export function attachStatusRotation(host) {
   // Client-side status rotation (mirrors src/hooks/useThinkingStatus.js) so Build
@@ -23,13 +25,14 @@ export function attachStatusRotation(host) {
   const BUILD_PHASES = [
     { text: "Designing the build…", duration: 1800 },
     { text: "Sketching the layout…", duration: 2000 },
-    { text: "Building out the sections…", duration: 2200 },
+    { text: "Building out the sections…", duration: 2400 },
+    { text: "Writing the components…", duration: 2600 },
     { text: "Wiring the interactions…", duration: 2400 },
-    { text: "Assembling the pieces…", duration: 2600 },
-    { text: "Polishing the details…", duration: 3000 },
-    { text: "Almost ready…", duration: 4000 },
-    { text: "Putting on the finishing touches…", duration: 6000 },
+    { text: "Laying out the screens…", duration: 2600 },
+    { text: "Filling in the details…", duration: 2800 },
+    { text: "Checking the layout…", duration: 2800 },
   ];
+  const BUILD_LOOP_FROM = 2;
   let statusRotateTimer = null;
   let statusRotateIndex = 0;
 
@@ -42,6 +45,7 @@ export function attachStatusRotation(host) {
     statusRotateIndex = 0;
     if (!opts || opts.resetLane !== false) {
       host.statusRotateLane = "think";
+      host.statusDidNonBuildWork = false;
     }
   }
 
@@ -67,9 +71,17 @@ export function attachStatusRotation(host) {
       return;
     }
     const phases = host.statusRotateLane === "build" ? BUILD_PHASES : THINK_PHASES;
-    if (statusRotateIndex >= phases.length - 1) return;
+    const looping = host.statusRotateLane === "build";
+    if (!looping && statusRotateIndex >= phases.length - 1) return;
     statusRotateTimer = setTimeout(() => {
-      statusRotateIndex = Math.min(statusRotateIndex + 1, phases.length - 1);
+      if (looping) {
+        statusRotateIndex =
+          statusRotateIndex >= phases.length - 1
+            ? BUILD_LOOP_FROM
+            : statusRotateIndex + 1;
+      } else {
+        statusRotateIndex = Math.min(statusRotateIndex + 1, phases.length - 1);
+      }
       applyRotatedStatus(phases[statusRotateIndex].text);
       tickStatusRotation();
     }, phases[statusRotateIndex].duration);
@@ -91,24 +103,35 @@ export function attachStatusRotation(host) {
   function maybeRotateFromStatus(text) {
     const t = String(text || "").trim();
     if (!t) return;
-    if (
-      GENERIC_BUILD_RE.test(t) ||
-      /^(building|designing|drafting|composing|writing|laying\sout|wiring|assembling|putting\stogether)/i.test(t)
-    ) {
-      if (GENERIC_BUILD_RE.test(t)) {
+    const isGenericBuild = GENERIC_BUILD_RE.test(t);
+    const isLiveBuild = LIVE_BUILD_STATUS_RE.test(t);
+    const isGenericThink = GENERIC_THINK_RE.test(t);
+    if (!isGenericBuild && !isLiveBuild && !isGenericThink) {
+      host.statusDidNonBuildWork = true;
+      host.statusRotateLane = "think";
+      stopStatusRotation({ resetLane: false });
+      return;
+    }
+    if (host.statusDidNonBuildWork) {
+      if (isGenericThink) {
+        startStatusRotation("think");
+        return;
+      }
+      stopStatusRotation({ resetLane: false });
+      return;
+    }
+    if (isGenericBuild || isLiveBuild) {
+      if (isGenericBuild) {
         startStatusRotation("build");
       } else {
-        // Detail-rich build line — show it, remember the lane, pause rotation.
         stopStatusRotation({ resetLane: false });
         host.statusRotateLane = "build";
       }
       return;
     }
-    if (GENERIC_THINK_RE.test(t)) {
+    if (isGenericThink) {
       startStatusRotation(host.statusRotateLane === "build" ? "build" : "think");
-      return;
     }
-    stopStatusRotation({ resetLane: false });
   }
   return {
     stopStatusRotation,

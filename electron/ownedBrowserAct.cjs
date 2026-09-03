@@ -9,6 +9,13 @@ const browserOverlays = require("./browserOverlays.cjs");
 // One detector for both agent paths. A 404 is the same page whichever loop is
 // driving, and duplicating the copy-matching is how one of them ends up stale.
 const deadEndPage = require("./browser-agent/runtime/deadEnd.cjs");
+const {
+  TITLE_TARGET_RE_SOURCE,
+  looksLikeDocsTitleTarget,
+  docsTypeShouldTargetBody,
+  docsTitleAfterTypeDecision,
+  docsTitleRetypeGuard,
+} = require("./docsTitleGuard.cjs");
 
 // Collection order matters: open dialogs/popovers first (their controls are
 // what the user is interacting with — e.g. Gmail's compose window sits at the
@@ -726,7 +733,7 @@ async function readActiveEditableState(webContents) {
           label:lab,
           value:val.slice(0,200),
           valueLen:val.length,
-          titleish:/rename|document name|document title/i.test(lab)
+          titleish:/${TITLE_TARGET_RE_SOURCE}/i.test(lab)
         };
       })()`,
       true,
@@ -1172,10 +1179,14 @@ async function typeWithFocusRetry(
     }
 
     // Double-type protection for single-line fields (search boxes, share
-    // "Add people" inputs): a prior attempt/round may have landed silently.
-    // If the field already holds the exact text, don't type it again; if it
-    // holds a doubled value or retry leftovers, clear before retyping.
-    if (!preferDocsBody && !canvas) {
+    // "Add people" inputs, Docs rename): a prior attempt/round may have
+    // landed silently. If the field already holds the exact text, don't type
+    // it again; if it holds a doubled value or retry leftovers, clear first.
+    //
+    // Docs is a canvas editor and the title widget is `titleish` — both used
+    // to skip this guard, which is how a rename typed the same name twice.
+    const titleTarget = looksLikeDocsTitleTarget(hint, verifyLabel, enriched?.label);
+    if (!preferDocsBody && (!canvas || titleTarget)) {
       const st = await readActiveEditableState(webContents);
       // Strict mode: "already present" only counts when the ACTIVE element is
       // the named field — the doc body behind a dialog holding the text (from
@@ -1183,11 +1194,31 @@ async function typeWithFocusRetry(
       const activeMatchesTarget = (() => {
         if (!strictVerify) return true;
         const lab = String(st?.label || "").toLowerCase().replace(/\s+/g, " ").trim();
-        const want = String(verifyLabel || "").toLowerCase().replace(/\s+/g, " ").trim().slice(0, 40);
+        const want = String(verifyLabel || hint || "").toLowerCase().replace(/\s+/g, " ").trim().slice(0, 40);
         if (!want) return true;
         return !!lab && (lab.includes(want) || want.includes(lab));
       })();
-      if (st?.activeOk && !st?.titleish && activeMatchesTarget) {
+      if (titleTarget) {
+        const titleGuard = docsTitleRetypeGuard({
+          hint,
+          label: verifyLabel || enriched?.label || st?.label || "",
+          currentValue: st?.value || "",
+          typed: value,
+        });
+        if (titleGuard.skip) {
+          if (pressEnter) await sendRealKey(webContents, "Enter");
+          return {
+            ok: true,
+            type: "os_write",
+            via: "already_present",
+            chars: value.length,
+            attempts: attempt + 1,
+            verified: true,
+          };
+        }
+        if (titleGuard.clear) await clearFocusedField(webContents);
+      }
+      if (st?.activeOk && (!st?.titleish || titleTarget) && activeMatchesTarget) {
         const stVal = normWs(st.value);
         const wanted = normWs(value).slice(0, 180);
         // Strict mode appends deliberately — only skip as "already present"
@@ -1268,7 +1299,36 @@ async function typeWithFocusRetry(
     await new Promise((r) => setTimeout(r, 280));
 
     if (looksLikeGoogleDocsUrl(pageUrl) && (await editorTitleStillFocused(webContents).catch(() => false))) {
+      const afterTitle = await readActiveEditableState(webContents);
+      const verdict = docsTitleAfterTypeDecision({
+        preferDocsBody,
+        hint,
+        label: verifyLabel || enriched?.label || "",
+        text: value,
+        titleStillFocused: true,
+        titleValue: afterTitle?.value || "",
+      });
+      if (verdict.action === "succeed") {
+        if (pressEnter) await sendRealKey(webContents, "Enter");
+        return {
+          ok: true,
+          type: "os_write",
+          via: verdict.via || "title_rename",
+          chars: value.length,
+          attempts: attempt + 1,
+          verified: !!verdict.verified,
+          unverified: !verdict.verified,
+        };
+      }
+      // Body write landed in the filename — undo, then retry the page.
       lastErr = "typed_into_title";
+      const mod = process.platform === "darwin" ? "meta" : "control";
+      try {
+        sendModKey(webContents, "Z", mod);
+      } catch {
+        /* ignore */
+      }
+      await new Promise((r) => setTimeout(r, 120));
       await focusPageEditor(webContents);
       continue;
     }
@@ -1756,6 +1816,11 @@ async function getDOMCatalog(webContents, { includeFrames = true } = {}) {
     // Canvas editors hide the real writing surface from normal interactable
     // scans — inject a stable target so the planner can click into the body.
     if (looksLikeGoogleDocsUrl(url)) {
+      for (const it of items) {
+        if (looksLikeDocsTitleTarget(it.label)) {
+          it.label = "Document filename (short title only)";
+        }
+      }
       let x = 280;
       let y = 320;
       try {
@@ -1782,7 +1847,7 @@ async function getDOMCatalog(webContents, { includeFrames = true } = {}) {
         tag: "div",
         role: "textbox",
         type: "",
-        label: "Document body (click here to write — not the title)",
+        label: "Document body (click here to write, not the title)",
         selector: ".kix-appview-editor",
         clientX: x,
         clientY: y,
@@ -2113,8 +2178,9 @@ async function getPageContext(webContents) {
     } else if (looksLikeGoogleDocsUrl(url)) {
       text =
         "[Google Docs tab — document body is canvas-rendered. Chrome text (menus, Share, title) barely changes when you type. " +
-        "To write: click element docs_editor_body / Document body, then use write/os_write with the essay text. " +
-        "Do NOT click the title field. Do NOT stop just because this scrape looks unchanged after typing.]\n" +
+        "To write: paste_text the essay, or click Document body then write. " +
+        "Do NOT click Rename / Untitled document unless they asked you to name the file. " +
+        "Do NOT stop just because this scrape looks unchanged after typing.]\n" +
         String(text || "").slice(0, 6000);
     }
     return { ok: true, ...(data || {}), url, text };
@@ -2460,10 +2526,13 @@ async function runAction(webContents, action, catalogItems) {
     const pageUrl = String(webContents.getURL?.() || "");
     const onCanvasEditor = looksLikeCanvasEditorUrl(pageUrl);
     // Only click the Docs body when the agent named it (or long canvas paste).
-    // Never default to a random body click for an unlabeled type action.
-    const wantsDocBody =
-      /document body|docs_editor|essay|page body|editor/i.test(fieldHint) ||
-      (onCanvasEditor && text.length > 80 && (!fieldHint || /^(type|write|os_write|fill|input|click_type)$/i.test(fieldHint)));
+    // A long write aimed at Rename / Untitled document is the essay, not a
+    // filename — dump it in the page, not the title widget.
+    const wantsDocBody = docsTypeShouldTargetBody({
+      fieldHint,
+      text,
+      onCanvasEditor,
+    });
 
     // LIVE-first targeting, same rule as plain click below: catalog pixels go
     // stale the moment the page scrolls or re-renders, and typing at a stale
@@ -2603,6 +2672,9 @@ async function runAction(webContents, action, catalogItems) {
     }
 
     // Refuse blind typing with no agent target (label/coords/doc-body intent).
+    if (wantsDocBody && looksLikeDocsTitleTarget(fieldHint, enriched.label)) {
+      clickPoint = null;
+    }
     if (
       !clickPoint &&
       !wantsDocBody &&
@@ -4412,7 +4484,7 @@ function formatUserHelpBrief({
         ? `**I'm paused and watching this tab.** Say **"continue"** once it's clear and I'll finish the rest.`
         : `When that's done, say **"continue"** and I'll finish the rest.`;
   return [
-    watched ? `## Waiting for you` : `## Needs you — 1 step`,
+    watched ? `## Waiting for you` : `## Needs you: 1 step`,
     ``,
     watched ? `**Waiting on you to:** ${action}` : `**Please:** ${action}`,
     ``,

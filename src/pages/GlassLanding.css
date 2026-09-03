@@ -1,6 +1,6 @@
 /* ============================================================================
-   GlassLanding — the production marketing landing page, focused on LYKN Glass
-   (the overlay). Served at "/", "/landing", and "/glass". The
+   GlassLanding — the production marketing landing page, focused on LYKN
+   desktop (the Mac app). Served at "/", "/landing", and "/glass". The
    header reuses the same .lkn-header markup/classes from index.css so it looks
    and behaves identically; everything else here is prefixed .gl- / .glo- to
    avoid any collision with the live landing page.
@@ -175,237 +175,682 @@
   padding-bottom: 0.14em;
 }
 
+/* ── Top progressive blur ─────────────────────────────────── */
+/* Fixed frosted band pinned under the floating header: as the page scrolls,
+   content sliding beneath the top of the viewport melts into a blur that
+   fades out toward the bottom of the band. Hidden at rest so the hero loads
+   crisp; faded in by JS once scrolling starts. */
+.gl-top-blur {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* Below the header (z 50), above all page content. */
+  z-index: 40;
+  height: clamp(6rem, 10vh, 8rem);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 360ms ease;
+  backdrop-filter: blur(18px) saturate(1.15);
+  -webkit-backdrop-filter: blur(18px) saturate(1.15);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black 0%,
+    black 30%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    black 0%,
+    black 30%,
+    transparent 100%
+  );
+}
+
+.gl-top-blur.is-on {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gl-top-blur {
+    transition: none;
+  }
+}
+
 /* ── Hero ───────────────────────────────────────────────── */
-/* Reference layout: plain white stage, copy + CTA left, and a blue blurred
-   blob behind frosted vertical glass stripes (wordmark + floating labels)
-   on the right. */
+/* Hero content sits directly on the soft cool-gray page: rotating
+   mixed-weight headline + dots + Download on the left, a desktop screen
+   (wave wallpaper + frosted desktop UI card) on the right. */
 .gl-hero {
+  --gl-hero-ink: #0968c4;
   position: relative;
+  z-index: 1;
   min-height: 100vh;
-  display: flex;
-  align-items: flex-start;
-  /* Transparent so the page-wide glow + panels show through — the fixed
-     backdrop underneath supplies the white. */
-  background: transparent;
-  padding: clamp(6rem, 14vh, 9rem) clamp(1.25rem, 6vw, 5rem)
-    clamp(3rem, 8vh, 6rem);
-  overflow: hidden;
+  display: grid;
+  place-items: center;
+  padding: clamp(5.5rem, 11vh, 7.5rem) clamp(1rem, 3.2vw, 3rem)
+    clamp(2rem, 6vh, 4rem);
+  background: radial-gradient(120% 90% at 50% 0%, #eef1f7 0%, #dde2ee 100%);
 }
 
 .gl-hero-inner {
   position: relative;
-  z-index: 1;
-  width: 100%;
-  /* The container is an invisible full-width box layered above the art —
-     let the mouse fall through it so the panels underneath get hover. */
-  pointer-events: none;
-}
-
-/* Top-left headline: "Welcome to / LYKN studio", with the brand name set in
-   the official wordmark art sized to the surrounding type. */
-.gl-hero-headline {
-  margin: 0;
-  font-size: clamp(2.8rem, 6vw, 5rem);
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  line-height: 1.12;
-  color: #0f172a;
-  animation: gl-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-/* The inline wordmark: scaled to read as part of the headline (the SVG has
-   built-in padding, so it runs a touch taller than the cap height) and
-   nudged down so its baseline sits on the text baseline. */
-.gl-hero-word {
-  display: inline-block;
-  height: 1.14em;
-  width: auto;
-  vertical-align: -0.18em;
-  user-select: none;
-}
-
-/* The first paragraph drops well below the headline, the second follows at
-   normal rhythm, the CTA under that. */
-.gl-hero-headline + .gl-hero-lede {
-  margin-top: clamp(3.5rem, 11vh, 6.5rem);
-}
-
-.gl-hero-lede {
-  margin: clamp(1.1rem, 2.6vh, 1.5rem) 0 0;
-  font-size: clamp(0.98rem, 1.3vw, 1.1rem);
-  line-height: 1.65;
-  color: #0f172a;
+  display: grid;
+  grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.28fr);
+  align-items: center;
+  gap: clamp(1.25rem, 3vw, 3rem);
+  width: min(80rem, 100%);
+  padding: 0 clamp(0.5rem, 2vw, 2rem);
   animation: gl-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 120ms both;
 }
 
-.gl-hero-cta {
-  margin-top: clamp(1.6rem, 3.5vh, 2.25rem);
-  display: inline-flex;
-  align-items: center;
-  padding: 0.8rem 1.9rem;
-  font: inherit;
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: #ffffff;
-  background: #0f172a;
-  border: none;
-  border-radius: 999px;
-  cursor: pointer;
-  box-shadow: 0 12px 30px -12px rgba(15, 23, 42, 0.5);
-  transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
-  animation: gl-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 220ms both;
-}
-.gl-hero-cta:hover {
-  background: #1e293b;
-  transform: translateY(-2px);
-  box-shadow: 0 18px 38px -14px rgba(15, 23, 42, 0.55);
-}
-.gl-hero-cta:active {
-  transform: translateY(0);
-}
-
-/* Row holding the hero's two CTAs (Try + Download). The buttons carry their
-   own fade-up animation; the row owns the drop below the ledes. */
-.gl-hero-ctas {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.75rem;
-  margin-top: clamp(1.6rem, 3.5vh, 2.25rem);
-}
-.gl-hero-ctas .gl-hero-cta {
-  margin-top: 0;
-}
-
-/* Blue variant — brand blue pill next to the dark CTA. */
-.gl-hero-cta--blue {
-  color: #ffffff;
-  background: #2563eb;
-  border: none;
-  box-shadow: 0 12px 30px -12px rgba(37, 99, 235, 0.55);
-}
-.gl-hero-cta--blue:hover {
-  background: #1d4ed8;
-  box-shadow: 0 18px 38px -14px rgba(37, 99, 235, 0.6);
-}
-
-/* The copy column under the headline: pinned to the left side and capped in
-   width so it never runs into the panel art on the right. Interactive again
-   (the inner container lets the mouse fall through for panel hovers). */
 .gl-hero-copy {
-  /* Dropped down from the very top of the hero. */
-  margin-top: clamp(3rem, 10vh, 6.5rem);
-  max-width: 34rem;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: clamp(1rem, 4vh, 2.5rem) 0;
   text-align: left;
-  pointer-events: auto;
 }
 
-/* The overlay chat bar floating centered over the panel art on the right. */
-.gl-hero-bar {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 54%;
-  right: 0;
-  z-index: 2;
+.gl-hero-headline {
+  margin: 0;
+}
+
+.lx-wordmark {
+  display: inline-block;
+  height: 0.72em;
+  height: 1cap;
+  width: auto;
+  margin: 0 0.08em 0 0.04em;
+  overflow: visible;
+  vertical-align: -0.05em;
+  pointer-events: none;
+  user-select: none;
+  flex: none;
+}
+
+/* Stacked slides: every rotation occupies the same three-line grid cell so
+   the headline height stays put; only the entering/leaving slides are
+   visible, their lines staggering in and out. */
+.gl-hero-slides {
+  display: grid;
+}
+
+.gl-hero-slide {
+  grid-area: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  font-size: clamp(2.35rem, 4.6vw, 3.9rem);
+  font-weight: 300;
+  letter-spacing: -0.025em;
+  line-height: 1.14;
+  /* Always reserve three lines so rotations don't jump as copy length changes. */
+  min-height: calc(3 * 1.14em);
+  color: #111;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.gl-hero-slide.is-in,
+.gl-hero-slide.is-out {
+  visibility: visible;
+}
+
+.gl-hero-line {
+  display: block;
+  opacity: 0;
+}
+
+.gl-hero-line.is-strong {
+  font-weight: 700;
+  color: var(--gl-hero-ink);
+}
+
+.gl-hero-slide.is-in .gl-hero-line {
+  animation: gl-hero-line-in 720ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--i) * 90ms + 100ms);
+}
+
+.gl-hero-slide.is-out .gl-hero-line {
+  animation: gl-hero-line-out 460ms cubic-bezier(0.4, 0, 1, 1) both;
+  animation-delay: calc(var(--i) * 40ms);
+}
+
+@keyframes gl-hero-line-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5em);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+@keyframes gl-hero-line-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-0.35em);
+    filter: blur(6px);
+  }
+}
+
+.gl-hero-visual {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  /* Let the mouse fall through the empty area so the panels still hover;
-     the bar itself is interactive. */
-  pointer-events: none;
-  animation: gl-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 280ms both;
-}
-.gl-hero-glassbar {
-  width: min(420px, 84%);
-  pointer-events: auto;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  box-shadow: 0 24px 60px -18px rgba(15, 23, 42, 0.5);
+  min-height: 0;
 }
 
-/* Little angled prompt hints scattered around the bar — decorative white
-   text over the blue panels. */
-.gl-hero-hints {
+/* The hero screen: wave wallpaper filling a rounded stage, with the frosted
+   desktop UI glass covering that image. */
+.gl-hero-stage {
+  position: relative;
+  width: min(54rem, 100%);
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border-radius: 20px;
+  background: #0b1c33;
+  box-shadow:
+    0 32px 70px -28px rgba(8, 16, 36, 0.5),
+    0 10px 28px -18px rgba(8, 16, 36, 0.28);
+  animation: gl-fade-up 1s cubic-bezier(0.22, 1, 0.36, 1) 260ms both;
+}
+
+.gl-hero-page-body {
   position: absolute;
   inset: 0;
+  color: #f8fafc;
 }
-.gl-hero-hint {
+
+.gl-hero-page-wall {
   position: absolute;
-  white-space: nowrap;
-  font-size: clamp(0.78rem, 0.95vw, 0.92rem);
-  font-weight: 600;
-  letter-spacing: 0.01em;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.gl-hero-glass {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  border-radius: 20px;
+  background: rgba(8, 18, 36, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  backdrop-filter: blur(28px) saturate(1.45);
+  -webkit-backdrop-filter: blur(28px) saturate(1.45);
+}
+
+.gl-hero-desk-widgets {
+  position: absolute;
+  top: 7%;
+  left: 4%;
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+  transform: scale(0.5);
+  transform-origin: top left;
+}
+
+.gl-hero-page-body .gl-desk-widget {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(8, 16, 32, 0.38);
+  color: #f8fafc;
+}
+
+.gl-hero-page-body .gl-desk-cal-event p:last-child,
+.gl-hero-page-body .gl-desk-month-week,
+.gl-hero-page-body .gl-desk-month-grid span {
+  color: rgba(248, 250, 252, 0.55);
+}
+
+.gl-hero-page-body .gl-desk-month-grid span.is-today {
   color: #ffffff;
-  text-shadow: 0 1px 12px rgba(10, 40, 120, 0.55), 0 1px 2px rgba(10, 40, 120, 0.4);
 }
-.gl-hero-hint:nth-of-type(1) {
-  top: 22%;
-  left: 10%;
-  transform: rotate(-8deg);
+
+.gl-hero-desk-icons {
+  position: absolute;
+  top: 7.5%;
+  right: 3.5%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  transform: scale(0.78);
+  transform-origin: top right;
 }
-.gl-hero-hint:nth-of-type(2) {
-  top: 16%;
-  right: 12%;
-  transform: rotate(6deg);
+
+.gl-hero-desk-icon {
+  display: flex;
+  width: 4.2rem;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.12rem;
 }
-.gl-hero-hint:nth-of-type(3) {
-  top: 36%;
-  right: 4%;
-  transform: rotate(-5deg);
+
+.gl-hero-desk-icon-art {
+  display: grid;
+  place-items: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.28));
 }
-.gl-hero-hint:nth-of-type(4) {
-  bottom: 34%;
-  left: 5%;
-  transform: rotate(6deg);
+
+.gl-hero-desk-icon-art svg {
+  width: 100%;
+  height: 100%;
 }
-.gl-hero-hint:nth-of-type(5) {
-  bottom: 25%;
-  right: 10%;
-  transform: rotate(-7deg);
+
+.gl-hero-desk-icon-art.is-sky {
+  color: #38bdf8;
 }
-.gl-hero-hint:nth-of-type(6) {
-  bottom: 15%;
-  left: 16%;
-  transform: rotate(4deg);
+
+.gl-hero-desk-icon-art.is-white {
+  color: #f8fafc;
+}
+
+.gl-hero-desk-icon-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.58rem;
+  font-weight: 600;
+  color: #ffffff;
+  text-shadow: 0 1px 8px rgba(8, 16, 36, 0.55);
+}
+
+.gl-hero-desk-center {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10%;
+  pointer-events: none;
+}
+
+.gl-hero-desk-welcome {
+  margin: 0 0 0.7rem;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.28em;
+  font-size: clamp(0.95rem, 1.4vw, 1.25rem);
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  color: #ffffff;
+  text-shadow: 0 2px 16px rgba(8, 16, 36, 0.4);
+}
+
+.gl-hero-desk-modes {
+  position: absolute;
+  top: 6%;
+  left: 50%;
+  z-index: 2;
+  transform: translateX(-50%) scale(0.68);
+  transform-origin: top center;
+}
+
+.gl-desk-bar.gl-hero-desk-homebar {
+  width: 27rem;
+  max-width: 27rem;
+  min-width: 0;
+  pointer-events: auto;
+  transform: scale(0.7);
+  transform-origin: top center;
+}
+
+.gl-hero-desk-homebar .gl-desk-composer {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.gl-hero-page-body .gl-desk-modes {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(8, 16, 32, 0.42);
+  box-shadow: none;
+}
+
+.gl-hero-page-body .gl-desk-mode {
+  gap: 0.28rem;
+  padding: 0.26rem 0.55rem;
+  font-size: 0.66rem;
+  color: rgba(248, 250, 252, 0.62);
+}
+
+.gl-hero-page-body .gl-desk-mode.is-on {
+  background: rgba(248, 250, 252, 0.92);
+  color: #0f172a;
+}
+
+.gl-hero-page-body .gl-desk-composer {
+  gap: 0.2rem;
+  padding: 0.28rem 0.28rem 0.28rem 0.4rem;
+  background: rgba(8, 16, 32, 0.48);
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: none;
+}
+
+.gl-hero-page-body .gl-desk-bot {
+  height: 1.55rem;
+}
+
+.gl-hero-page-body .gl-desk-ask {
+  font-size: 0.72rem;
+}
+
+.gl-hero-page-body .gl-desk-ask,
+.gl-hero-page-body .gl-desk-bot,
+.gl-hero-page-body .gl-desk-composer button:not(.gl-desk-send) {
+  color: rgba(248, 250, 252, 0.88);
+}
+
+.gl-hero-page-body .gl-desk-ask::placeholder {
+  color: rgba(248, 250, 252, 0.42);
+}
+
+.gl-hero-page-body .gl-desk-send {
+  height: 1.55rem;
+  width: 1.55rem;
+  background: rgba(248, 250, 252, 0.92);
+  color: #0f172a;
+}
+
+.gl-hero-page-body .gl-desk-composer .h-8 {
+  height: 1.55rem;
+  width: 1.55rem;
+}
+
+/* ── Browser window pulled up over the desktop stage ─────────
+   Mac window chrome with a New-tab tab, nav toolbar, and the glowing
+   new-tab page with AI search. Sits above the wallpaper glass, below
+   the dock. */
+.gl-hero-browser {
+  position: absolute;
+  top: 12%;
+  left: 50%;
+  z-index: 2;
+  display: flex;
+  width: 62%;
+  height: 68%;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow:
+    0 30px 64px -24px rgba(8, 16, 36, 0.6),
+    0 0 0 1px rgba(15, 23, 42, 0.1);
+  transform: translateX(-50%);
+  transform-origin: 50% 85%;
+  /* Pops up from the dock like a mac window opening: rises, unshrinks,
+     and lands with a slight spring. */
+  animation: gl-hero-browser-pop 0.6s cubic-bezier(0.34, 1.42, 0.64, 1) 0.2s
+    backwards;
+}
+
+@keyframes gl-hero-browser-pop {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(16%) scale(0.72);
+  }
+  45% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gl-hero-browser {
+    animation: none;
+  }
+}
+
+.gl-hero-browser-top {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.32rem 0.55rem 0;
+  background: #e7e8ee;
+}
+.gl-hero-browser-lights {
+  display: flex;
+  gap: 0.26rem;
+  padding-bottom: 0.28rem;
+}
+.gl-hero-browser-lights i {
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 50%;
+}
+.gl-hero-browser-lights i:nth-child(1) {
+  background: #ff5f57;
+}
+.gl-hero-browser-lights i:nth-child(2) {
+  background: #febc2e;
+}
+.gl-hero-browser-lights i:nth-child(3) {
+  background: #28c840;
+}
+.gl-hero-browser-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.24rem 0.5rem;
+  border-radius: 8px 8px 0 0;
+  background: #f6f7fa;
+  font-size: 0.54rem;
+  font-weight: 500;
+  color: #334155;
+}
+.gl-hero-browser-tab img {
+  width: 0.58rem;
+}
+.gl-hero-browser-tab svg {
+  width: 0.48rem;
+  height: 0.48rem;
+  opacity: 0.45;
+}
+.gl-hero-browser-newtab {
+  width: 0.65rem;
+  height: 0.65rem;
+  margin-bottom: 0.24rem;
+  color: #64748b;
+}
+
+.gl-hero-browser-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.3rem 0.6rem;
+  background: #f6f7fa;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+}
+.gl-hero-browser-nav > svg {
+  width: 0.62rem;
+  height: 0.62rem;
+  flex: 0 0 auto;
+  color: #64748b;
+}
+.gl-hero-browser-url {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+  padding: 0.24rem 0.62rem;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  font-size: 0.52rem;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+.gl-hero-browser-ask {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.24rem;
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  background: #2f7bff;
+  font-size: 0.52rem;
+  font-weight: 600;
+  color: #ffffff;
+}
+.gl-hero-browser-ask img,
+.gl-hero-browser-aimode img {
+  width: 0.54rem;
+  filter: brightness(0) invert(1);
+}
+
+.gl-hero-browser-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  background: #ffffff;
+}
+.gl-hero-browser-logo {
+  width: 2.7rem;
+  filter: drop-shadow(0 0 13px rgba(59, 130, 246, 0.5));
+}
+.gl-hero-browser-search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 52%;
+  padding: 0.26rem 0.26rem 0.26rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  box-shadow: 0 10px 22px -14px rgba(15, 23, 42, 0.35);
+  background: #ffffff;
+}
+.gl-hero-browser-search > svg {
+  width: 0.6rem;
+  height: 0.6rem;
+  flex: 0 0 auto;
+  color: #94a3b8;
+}
+.gl-hero-browser-search-hint {
+  flex: 1;
+  font-size: 0.56rem;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+.gl-hero-browser-aimode {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.18rem 0.45rem;
+  border-radius: 999px;
+  background: #2f7bff;
+  font-size: 0.46rem;
+  font-weight: 600;
+  color: #ffffff;
+}
+.gl-hero-browser-aimode img {
+  width: 0.46rem;
+}
+
+.gl-hero-desk-dock {
+  position: absolute;
+  right: 0;
+  bottom: 4.5%;
+  left: 0;
+  z-index: 3;
+  display: flex;
+  justify-content: center;
+  transform: scale(0.84);
+  transform-origin: bottom center;
+}
+
+.gl-hero-desk-dock-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.12rem;
+  padding: 0.22rem 0.28rem;
+  border-radius: 999px;
+  background: rgba(8, 16, 32, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+}
+
+.gl-hero-desk-dock-lykn {
+  display: grid;
+  height: 1.65rem;
+  width: 1.65rem;
+  place-items: center;
+}
+
+.gl-hero-desk-dock-lykn img {
+  height: 1.2rem;
+  width: 1.2rem;
+  object-fit: contain;
+  filter: brightness(0) invert(1);
+}
+
+.gl-hero-desk-dock-btn {
+  display: grid;
+  height: 1.85rem;
+  width: 1.85rem;
+  place-items: center;
+  color: rgba(248, 250, 252, 0.78);
+}
+
+.gl-hero-ctas {
+  --lkn-sky: #0968c4;
+  --lkn-sky-deep: #0754a3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  margin-top: clamp(1.6rem, 4vh, 2.4rem);
+}
+.gl-hero-ctas .lkn-nav-signup {
+  gap: 0.35em;
+  align-items: baseline;
 }
 
 @media (max-width: 860px) {
-  /* Phones: the hero stacks — copy first, then the overlay bar sitting on
-     its own blue panel (standing in for the hidden page-wide glow), so the
-     product visual survives the switch to one column. */
   .gl-hero {
-    flex-direction: column;
     min-height: 0;
-    padding-top: clamp(5.5rem, 12vh, 7rem);
+    padding: 5.25rem 0.9rem 2rem;
   }
   .gl-hero-inner {
-    order: 1;
+    grid-template-columns: 1fr;
+    padding: 0;
   }
   .gl-hero-copy {
-    margin-top: 0.5rem;
-    max-width: 100%;
+    padding: 0.5rem 0 0;
   }
-  .gl-hero-headline + .gl-hero-lede {
-    margin-top: clamp(1.5rem, 4vh, 2.5rem);
+  .gl-hero-visual {
+    margin-top: 1.25rem;
   }
-  .gl-hero-bar {
-    order: 2;
-    position: relative;
-    inset: auto;
+  .gl-hero-stage {
     width: 100%;
-    min-height: 300px;
-    margin-top: clamp(2.25rem, 6vh, 3.5rem);
-    padding: 2rem 1.25rem;
-    border-radius: 24px;
-    overflow: hidden;
-    background:
-      radial-gradient(120% 140% at 85% -10%, #4d94ff 0%, rgba(77, 148, 255, 0) 55%),
-      linear-gradient(150deg, #2f7bff 0%, #0e6fff 55%, #0847c9 100%);
-    box-shadow: 0 24px 60px -28px rgba(14, 111, 255, 0.55);
-  }
-  /* The angled prompt hints would collide with the bar in the small panel. */
-  .gl-hero-hints {
-    display: none;
   }
 }
 
@@ -430,11 +875,20 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .gl-hero-headline,
-  .gl-hero-lede,
+  .gl-hero-inner,
   .gl-hero-cta,
-  .gl-hero-bar {
+  .gl-hero-stage,
+  .gl-hero-slide.is-in .gl-hero-line,
+  .gl-hero-slide.is-out .gl-hero-line {
     animation: none;
+  }
+  .gl-hero-slide.is-in .gl-hero-line {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+  .gl-hero-slide.is-out {
+    visibility: hidden;
   }
 }
 
@@ -444,10 +898,10 @@
    name bottom-left and an "Explore →" link bottom-right. */
 .gl-cap {
   position: relative;
-  z-index: 1;
+  z-index: 2;
   background: transparent;
   padding: clamp(3.5rem, 9vh, 7rem) clamp(1.25rem, 6vw, 5rem)
-    clamp(4rem, 11vh, 8rem);
+    clamp(7rem, 18vh, 12rem);
   text-align: center;
 }
 .gl-cap-inner {
@@ -462,44 +916,55 @@
   font-weight: 700;
   letter-spacing: -0.03em;
   line-height: 1.1;
-  color: #0f172a;
+  color: #111;
 }
 .gl-cap-underline {
+  color: #0968c4;
   text-decoration: underline;
   text-decoration-thickness: 2px;
   text-underline-offset: 0.18em;
-  text-decoration-color: rgba(15, 23, 42, 0.55);
+  text-decoration-color: #0968c4;
 }
 .gl-cap-grid {
   margin-top: clamp(2.5rem, 6vh, 4rem);
-  /* Wider than the section copy so the cards read long and low. */
   max-width: 1280px;
   margin-left: auto;
   margin-right: auto;
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: clamp(0.9rem, 1.8vw, 1.4rem);
+  grid-template-columns: repeat(6, 1fr);
+  gap: clamp(0.85rem, 1.6vw, 1.25rem);
   text-align: left;
+}
+.gl-cap-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  grid-column: span 2;
+  height: clamp(260px, 28vw, 360px);
+  border-radius: 22px;
+  overflow: hidden;
+  background: #f3f3f5;
+  border: none;
+  box-shadow: none;
+}
+.gl-cap-card--wide {
+  grid-column: span 3;
+}
+.gl-cap-card--dark {
+  background: #2a2a2e;
+}
+.gl-cap-card--media {
+  background: #111;
 }
 @media (max-width: 860px) {
   .gl-cap-grid {
     grid-template-columns: 1fr;
   }
-}
-
-.gl-cap-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  /* Fixed height (not min-height): the chat thread grows as bubbles land and
-     must clip inside the card instead of stretching it (and its row). Kept
-     low relative to the width so the cards read wide, like the reference. */
-  height: clamp(200px, 21vw, 280px);
-  border-radius: 20px;
-  overflow: hidden;
-  background: #0b0c0f;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 24px 60px -30px rgba(15, 23, 42, 0.45);
+  .gl-cap-card,
+  .gl-cap-card--wide {
+    grid-column: auto;
+    height: 280px;
+  }
 }
 
 /* Video cards (Build / Imagine) — the product clip fills the whole card. */
@@ -511,65 +976,39 @@
   object-fit: cover;
 }
 
-/* Build card: LYKN typing out code on black. */
+/* Build card: terminal on charcoal. */
 .gl-cap-code {
   position: absolute;
   inset: 0;
   display: flex;
   flex-direction: column;
-  /* Charcoal rather than pure black so the card reads softer on the page. */
-  background: #1e2026;
+  padding: 0.85rem 1rem 3.2rem;
+  background: #2a2a2e;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #d4d4d8;
 }
 .gl-cap-code-head {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0.7rem 1rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  font-size: 0.72rem;
-  color: rgba(255, 255, 255, 0.5);
+  justify-content: space-between;
+  margin-bottom: 0.65rem;
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.42);
 }
-.gl-cap-code-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 999px;
-}
-.gl-cap-code-dot[data-tint="r"] {
-  background: #ff5f57;
-}
-.gl-cap-code-dot[data-tint="y"] {
-  background: #febc2e;
-}
-.gl-cap-code-dot[data-tint="g"] {
-  background: #28c840;
-}
-.gl-cap-code-file {
-  margin-left: 8px;
-}
+.gl-cap-code-file,
 .gl-cap-code-mode {
-  margin-left: auto;
-  font-size: 0.62rem;
-  color: rgba(255, 255, 255, 0.35);
-}
-.gl-cap-code-body {
-  flex: 1;
-  min-height: 0;
   margin: 0;
-  padding: 0.85rem 1rem 3.2rem;
-  overflow: hidden;
-  overflow-anchor: none;
-  font-size: 0.74rem;
-  line-height: 1.7;
-  color: #dbeafe;
-  /* The snippet grows downward; keep the newest lines visible by pinning the
-     column to the bottom once it overflows, fading clipped lines at the top. */
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.42);
+}
+.gl-cap-code-snippet {
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
-  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 18%);
-  mask-image: linear-gradient(180deg, transparent 0%, #000 18%);
+  gap: 0.15rem;
+  font-size: 0.68rem;
+  line-height: 1.45;
+  color: #e4e4e7;
 }
 .gl-cap-code-line {
   display: flex;
@@ -578,39 +1017,52 @@
 .gl-cap-code-num {
   flex: none;
   width: 2em;
-  color: rgba(147, 197, 253, 0.32);
+  color: #4ade80;
   font-size: 0.85em;
-  padding-top: 0.1em;
   user-select: none;
 }
-.gl-cap-code-str {
-  color: #8ce99a;
+.gl-cap-code-prompt {
+  margin: 0.7rem 0 0.45rem;
+  font-size: 0.72rem;
+  color: #f4f4f5;
 }
-.gl-cap-code-kw {
-  color: #c792ea;
+.gl-cap-code-prompt span {
+  color: #a1a1aa;
+  margin-right: 0.35em;
 }
-.gl-cap-code-caret {
-  display: inline-block;
-  width: 6px;
-  height: 0.95em;
-  margin-left: 2px;
-  background: #3b78ff;
-  vertical-align: text-bottom;
-  animation: gl-cap-caret-blink 1s steps(1) infinite;
+.gl-cap-code-log {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+  font-size: 0.66rem;
+  color: rgba(255, 255, 255, 0.5);
 }
-@keyframes gl-cap-caret-blink {
-  50% {
-    opacity: 0;
-  }
+.gl-cap-code-thinking {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.38);
 }
-@media (prefers-reduced-motion: reduce) {
-  .gl-cap-code-caret {
-    animation: none;
-  }
+.gl-cap-code-op {
+  margin: 0;
+  display: flex;
+  gap: 0.7rem;
+}
+.gl-cap-code-op span:first-child {
+  width: 5.2rem;
+  flex: none;
+  color: #a1a1aa;
+}
+.gl-cap-code-task {
+  margin: 0;
+  display: flex;
+  gap: 0.45rem;
+}
+.gl-cap-code-task[data-status="running"] span {
+  color: #60a5fa;
+}
+.gl-cap-code-task[data-status="done"] span {
+  color: #4ade80;
 }
 
-/* Bottom row: surface name left, Explore link right, over a legibility
-   gradient so it reads on top of the video/artwork. */
 .gl-cap-foot {
   position: absolute;
   left: 0;
@@ -622,11 +1074,19 @@
   justify-content: space-between;
   gap: 1rem;
   padding: 2.2rem 1.15rem 0.9rem;
+}
+.gl-cap-foot--light {
+  background: linear-gradient(180deg, transparent 0%, #f3f3f5 62%);
+}
+.gl-cap-foot--dark {
   background: linear-gradient(180deg, transparent 0%, rgba(5, 6, 8, 0.72) 100%);
 }
 .gl-cap-name {
   font-size: 0.9rem;
   font-weight: 600;
+  color: #111111;
+}
+.gl-cap-foot--dark .gl-cap-name {
   color: #ffffff;
 }
 .gl-cap-explore {
@@ -636,7 +1096,7 @@
   font: inherit;
   font-size: 0.85rem;
   font-weight: 500;
-  color: rgba(255, 255, 255, 0.62);
+  color: #6b7280;
   background: none;
   border: none;
   padding: 0;
@@ -644,42 +1104,37 @@
   transition: color 0.15s ease;
 }
 .gl-cap-explore:hover {
+  color: #111111;
+}
+.gl-cap-foot--dark .gl-cap-explore {
+  color: rgba(255, 255, 255, 0.62);
+}
+.gl-cap-foot--dark .gl-cap-explore:hover {
   color: #ffffff;
 }
 
-/* Chat card — alternating bubbles: questions right, LYKN answers left with
-   the LYKN mark, mirroring the overlay conversation. The thread is anchored
-   to the bottom; each new bubble grows in and pushes the earlier ones up,
-   which fade out toward the top of the card. */
 .gl-cap-chat {
   position: relative;
   z-index: 1;
   flex: 1;
-  /* Without this the flex item refuses to shrink below its content and the
-     thread would spill past the card bottom instead of clipping at the top. */
   min-height: 0;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  gap: 0.65rem;
-  padding: 1.25rem 1.15rem 3.4rem;
+  gap: 0.5rem;
+  padding: 1.15rem 1.1rem 3.4rem;
   overflow: hidden;
-  /* Bubbles landing/shifting must never become the page's scroll anchor —
-     without this the browser "helpfully" scrolls the page to follow them. */
   overflow-anchor: none;
-  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 22%);
-  mask-image: linear-gradient(180deg, transparent 0%, #000 22%);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 18%);
+  mask-image: linear-gradient(180deg, transparent 0%, #000 18%);
 }
 .gl-cap-bubble {
-  max-width: 78%;
-  padding: 0.55rem 0.85rem;
-  border-radius: 14px;
-  font-size: 0.82rem;
-  line-height: 1.45;
-  color: #e5e7eb;
-  /* Grow-in: height/padding animate from 0 (with a negative margin to cancel
-     the column gap) so the bubbles above slide up smoothly instead of
-     jumping, while the bubble itself rises and fades in. */
+  max-width: 82%;
+  padding: 0.5rem 0.8rem;
+  border-radius: 16px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: #111111;
   animation: gl-cap-bubble-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 @keyframes gl-cap-bubble-in {
@@ -710,31 +1165,12 @@
 }
 .gl-cap-bubble--user {
   align-self: flex-end;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-bottom-right-radius: 5px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
 }
 .gl-cap-bubble--lykn {
   align-self: flex-start;
-  display: flex;
-  align-items: flex-start;
-  gap: 0.55rem;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-bottom-left-radius: 5px;
-  color: #cbd5e1;
-}
-.gl-cap-bubble-mark {
-  flex: none;
-  width: 15px;
-  height: 15px;
-  margin-top: 2px;
-  color: #3b78ff;
-  filter: drop-shadow(0 0 3px rgba(59, 120, 255, 0.7));
-}
-.gl-cap-bubble-mark path {
-  fill: none;
-  stroke: currentColor;
+  background: #e4e4e7;
 }
 
 /* Imagine card — a rotating collage of generated images: one big slot on the
@@ -782,10 +1218,6 @@
   }
 }
 
-/* Voice card — the ACTUAL Voice Mode surface (forced dark), borderless: no
-   window chrome, no audio toggle, just the orb + status filling the card.
-   Laid out at a wide design width and uniformly scaled down (WakePreviewFit)
-   so it reads zoomed out. */
 .gl-cap-voice {
   position: relative;
   z-index: 1;
@@ -796,32 +1228,235 @@
   justify-content: center;
   overflow: hidden;
   pointer-events: none;
-  /* Charcoal rather than the card's near-black so the orb sits on grey. */
-  background: #1e2026;
+  /* Wallpaper tone, so nothing gray flashes in before the image paints. */
+  background: #0b1c33;
 }
 .gl-cap-voice * {
   pointer-events: none !important;
 }
-
-/* Research card — Remotion LyknStudioDemo mp4 fills the card. */
-.gl-cap-research {
+/* The desktop wallpaper behind the popup, so the glass has something
+   real to blur. */
+.gl-cap-voice-wall {
   position: absolute;
   inset: 0;
-  overflow: hidden;
-  background: #0b0c0f;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  user-select: none;
+  /* Soft-focus desktop behind the popup; scaled up so the blur doesn't
+     reveal transparent edges. */
+  filter: blur(14px);
+  transform: scale(1.08);
+}
+/* Mini replica of the desktop Voice Mode popup: dark glass over the
+   wallpaper, like the real overlay. */
+.gl-cap-voice-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(17.75rem, 82%);
+  padding: 0.7rem 0.85rem 0.9rem;
+  border-radius: 20px;
+  background: rgba(16, 18, 24, 0.32);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow:
+    0 26px 56px -30px rgba(8, 16, 36, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(24px) saturate(1.3);
+  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+}
+.gl-cap-voice-chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-bottom: 0.15rem;
+}
+.gl-cap-voice-chrome span {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: rgba(255, 255, 255, 0.55);
+}
+.gl-cap-voice-chrome svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  color: rgba(255, 255, 255, 0.55);
+}
+.gl-cap-voice-status {
+  margin-top: 0.3rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.85);
+}
+.gl-cap-voice-paste {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  margin-top: 0.85rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+}
+.gl-cap-voice-paste svg {
+  width: 0.8rem;
+  height: 0.8rem;
+  color: rgba(255, 255, 255, 0.55);
+}
+.gl-cap-voice-paste em {
+  font-style: normal;
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.55);
 }
 
-/* Browser card — Remotion LyknStudioBrowser mp4; contain so the full
-   desktop frame stays visible (cover was cropping the UI). */
-.gl-cap-browser {
-  position: absolute;
-  inset: 0;
+.gl-cap-rs {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
-  background: #0b0c0f;
+  pointer-events: none;
+  padding: 0.7rem 0.7rem 3.2rem;
 }
-.gl-cap-browser .gl-cap-video {
-  object-fit: contain;
-  object-position: center center;
+/* One stable layout for the whole loop: thread on the left, rail column on
+   the right. Beats crossfade in place, so nothing ever reflows. */
+.gl-cap-rs-run {
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 9.5rem;
+  gap: 0.6rem;
+  min-height: 0;
+  transition: opacity 0.55s ease;
+}
+/* Last beat: the finished report breathes for a moment, then the whole
+   scene fades out and the loop restarts clean. */
+.gl-cap-rs-run.is-out {
+  opacity: 0;
+}
+.gl-cap-rs-thread {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.gl-cap-rs-user {
+  align-self: flex-end;
+  margin: 0;
+  max-width: 95%;
+  padding: 0.45rem 0.7rem;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  font-size: 0.68rem;
+  line-height: 1.35;
+  color: #111111;
+  animation: gl-cap-rs-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+/* Thinking and the report overlap in one grid cell so the hand-off between
+   them is a pure crossfade. */
+.gl-cap-rs-swap {
+  display: grid;
+  min-height: 0;
+}
+.gl-cap-rs-swap > * {
+  grid-area: 1 / 1;
+  min-height: 0;
+}
+.gl-cap-rs-wait {
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+.gl-cap-rs-wait.is-on {
+  opacity: 1;
+  transition-delay: 0.15s;
+}
+.gl-cap-rs-doc {
+  text-align: left;
+  font-size: 0.66rem;
+  line-height: 1.45;
+  color: #3f3f46;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.gl-cap-rs-doc.is-on {
+  opacity: 1;
+  transform: none;
+  transition-delay: 0.2s;
+}
+.gl-cap-rs-doc p {
+  margin: 0 0 0.45rem;
+}
+.gl-cap-rs-doc h3 {
+  margin: 0 0 0.25rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  color: #111111;
+}
+.gl-cap-rs-doc ul {
+  margin: 0;
+  padding-left: 1rem;
+}
+/* The sources rail slides in from the right edge alongside the report. */
+.gl-cap-rs-rail {
+  min-height: 0;
+  opacity: 0;
+  transform: translateX(112%);
+  transition:
+    opacity 0.55s ease,
+    transform 0.65s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.gl-cap-rs-rail.is-on {
+  opacity: 1;
+  transform: none;
+}
+/* The real Studio rail ships with the app's dark glass surface and a
+   3.5rem window-chrome inset; restyle it here as the light-theme rail
+   sized for the card. */
+.gl-cap-rs-rail .lykn-studio-research-rail {
+  min-height: 0;
+  height: 100%;
+  border-radius: 14px;
+  overflow: hidden;
+  padding-top: 0.65rem;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 16px 34px -26px rgba(15, 23, 42, 0.4);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  color: #111111;
+}
+.gl-cap-rs-rail .lykn-studio-research-rail > div:last-child {
+  padding: 0.45rem 0.55rem 0.55rem;
+}
+@keyframes gl-cap-rs-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gl-cap-rs-user {
+    animation: none;
+  }
+  .gl-cap-rs-run,
+  .gl-cap-rs-wait,
+  .gl-cap-rs-doc,
+  .gl-cap-rs-rail {
+    transition: none;
+  }
 }
 
 /* Glass card — Remotion LyknGlassOverlay mp4 fills the card. */
@@ -830,22 +1465,6 @@
   inset: 0;
   overflow: hidden;
   background: #0b0c0f;
-}
-
-/* Drive card — vault collage fills the card behind the Explore footer. */
-.gl-cap-drive {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  background: #0b0c0f;
-}
-.gl-cap-drive-bg {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: center top;
 }
 
 /* ── About: What is LYKN Glass ───────────────────────────── */
@@ -936,9 +1555,32 @@
 .gl-any-sub {
   margin: clamp(1rem, 2.4vh, 1.5rem) 0 0;
   max-width: 30rem;
+  /* Tall enough for the longest view description so tab swaps don't
+     reflow the buttons and stats below. */
+  min-height: 6.5em;
   font-size: clamp(0.95rem, 1.2vw, 1.05rem);
   line-height: 1.65;
   color: #475569;
+}
+/* Each view's headline and description fade in on swap. */
+.gl-any-sub-swap {
+  display: block;
+  animation: gl-any-words-in 0.85s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes gl-any-words-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.4em);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gl-any-sub-swap {
+    animation: none;
+  }
 }
 
 /* CTA pills — dark primary + quiet outlined secondary. */
@@ -950,13 +1592,14 @@
 }
 .gl-any-btn {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   padding: 0.6rem 1.35rem;
   font: inherit;
   font-size: 0.88rem;
   font-weight: 600;
   border-radius: 999px;
   cursor: pointer;
+  isolation: isolate;
   transition: background 0.18s ease, border-color 0.18s ease,
     transform 0.18s ease;
 }
@@ -964,19 +1607,21 @@
   transform: translateY(-1px);
 }
 .gl-any-btn--primary {
-  background: #0f172a;
-  border: 1px solid #0f172a;
+  background: #0968c4;
+  border: 1px solid #0968c4;
   color: #ffffff;
+  box-shadow: none;
 }
 .gl-any-btn--primary:hover {
-  background: #1e293b;
+  background: #0754a3;
+  box-shadow: none;
 }
 /* Download — white pill with blue lettering. */
 .gl-any-btn--ghost {
   background: #ffffff;
   border: 1px solid rgba(37, 99, 235, 0.28);
-  color: #2563eb;
-  box-shadow: 0 8px 22px -14px rgba(15, 23, 42, 0.35);
+  color: #0968c4;
+  box-shadow: none;
 }
 .gl-any-btn--ghost:hover {
   border-color: rgba(37, 99, 235, 0.55);
@@ -1023,6 +1668,52 @@
   box-shadow: 0 32px 80px -32px rgba(15, 23, 42, 0.45);
   user-select: none;
 }
+.gl-any-shot--desk {
+  overflow: hidden;
+  aspect-ratio: 16 / 11;
+  background: #111318;
+}
+/* Switchable UI screenshot: a fixed frame (the desktop shots' native ratio)
+   so swapping views never shifts the layout; other ratios center-crop. */
+.gl-any-shot--switch {
+  aspect-ratio: 1024 / 661;
+  object-fit: cover;
+  object-position: center;
+  background: #111318;
+  animation: gl-any-shot-in 0.35s ease;
+}
+@keyframes gl-any-shot-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+/* Live desktop-stage view (the Apps tab): the hero's desktop UI rendered
+   for real, framed exactly like the screenshot views. */
+.gl-any-live {
+  position: relative;
+  aspect-ratio: 1024 / 661;
+  overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  box-shadow: 0 32px 80px -32px rgba(15, 23, 42, 0.45);
+  background: #0b1c33;
+  animation: gl-any-shot-in 0.35s ease;
+}
+.gl-any-live .gl-hero-stage {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  aspect-ratio: auto;
+  border-radius: 16px;
+  box-shadow: none;
+  animation: none;
+}
+.gl-any-live .gl-hero-glass {
+  border-radius: 16px;
+}
 
 /* Step chips under the window (reference: language tabs). Wraps so the
    eight chips fold into rows once the column narrows past their width. */
@@ -1048,6 +1739,10 @@
   background: #0f172a;
   color: #ffffff;
 }
+.gl-any-chip.is-active {
+  background: #0f172a;
+  color: #ffffff;
+}
 
 /* ── Snip showcase: one wide card playing the snip animation ── */
 .gl-snip {
@@ -1068,6 +1763,10 @@
   border: 1px solid rgba(15, 23, 42, 0.07);
   box-shadow: 0 24px 60px -30px rgba(15, 23, 42, 0.25);
 }
+.gl-snip-card--desk {
+  padding: 0;
+  background: #111318;
+}
 .gl-snip-video {
   display: block;
   width: 100%;
@@ -1075,6 +1774,440 @@
   object-fit: cover;
   border-radius: 16px;
   box-shadow: 0 24px 60px -30px rgba(15, 23, 42, 0.4);
+}
+
+/* ── Home desktop preview (hero bar, cap card, sync section, showcase) ── */
+.gl-desk-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.7rem;
+  width: 100%;
+}
+.gl-desk-modes {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.22rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: 0 10px 28px -16px rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+}
+.gl-desk-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.7rem;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: rgba(15, 23, 42, 0.55);
+  cursor: pointer;
+}
+.gl-desk-mode.is-on {
+  background: rgba(15, 23, 42, 0.9);
+  color: #ffffff;
+}
+.gl-desk-composer {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  padding: 0.4rem 0.4rem 0.4rem 0.55rem;
+  background: var(--lg-menu-tint, rgba(255, 255, 255, 0.78));
+  border: 1px solid var(--lg-hairline, rgba(255, 255, 255, 0.45));
+  box-shadow: 0 16px 40px -18px rgba(15, 23, 42, 0.45);
+}
+.gl-desk-bot {
+  display: flex;
+  height: 2rem;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0 0.25rem 0 0.35rem;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(15, 23, 42, 0.6);
+  cursor: pointer;
+}
+.gl-desk-ask {
+  min-width: 0;
+  flex: 1;
+  resize: none;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0.25rem 0;
+  font: inherit;
+  font-size: 0.85rem;
+  color: rgba(15, 23, 42, 0.88);
+}
+.gl-desk-ask::placeholder {
+  color: rgba(15, 23, 42, 0.4);
+}
+.gl-desk-send {
+  display: flex;
+  height: 2rem;
+  width: 2rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.88);
+  color: #ffffff;
+  box-shadow: 0 6px 14px -8px rgba(15, 23, 42, 0.55);
+  cursor: pointer;
+}
+
+.gl-desk {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+  min-height: 16rem;
+  color: #0f172a;
+  background: #1c3148;
+}
+.gl-desk--wide {
+  aspect-ratio: 16 / 9;
+  min-height: 0;
+}
+.gl-desk--stage {
+  min-height: 0;
+  height: 100%;
+}
+.gl-desk--compact {
+  min-height: 0;
+  height: 100%;
+}
+.gl-desk--hero {
+  min-height: 100%;
+  height: 100%;
+  background: #d8d8dc;
+}
+.gl-desk--hero .gl-desk-welcome {
+  font-size: clamp(1.35rem, 2.4vw, 2rem);
+}
+.gl-desk--hero .gl-desk-homebar {
+  width: min(32rem, 72%);
+}
+.gl-desk--hero .gl-desk-dock {
+  bottom: 5.25rem;
+}
+.gl-desk-wall {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 40%;
+}
+.gl-desk-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 14, 22, 0.18);
+}
+.gl-desk--steel {
+  --lg-menu-tint: rgba(255, 255, 255, 0.82);
+  --lg-menu-tint-strong: rgba(255, 255, 255, 0.9);
+  --lg-hairline: rgba(255, 255, 255, 0.55);
+  --lg-text: rgba(15, 23, 42, 0.88);
+  color-scheme: light;
+  background: #e6e6e8;
+}
+.gl-desk--steel .gl-desk-wall {
+  object-fit: cover;
+  object-position: center;
+  opacity: 0.62;
+  filter: grayscale(1) contrast(0.68) brightness(1.08) saturate(0);
+}
+.gl-desk--steel .gl-desk-composer,
+.gl-desk--steel .gl-desk-dock-pill {
+  background: rgba(255, 255, 255, 0.84);
+}
+.gl-desk--steel .gl-desk-scrim {
+  background:
+    linear-gradient(90deg, #f2f2f4 0%, rgba(242, 242, 244, 0.72) 16%, rgba(242, 242, 244, 0.18) 42%, transparent 62%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.38) 0%, rgba(255, 255, 255, 0) 32%),
+    rgba(236, 236, 238, 0.28);
+}
+.gl-desk--steel .gl-desk-welcome {
+  color: #0968c4;
+  text-shadow: none;
+}
+.gl-desk--steel .gl-desk-icon-label {
+  color: #3f3f46;
+  text-shadow: none;
+}
+.gl-desk-widgets {
+  position: absolute;
+  top: 6%;
+  left: 3.5%;
+  z-index: 2;
+  display: flex;
+  align-items: stretch;
+  gap: 0.55rem;
+}
+.gl-desk-widget {
+  overflow: hidden;
+  border-radius: 1.15rem;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 12px 32px -18px rgba(8, 16, 36, 0.45);
+  backdrop-filter: blur(22px) saturate(1.35);
+  -webkit-backdrop-filter: blur(22px) saturate(1.35);
+}
+.gl-desk-cal {
+  width: 7.6rem;
+  padding: 0.75rem 0.8rem 0.7rem;
+}
+.gl-desk-cal-weekday {
+  margin: 0;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #ef4444;
+}
+.gl-desk-cal-num {
+  margin: 0.05rem 0 0;
+  font-size: 1.65rem;
+  font-weight: 650;
+  letter-spacing: -0.04em;
+  line-height: 1.05;
+}
+.gl-desk-cal-event {
+  margin-top: 0.45rem;
+  padding-left: 0.45rem;
+  border-left: 3px solid #3b82f6;
+}
+.gl-desk-cal-event p {
+  margin: 0;
+  line-height: 1.2;
+}
+.gl-desk-cal-event p:first-child {
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+.gl-desk-cal-event p:last-child {
+  font-size: 0.58rem;
+  color: rgba(15, 23, 42, 0.45);
+}
+.gl-desk-month {
+  width: 8.6rem;
+  padding: 0.65rem 0.6rem 0.55rem;
+}
+.gl-desk-month-week,
+.gl-desk-month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  text-align: center;
+}
+.gl-desk-month-week {
+  margin-top: 0.35rem;
+  font-size: 0.5rem;
+  font-weight: 650;
+  color: rgba(15, 23, 42, 0.35);
+}
+.gl-desk-month-grid {
+  margin-top: 0.15rem;
+}
+.gl-desk-month-grid span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 1.05rem;
+  font-size: 0.52rem;
+  font-variant-numeric: tabular-nums;
+  color: rgba(15, 23, 42, 0.72);
+}
+.gl-desk-month-grid span.is-today {
+  border-radius: 999px;
+  background: #ef4444;
+  color: #ffffff;
+  font-weight: 650;
+}
+.gl-desk-clock {
+  width: 8.2rem;
+  padding: 0.8rem 0.85rem;
+}
+.gl-desk-clock-time {
+  margin: 0;
+  font-size: 1.7rem;
+  font-weight: 650;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.gl-desk-clock-day,
+.gl-desk-clock-date {
+  margin: 0;
+  font-size: 0.68rem;
+}
+.gl-desk-clock-day {
+  margin-top: 0.45rem;
+  font-weight: 550;
+  color: rgba(15, 23, 42, 0.55);
+}
+.gl-desk-clock-date {
+  color: rgba(15, 23, 42, 0.4);
+}
+.gl-desk-icons {
+  position: absolute;
+  top: 7%;
+  right: 3.5%;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.85rem;
+}
+.gl-desk-icon {
+  display: flex;
+  width: 4.4rem;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+}
+.gl-desk-icon-art {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 2.7rem;
+  height: 2.7rem;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.25));
+}
+.gl-desk-icon-art svg {
+  width: 100%;
+  height: 100%;
+}
+.gl-desk-icon-badge {
+  position: absolute;
+  right: -0.35rem;
+  bottom: -0.15rem;
+  padding: 0.08rem 0.32rem;
+  border-radius: 999px;
+  background: #2563eb;
+  color: #ffffff;
+  font-size: 0.48rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.4);
+}
+.gl-desk-icon-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: #ffffff;
+  text-shadow: 0 1px 8px rgba(8, 16, 36, 0.55);
+}
+.gl-desk-center {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8%;
+  pointer-events: none;
+}
+.gl-desk-welcome {
+  margin: 0 0 1.15rem;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.28em;
+  font-size: clamp(1.15rem, 2.2vw, 1.7rem);
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  color: #ffffff;
+  text-shadow: 0 2px 18px rgba(8, 16, 36, 0.45);
+}
+.gl-desk-homebar {
+  width: min(28rem, 86%);
+  pointer-events: auto;
+}
+.gl-desk-dock {
+  position: absolute;
+  right: 0;
+  bottom: 3.5%;
+  left: 0;
+  z-index: 4;
+  display: flex;
+  justify-content: center;
+}
+.gl-desk-dock-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.28rem;
+  border-radius: 999px;
+}
+.gl-desk-dock-lykn {
+  display: grid;
+  height: 2.15rem;
+  width: 2.15rem;
+  place-items: center;
+}
+.gl-desk-dock-lykn img {
+  height: 1.7rem;
+  width: 1.7rem;
+  object-fit: contain;
+}
+.gl-desk-dock-btn {
+  display: grid;
+  height: 2.15rem;
+  width: 2.15rem;
+  place-items: center;
+  color: rgba(15, 23, 42, 0.62);
+}
+
+.gl-desk--compact .gl-desk-widgets {
+  top: 8%;
+  left: 4%;
+  transform: scale(0.72);
+  transform-origin: top left;
+}
+.gl-desk--compact .gl-desk-icons {
+  display: none;
+}
+.gl-desk--compact .gl-desk-welcome {
+  display: none;
+}
+.gl-desk--compact .gl-desk-homebar {
+  width: 88%;
+}
+.gl-desk--compact .gl-desk-dock {
+  transform: scale(0.82);
+  transform-origin: bottom center;
+}
+
+@media (max-width: 860px) {
+  .gl-desk-widgets {
+    transform: scale(0.78);
+    transform-origin: top left;
+  }
+  .gl-desk-icons {
+    transform: scale(0.86);
+    transform-origin: top right;
+  }
+  .gl-any-shot--desk {
+    aspect-ratio: 4 / 3;
+  }
 }
 
 .gl-window {
@@ -1492,7 +2625,8 @@
   .glass-land .gl-any-chip {
     color: rgba(255, 255, 255, 0.8);
   }
-  .glass-land .gl-any-chip:hover {
+  .glass-land .gl-any-chip:hover,
+  .glass-land .gl-any-chip.is-active {
     background: rgba(255, 255, 255, 0.16);
     color: #ffffff;
   }
@@ -1761,281 +2895,6 @@
 }
 
 /* ============================================================================
-   Project Manager section — frames the ACTUAL projects + calendar dashboard UI
-   (stat tiles, month calendar, tasks, Night Shift queue) in the browser window
-   chrome, with looping micro-animations so the surface feels alive.
-   ========================================================================== */
-.gl-pm {
-  position: relative;
-  z-index: 1;
-  background: transparent;
-  padding: clamp(3.5rem, 9vh, 7rem) clamp(1.25rem, 6vw, 5rem)
-    clamp(4rem, 11vh, 8rem);
-  text-align: left;
-}
-.gl-pm-inner {
-  max-width: 1120px;
-  margin: 0 auto;
-}
-.gl-pm-title {
-  margin: 0;
-  font-size: clamp(2rem, 4vw, 3.2rem);
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  line-height: 1.08;
-  color: #0f172a;
-}
-.gl-pm-sub {
-  /* Left-aligned section: sub sits under the heading, not centered. */
-  margin: clamp(0.85rem, 2vh, 1.25rem) auto 0 0;
-  max-width: 42rem;
-  font-size: clamp(1rem, 1.5vw, 1.18rem);
-  line-height: 1.55;
-  color: #475569;
-}
-
-.gl-pm-stage {
-  position: relative;
-  margin-top: clamp(2.5rem, 6vh, 4rem);
-  padding: clamp(2rem, 5vw, 4rem) clamp(1.25rem, 4vw, 3.5rem);
-  border-radius: 28px;
-  background: #f6f8fa;
-  border: 1px solid rgba(15, 23, 42, 0.07);
-  box-shadow: 0 24px 60px -30px rgba(15, 23, 42, 0.25);
-}
-
-/* Full-window variant (rounded all corners, grows to fit the dashboard). */
-.gl-window--pm {
-  max-width: 940px;
-  max-height: none;
-  border-radius: 14px;
-}
-.gl-pm-body {
-  padding: 20px 22px 24px;
-  text-align: left;
-}
-
-/* Phones: PmPreviewFit lays the desktop dashboard out at a fixed width and
-   uniformly scales it to the stage — a true miniature, not a squished reflow. */
-@media (max-width: 860px) {
-  .gl-pm-stage {
-    padding: 0.75rem;
-    overflow: hidden;
-  }
-  .gl-pm-fit {
-    position: relative;
-    width: 100%;
-    overflow: hidden;
-  }
-  .gl-pm-fit-inner {
-    transform-origin: top left;
-    will-change: transform;
-  }
-  .gl-pm-fit .gl-window--pm {
-    width: 100%;
-    max-width: none;
-  }
-}
-
-/* Calendar event/deadline dots gently pulse. */
-.gl-pm-dot {
-  animation: gl-pm-dotpulse 2.4s ease-in-out infinite;
-}
-@keyframes gl-pm-dotpulse {
-  0%,
-  100% {
-    transform: scale(1);
-    opacity: 1;
-  }
-  50% {
-    transform: scale(1.6);
-    opacity: 0.55;
-  }
-}
-
-/* Today cell — an expanding ring that radiates outward on a loop. */
-.gl-pm-today::after {
-  content: "";
-  position: absolute;
-  inset: -3px;
-  border-radius: 9999px;
-  border: 2px solid rgba(15, 23, 42, 0.28);
-  animation: gl-pm-ring 2.6s ease-out infinite;
-}
-@keyframes gl-pm-ring {
-  0% {
-    transform: scale(0.85);
-    opacity: 0.6;
-  }
-  80%,
-  100% {
-    transform: scale(1.4);
-    opacity: 0;
-  }
-}
-
-/* Task checkbox — a rounded ring; the first task auto-checks on a loop to show
-   LYKN working through the list. */
-.gl-pm-cb {
-  position: relative;
-  flex: none;
-  width: 1.3rem;
-  height: 1.3rem;
-  border-radius: 9999px;
-  border: 2px solid #cbd5e1;
-  background: transparent;
-}
-.gl-pm-cb::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 47%;
-  width: 5px;
-  height: 9px;
-  border: solid #ffffff;
-  border-width: 0 2px 2px 0;
-  transform: translate(-50%, -50%) rotate(45deg) scale(0.5);
-  opacity: 0;
-}
-.gl-pm-cb--done {
-  background: #10b981;
-  border-color: #10b981;
-}
-.gl-pm-cb--done::after {
-  opacity: 1;
-  transform: translate(-50%, -50%) rotate(45deg) scale(1);
-}
-.gl-pm-cb--auto {
-  animation: gl-pm-cbfill 6s ease-in-out infinite;
-}
-.gl-pm-cb--auto::after {
-  animation: gl-pm-cbmark 6s ease-in-out infinite;
-}
-@keyframes gl-pm-cbfill {
-  0%,
-  40% {
-    background: transparent;
-    border-color: #cbd5e1;
-  }
-  52%,
-  92% {
-    background: #10b981;
-    border-color: #10b981;
-  }
-  100% {
-    background: transparent;
-    border-color: #cbd5e1;
-  }
-}
-@keyframes gl-pm-cbmark {
-  0%,
-  40% {
-    opacity: 0;
-    transform: translate(-50%, -50%) rotate(45deg) scale(0.5);
-  }
-  52%,
-  92% {
-    opacity: 1;
-    transform: translate(-50%, -50%) rotate(45deg) scale(1);
-  }
-  100% {
-    opacity: 0;
-    transform: translate(-50%, -50%) rotate(45deg) scale(0.5);
-  }
-}
-
-/* Task label — fades to muted + a strike line sweeps across as it's checked. */
-.gl-pm-tasklabel {
-  position: relative;
-  display: inline-block;
-}
-.gl-pm-tasklabel--done {
-  color: #94a3b8;
-  text-decoration: line-through;
-}
-.gl-pm-tasklabel--auto {
-  animation: gl-pm-strikecolor 6s ease-in-out infinite;
-}
-.gl-pm-tasklabel--auto::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 52%;
-  height: 1.5px;
-  width: 0;
-  background: #94a3b8;
-  animation: gl-pm-strikeline 6s ease-in-out infinite;
-}
-@keyframes gl-pm-strikecolor {
-  0%,
-  40% {
-    color: #1e293b;
-  }
-  52%,
-  92% {
-    color: #94a3b8;
-  }
-  100% {
-    color: #1e293b;
-  }
-}
-@keyframes gl-pm-strikeline {
-  0%,
-  40% {
-    width: 0;
-  }
-  52%,
-  92% {
-    width: 100%;
-  }
-  100% {
-    width: 0;
-  }
-}
-
-/* Freshly-expanded Night Shift card — slides in with a blue glow each loop. */
-.gl-pm-card-fresh {
-  animation: gl-pm-cardin 6s ease-in-out infinite;
-}
-@keyframes gl-pm-cardin {
-  0% {
-    transform: translateX(-10px);
-    opacity: 0;
-    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
-  }
-  9% {
-    transform: translateX(0);
-    opacity: 1;
-  }
-  14%,
-  42% {
-    box-shadow: 0 0 0 1.5px rgba(59, 130, 246, 0.4),
-      0 8px 18px rgba(59, 130, 246, 0.2);
-  }
-  60%,
-  100% {
-    transform: translateX(0);
-    opacity: 1;
-    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .gl-pm-dot,
-  .gl-pm-today::after,
-  .gl-pm-cb--auto,
-  .gl-pm-cb--auto::after,
-  .gl-pm-tasklabel--auto,
-  .gl-pm-tasklabel--auto::after,
-  .gl-pm-card-fresh {
-    animation: none;
-  }
-  .gl-pm-tasklabel--auto::after {
-    width: 0;
-  }
-}
-
-/* ============================================================================
    Latest news — a row of gradient article tiles (reference: xAI's news strip),
    date + headline under each tile.
    ========================================================================== */
@@ -2289,6 +3148,11 @@
   line-height: 1.1;
   color: #0f172a;
 }
+.gl-start-title .lx-wordmark,
+.gl-start-card-title .lx-wordmark {
+  margin-left: 0.22em;
+  margin-right: -0.1em;
+}
 .gl-start-grid {
   margin-top: clamp(2rem, 5vh, 3.25rem);
   display: grid;
@@ -2312,13 +3176,11 @@
   flex-direction: column;
   padding: clamp(1.6rem, 3vw, 2.25rem);
   border-radius: 24px;
-  /* Frosted glass on the white stage, same family as the floating header. */
-  background: rgba(255, 255, 255, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.75);
-  backdrop-filter: blur(20px) saturate(170%);
-  -webkit-backdrop-filter: blur(20px) saturate(170%);
-  box-shadow: 0 24px 60px -28px rgba(15, 23, 42, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: 0 24px 60px -28px rgba(15, 23, 42, 0.35);
 }
 .gl-start-card-title {
   margin: 0;
@@ -2354,7 +3216,7 @@
   width: 0.85rem;
   height: 0.85rem;
   margin-top: 0.22em;
-  color: #2563eb;
+  color: #0968c4;
 }
 .gl-start-btn {
   margin-top: auto;
@@ -2365,8 +3227,9 @@
   font-weight: 600;
   border-radius: 999px;
   cursor: pointer;
+  isolation: isolate;
   transition: transform 0.18s ease, background 0.18s ease,
-    border-color 0.18s ease, box-shadow 0.18s ease;
+    border-color 0.18s ease;
 }
 .gl-start-btn:hover {
   transform: translateY(-1px);
@@ -2381,7 +3244,7 @@
 }
 .gl-start-btn--solid:hover {
   background: #1e293b;
-  box-shadow: 0 14px 30px -12px rgba(15, 23, 42, 0.5);
+  box-shadow: none;
 }
 .gl-start-btn--ghost {
   color: #0f172a;
@@ -2425,8 +3288,12 @@
   }
 }
 .gl-footer-logo {
+  display: block;
   height: 26px;
-  width: auto;
+  width: 4.35rem;
+  background: #0968c4;
+  -webkit-mask: var(--gl-footer-mark) left center / contain no-repeat;
+  mask: var(--gl-footer-mark) left center / contain no-repeat;
 }
 .gl-footer-tagline {
   margin: 1rem 0 0;
@@ -2471,7 +3338,7 @@
   transition: color 0.15s ease;
 }
 .gl-footer-link:hover {
-  color: #0f172a;
+  color: #072544;
 }
 .gl-footer-bottom {
   max-width: 1120px;
@@ -2486,9 +3353,14 @@
   font-size: 0.82rem;
   color: #94a3b8;
 }
+.gl-footer-bottom > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.28em;
+}
 .gl-footer-shortcut {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   gap: 0.4rem;
 }
 .gl-footer-shortcut kbd {
@@ -2501,93 +3373,6 @@
   color: #334155;
   background: #ffffff;
   border: 1px solid rgba(15, 23, 42, 0.12);
-}
-
-/* ─────────────────────────────────────────────────────────────
-   Connected-app ticker (Vault section bottom)
-   ───────────────────────────────────────────────────────────── */
-.gl-ticker {
-  margin-top: clamp(2.75rem, 7vh, 4.5rem);
-  width: 100%;
-}
-.gl-ticker-label {
-  text-align: center;
-  margin: 0 0 clamp(1.1rem, 2.5vh, 1.6rem);
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: #94a3b8;
-}
-.gl-ticker-viewport {
-  overflow: hidden;
-  -webkit-mask-image: linear-gradient(
-    to right,
-    transparent,
-    #000 8%,
-    #000 92%,
-    transparent
-  );
-  mask-image: linear-gradient(
-    to right,
-    transparent,
-    #000 8%,
-    #000 92%,
-    transparent
-  );
-}
-.gl-ticker-track {
-  display: flex;
-  width: max-content;
-  animation: gl-ticker-scroll 42s linear infinite;
-}
-.gl-ticker:hover .gl-ticker-track {
-  animation-play-state: paused;
-}
-.gl-ticker-box {
-  flex: none;
-  /* trailing margin (not gap) keeps the loop seamless at -50% */
-  margin-right: clamp(0.85rem, 1.6vw, 1.35rem);
-  display: grid;
-  place-items: center;
-  width: clamp(54px, 5vw, 66px);
-  height: clamp(54px, 5vw, 66px);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.65);
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(18px) saturate(160%);
-  -webkit-backdrop-filter: blur(18px) saturate(160%);
-  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.1),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
-}
-.gl-ticker-box:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
-}
-.gl-ticker-box img {
-  width: 56%;
-  height: 56%;
-  object-fit: contain;
-}
-.gl-ticker-fallback {
-  font-size: 1.1rem;
-  font-weight: 700;
-  color: #64748b;
-}
-@keyframes gl-ticker-scroll {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(-50%);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .gl-ticker-track {
-    animation: none;
-  }
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -2961,6 +3746,9 @@
   transform-origin: center;
   animation: gl-demo-outline-pop 3.6s ease-in-out infinite;
   flex: none;
+  position: relative;
+  top: -2px;
+  left: 3px;
 }
 .gl-demo-spinner path {
   stroke-dasharray: 1;
@@ -3028,6 +3816,9 @@
 }
 .gl-demo-cta {
   flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3em;
   border: 1px solid rgba(120, 160, 255, 0.5);
   background: rgba(59, 120, 255, 0.28);
   color: #fff;

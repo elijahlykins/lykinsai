@@ -85,7 +85,7 @@ export default function RemoteTargetsSection() {
   };
 
   return (
-    <div id="remote-targets" className="mt-8">
+    <div id="remote-targets">
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">
           <Server className="w-4 h-4 text-black/60 dark:text-white/60" />
@@ -102,7 +102,7 @@ export default function RemoteTargetsSection() {
         </button>
       </div>
       <p className="text-[12.5px] text-black/45 dark:text-white/45 mb-3">
-        SSH hosts LYKN can work on. Authentication uses your system SSH keys and agent —
+        SSH hosts LYKN can work on. Authentication uses your system SSH keys and agent.
         LYKN never stores passwords or key files. First connection asks you to verify the
         host&apos;s key fingerprint. Production hosts always require your approval for changes.
       </p>
@@ -211,7 +211,7 @@ export default function RemoteTargetsSection() {
                   await updateRemoteTarget(t.id, { environment: e.target.value });
                   await refresh();
                 }}
-                title="Environment classification — production always requires approval for changes"
+                title="Environment classification. Production always requires approval for changes."
                 className="rounded-lg border border-black/10 dark:border-white/10 bg-transparent px-1.5 py-1 text-[11.5px] outline-none"
               >
                 {ENVIRONMENTS.map((env) => (
@@ -223,7 +223,7 @@ export default function RemoteTargetsSection() {
               {t.trusted && (
                 <button
                   type="button"
-                  title="Reset trust — the next connection re-verifies the host key fingerprint with you"
+                  title="Reset trust. The next connection re-verifies the host key fingerprint with you."
                   onClick={async () => {
                     await forgetRemoteTargetTrust(t.id);
                     await refresh();

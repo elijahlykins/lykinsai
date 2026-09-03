@@ -158,6 +158,15 @@ function extOf(att: AttachmentLike): string {
   return "";
 }
 
+/** Written documents and built pages - render them, never dump the markup. */
+export function looksLikeHtmlAttachment(attachment: AttachmentLike = {}): boolean {
+  const mime = String(attachment.mimeType || attachment.mime || "").toLowerCase().split(";")[0].trim();
+  if (mime === "text/html") return true;
+  if (String(attachment.type || "").toLowerCase() === "html") return true;
+  const ext = extOf(attachment);
+  return ext === "html" || ext === "htm";
+}
+
 /** True when attachment paths/names look like an image file. */
 export function looksLikeImageAttachment(attachment: AttachmentLike = {}): boolean {
   const mime = String(attachment.mimeType || "").toLowerCase().split(";")[0].trim();

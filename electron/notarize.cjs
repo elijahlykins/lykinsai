@@ -44,6 +44,13 @@ exports.default = async function notarizing(context) {
     process.env.APPLE_ID && process.env.APPLE_APP_SPECIFIC_PASSWORD && process.env.APPLE_TEAM_ID;
 
   if (!hasApiKey && !hasAppleId) {
+    if (process.env.LYKN_REQUIRE_NOTARIZATION === "1") {
+      throw new Error(
+        "[notarize] Release requires Apple notarization credentials. " +
+          "Set APPLE_API_KEY/APPLE_API_KEY_ID/APPLE_API_ISSUER, or " +
+          "APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID.",
+      );
+    }
     console.log(
       "[notarize] Skipping — no Apple credentials in env. Set APPLE_API_KEY/" +
         "APPLE_API_KEY_ID/APPLE_API_ISSUER, or APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/" +

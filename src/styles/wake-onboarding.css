@@ -2592,7 +2592,7 @@
     -2px -2px 6px rgba(255, 255, 255, 0.82),
     0 0 14px rgba(59, 130, 246, 0.14);
 }
-.lkn-chat-light .lykn-chat-neu-chat-send-btn:not(:disabled) svg { color: #2563eb !important; }
+.lkn-chat-light .lykn-chat-neu-chat-send-btn:not(:disabled) svg { color: #0968c4 !important; }
 
 /* Send button picks up the same slate-blue family so the toolbar reads
    as one surface. */

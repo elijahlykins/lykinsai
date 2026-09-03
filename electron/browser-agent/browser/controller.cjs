@@ -9,6 +9,7 @@
 
 const { buildSnapshot, diffSnapshots } = require("./snapshot.cjs");
 const { createBrowserSession } = require("./session.cjs");
+const { looksLikeDocsTitleTarget } = require("../../docsTitleGuard.cjs");
 
 /**
  * @param {object} deps
@@ -529,12 +530,15 @@ function createBrowserController({
     if (blocked) return blocked;
     const { el, error, hint } = resolveRef(ref);
     if (error) return { ok: false, error, ...(hint ? { hint } : {}) };
+    const titleField = looksLikeDocsTitleTarget(el.label);
+    // Docs filename ignores HTML value assignment. Always clear + type.
+    if (titleField) mode = "replace";
     // mode "replace": set the field's whole value deterministically (inputs /
     // textareas). Rich-text bodies should use replaceText for targeted edits
     // instead of wiping and retyping.
     if (mode === "replace") {
       const tag = String(el.raw.tag || "").toLowerCase();
-      if (tag === "input" || tag === "textarea") {
+      if ((tag === "input" || tag === "textarea") && !titleField) {
         const res = await asAgent(() => actuator.runAction(
           wc(),
           {

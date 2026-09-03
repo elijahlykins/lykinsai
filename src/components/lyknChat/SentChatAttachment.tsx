@@ -34,6 +34,7 @@ type SentChatAttachmentProps = {
   isSaved: boolean;
   onSaveToVault: (att: SentChatAttachmentData) => void;
   onSaveYouTube: (videoId: string, url: string) => void;
+  chatId?: string | null;
 };
 
 export default function SentChatAttachment({
@@ -41,6 +42,7 @@ export default function SentChatAttachment({
   isSaved,
   onSaveToVault,
   onSaveYouTube,
+  chatId,
 }: SentChatAttachmentProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [dropUp, setDropUp] = useState(false);
@@ -168,6 +170,7 @@ export default function SentChatAttachment({
             authorHandle={att.authorHandle || ""}
             oembedType={att.oembedType || ""}
             variant="vault"
+            chatId={chatId}
           />
         </div>
       );

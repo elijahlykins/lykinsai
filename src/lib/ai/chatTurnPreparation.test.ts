@@ -6,9 +6,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  attachmentsForPrompt,
   buildAttachmentContext,
   buildThreadHistory,
   buildConversationArray,
+  collectThreadFolderAttachments,
+  folderPathFromAttachment,
 } from "./chatTurnPreparation";
 import type { FocusedChatAttachment, PromptMessage } from "@/lib/lyknChat/chatTurnTypes";
 
@@ -36,6 +39,31 @@ describe("buildAttachmentContext", () => {
     assert.match(ctx, /Desktop folder "Docs"/);
     assert.match(ctx, /file\.txt/);
     assert.match(ctx, /local_list_dir/);
+    assert.match(ctx, /Do not hand this off/);
+  });
+
+  it("carries a prior desktop folder onto the next turn", () => {
+    const folder = att({
+      type: "folder",
+      name: "Docs",
+      localPath: "/Users/me/Docs",
+      vaultContent: "Attached folder \"Docs\"\nPath: /Users/me/Docs\n  - agents.md",
+    });
+    const messages: PromptMessage[] = [
+      {
+        id: "1",
+        role: "user",
+        content: "what's in here",
+        kind: "prompt",
+        attachments: [folder],
+      },
+    ];
+    const prior = collectThreadFolderAttachments(messages, []);
+    assert.equal(prior.length, 1);
+    assert.equal(folderPathFromAttachment(prior[0]), "/Users/me/Docs");
+    const merged = attachmentsForPrompt([], messages);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].name, "Docs");
   });
 
   it("does not spell out a data URL", () => {
@@ -59,6 +87,18 @@ describe("buildAttachmentContext", () => {
     assert.match(ctx, /What the image shows: a red card/);
     assert.match(ctx, /Text extracted from this image \(OCR/);
     assert.match(ctx, /HELLO/);
+  });
+
+  it("names an attached artifact so the model sees it on every mode", () => {
+    const ctx = buildAttachmentContext([
+      att({
+        type: "artifact",
+        name: "Super Coin Dash",
+        artifact: { toolName: "lykn_build_react_artifact", title: "Super Coin Dash" },
+      }),
+    ]);
+    assert.match(ctx, /Attached artifact "Super Coin Dash"/);
+    assert.match(ctx, /build react artifact/);
   });
 });
 

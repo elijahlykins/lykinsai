@@ -59,12 +59,12 @@ function refreshTrayUpdateAffordance() {
     const hotkeyLabel = IS_MAC ? "⌘L" : "Ctrl+L";
     if (d.pendingUpdate) {
       const ver = d.pendingUpdate.version ? ` ${d.pendingUpdate.version}` : "";
-      d.tray.setToolTip(`LYKN${ver} is ready — restart to update (${hotkeyLabel})`);
+      d.tray.setToolTip(`LYKN${ver} is ready. Restart to update (${hotkeyLabel})`);
       if (IS_MAC && app.dock) {
         try { app.dock.setBadge("↑"); } catch (_) { /* cosmetic */ }
       }
     } else {
-      d.tray.setToolTip(`LYKN — open the chat overlay (${hotkeyLabel})`);
+      d.tray.setToolTip(`LYKN: open the chat overlay (${hotkeyLabel})`);
       if (IS_MAC && app.dock) {
         try { app.dock.setBadge(""); } catch (_) { /* cosmetic */ }
       }

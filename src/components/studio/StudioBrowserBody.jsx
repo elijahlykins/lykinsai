@@ -4,16 +4,11 @@
 import { useEffect, useRef, useState } from "react";
 import BrowserMark from "@/components/macdesktop/BrowserMark";
 import StudioAgentRail from "@/components/studio/agentRail/StudioAgentRail";
-
-/* The window frame is rounded 1.25rem (20px) and the views below are inset by
- * one 6px resize grip, so their corners have to curve that much tighter to sit
- * concentric with the frame's. Reported to the main process, which wears it on
- * the native views. */
-export const BROWSER_VIEW_RADIUS = 14;
-// Mirrors AGENT_STAGE_CHROME_DEFAULT in electron/main.cjs — how much room the
-// native tab strip + nav row take above the page. The stage reports its real
-// height (a favourites row makes it taller) and that arrives with the shot.
-export const BROWSER_CHROME_HEIGHT = 82;
+import {
+  BROWSER_CHROME_HEIGHT,
+  BROWSER_TAB_STRIP_HEIGHT,
+  BROWSER_VIEW_RADIUS,
+} from "@/components/studio/browserPaneLayout";
 // Long enough to cover the slowest way the window leaves (DesktopAppWindow's
 // 260ms peek slide; close and minimize are quicker) and no longer, so the
 // browser's last picture is gone by the time it comes back.
@@ -33,7 +28,10 @@ function StudioBrowserSkeleton({ chromeHeight }) {
         style={{ height: chromeHeight }}
       >
         {/* Tab strip: traffic lights, then the one open tab. */}
-        <div className="flex h-[42px] flex-none items-center gap-2 pl-[13px] pr-2">
+        <div
+          className="flex flex-none items-center gap-2 pl-[13px] pr-2"
+          style={{ height: BROWSER_TAB_STRIP_HEIGHT }}
+        >
           <div className="h-3 w-3 flex-none rounded-full bg-black/[0.09]" />
           <div className="h-3 w-3 flex-none rounded-full bg-black/[0.09]" />
           <div className="h-3 w-3 flex-none rounded-full bg-black/[0.09]" />
@@ -67,10 +65,8 @@ export default function StudioBrowserBody({
   desktop,
   shot,
   docked,
-  chromeHeight,
-  homeChatLive,
-  homeView,
-  name,
+  chromeHeight = BROWSER_CHROME_HEIGHT,
+  railOpen = false,
   onAttachedBarChange,
 }) {
   // The picture is strictly for leaving: the native views can't be scaled or
@@ -105,12 +101,21 @@ export default function StudioBrowserBody({
     // the tab strip runs to the top edge here, with no title bar above it.
     <div className="flex h-full w-full p-1.5">
       <div
-        ref={hostRef}
-        // Matching the native views' own rounding, so the frame's background
-        // (not the underlay) shows through the curve of all four corners.
-        className="relative min-w-0 flex-1 overflow-hidden"
+        className="lykn-browser-pane flex min-h-0 min-w-0 flex-1 overflow-hidden bg-[#f3f2f0]"
         style={{ borderRadius: BROWSER_VIEW_RADIUS }}
       >
+        <div
+          ref={hostRef}
+          // Chrome wears the frame curve; the page under the tabs is square.
+          // Open rail: left corners only, so the pane meets the chat on a
+          // straight edge.
+          className="relative min-w-0 flex-1 overflow-hidden"
+          style={{
+            borderRadius: railOpen
+              ? `${BROWSER_VIEW_RADIUS}px 0 0 ${BROWSER_VIEW_RADIUS}px`
+              : BROWSER_VIEW_RADIUS,
+          }}
+        >
         {/* Underlay for the sliver of time before the native views paint. It
             matches the page they'll show rather than announcing itself: any
             mark or copy here reads as a placeholder screen flashing up in
@@ -155,15 +160,13 @@ export default function StudioBrowserBody({
             )}
           </div>
         )}
+        </div>
+        <StudioAgentRail
+          desktop={desktop}
+          chromeHeight={chromeHeight}
+          onAttachedBarChange={onAttachedBarChange}
+        />
       </div>
-      <StudioAgentRail
-        desktop={desktop}
-        homeChatLive={homeChatLive}
-        homeView={homeView}
-        name={name}
-        visible={docked}
-        onAttachedBarChange={onAttachedBarChange}
-      />
     </div>
   );
 }

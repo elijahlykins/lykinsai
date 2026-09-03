@@ -5,10 +5,13 @@ import {
   Library,
   Link as LinkIcon,
   Paperclip,
+  Plug,
   Plus,
 } from "lucide-react";
 import LocalModeToggle from "@/components/vault/LocalModeToggle";
 import { isLocalModeAvailable } from "@/lib/localMode";
+import { openConnectionsSettings } from "@/lib/mcp/mcpApi";
+import { openStudioTab } from "@/lib/studioTabs";
 
 export type LyknChatPlusMenuProps = {
   iconBtnCls: string;
@@ -33,6 +36,14 @@ const LyknChatPlusMenu = React.memo(function LyknChatPlusMenu({
     setOpen(false);
     // Defer so the popover can close before any prompt()/dialog opens.
     window.setTimeout(fn, 0);
+  }, []);
+
+  // Settings → Connections, same pattern as the Bots page: Studio handles
+  // the tab event when chat lives on the Studio desktop; the settings URL
+  // fallback covers everything else.
+  const onConnectTool = React.useCallback(() => {
+    openStudioTab("settings", "connections");
+    openConnectionsSettings();
   }, []);
 
   const itemCls =
@@ -73,6 +84,10 @@ const LyknChatPlusMenu = React.memo(function LyknChatPlusMenu({
           <button type="button" className={itemCls} onClick={() => run(onProjects)}>
             <span className={iconWrapCls}><FolderKanban className="w-[1.05rem] h-[1.05rem]" /></span>
             Projects
+          </button>
+          <button type="button" className={itemCls} onClick={() => run(onConnectTool)}>
+            <span className={iconWrapCls}><Plug className="w-[1.05rem] h-[1.05rem]" /></span>
+            Connect a tool
           </button>
           {/* Local Mode — desktop shell only. Grants LYKN file/terminal access
               on this Mac; risky actions still ask for approval per action. */}

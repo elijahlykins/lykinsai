@@ -2,9 +2,15 @@
 // overlay page — never the raw ipcRenderer.
 
 const { contextBridge, ipcRenderer, clipboard } = require("electron");
+const {
+  GLASS_LIVE_WATCH_ENABLED,
+  GLASS_AGENT_MODE_ENABLED,
+} = require("./overlay/glassFeatures.cjs");
 
 contextBridge.exposeInMainWorld("lyknOverlay", {
   platform: process.platform,
+  glassLiveWatchEnabled: GLASS_LIVE_WATCH_ENABLED,
+  glassAgentModeEnabled: GLASS_AGENT_MODE_ENABLED,
   // Local Mode — file/terminal access, shared with the main-app surface so the
   // Glass overlay can run local tools too. Tools execute in main.
   localModeGet: () => ipcRenderer.invoke("lykn:local-mode-get"),
@@ -162,7 +168,12 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
     ipcRenderer.invoke("lykn:set-content-protection", !!enabled),
   // Live Watch — continuous screen awareness (motion-aware frame stream).
   getLiveWatch: () => ipcRenderer.invoke("lykn:get-live-watch"),
-  setLiveWatch: (enabled) => ipcRenderer.invoke("lykn:set-live-watch", !!enabled),
+  setLiveWatch: (enabled) => {
+    if (!GLASS_LIVE_WATCH_ENABLED && enabled) {
+      return Promise.resolve({ ok: false, error: "unplugged", enabled: false });
+    }
+    return ipcRenderer.invoke("lykn:set-live-watch", !!enabled);
+  },
   addLiveWatchRule: (text) => ipcRenderer.invoke("lykn:add-live-watch-rule", { text }),
   clearLiveWatchRules: () => ipcRenderer.invoke("lykn:clear-live-watch-rules"),
   onLiveWatchUpdate: (cb) => {
@@ -172,6 +183,13 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   },
   openExtensionInstall: () => ipcRenderer.invoke("lykn:open-extension-install"),
   getNightBriefs: () => ipcRenderer.invoke("lykn:get-night-briefs"),
+  updateStatus: () => ipcRenderer.invoke("lykn:update-status"),
+  installUpdate: () => ipcRenderer.invoke("lykn:update-install"),
+  onUpdateStatus: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:update-status", fn);
+    return () => ipcRenderer.removeListener("lykn:update-status", fn);
+  },
   // Agent Mode — parallel cowork agents (owned browser sessions).
   agentCreate: (payload) => ipcRenderer.invoke("lykn:agent-create", payload || {}),
   agentList: () => ipcRenderer.invoke("lykn:agent-list"),
@@ -183,7 +201,14 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
     ipcRenderer.invoke("lykn:agent-send", { agentId, text, attachments }),
   agentChoiceResolve: (agentId, choiceId, buttonId) =>
     ipcRenderer.invoke("lykn:agent-choice-resolve", { agentId, choiceId, buttonId }),
-  agentModeSet: (open) => ipcRenderer.invoke("lykn:agent-mode-set", { open: !!open }),
+  agentModeSet: (open) => {
+    // Soft-unplug: Glass cannot enter Agent Mode. Closing still works so a
+    // leftover session can stand down. Studio uses a different preload.
+    if (!GLASS_AGENT_MODE_ENABLED && open) {
+      return Promise.resolve({ ok: false, unplugged: true, agentModeOn: false });
+    }
+    return ipcRenderer.invoke("lykn:agent-mode-set", { open: !!open });
+  },
   agentHistory: (agentId) => ipcRenderer.invoke("lykn:agent-history", agentId),
   agentShowBrowser: (agentId, visible) =>
     ipcRenderer.invoke("lykn:agent-show-browser", { agentId, visible: visible !== false }),

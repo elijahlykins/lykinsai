@@ -48,7 +48,7 @@ export function useVaultFoldersViews({
   // grid then renders only that connector's items plus a "back to all"
   // affordance. null = normal mixed view.
   const [openSourceFolder, setOpenSourceFolder] = useState(null);
-  // Which of AI Drive's two folders is open ("artifacts" / "images"), or null
+  // Which of AI Drive's folders is open ("docs" / "artifacts" / "images"), or null
   // for the drive's root. See AI_DRIVE_FOLDERS and deriveVisibleCards.
   const [openDriveFolder, setOpenDriveFolder] = useState(null);
   // Display data for the folder-view header (name, domain, favicon),

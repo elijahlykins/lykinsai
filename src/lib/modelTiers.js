@@ -4,6 +4,7 @@
 
 import {
   LYKN_ID,
+  MY_SETUP_ID,
   LEGACY_LYKN_LITE_ID,
   LEGACY_LYKN_FAST_ID,
   LEGACY_LYKN_DEEP_ID,
@@ -13,29 +14,21 @@ import {
   FRONTIER_GOOGLE_ID,
   FRONTIER_XAI_ID,
   KNOWN_MODEL_IDS,
-  CLAUDE_OPUS_4_8_ID,
 } from "./modelCatalog.js";
 
 export const MODEL_TIER_BASIC = "basic";
 export const MODEL_TIER_FRONTIER = "frontier";
 
-export const BASIC_MODEL_IDS = new Set([LYKN_ID]);
+export const BASIC_MODEL_IDS = new Set([LYKN_ID, MY_SETUP_ID]);
 
-const FRONTIER_MODEL_IDS = new Set([
-  FRONTIER_OPENAI_ID,
-  FRONTIER_ANTHROPIC_ID,
-  FRONTIER_GOOGLE_ID,
-  FRONTIER_XAI_ID,
-  CLAUDE_OPUS_4_8_ID,
-  "gpt-4.1",
-]);
+const FRONTIER_MODEL_IDS = new Set(
+  KNOWN_MODEL_IDS.filter((id) => !BASIC_MODEL_IDS.has(id)),
+);
 
 const LEGACY_ALIASES = {
   [LEGACY_LYKN_LITE_ID]: LYKN_ID,
   [LEGACY_LYKN_FAST_ID]: LYKN_ID,
   [LEGACY_LYKN_DEEP_ID]: LYKN_ID,
-  // Retired frontier picks (saved in localStorage / chat rows) migrate to
-  // the current flagship of the same provider.
   ...LEGACY_FRONTIER_ALIASES,
 };
 

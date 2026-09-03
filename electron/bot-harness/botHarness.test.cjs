@@ -71,13 +71,46 @@ test("system prompt carries identity + rules + tool index, but no full tool docs
   assert.doesNotMatch(system, /# Tool: browser/);
 });
 
+test("system prompt contains no em dashes", () => {
+  const system = contextRouter.buildDecisionSystem({ bot: BOT, localMode: true });
+  assert.equal(system.includes("\u2014"), false, "agent system prompt must not contain em dashes");
+  assert.equal(
+    contextRouter.buildVerificationSystem().includes("\u2014"),
+    false,
+    "verification system prompt must not contain em dashes",
+  );
+});
+
+test("system prompt carries custom skills the user taught the bot", () => {
+  const system = contextRouter.buildDecisionSystem({
+    bot: {
+      ...BOT,
+      skills: [
+        {
+          id: "skill_1",
+          name: "Invoice chase",
+          instructions: "Check unpaid invoices and draft a polite reminder.",
+        },
+      ],
+    },
+    localMode: false,
+  });
+  assert.match(system, /Custom skills the user taught you/);
+  assert.match(system, /Invoice chase/);
+  assert.match(system, /unpaid invoices/);
+});
+
 test("system prompt is byte-stable for the same bot, and local mode gates the local tool", () => {
   const a = contextRouter.buildDecisionSystem({ bot: BOT, localMode: false });
   const b = contextRouter.buildDecisionSystem({ bot: BOT, localMode: false });
   assert.equal(a, b);
   assert.doesNotMatch(a, /`local_computer`/);
+  assert.match(a, /`ai_drive`/);
+  assert.match(a, /`create_routine`/);
+  assert.match(a, /`connected_apps`/);
   const withLocal = contextRouter.buildDecisionSystem({ bot: BOT, localMode: true });
   assert.match(withLocal, /`local_computer`/);
+  assert.match(withLocal, /`ai_drive`/);
 });
 
 /* ── Progressive disclosure ───────────────────────────────────────────────── */
@@ -109,7 +142,7 @@ test("first selection of a tool loads its doc instead of running; the call runs 
 test("primaryTool preloads its doc so the routed single-tool task runs on round one", async () => {
   const { model, seen } = fakeModel([
     { kind: "use_tool", tool: "research_report", instruction: "espresso machines under $500", narration: "Researching." },
-    { kind: "deliver", answer: "Report's ready — three machines stood out." },
+    { kind: "deliver", answer: "Report's ready — it's in the document above." },
   ]);
   const research = okExecutor("# Report\nLots of sourced findings…");
   const res = await harness.runBotTask({
@@ -121,11 +154,76 @@ test("primaryTool preloads its doc so the routed single-tool task runs on round 
   });
   assert.equal(res.status, "completed");
   assert.equal(research.calls.length, 1);
+  // The report is delivered to the user as a document card; the answer is
+  // the model's short close, not the report repeated.
+  assert.equal(res.answer, "Report's ready — it's in the document above.");
   // The doc was in context from round one.
   assert.match(seen.users[0], /# Tool: research_report/);
 });
 
+test("create_routine is a first-class tool and preloads when routed", async () => {
+  const names = registry.listTools({ localMode: false }).map((t) => t.name);
+  assert.ok(names.includes("create_routine"));
+  assert.ok(names.includes("connected_apps"));
+  const { model, seen } = fakeModel([
+    {
+      kind: "use_tool",
+      tool: "create_routine",
+      instruction: JSON.stringify({
+        name: "Inbox watch",
+        instructions: "Check Gmail and ping me when new mail arrives.",
+        trigger: { type: "schedule", schedule: { kind: "interval", everyMs: 60000 } },
+      }),
+      narration: "Setting up the inbox watch.",
+    },
+    {
+      kind: "deliver",
+      answer:
+        'Routine created: "Inbox watch". It will check every minute. You can pause, run, or delete it on my page.',
+    },
+  ]);
+  const routine = okExecutor(
+    'Routine created: "Inbox watch". Runs: every minute. The user can pause, run, or delete it from this bot\'s page.',
+  );
+  const res = await harness.runBotTask({
+    goal: "set a routine to monitor my email every minute",
+    bot: BOT,
+    model,
+    executors: { create_routine: routine.fn },
+    primaryTool: "create_routine",
+  });
+  assert.equal(res.status, "completed");
+  assert.equal(routine.calls.length, 1);
+  assert.match(seen.users[0], /# Tool: create_routine/);
+  assert.match(res.answer, /Inbox watch/);
+});
+
 /* ── Delivery discipline ──────────────────────────────────────────────────── */
+
+test("a prior conversation report is not this task — empty delivery is pushed back to the routed tool", async () => {
+  const { model, seen } = fakeModel([
+    { kind: "deliver", answer: "Here is the report I already wrote." },
+    { kind: "use_tool", tool: "research_report", instruction: "espresso machines under $500", narration: "Researching again." },
+    { kind: "deliver", answer: "Fresh report's done — it's in the document above." },
+  ]);
+  const research = okExecutor("# Fresh report");
+  const res = await harness.runBotTask({
+    goal: "research espresso machines under $500",
+    bot: BOT,
+    model,
+    executors: { research_report: research.fn },
+    primaryTool: "research_report",
+    conversationHistory: [
+      { role: "user", content: "research espresso machines under $500" },
+      { role: "assistant", content: "Report's ready — three machines stood out." },
+    ],
+  });
+  assert.equal(res.status, "completed");
+  assert.equal(research.calls.length, 1);
+  assert.match(seen.users[0], /references only/i);
+  assert.match(seen.users[1], /research_report/);
+  assert.match(res.answer, /Fresh report's done/);
+});
 
 test("delivering with nothing run gets one pushback, then stands", async () => {
   const { model, seen } = fakeModel([
@@ -180,10 +278,10 @@ test("a consequential decision runs only after approval; a decline is recorded a
   assert.match(seen.users[1], /user declined/i);
 });
 
-test("the browser tool parks its own opt-in — no double ask through the approval gate", async () => {
-  // The browser executor's only act is parking "want me to use the browser?"
-  // — that question IS the consent gate. A consequential floor here made the
-  // user approve being asked, then answer the ask: two prompts for one yes.
+test("the browser tool can park a mid-run question — no double ask through the approval gate", async () => {
+  // A mid-browse handback (sign-in, which size) is the consent gate for
+  // THAT pause. A consequential floor here would make the user approve
+  // opening the tab, then answer the real question: two prompts for one yes.
   const { model } = fakeModel([
     { kind: "use_tool", tool: "browser", instruction: "send the mail", narration: "Sending.", risk: "low" },
   ]);
@@ -204,12 +302,12 @@ test("the browser tool parks its own opt-in — no double ask through the approv
       return true;
     },
   });
-  assert.equal(asked, 0, "the opt-in question is the gate — no approval prompt on top of it");
+  assert.equal(asked, 0, "the parked question is the gate — no approval prompt on top of it");
   assert.equal(res.status, "waiting_for_user");
   assert.equal(res.parked, true);
 });
 
-test("an executor can park the whole turn on the user (browser opt-in)", async () => {
+test("an executor can park the whole turn on the user (mid-browse question)", async () => {
   const { model } = fakeModel([
     { kind: "use_tool", tool: "browser", instruction: "reorder the pizza", narration: "Heading to the site." },
   ]);
@@ -311,6 +409,220 @@ test("a failing tool burns the recovery budget, then the model is told to delive
 
 /* ── Terminal reply and budget ────────────────────────────────────────────── */
 
+test("verification asks whether the instruction landed, not leftover teammate steps", () => {
+  const system = contextRouter.buildVerificationSystem();
+  assert.match(system, /accomplished its INSTRUCTION/);
+  assert.match(system, /teammate consult/);
+});
+
+test("a verify-retry that rewrote the report yields one deliverable card, not two", async () => {
+  const { model } = fakeModel(
+    [
+      { kind: "use_tool", tool: "research_report", instruction: "top landing pages", narration: "Researching." },
+      { kind: "use_tool", tool: "research_report", instruction: "top landing pages, more proof", narration: "Rewriting." },
+      { kind: "deliver", answer: "Report's done — it's in the document above." },
+    ],
+    [
+      { success: false, reason: "too thin on proof", next: "recover" },
+      { success: true, evidence: "sourced comparisons", next: "continue" },
+    ],
+  );
+  let attempt = 0;
+  const research = {
+    fn: async () => {
+      attempt += 1;
+      return {
+        ok: true,
+        output: `# Landing pages v${attempt}`,
+        deliverable: { kind: "html", title: `Landing pages v${attempt}`, html: `<html>v${attempt}</html>` },
+      };
+    },
+  };
+  const browser = okExecutor("Opened docs.google.com");
+  const res = await harness.runBotTask({
+    goal: "go to the top landing pages in the world and find out how they do so good",
+    bot: BOT,
+    model,
+    executors: { research_report: research.fn, browser: browser.fn },
+    primaryTool: "research_report",
+  });
+  assert.equal(res.status, "completed");
+  assert.equal(browser.calls.length, 0, "do not follow a finished report into the browser");
+  // The failed-verify attempt's card was replaced by the verified rewrite.
+  assert.equal(res.deliverables.length, 1);
+  assert.equal(res.deliverables[0].title, "Landing pages v2");
+  assert.equal(res.deliverables[0].tool, "research_report");
+});
+
+test("a report-then-presentation task keeps both deliverables for the chat", async () => {
+  const { model } = fakeModel([
+    { kind: "use_tool", tool: "research_report", instruction: "coffee market", narration: "Researching." },
+    { kind: "use_tool", tool: "build_artifact", instruction: "present the report", narration: "Building." },
+    { kind: "use_tool", tool: "build_artifact", instruction: "present the report", narration: "Building." },
+    { kind: "deliver", answer: "Report and presentation are both above." },
+  ]);
+  const research = {
+    fn: async () => ({
+      ok: true,
+      output: "# Coffee market",
+      deliverable: { kind: "html", title: "Coffee market", html: "<html>report</html>" },
+    }),
+  };
+  const build = {
+    fn: async () => ({
+      ok: true,
+      output: "built",
+      deliverable: { kind: "artifact", title: "Coffee deck", url: "http://stage/deck" },
+    }),
+  };
+  const res = await harness.runBotTask({
+    goal: "make a report on the coffee market and then turn it into a presentation",
+    bot: BOT,
+    model,
+    executors: { research_report: research.fn, build_artifact: build.fn },
+    primaryTool: "research_report",
+  });
+  assert.equal(res.status, "completed");
+  assert.equal(res.answer, "Report and presentation are both above.");
+  assert.deepEqual(
+    res.deliverables.map((d) => [d.tool, d.kind]),
+    [
+      ["research_report", "html"],
+      ["build_artifact", "artifact"],
+    ],
+  );
+});
+
+test("the verifier sees a long report's head AND tail, never a mid-sentence chop", async () => {
+  // A 15k-character report clipped to its first 3000 characters used to read
+  // as incomplete work — the verifier failed it and the harness re-ran the
+  // whole research, which the user watched as a second report being written.
+  const { model, seen } = fakeModel([
+    { kind: "use_tool", tool: "research_report", instruction: "deep dive", narration: "Researching." },
+    { kind: "deliver", answer: "Report's in the document above." },
+  ]);
+  const longReport =
+    `# Deep dive\n\n${"Body paragraph with cited evidence. ".repeat(450)}\n\n## Sources\n- https://example.com/proof`;
+  const research = { fn: async () => ({ ok: true, output: longReport }) };
+  const res = await harness.runBotTask({
+    goal: "write a deep dive report",
+    bot: BOT,
+    model,
+    executors: { research_report: research.fn },
+    primaryTool: "research_report",
+  });
+  assert.equal(res.status, "completed");
+  const v = seen.verifies[0];
+  assert.match(v, /# Deep dive/, "the opening survives the clip");
+  assert.match(v, /characters omitted/, "the clip announces itself");
+  assert.match(v, /https:\/\/example\.com\/proof/, "the ending (Sources) survives the clip");
+});
+
+test("a deliver that re-writes the finished report becomes a short close", async () => {
+  const rewritten = `# Landing pages\n\n${"Findings prose. ".repeat(120)}\n\n## Methods\n\n${"More prose. ".repeat(40)}`;
+  const { model } = fakeModel([
+    { kind: "use_tool", tool: "research_report", instruction: "top landing pages", narration: "Researching." },
+    { kind: "deliver", answer: rewritten },
+  ]);
+  const research = {
+    fn: async () => ({
+      ok: true,
+      output: "# Landing pages",
+      deliverable: { kind: "html", title: "Landing pages", html: "<html>r</html>" },
+    }),
+  };
+  const res = await harness.runBotTask({
+    goal: "report on the top landing pages",
+    bot: BOT,
+    model,
+    executors: { research_report: research.fn },
+    primaryTool: "research_report",
+  });
+  assert.equal(res.status, "completed");
+  assert.equal(res.answer, `Your report "Landing pages" is ready - it's in the document above.`);
+  assert.equal(res.deliverables.length, 1, "the card still carries the real report");
+});
+
+test("an unnamed teammate on the roster stays out of a report task's prompts", async () => {
+  const { model, seen } = fakeModel([
+    { kind: "use_tool", tool: "research_report", instruction: "top landing pages", narration: "Researching." },
+    { kind: "deliver", answer: "Report's ready — above-the-fold findings are in the document above." },
+  ]);
+  const research = okExecutor("# Landing pages\nClear above-the-fold promise.");
+  const res = await harness.runBotTask({
+    task: {
+      objective: "go to the top landing pages and find out how they do so good",
+      collaborators: [{ name: "Cody", role: "Architect" }],
+    },
+    goal: "go to the top landing pages and find out how they do so good",
+    bot: BOT,
+    model,
+    executors: { research_report: research.fn },
+    primaryTool: "research_report",
+  });
+  assert.equal(res.status, "completed");
+  assert.match(res.answer, /above-the-fold/);
+  assert.doesNotMatch(res.answer, /\[\[ask Cody/);
+  // Cody is not named in the goal, so no prompt advertises the roster.
+  for (const user of seen.users) assert.doesNotMatch(user, /AVAILABLE TEAMMATES/);
+});
+
+test("a lone research report closes with a short deliver round, never the report repeated", async () => {
+  const { model, seen } = fakeModel([
+    { kind: "use_tool", tool: "research_report", instruction: "espresso machines under $500", narration: "Researching." },
+    { kind: "deliver", answer: "Done — three machines stood out. Full findings are in the document above." },
+  ]);
+  const research = {
+    fn: async () => ({
+      ok: true,
+      output: "# Espresso under $500\n\n## Summary\nThree machines stood out.",
+      deliverable: { kind: "html", title: "Espresso under $500", html: "<html>report</html>" },
+    }),
+  };
+  const res = await harness.runBotTask({
+    goal: "research espresso machines under $500",
+    bot: BOT,
+    model,
+    executors: { research_report: research.fn },
+    primaryTool: "research_report",
+  });
+  assert.equal(res.status, "completed");
+  // The chat shows the close; the report survives as the deliverable card.
+  assert.match(res.answer, /three machines stood out/i);
+  assert.equal(seen.users.length, 2, "one report round, one deliver round");
+  assert.equal(res.deliverables.length, 1);
+  assert.equal(res.deliverables[0].kind, "html");
+});
+
+test("a research report task still hands off when the goal names a teammate", async () => {
+  const { model } = fakeModel([
+    {
+      kind: "use_tool",
+      tool: "research_report",
+      instruction: "compare the three landing pages",
+      narration: "Researching.",
+    },
+    {
+      kind: "deliver",
+      answer: "[[ask Cody: How should we change the LYKN landing page to match this vibe?]]",
+    },
+  ]);
+  const research = okExecutor("# Landing page report\nThey lead with product-as-OS.");
+  const res = await harness.runBotTask({
+    task: {
+      objective: "look at those landing pages then talk to Cody about our codebase",
+      collaborators: [{ name: "Cody", role: "Architect" }],
+    },
+    goal: "look at those landing pages then talk to Cody about our codebase",
+    bot: BOT,
+    model,
+    executors: { research_report: research.fn },
+    primaryTool: "research_report",
+  });
+  assert.equal(res.status, "completed");
+  assert.match(res.answer, /\[\[ask Cody:/);
+});
+
 test("a successful lone reply ends the task without a duplicate delivery round", async () => {
   const { model, seen } = fakeModel([
     { kind: "use_tool", tool: "reply", instruction: "explain the difference between RAM and storage", narration: "Answering." },
@@ -389,31 +701,31 @@ test("the model's first-round brief is pinned into every later round and into ve
     [
       {
         kind: "use_tool",
-        tool: "research_report",
-        instruction: "espresso machines under $500",
-        narration: "Researching.",
-        successCondition: "A sourced report on sub-$500 espresso machines has been produced.",
-        doNot: ["Recommend machines over budget.", "Draft a purchase order."],
+        tool: "generate_image",
+        instruction: "a fox logo",
+        narration: "Making the logo.",
+        successCondition: "A flat orange fox logo has been generated.",
+        doNot: ["Animate the logo.", "Design a second mark."],
       },
-      { kind: "deliver", answer: "Report's ready." },
+      { kind: "deliver", answer: "Logo's done — flat orange fox, opened for you." },
     ],
-    [{ success: true, evidence: "the report covers three machines with sources", next: "continue" }],
+    [{ success: true, evidence: "the image is a flat orange fox", next: "continue" }],
   );
-  const research = okExecutor("# Report\nThree machines stood out…");
+  const image = okExecutor("image generated: fox logo");
   const res = await harness.runBotTask({
-    goal: "research espresso machines under $500",
+    goal: "make me a fox logo",
     bot: BOT,
     model,
-    executors: { research_report: research.fn },
-    primaryTool: "research_report",
+    executors: { generate_image: image.fn },
+    primaryTool: "generate_image",
   });
   assert.equal(res.status, "completed");
   // Round 2 sees the brief the model defined on round 1.
-  assert.match(seen.users[1], /SUCCESS CONDITION:\nA sourced report on sub-\$500 espresso machines has been produced\./);
-  assert.match(seen.users[1], /- Recommend machines over budget\./);
-  assert.match(seen.users[1], /- Draft a purchase order\./);
+  assert.match(seen.users[1], /SUCCESS CONDITION:\nA flat orange fox logo has been generated\./);
+  assert.match(seen.users[1], /- Animate the logo\./);
+  assert.match(seen.users[1], /- Design a second mark\./);
   // And the standing wall is still there beneath the task-specific list.
   assert.match(seen.users[1], /- Continue looking for additional useful work\./);
   // The verifier judges against the same success condition.
-  assert.match(seen.verifies[0], /SUCCESS CONDITION:\nA sourced report on sub-\$500 espresso machines has been produced\./);
+  assert.match(seen.verifies[0], /SUCCESS CONDITION:\nA flat orange fox logo has been generated\./);
 });

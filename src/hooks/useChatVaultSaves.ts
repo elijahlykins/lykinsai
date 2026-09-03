@@ -185,7 +185,7 @@ export function useChatVaultSaves({
     setResearchReportSaving(true);
     try {
       const topic = research.topic.replace(/\s+/g, " ").slice(0, 80);
-      const title = topic ? `Research report — ${topic}` : "Research report";
+      const title = topic ? `Research report: ${topic}` : "Research report";
       const sourcesBlock = research.sources.length
         ? `\n\nSources:\n${research.sources.map((s) => `- [${s.title}](${s.url})`).join("\n")}`
         : "";
@@ -583,7 +583,10 @@ export function useChatVaultSaves({
       const filing = {
         source: "ai_artifact",
         folder: "Generated",
-        tags: [fileType, "generated"],
+        tags:
+          artifact.toolName === "lykn_write_document"
+            ? [fileType, "generated", "document"]
+            : [fileType, "generated"],
       };
 
       let noteId = existing?.noteId || "";

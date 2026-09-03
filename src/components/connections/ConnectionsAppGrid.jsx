@@ -1,11 +1,14 @@
 import { useState } from "react";
-import { CalendarDays, Code2, DatabaseZap, Link2, PlugZap } from "lucide-react";
+import { CalendarDays, Link2, Plug, PlugZap } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
-import CustomApiDialog from "@/components/connections/CustomApiDialog";
-import CursorCredentialDialog from "@/components/connections/CursorCredentialDialog";
+import ManagedConnectionsSection from "@/components/connections/ManagedConnectionsSection";
 import McpConnectionsPanel from "@/components/connections/McpConnectionsPanel";
+import RemoteTargetsSection from "@/components/connections/RemoteTargetsSection";
 import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { EXTERNAL_CALENDAR_SYNC_ENABLED } from "@/lib/calendar/calendarConfig";
+import { remoteTargetsAvailable } from "@/lib/remote/remoteTargetsClient";
 
 export default function ConnectionsAppGrid({
   user,
@@ -14,8 +17,8 @@ export default function ConnectionsAppGrid({
   embedded = false,
 }) {
   const navigate = useNavigate();
-  const [customApiOpen, setCustomApiOpen] = useState(false);
-  const [cursorOpen, setCursorOpen] = useState(false);
+  const [mcpOpen, setMcpOpen] = useState(false);
+  const [remoteOpen, setRemoteOpen] = useState(false);
 
   return (
     <section className={embedded ? "space-y-5" : "mx-auto max-w-5xl space-y-6 p-6"}>
@@ -27,16 +30,12 @@ export default function ConnectionsAppGrid({
           </h2>
         </div>
         <p className="mt-1 text-xs leading-relaxed text-black/50 dark:text-white/50">
-          Connect almost anything. Marketplace installs connections, not Vault syncs.
-          External data stays in its source unless you explicitly save it.
+          Connect the apps LYKN can work with. External data stays in its source
+          unless you explicitly save it.
         </p>
       </div>
 
-      {user && (
-        <div id="mcp-connections">
-          <McpConnectionsPanel user={user} embedded={embedded} />
-        </div>
-      )}
+      <ManagedConnectionsSection user={user} />
 
       <div>
         <h3 className="text-[11px] font-semibold uppercase tracking-wide text-black/35 dark:text-white/35">
@@ -44,36 +43,30 @@ export default function ConnectionsAppGrid({
         </h3>
         <div className="mt-2 grid gap-3 sm:grid-cols-2">
           <ConnectionCard
-            icon={CalendarDays}
-            title="Calendars"
-            description="Google Calendar and Apple iCloud, imported read-only into the LYKN calendar."
+            icon={Plug}
+            title="MCP servers"
+            description="Connect any MCP server by URL. Remote servers use HTTPS; sign-in runs through the server's own OAuth."
             action="Manage"
-            onClick={() => navigate("/calendar?sync=1")}
+            onClick={() => setMcpOpen(true)}
           />
-          <ConnectionCard
-            icon={Code2}
-            title="Cursor Cloud"
-            description="Use your encrypted Cursor API key for cloud-agent builds and pull requests."
-            action="Manage"
-            onClick={() => setCursorOpen(true)}
-          />
-          <ConnectionCard
-            icon={DatabaseZap}
-            title="Custom API"
-            description="Call an API you control with a server-injected key and explicit write policy."
-            action="Configure"
-            onClick={() => setCustomApiOpen(true)}
-          />
-          <ConnectionCard
-            icon={Link2}
-            title="Remote targets"
-            description="SSH machines and GitHub workflows live in the Remote Targets section below."
-            action="See below"
-            onClick={() => document.getElementById("remote-targets")?.scrollIntoView({
-              behavior: "smooth",
-              block: "start",
-            })}
-          />
+          {EXTERNAL_CALENDAR_SYNC_ENABLED && (
+            <ConnectionCard
+              icon={CalendarDays}
+              title="Calendars"
+              description="Google Calendar and Apple iCloud, imported read-only into the LYKN calendar."
+              action="Manage"
+              onClick={() => navigate("/calendar?sync=1")}
+            />
+          )}
+          {remoteTargetsAvailable() && (
+            <ConnectionCard
+              icon={Link2}
+              title="Remote targets"
+              description="Saved SSH hosts LYKN can operate on. Auth uses your system SSH agent and keys - no credentials stored."
+              action="Manage"
+              onClick={() => setRemoteOpen(true)}
+            />
+          )}
         </div>
       </div>
 
@@ -86,12 +79,21 @@ export default function ConnectionsAppGrid({
         </div>
       )}
 
-      <CursorCredentialDialog open={cursorOpen} onOpenChange={setCursorOpen} />
-      <CustomApiDialog
-        open={customApiOpen}
-        initialPresetId={null}
-        onOpenChange={setCustomApiOpen}
-      />
+      <Dialog open={mcpOpen} onOpenChange={setMcpOpen}>
+        <DialogContent className="max-h-[80vh] max-w-lg overflow-y-auto">
+          <DialogTitle className="sr-only">MCP servers</DialogTitle>
+          <div id="mcp-connections">
+            <McpConnectionsPanel user={user} embedded />
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={remoteOpen} onOpenChange={setRemoteOpen}>
+        <DialogContent className="max-h-[80vh] max-w-lg overflow-y-auto">
+          <DialogTitle className="sr-only">Remote targets</DialogTitle>
+          <RemoteTargetsSection />
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

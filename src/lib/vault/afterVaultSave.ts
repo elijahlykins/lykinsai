@@ -5,6 +5,7 @@ import { invalidateWorkspaceSummaryCache } from "@/lib/workspaceContext";
 import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
 import { vaultNoteTextForSynthesis } from "@/lib/synthesis/sourceText";
 import { clearAiDriveCache } from "@/lib/vault/aiDriveContents";
+import { AI_DRIVE_WIDGET_QUERY_KEY } from "@/lib/vault/localAiDriveImages";
 
 const enrichTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const ENRICH_DEBOUNCE_MS = 4000;
@@ -32,6 +33,13 @@ export function afterVaultNoteSaved(
   // artifact and immediately asking to open it is the obvious next move, so the
   // list has to know about it before that minute is up.
   clearAiDriveCache();
+  void import("@/lib/query-client")
+    .then(({ queryClientInstance }) => {
+      queryClientInstance.invalidateQueries({ queryKey: [AI_DRIVE_WIDGET_QUERY_KEY] });
+    })
+    .catch(() => {
+      /* Home widget will refresh on its own stale window */
+    });
 
   if (!bulkImport) {
     invalidateWorkspaceSummaryCache(userId);

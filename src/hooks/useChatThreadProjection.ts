@@ -11,6 +11,7 @@ import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 import type { PromptMessage } from "@/lib/lyknChat/chatTurnTypes";
 import {
   addOpenThread,
+  dispatchThreadRuntimeChange,
   ensureThreadSnapshot,
   getActiveThreadChatId,
   getThreadSnapshot,
@@ -97,6 +98,7 @@ export function useChatThreadProjection(
     const snap = ensureThreadSnapshot(String(bid));
     snap.chatMessages = updater(snap.chatMessages);
     snap.updatedAt = Date.now();
+    dispatchThreadRuntimeChange(String(bid));
     if (getActiveThreadChatId() === String(bid)) {
       setChatMessages(() => snap.chatMessages);
     }

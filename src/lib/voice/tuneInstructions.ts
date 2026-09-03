@@ -103,7 +103,7 @@ export async function applyVoiceInstructionTune(params: unknown): Promise<string
       ok: true,
       updated: true,
       summary: data.summary || "updated how I behave in voice",
-      message: "Saved — this will shape how I sound from now on.",
+      message: "Saved. This will shape how I sound from now on.",
     });
   } catch {
     return JSON.stringify({

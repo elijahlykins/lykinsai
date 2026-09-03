@@ -1,22 +1,20 @@
 // Studio chat chrome: everything that turns the plain chat page into the
 // Studio glass experience — the StudioView mode model (Chat / Build / Imagine
 // / Research) with its per-mode system prompts, headlines and composer
-// placeholders, the floating mode pill, the quick-start chip strip, the
-// post-report / post-build follow-up suggestions, and the Research sources
-// sidebar. Extracted verbatim from src/pages/LyknChat.tsx (LyknChat
-// decomposition phase, see docs/REFACTOR_LOG.md).
+// placeholders, the floating mode pill, the quick-start chip strip, and the
+// Research sources sidebar. Extracted verbatim from src/pages/LyknChat.tsx
+// (LyknChat decomposition phase, see docs/REFACTOR_LOG.md).
 import React from "react";
 import {
   Code,
   ImagePlus,
   MessageCircle,
   Save,
-  Sparkles,
   SquarePen,
   Telescope,
 } from "lucide-react";
 import { SiteFavicon } from "@/components/SiteFavicon";
-import { openInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
+import { openInStudioBrowser, studioOpenChatOpts } from "@/lib/lyknChat/openInStudioBrowser";
 import type { ComposerMode } from "@/hooks/useChatEngine";
 
 // Studio glass mode selector — Chat / Build / Imagine / Research. Floats at
@@ -63,10 +61,13 @@ const STUDIO_MODE_SWITCH_RULE =
 
 const STUDIO_VIEW_SYSTEM_PROMPTS: Record<StudioView, string> = {
   chat:
-    "The user is in Chat mode. Answer questions and talk. Images are Imagine-only: if they ask " +
-    "to generate an image or tweak one, do NOT generate it here. Reply in one short line telling " +
-    "them to click Imagine at the top of the page and resend — never fake an image, never write a " +
-    "prompt as if that's all you can do, and never substitute a diagram or mermaid block.",
+    "The user is in Chat mode. Plan, discuss, and answer here. Chat cannot produce the live " +
+    "deliverable. If they ask you to actually make the thing you have been planning (build the app, " +
+    "generate the image, write the research report), that is not another planning turn. Do not " +
+    "repeat the plan, dump a spec, or paste a code/HTML sketch. Reply briefly telling them to switch " +
+    "using the pills at the top of the page, then resend: Build for apps/pages/dashboards/decks/" +
+    "docs/charts/diagrams/interactive tools; Imagine for images; Research for a deep sourced " +
+    "report. Never fake those outputs in Chat.",
   build:
     "The user is in Build mode — a dedicated session for designing and building artifacts " +
     "(interactive pages, apps, tools, games, decks, documents, charts, diagrams). Act as their " +
@@ -141,7 +142,7 @@ export const StudioModePill = React.memo(function StudioModePill({
   onNewChat?: () => void;
 }) {
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-3 z-[70] flex items-center justify-center gap-2">
+    <div className="lykn-studio-mode-pill pointer-events-none absolute inset-x-0 z-[70] flex items-center justify-center gap-2">
       {onNewChat && (
         <button
           type="button"
@@ -249,132 +250,6 @@ export const StudioComposerStrip = React.memo(function StudioComposerStrip({
   );
 });
 
-/** Short topic phrase for post-report suggestion labels ("Brainstorm …"). */
-function researchSuggestionTopic(raw: string, maxLen = 42): string {
-  let t = String(raw || "").replace(/\s+/g, " ").trim();
-  t = t.replace(
-    /^(please\s+)?(?:do\s+)?(?:an?\s+)?(?:deep\s+)?(?:research|investigate|look into|analyze|study|explore|write|give me)\s+(?:(?:a|an|the)\s+)?(?:academic\s+)?(?:research\s+)?(?:report|overview|brief|summary)?\s*(?:on|about|into|regarding|for)?\s+/i,
-    "",
-  );
-  t = t.replace(/[.?!]+$/, "").trim();
-  if (!t) return "these findings";
-  if (t.length > maxLen) t = `${t.slice(0, Math.max(12, maxLen - 1)).replace(/\s+\S*$/, "")}…`;
-  return t;
-}
-
-function buildSuggestionTopic(raw: string, maxLen = 42): string {
-  let t = String(raw || "").replace(/\s+/g, " ").trim();
-  t = t.replace(
-    /^(please\s+)?(?:can you\s+)?(?:make|build|create|design|generate|code|write|whip up|mock up|put together)\s+(?:me\s+)?(?:an?\s+)?(?:interactive\s+)?(?:presentation|pitch deck|slide deck|deck|app|game|dashboard|one-pager|investor deck|study guide|page|site|tool)?\s*(?:about|on|for|that|which|where)?\s*/i,
-    "",
-  );
-  t = t.replace(/[.?!]+$/, "").trim();
-  if (!t) return "this build";
-  if (t.length > maxLen) t = `${t.slice(0, Math.max(12, maxLen - 1)).replace(/\s+\S*$/, "")}…`;
-  return t;
-}
-
-export type StudioSuggestionItem = {
-  key: string;
-  view: StudioView;
-  label: string;
-  prompt: string;
-  icon: React.ComponentType<{ className?: string }>;
-};
-
-// Shared strip above the chat bar: three one-tap next steps after a
-// Research report finishes. Each switches Studio mode (when needed) and
-// immediately starts the turn. Build keeps the composer clean — no
-// follow-up chips sitting above the bar.
-export const StudioFollowUpSuggestions = React.memo(function StudioFollowUpSuggestions({
-  items,
-  disabled,
-  onSelect,
-}: {
-  items: StudioSuggestionItem[];
-  disabled?: boolean;
-  onSelect: (view: StudioView, prompt: string) => void;
-}) {
-  return (
-    <div className="lykn-studio-suggestions mb-1.5 px-1">
-      <p className="mb-1.5 px-0.5 text-[0.65rem] font-semibold uppercase tracking-[0.08em] text-black/40 dark:text-white/40">
-        Suggestions
-      </p>
-      <div className="flex flex-col gap-1.5 sm:flex-row sm:flex-wrap">
-        {items.map(({ key, view, label, prompt, icon: Icon }) => (
-          <button
-            key={key}
-            type="button"
-            disabled={disabled}
-            onClick={() => onSelect(view, prompt)}
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-2xl border border-black/10 bg-white/50 px-3 py-2 text-left text-[12px] font-medium leading-snug text-black/70 backdrop-blur-sm transition-colors hover:bg-black/[0.06] hover:text-black/90 disabled:pointer-events-none disabled:opacity-40 dark:border-white/12 dark:bg-white/[0.06] dark:text-white/70 dark:hover:bg-white/[0.1] dark:hover:text-white/90"
-          >
-            <Icon className="h-3.5 w-3.5 shrink-0 opacity-60" />
-            <span className="min-w-0">{label}</span>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-});
-
-export function researchFollowUpItems(topic: string): StudioSuggestionItem[] {
-  const blank = researchSuggestionTopic(topic, 42);
-  const fullTopic = researchSuggestionTopic(topic, 160);
-  return [
-    {
-      key: "build",
-      view: "build",
-      label: "Build · Turn this into an interactive presentation",
-      prompt: "Turn this research report into an interactive presentation",
-      icon: Code,
-    },
-    {
-      key: "brainstorm",
-      view: "chat",
-      label: `Chat · Brainstorm ${blank}`,
-      prompt: `Brainstorm ideas, angles, and next steps around ${fullTopic}`,
-      icon: MessageCircle,
-    },
-    {
-      key: "deeper",
-      view: "research",
-      label: "Dive deeper",
-      prompt: `Dive deeper into ${fullTopic}`,
-      icon: Telescope,
-    },
-  ];
-}
-
-export function buildFollowUpItems(topic: string): StudioSuggestionItem[] {
-  const blank = buildSuggestionTopic(topic, 42);
-  const fullTopic = buildSuggestionTopic(topic, 160);
-  return [
-    {
-      key: "research",
-      view: "research",
-      label: `Research · Dig into ${blank}`,
-      prompt: `Research ${fullTopic}: key facts, current context, and anything I should know to strengthen this build`,
-      icon: Telescope,
-    },
-    {
-      key: "brainstorm",
-      view: "chat",
-      label: `Chat · Brainstorm improvements for ${blank}`,
-      prompt: `Brainstorm improvements, alternate directions, and next features for ${fullTopic}`,
-      icon: MessageCircle,
-    },
-    {
-      key: "polish",
-      view: "build",
-      label: "Polish this",
-      prompt:
-        "Polish and refine this build — tighten the design, improve clarity, and add polished interactions",
-      icon: Sparkles,
-    },
-  ];
-}
-
 // Studio Research page: right rail listing every link the deep-research
 // pipeline searched/read (streamed from the server before the report text),
 // plus a Save report action that writes the finished report into the vault.
@@ -388,24 +263,27 @@ function researchLinkHostname(url: string): string {
 
 export const StudioResearchSidebar = React.memo(function StudioResearchSidebar({
   sources,
+  chatId,
   canSave,
   saving,
   onSave,
 }: {
   sources: { title: string; url: string }[];
+  /** Owning conversation for in-chat research. Omit for marketing/demo rails. */
+  chatId?: string | null;
   canSave: boolean;
   saving: boolean;
   onSave: () => void;
 }) {
   const openLink = (url: string) => {
-    if (openInStudioBrowser(url)) return;
+    if (openInStudioBrowser(url, undefined, studioOpenChatOpts(chatId))) return;
     const lykn = (window as any).lykn;
-    if (lykn?.openExternal) lykn.openExternal(url);
+    if (lykn?.openExternal) lykn.openExternal(url, undefined, studioOpenChatOpts(chatId));
     else window.open(url, "_blank", "noopener");
   };
   // Shared blur glass so the report underneath is frosted, not readable.
   return (
-    <div className="lg-desktop-surface flex h-full flex-col rounded-none pt-14">
+    <div className="lykn-studio-research-rail lg-desktop-surface flex h-full flex-col rounded-none">
       <div className="flex items-center justify-between px-4 pb-2.5">
         <p className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-black/55 dark:text-white/60">
           Research links

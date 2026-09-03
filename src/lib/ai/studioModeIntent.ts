@@ -139,6 +139,6 @@ export function detectStudioModeRedirect(
 export function imagineSwitchNotice(): string {
   return (
     "Image generation lives in Imagine. Switch to **Imagine** using the pills at the top of the page " +
-    "and send it again — I'll take it from there."
+    "and send it again. I'll take it from there."
   );
 }

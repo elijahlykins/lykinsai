@@ -37,14 +37,13 @@ function rememberConsent() {
 }
 
 /**
- * Live view of the allowlist plus the actions that change it. `syncAll` is the
- * default: the whole home folder, with `folders` kept around so switching back
- * to a hand-picked list doesn't lose it.
+ * Live view of the allowlist plus the actions that change it. Whole-home
+ * access (`syncAll`) is opt-in. First enable starts with no folders.
  */
 export function useMacSync() {
   const api = useMemo(() => macSyncBridge(), []);
   const [localModeOn, setLocalModeOn] = useState(getLocalModeCached);
-  const [sync, setSync] = useState({ syncAll: true, folders: [], excluded: [] });
+  const [sync, setSync] = useState({ syncAll: false, folders: [], excluded: [] });
   const [busy, setBusy] = useState(false);
   // True while the access explainer is up, before Local Mode is granted.
   const [confirming, setConfirming] = useState(false);
@@ -57,7 +56,7 @@ export function useMacSync() {
     const apply = (payload) => {
       if (cancelled) return;
       setSync({
-        syncAll: payload?.syncAll !== false,
+        syncAll: payload?.syncAll === true,
         folders: payload?.syncedFolders || [],
         excluded: payload?.excludedFolders || [],
       });
@@ -124,7 +123,7 @@ export function useMacSync() {
 
     confirmEnable: () => {
       rememberConsent();
-      void grantAccess();
+      return grantAccess();
     },
 
     cancelEnable: () => setConfirming(false),

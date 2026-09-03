@@ -27,6 +27,7 @@ import {
   estimateTokens,
   extractOpenAIUsage,
 } from '../../usageTracking.js';
+import { getUserRowById, userOwnedTable } from '../../lib/security/userOwnedAccess.js';
 
 export function getBrowserControlProvider() {
   const pref = String(process.env.BROWSER_CONTROL_PROVIDER || 'auto').trim().toLowerCase();
@@ -56,11 +57,19 @@ export function pickBrowserControlModel(_hasImage) {
 export function registerDesktopRoutes(app, {
   requireAuth,
   requireAppAccess,
+  requireMeteredUsage,
   aiLimiter,
   supabaseAdmin,
   sha256,
   memCache,
 }) {
+  // Agent/browser LLM routes are metered (autonomous compute is never
+  // included chat), so they need a positive Usage Balance for every plan.
+  // Falls back to a pass-through when the bootstrap doesn't provide the
+  // gate (unit tests register these routes without billing).
+  const requireMetered = typeof requireMeteredUsage === 'function'
+    ? requireMeteredUsage
+    : (_req, _res, next) => next();
   // ──────────────────────────────────────────────────
   // Desktop overlay — list recent app chats for the ⌘L "Past chats" menu.
   // Returns lightweight rows (title + preview) from lykn_chats + snapshots.
@@ -476,7 +485,7 @@ export function registerDesktopRoutes(app, {
    * Deduce the real destination + work plan from vague asks BEFORE navigating
    * (e.g. "open my reddit ads thing" → ads.reddit.com + review campaigns).
    */
-  app.post('/api/desktop/agent-intent', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
+  app.post('/api/desktop/agent-intent', requireAuth, requireAppAccess, requireMetered, aiLimiter, async (req, res) => {
     try {
       if (!process.env.OPENAI_API_KEY && !process.env.HAI_API_KEY) {
         return res.status(503).json({ error: 'AI not configured' });
@@ -497,7 +506,8 @@ export function registerDesktopRoutes(app, {
         `- Vague filler ("thing", "stuff", "my … ads") still maps to the real product (e.g. Reddit Ads → https://ads.reddit.com).\n` +
         `- Do NOT invent credentials. Sign-in walls are fine — land on the right product.\n` +
         `- If they want to check/review something, say that in browseGoal (not just "open").\n` +
-        `- browseGoal must cover the WHOLE ask through to its finished outcome, including anything after the first navigation ("… then write the body and save it as a draft"). Never shorten it to just opening a page.\n` +
+        `- If they only asked to check, review, look at, or summarize mail, browseGoal is that review only. Never add reply, compose, draft, or send.\n` +
+        `- browseGoal must cover the WHOLE ask through to its finished outcome, including anything after the first navigation ("… then write the body and save it as a draft"). Never shorten it to just opening a page. Never invent follow-up work the ask did not name.\n` +
         `- Only use a Google search URL when the destination is truly unknown. For an unfamiliar named product, search for that product's login/dashboard rather than routing to a generic tool.\n` +
         `- skill is usually "browse". Use "research" only for deep research reports, "build" for artifacts, "general" for chat.\n` +
         `Return JSON only:\n` +
@@ -567,7 +577,7 @@ export function registerDesktopRoutes(app, {
     }
   });
 
-  app.post('/api/desktop/browser-plan', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
+  app.post('/api/desktop/browser-plan', requireAuth, requireAppAccess, requireMetered, aiLimiter, async (req, res) => {
     try {
       if (!browserControlConfigured()) return res.status(503).json({ error: 'AI not configured' });
 
@@ -698,7 +708,7 @@ export function registerDesktopRoutes(app, {
   // executor / verifier stages: { stage, system, user, imageUrl?, schema,
   // maxTokens? } -> { ok, json }. Keeps API keys server-side and lets the
   // provider/model change without touching browser control, state, or skills.
-  app.post('/api/desktop/agent-model', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
+  app.post('/api/desktop/agent-model', requireAuth, requireAppAccess, requireMetered, aiLimiter, async (req, res) => {
     try {
       const stage = String(req.body?.stage || 'decide').slice(0, 24);
       const system = String(req.body?.system || '').slice(0, 60000);
@@ -728,6 +738,14 @@ export function registerDesktopRoutes(app, {
       res.set('X-Lykn-Upstream-Ms', String(out.upstreamMs || 0));
 
       if (!out.ok) {
+        // Without this line a failed stage was invisible: the client collapses
+        // the body to "agent model unavailable (NNN)" and nothing was logged
+        // server-side, so an OpenRouter/provider defect could only be found by
+        // reproducing it by hand.
+        console.warn(
+          `⚠️ /api/desktop/agent-model ${stage} failed — ${model} via ${out.provider}` +
+          `${out.status ? ` [upstream ${out.status}]` : ''}: ${out.error || 'model call failed'}`,
+        );
         return res.status(out.status && out.status >= 400 ? out.status : 502)
           .json({ ok: false, error: out.error || 'model call failed', model, provider: out.provider });
       }
@@ -759,7 +777,7 @@ export function registerDesktopRoutes(app, {
    * nothing else. Keeping them apart also keeps the usage ledger honest:
    * grounding is its own actionType with its own provider.
    */
-  app.post('/api/desktop/agent-ground', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
+  app.post('/api/desktop/agent-ground', requireAuth, requireAppAccess, requireMetered, aiLimiter, async (req, res) => {
     try {
       const description = String(req.body?.description || '').slice(0, 300).trim();
       const imageUrl = String(req.body?.imageUrl || '').trim();
@@ -814,7 +832,7 @@ export function registerDesktopRoutes(app, {
   });
 
   // Next-step planner for adaptive browser control — re-scan after each action.
-  app.post('/api/desktop/browser-plan-next', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
+  app.post('/api/desktop/browser-plan-next', requireAuth, requireAppAccess, requireMetered, aiLimiter, async (req, res) => {
     try {
       if (!browserControlConfigured()) return res.status(503).json({ error: 'AI not configured' });
 
@@ -1367,7 +1385,7 @@ export function registerDesktopRoutes(app, {
 
 
   // Turn raw browser automation results into a user-facing LYKN overlay message.
-  app.post('/api/desktop/browser-report', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
+  app.post('/api/desktop/browser-report', requireAuth, requireAppAccess, requireMetered, aiLimiter, async (req, res) => {
     try {
       if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'AI not configured' });
 
@@ -1421,10 +1439,8 @@ export function registerDesktopRoutes(app, {
       if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
 
       const limit = Math.min(Math.max(parseInt(String(req.query.limit || '40'), 10) || 40, 1), 80);
-      const { data, error } = await supabaseAdmin
-        .from('lykn_chats')
+      const { data, error } = await userOwnedTable(supabaseAdmin, 'lykn_chats', userId)
         .select('id, title, updated_at, created_at, lykn_chat_states(state)')
-        .eq('user_id', userId)
         .order('updated_at', { ascending: false })
         .limit(limit * 2);
 
@@ -1540,17 +1556,17 @@ export function registerDesktopRoutes(app, {
 
       // Upsert the board row (don't clobber a title the user set in the app:
       // only update title if the existing one is still a default).
-      const { data: existing } = await supabaseAdmin
-        .from('lykn_chats')
-        .select('id, title')
-        .eq('id', chatId)
-        .eq('user_id', userId)
-        .maybeSingle();
+      const { data: existing } = await getUserRowById(
+        supabaseAdmin,
+        'lykn_chats',
+        userId,
+        chatId,
+        'id, title',
+      );
 
       if (!existing?.id) {
-        const { error: insErr } = await supabaseAdmin
-          .from('lykn_chats')
-          .insert({ id: chatId, user_id: userId, title, updated_at: now });
+        const { error: insErr } = await userOwnedTable(supabaseAdmin, 'lykn_chats', userId)
+          .insert({ id: chatId, title, updated_at: now });
         if (insErr) {
           // A row may exist under a different user_id (shouldn't happen) — bail safely.
           console.error('❌ overlay chat board insert:', insErr.message);
@@ -1558,11 +1574,9 @@ export function registerDesktopRoutes(app, {
         }
       } else {
         const keepTitle = existing.title && !DEFAULT_CHAT_TITLES.has(String(existing.title).trim());
-        await supabaseAdmin
-          .from('lykn_chats')
+        await userOwnedTable(supabaseAdmin, 'lykn_chats', userId)
           .update({ updated_at: now, ...(keepTitle ? {} : { title }) })
-          .eq('id', chatId)
-          .eq('user_id', userId);
+          .eq('id', chatId);
       }
 
       // Deliberately NOT an upsert on chat_id: an unscoped upsert would overwrite
@@ -1570,23 +1584,28 @@ export function registerDesktopRoutes(app, {
       // to the lykn_chats PK collision above. Scope the update by user_id and let
       // a foreign row surface as a unique-violation on insert instead.
       const stateRow = { chat_id: chatId, state: snapshot, version: 2, user_id: userId, updated_at: now };
-      const { data: stateUpdated, error: stateUpdErr } = await supabaseAdmin
-        .from('lykn_chat_states')
+      const { data: stateUpdated, error: stateUpdErr } = await userOwnedTable(
+        supabaseAdmin,
+        'lykn_chat_states',
+        userId,
+      )
         .update(stateRow)
         .eq('chat_id', chatId)
-        .eq('user_id', userId)
         .select('chat_id');
       let stateErr = stateUpdErr;
       if (!stateErr && !stateUpdated?.length) {
-        const { error: insErr } = await supabaseAdmin.from('lykn_chat_states').insert(stateRow);
+        const { error: insErr } = await userOwnedTable(supabaseAdmin, 'lykn_chat_states', userId)
+          .insert(stateRow);
         if (insErr && insErr.code === '23505') {
           // Lost a race with a concurrent save of the same chat — retry the
           // scoped update once. Still fails (correctly) if the row is foreign.
-          const { data: retried, error: retryErr } = await supabaseAdmin
-            .from('lykn_chat_states')
+          const { data: retried, error: retryErr } = await userOwnedTable(
+            supabaseAdmin,
+            'lykn_chat_states',
+            userId,
+          )
             .update(stateRow)
             .eq('chat_id', chatId)
-            .eq('user_id', userId)
             .select('chat_id');
           stateErr = retryErr || (retried?.length ? null : insErr);
         } else {
@@ -1642,12 +1661,13 @@ export function registerDesktopRoutes(app, {
       if (!supabaseAdmin) {
         return res.status(503).json({ error: 'Database not configured' });
       }
-      const { data: board, error: boardErr } = await supabaseAdmin
-        .from('lykn_chats')
-        .select('id, title, user_id')
-        .eq('id', chatId)
-        .eq('user_id', userId)
-        .maybeSingle();
+      const { data: board, error: boardErr } = await getUserRowById(
+        supabaseAdmin,
+        'lykn_chats',
+        userId,
+        chatId,
+        'id, title, user_id',
+      );
       if (boardErr || !board) {
         return res.json({ applied: false, reason: 'not_found' });
       }
@@ -1707,11 +1727,9 @@ export function registerDesktopRoutes(app, {
 
       // Write through. We re-check the current title in the WHERE clause
       // so a concurrent manual rename in another tab wins the race.
-      const { data: updated, error: updateErr } = await supabaseAdmin
-        .from('lykn_chats')
+      const { data: updated, error: updateErr } = await userOwnedTable(supabaseAdmin, 'lykn_chats', userId)
         .update({ title, updated_at: new Date().toISOString() })
         .eq('id', chatId)
-        .eq('user_id', userId)
         .in('title', ['New Chat', 'Untitled board', ''])
         .select('id, title')
         .maybeSingle();

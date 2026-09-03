@@ -16,6 +16,7 @@
 //   email-auth registrars in authFlows.routes.js) and are passed here —
 //   never construct a second Resend client.
 // - pickUserDisplayName is a shared server.js prompt-section helper, passed.
+import { getUserRowById } from '../../lib/security/userOwnedAccess.js';
 import { z, validate } from '../../validation.js';
 
 export function registerMetricsRoutes(app, deps) {
@@ -171,16 +172,15 @@ export function registerProjectInviteRoutes(app, deps) {
       const email = String(req.body.email).trim().toLowerCase();
       const role = req.body.role === 'viewer' ? 'viewer' : 'editor';
 
-      const { data: project, error: projErr } = await supabaseAdmin
-        .from('lykn_projects')
-        .select('id, name, user_id')
-        .eq('id', projectId)
-        .maybeSingle();
+      const { data: project, error: projErr } = await getUserRowById(
+        supabaseAdmin,
+        'lykn_projects',
+        ownerId,
+        projectId,
+        'id, name, user_id',
+      );
       if (projErr) throw projErr;
       if (!project) return res.status(404).json({ ok: false, error: 'Project not found.' });
-      if (project.user_id !== ownerId) {
-        return res.status(403).json({ ok: false, error: 'Only the project owner can invite people.' });
-      }
       if (email === String(req.user?.email || '').toLowerCase()) {
         return res.status(400).json({ ok: false, error: "That's your own email — you're already the owner." });
       }

@@ -1,12 +1,11 @@
 /* ============================================================================
    Download LYKN for Mac (/download) — poster layout: tagline over the big
-   wordmark on a pale blue sky, one CTA, and soft grainy concentric waves
-   rising from the bottom. GlassLanding.css supplies the glass header.
+   wordmark on the same mist + navy as the landing page.
    ========================================================================== */
 
 .dlp {
-  /* Plain white, same stage the panel art sits on everywhere else. */
-  background: #ffffff;
+  background: var(--gl-mist, #dde2ee);
+  color: var(--gl-navy, #0968c4);
 }
 
 .dlp-stage {
@@ -34,7 +33,7 @@
   font-size: clamp(1.3rem, 2.2vw, 1.9rem);
   font-weight: 600;
   letter-spacing: -0.015em;
-  color: #1e293b;
+  color: var(--gl-navy, #0968c4);
   animation: dlp-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 90ms both;
 }
 /* The rotating tail ("research", "ads", ...). The swap wrapper holds both
@@ -50,7 +49,8 @@
 }
 .dlp-tag-word {
   display: inline-block;
-  color: #0e5fe8;
+  color: var(--gl-navy, #0968c4);
+  font-weight: 700;
   white-space: nowrap;
   animation: dlp-word-in 620ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
@@ -87,12 +87,16 @@
     filter: blur(4px);
   }
 }
-/* The primary logo lockup (icon + wordmark in one asset), scaling as one. */
+/* Icon + wordmark from one mask so both paint the same navy. */
 .dlp-brand {
+  display: block;
   width: clamp(280px, 38vw, 540px);
+  aspect-ratio: 723.46 / 272.34;
   height: auto;
   user-select: none;
-  filter: drop-shadow(0 18px 44px rgba(14, 111, 255, 0.18));
+  background: var(--gl-navy, #0968c4);
+  -webkit-mask: var(--dlp-mark) center / contain no-repeat;
+  mask: var(--dlp-mark) center / contain no-repeat;
   animation: dlp-up 900ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .dlp-actions {
@@ -113,17 +117,20 @@
   font-weight: 600;
   text-decoration: none;
   color: #ffffff;
-  background: linear-gradient(180deg, #2f7bff, #0e5fe8);
+  background: #0968c4;
+  border: 1px solid #0968c4;
   border-radius: 999px;
-  box-shadow: 0 18px 44px -14px rgba(14, 95, 232, 0.65),
-    inset 0 1px 0 rgba(255, 255, 255, 0.35);
-  transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease;
+  box-shadow: none;
+  isolation: isolate;
+  transition: transform 0.18s ease, background 0.18s ease;
 }
 .dlp-btn--secondary {
-  color: #0e5fe8;
-  background: #ffffff;
-  border: 1px solid rgba(14, 95, 232, 0.28);
-  box-shadow: 0 10px 28px -16px rgba(14, 95, 232, 0.35);
+  color: var(--gl-navy, #0968c4);
+  background: rgba(255, 255, 255, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow:
+    0 24px 60px -28px rgba(11, 58, 110, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 .dlp-btn svg {
   width: 1.15rem;
@@ -132,14 +139,10 @@
 }
 .dlp-btn:hover {
   transform: translateY(-2px);
-  filter: brightness(1.05);
-  box-shadow: 0 24px 54px -16px rgba(14, 95, 232, 0.75),
-    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  background: #0754a3;
 }
 .dlp-btn--secondary:hover {
-  filter: none;
-  background: #f5f8ff;
-  box-shadow: 0 14px 36px -16px rgba(14, 95, 232, 0.45);
+  background: rgba(255, 255, 255, 0.62);
 }
 .dlp-btn:active {
   transform: translateY(0);
@@ -147,13 +150,9 @@
 .dlp-meta {
   margin: 1.1rem 0 0;
   font-size: 0.82rem;
-  color: #7b87a1;
+  color: rgba(11, 58, 110, 0.58);
   animation: dlp-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 260ms both;
 }
-
-/* The backdrop (wandering blue glow + frosted stripes) comes from the shared
-   GlassBackdrop component — same look, size, and wander as the pricing page,
-   with the orb rising in from the bottom edge on load. */
 
 @keyframes dlp-up {
   from {

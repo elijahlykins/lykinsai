@@ -25,10 +25,17 @@ function resolvePlanId(billing) {
  * per session (react-query cached) and derives the tier from PLAN_LIMITS.
  *
  * @returns {{
- *   planId: "free" | "student" | "studio" | "studio_pro" | "studio_max",
+ *   planId: "free" | "student" | "studio" | "max" | "studio_pro" | "studio_max",
  *   modelTier: "basic" | "top" | "top+media",
  *   isGuest: boolean,
  *   isActive: boolean,
+ *   hasAppAccess?: boolean,
+ *   hasStripeCustomer: boolean,
+ *   hasActiveSubscription: boolean,
+ *   cancelAtPeriodEnd: boolean,
+ *   currentPeriodEnd: string | null,
+ *   usageBalance?: { available_micros: number, available_usd: string } | null,
+ *   outOfUsage?: boolean,
  *   loading: boolean,
  * }}
  */
@@ -89,14 +96,14 @@ export function useUserPlan() {
     hasActiveSubscription: Boolean(data?.has_active_subscription),
     cancelAtPeriodEnd: Boolean(data?.cancel_at_period_end),
     currentPeriodEnd: data?.current_period_end || null,
-    // Free signup allowance meter ({ used, limit, remaining }) — present only
-    // for accounts riding the free credits (no subscription). Drives the
-    // "almost out of credits" upgrade nudge.
-    freeCredits: data?.free_credits || null,
-    // Purchased credit balance ({ granted, used, balance }) — only sent when
-    // it's what's keeping the account unwalled. The billing popup reads the
-    // full picture from /api/billing/credits instead.
-    topupCredits: data?.topup_credits || null,
+    // Usage Balance summary ({ available_micros, available_usd }) — present
+    // for accounts running on prepaid usage (no subscription). Drives the
+    // low-balance nudge; the billing popup reads the full breakdown from
+    // /api/billing/credits.
+    usageBalance: data?.usage_balance || null,
+    // True when a free account has spent all its usage. Metered actions will
+    // 402 server-side; the UI should point at top-up / upgrade.
+    outOfUsage: Boolean(data?.out_of_usage),
     loading: isLoading || authLoading,
   };
 }

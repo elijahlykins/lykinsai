@@ -1,5 +1,8 @@
 // Chat context builders: project section, connected-tools section, custom models.
 // `projectSectionCache` and `connectedToolsSectionCache` are process singletons.
+//
+// Context composition / cache identity lives in server/ai/contextPipeline.
+// This file stays the owner of project + connected-tools prompt sections.
 import {
   formatProjectStateForPromptInLykn,
   formatOtherProjectsForPromptOutsideClient,
@@ -120,7 +123,24 @@ export async function fetchConnectedToolsSection(authHeader, userId) {
 
   const oauthActionApps = [];
 
-  if (rows.length === 0 && customConns.length === 0 && oauthActionApps.length === 0) {
+  // Managed OAuth apps (Settings → Connections). Their tools surface as
+  // connected-app (MCP) tools on the turn; this block gives the model
+  // standing awareness of what is connected even before a tool need is
+  // inferred, so it reaches for the OAuth tools instead of the browser.
+  let managedApps = [];
+  try {
+    const { data } = await client
+      .from('lykn_mcp_connections')
+      .select('name, status')
+      .eq('user_id', userId)
+      .eq('provided_through', 'composio')
+      .neq('status', 'disconnected');
+    if (Array.isArray(data)) managedApps = data;
+  } catch (e) {
+    console.warn('⚠️ fetchConnectedToolsSection managed:', e?.message || e);
+  }
+
+  if (rows.length === 0 && customConns.length === 0 && oauthActionApps.length === 0 && managedApps.length === 0) {
     connectedToolsSectionCache.set(userId, { text: '', at: Date.now() });
     return '';
   }
@@ -168,11 +188,24 @@ export async function fetchConnectedToolsSection(authHeader, userId) {
     customLines.push(`- ${a.name} [slug: ${a.slug}] (${writes}, OAuth) ${a.base_url}${desc}`);
   }
 
+  const managedBlock = managedApps.length
+    ? [
+        '',
+        '[CONNECTED_APPS — OAuth]',
+        'The user connected these apps with OAuth (Settings → Connections). Act in them through lykn_search_connected_tools then lykn_call_connected_tool — never the browser agent. A failed tool call is not a disconnect. Only mention Settings → Connections when a row here says [needs reconnect in Settings] or the app is missing from this list.',
+        '',
+        ...managedApps.slice(0, 25).map((c) => {
+          const needsAttention = c.status !== 'connected' ? ' [needs reconnect in Settings]' : '';
+          return `- ${c.name}${needsAttention}`;
+        }),
+      ].join('\n')
+    : '';
+
   const customBlock = customLines.length
     ? [
         '',
         '[CONNECTED_APPS — actionable]',
-        'The user attached these apps with their own API key (Connections → Custom API). First-party Chat cannot call lykn_list_apps / lykn_call_app — that lane is Voice-only. If this turn lists MCP/external tools, use those. Otherwise name the connection in prose; do not invent a Chat tool for it.',
+        'The user attached these apps with their own API key (Connections → Custom API). First-party Chat cannot call lykn_list_apps / lykn_call_app — that lane is Voice-only. If this turn lists MCP/external tools, those are the callable ones.',
         '',
         ...customLines,
       ].join('\n')
@@ -180,9 +213,10 @@ export async function fetchConnectedToolsSection(authHeader, userId) {
 
   const text = [
     '[CONNECTED_TOOLS]',
-    "These are the external apps this user has actively connected to LYKN. Synced content from each one already lives in their Vault and shows up inside [WHAT_IVE_SAVED] / [WORKSPACE_CONTEXT]. USE THIS LIST when giving advice — prefer specific, actionable suggestions tied to tools they actually use (e.g. \"drop a ticket for this in Linear\", \"save this to your Notion\", \"add it to your Todoist inbox\"). Never invent or assume a tool that isn't on this list. If a clearly relevant tool from the broader connector catalog is NOT connected and would obviously help (e.g. the user is talking about engineering tickets but has no issue tracker connected), you may briefly mention they could connect it from the Connections page — at most one such nudge per reply, and only when it's directly useful.",
+    'These are the external apps this user has actively connected to LYKN. Read and act in them live through lykn_search_connected_tools then lykn_call_connected_tool. Their contents are not a Vault library.',
     '',
     ...lines,
+    managedBlock,
     customBlock,
   ].join('\n').trim();
 

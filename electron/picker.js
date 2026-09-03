@@ -34,7 +34,7 @@ function renderOptions(state) {
     btn.setAttribute("role", "option");
     btn.innerHTML =
       `<span>${escapeHtml(opt.label)}</span>` +
-      (opt.id && opt.id !== "all" ? `<span class="count">${opt.count || "—"}</span>` : "");
+      (opt.id && opt.id !== "all" ? `<span class="count">${opt.count || "-"}</span>` : "");
     btn.addEventListener("click", () => {
       window.lyknPicker.select(opt.id);
       window.lyknPicker.close();

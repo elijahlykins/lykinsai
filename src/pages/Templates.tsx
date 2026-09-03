@@ -510,7 +510,7 @@ const SECTIONS: Section[] = [
         id: "okrs-dashboard",
         title: "OKR dashboard from a spreadsheet",
         description:
-          "Snip your metrics sheet and Build a live dashboard you can open in Studio.",
+          "Snip your metrics sheet and Build a live dashboard you can open on the desktop.",
         apps: apps(I.build, I.chart),
       },
       {

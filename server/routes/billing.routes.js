@@ -10,21 +10,28 @@
 // Dependency notes — everything billing-shared stays in server.js and is
 // passed via deps, because the webhook handler (handleStripeEvent →
 // syncSubscriptionToBilling), requireAppAccess, and checkAiUsageLimit use
-// the same helpers/caches (userPlanCache, appAccessGrace, freeCreditsCache
-// never moved):
+// the same helpers/caches (userPlanCache, appAccessGrace never moved):
 // - stripe / supabaseAdmin / requireAuth are bootstrap singletons.
 // - PLAN_LIMITS / creditPackById come from src/lib/pricing-config.js —
 //   passed via deps so the frontend-config import edge stays in server.js
 //   only (cross-boundary config ownership is a later phase, not this Wave).
-// - getCreditWallet / listCreditTopups (lib/billing/creditWallet.js) and
-//   getUserMonthlyUsage (usageTracking.js) are stateless module functions;
-//   ESM module cache preserves identity, direct import.
+// - getCreditWallet (lib/billing/creditWallet.js) is a stateless module
+//   function; ESM module cache preserves identity, direct import.
 // - isCompedProEmail / COMPED_PRO_PLAN_ID implement the comped-email
 //   shortcut — DEFERRED BILLING FINDING, behavior preserved exactly.
 import { z, validate } from '../../validation.js';
-import { getCreditWallet, listCreditTopups } from '../../lib/billing/creditWallet.js';
-import { getUserMonthlyUsage } from '../../usageTracking.js';
-
+import { getCreditWallet } from '../../lib/billing/creditWallet.js';
+import {
+  customerUsagePayload,
+  ensureSignupGrant,
+  getUsageBalance,
+  listUsageHistory,
+  monthUsageSpent,
+  usageBucketBreakdown,
+} from '../../lib/billing/usageBalance.js';
+import { normalizeUsageFundRequest, usageFundingPresets } from '../../lib/billing/usageFunding.js';
+import { assertProCheckoutPriceNotLegacy } from '../../lib/billing/stripePriceConfig.js';
+import { USAGE_FUNDING } from '../../lib/billing/usagePricing.js';
 export function registerBillingRoutes(app, deps) {
   const {
     requireAuth,
@@ -35,10 +42,7 @@ export function registerBillingRoutes(app, deps) {
     appUrlFromReq,
     billingMePayload,
     hasSubscriptionAccess,
-    hasAppAccessRow,
     hasEstablishedStripeCustomer,
-    freeCreditsStatus,
-    FREE_PLAN_CREDITS,
     resolveUserPlan,
     buildStripeCheckoutIdentity,
     rejectIneligibleStudentCheckout,
@@ -83,28 +87,31 @@ export function registerBillingRoutes(app, deps) {
 
       const row = await loadBillingRow(userId);
       const payload = billingMePayload(row);
-      // Free signup credits: while the allowance lasts, the client gate must
-      // NOT bounce the user to /start-trial. Surface the meter either way so
-      // the UI can show credits remaining / the upgrade nudge.
-      if (payload.needs_trial_checkout && FREE_PLAN_CREDITS > 0) {
-        const credits = await freeCreditsStatus(userId);
-        if (credits) {
-          payload.free_credits = credits;
-          if (credits.remaining > 0) payload.needs_trial_checkout = false;
-        }
-      }
-      // Purchased credits also count as access — otherwise someone who just
-      // topped up would be bounced to /start-trial by the client gate. Only read
-      // the wallet when they'd otherwise be walled, so the common case (a healthy
-      // subscription) stays a single query; the billing popup gets the full
-      // balance from /api/billing/credits.
+      // Free accounts run on the dollar Usage Balance. Make sure the one-time
+      // $10 signup grant exists (idempotent no-op afterwards), then let a
+      // positive balance satisfy the client gate — no forced card wall.
       if (payload.needs_trial_checkout) {
-        const wallet = await getCreditWallet(userId);
-        if (wallet && wallet.balance > 0) {
-          payload.topup_credits = wallet;
+        await ensureSignupGrant(userId).catch(() => {});
+        const usage = await getUsageBalance(userId);
+        payload.usage_balance = {
+          available_micros: usage?.available || 0,
+          available_usd: usage?.display || '$0.00',
+        };
+        if ((usage?.available || 0) > 0) {
           payload.needs_trial_checkout = false;
         }
       }
+      // Leftover purchased legacy credits keep access until the migration
+      // converts them to Usage dollars.
+      if (payload.needs_trial_checkout) {
+        const wallet = await getCreditWallet(userId);
+        if (wallet && wallet.balance > 0) {
+          payload.needs_trial_checkout = false;
+        }
+      }
+      payload.out_of_usage = payload.needs_trial_checkout;
+      payload.needs_trial_checkout = false;
+      if (payload.out_of_usage) payload.add_funds = true;
       return res.json(payload);
     } catch (err) {
       console.error('❌ /api/billing/me error:', err);
@@ -137,6 +144,15 @@ export function registerBillingRoutes(app, deps) {
           error: 'price_not_configured',
           message: `Missing env var for ${planId}/${period} price id`,
         });
+      }
+      if ((planId === 'studio' || planId === 'studio_pro') && period === 'monthly') {
+        const priceGuard = assertProCheckoutPriceNotLegacy(priceId);
+        if (!priceGuard.ok) {
+          return res.status(500).json({
+            error: 'price_misconfigured',
+            message: 'Pro monthly checkout is pointed at the legacy $25 Price. Set STRIPE_PRICE_STUDIO_MONTHLY to the $20 Price.',
+          });
+        }
       }
 
       const row = await loadBillingRow(user.id);
@@ -193,60 +209,48 @@ export function registerBillingRoutes(app, deps) {
 
 
   // ── /api/billing/credits ────────────────────────────────────────────────────
-  // Everything the billing popup needs to explain where an account stands:
-  // what's included, what's been used this month, what's been bought, and which
-  // packs are purchasable. Kept off /api/billing/me because the monthly usage
-  // scan is far too heavy for a route the client gate hits on every app load.
+  // Everything the billing settings screen needs: plan, dollar Usage Balance
+  // with its bucket breakdown, recent activity, and the top-up options. Kept
+  // off /api/billing/me because that route runs on every app load.
+  //
+  // The path keeps its historical name for client compatibility; the payload
+  // is Usage Balance, not credits. Legacy wallet balances only appear while a
+  // pre-migration remainder exists.
   app.get('/api/billing/credits', requireAuth, async (req, res) => {
     try {
       const userId = req.user?.id;
       if (!userId) return res.status(401).json({ error: 'Not authenticated' });
 
       const { planId } = await resolveUserPlan(userId, req.user?.email);
-      const rawLimit = PLAN_LIMITS[planId]?.glassRequests ?? PLAN_LIMITS.free.glassRequests ?? null;
-      const now = new Date();
+      const includedChat = Boolean(PLAN_LIMITS[planId]?.unlimitedNormalChat);
 
-      const [monthly, wallet, purchases] = await Promise.all([
-        getUserMonthlyUsage(userId),
+      const [wallet, usage, history] = await Promise.all([
         getCreditWallet(userId),
-        listCreditTopups(userId, 10),
+        getUsageBalance(userId),
+        listUsageHistory(userId, 20),
       ]);
-
-      // The signup allowance only exists for accounts without a subscription.
-      let includedCredits = null;
-      const row = await loadBillingRow(userId);
-      if (!hasAppAccessRow(row) && FREE_PLAN_CREDITS > 0 && !isCompedProEmail(req.user?.email)) {
-        includedCredits = await freeCreditsStatus(userId);
-      }
+      const [month, breakdown] = await Promise.all([
+        monthUsageSpent(userId, history),
+        usageBucketBreakdown(userId, usage),
+      ]);
 
       return res.json({
         plan: planId,
-        // null limit = unlimited (Max, and the free tier's uncapped request count).
-        monthly: {
-          period_start: new Date(now.getFullYear(), now.getMonth(), 1).toISOString(),
-          // Mirror checkAiUsageLimit exactly, so the meter can't disagree with
-          // what actually gets enforced.
-          requests_used: monthly?.billable_count ?? monthly?.log_count ?? null,
-          requests_limit: Number.isFinite(rawLimit) ? rawLimit : null,
-          credits_used: monthly?.total_credits ?? null,
-          action_breakdown: monthly?.action_breakdown || {},
-          usage_available: Boolean(monthly),
+        included_chat: includedChat,
+        usage: customerUsagePayload(usage, history, month),
+        bucket_breakdown: breakdown,
+        funding: {
+          presets: usageFundingPresets(),
+          min_cents: USAGE_FUNDING.minCents,
+          max_cents: USAGE_FUNDING.maxCents,
+          custom: true,
         },
-        included_credits: includedCredits,
-        topup: wallet || { granted: 0, used: 0, balance: 0 },
-        packs: availableCreditPacks().map((pack) => ({
-          id: pack.id,
-          name: pack.name,
-          credits: pack.credits,
-          priceUsd: pack.priceUsd,
-          blurb: pack.blurb,
-          highlighted: Boolean(pack.highlighted),
-        })),
-        purchases,
+        // Pre-migration leftovers only; the UI shows a conversion notice.
+        legacy_credits: wallet && wallet.balance > 0 ? { balance: wallet.balance } : null,
       });
     } catch (err) {
       console.error('❌ /api/billing/credits error:', err);
-      return res.status(500).json({ error: 'Failed to load credits' });
+      return res.status(500).json({ error: 'Failed to load usage balance' });
     }
   });
 
@@ -257,6 +261,13 @@ export function registerBillingRoutes(app, deps) {
 
   app.post('/api/billing/topup', requireAuth, validate(billingTopupSchema), async (req, res) => {
     try {
+      if (availableCreditPacks().length === 0) {
+        return res.status(410).json({
+          error: 'credit_packs_retired',
+          message: 'Credit packs are no longer for sale. Add funds to your Usage Balance instead.',
+          add_funds: true,
+        });
+      }
       if (!stripeConfigured()) return res.status(503).json({ error: 'Stripe not configured' });
       const user = req.user;
       const pack = creditPackById(req.body.packId);
@@ -299,6 +310,65 @@ export function registerBillingRoutes(app, deps) {
         return res.status(400).json({ error: 'checkout_email_required' });
       }
       return res.status(500).json({ error: 'topup_failed' });
+    }
+  });
+
+  const usageFundSchema = z.object({
+    presetCents: z.number().int().optional(),
+    amountCents: z.number().int().optional(),
+  });
+
+  app.post('/api/billing/usage/fund', requireAuth, validate(usageFundSchema), async (req, res) => {
+    try {
+      if (!stripeConfigured()) return res.status(503).json({ error: 'Stripe not configured' });
+      const parsed = normalizeUsageFundRequest(req.body || {});
+      if (!parsed.ok) {
+        console.log(`[billing] usage_funding_rejected ${JSON.stringify({ error: parsed.error })}`);
+        return res.status(400).json({ error: parsed.error, message: parsed.message });
+      }
+
+      const user = req.user;
+      const row = await loadBillingRow(user.id);
+      const checkoutIdentity = await buildStripeCheckoutIdentity(user, row);
+      const appUrl = appUrlFromReq(req);
+
+      const session = await stripe.checkout.sessions.create({
+        mode: 'payment',
+        ...checkoutIdentity,
+        ...(checkoutIdentity.customer ? {} : { customer_creation: 'always' }),
+        line_items: [{
+          price_data: {
+            currency: parsed.currency,
+            unit_amount: parsed.cents,
+            product_data: {
+              name: 'LYKN Usage Balance',
+              description: `Add ${parsed.display} to your Usage Balance`,
+            },
+          },
+          quantity: 1,
+        }],
+        success_url: `${appUrl}/billing?usage_fund=success&session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${appUrl}/billing?usage_fund=canceled`,
+        client_reference_id: user.id,
+        metadata: {
+          supabase_user_id: user.id,
+          usage_funding: '1',
+        },
+        payment_intent_data: {
+          metadata: {
+            supabase_user_id: user.id,
+            usage_funding: '1',
+          },
+        },
+      });
+
+      return res.json({ url: session.url, amount_cents: parsed.cents, display: parsed.display });
+    } catch (err) {
+      console.error('❌ /api/billing/usage/fund error:', err);
+      if (String(err?.message || '').includes('checkout_email_required')) {
+        return res.status(400).json({ error: 'checkout_email_required' });
+      }
+      return res.status(500).json({ error: 'usage_fund_failed' });
     }
   });
 

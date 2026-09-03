@@ -112,7 +112,7 @@ export default function QuickNoteWidget({ id, userId, size = 'small', onOpen }) 
             void save();
           }
         }}
-        placeholder={size === 'small' ? 'Jot something…' : 'Jot something down — ⌘↵ files it in the Vault.'}
+        placeholder={size === 'small' ? 'Jot something…' : 'Jot something down. ⌘↵ files it in the Vault.'}
         spellCheck={false}
         className="mt-1.5 min-h-0 w-full flex-1 resize-none bg-transparent text-[0.72rem] leading-relaxed text-black/85 outline-none placeholder:text-black/35 dark:text-white/90 dark:placeholder:text-white/30"
       />

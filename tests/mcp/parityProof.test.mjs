@@ -439,13 +439,20 @@ test('multi-account: Work vs Personal; ambiguous send does not pick', async () =
     assert.equal(workSend.ambiguous, false);
     assert.ok(workSend.tools.every((t) => t.connectionId === work.id));
 
+    // No named account: the send is ambiguous, so send tools are withheld
+    // (never guess which mailbox) while reads keep working, and the
+    // candidates are surfaced so the model can ask.
     const ambiguous = resolveExternalTools({
       task: { objective: 'Send this email', capabilities: ['communication.email.send'] },
       connections,
       classifiedByConnectionId,
     });
-    assert.equal(ambiguous.reason, 'ambiguous_account');
-    assert.equal(ambiguous.tools.length, 0);
+    assert.equal(ambiguous.ambiguous, true);
+    assert.ok(
+      !ambiguous.tools.some((t) =>
+        (t.semanticCapabilities || []).includes('communication.email.send'),
+      ),
+    );
     assert.ok(ambiguous.candidates.length >= 2);
   } finally {
     await fixture.close();

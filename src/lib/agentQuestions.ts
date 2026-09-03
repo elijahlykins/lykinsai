@@ -10,6 +10,19 @@ export function questionPrompt(text: string): string {
   return String(text || "").replace(/\s+/g, " ").trim();
 }
 
+/** Title + body for the in-chat question card. First line is the header. */
+export function splitQuestion(text: string): { title: string; body: string } {
+  const raw = String(text || "").replace(/\r\n/g, "\n").trim();
+  if (!raw) return { title: "", body: "" };
+  const lines = raw.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (lines.length >= 2) {
+    return { title: lines[0].slice(0, 90), body: lines.slice(1).join("\n") };
+  }
+  const sentence = raw.match(/^(.{1,80}?[.?])\s+([\s\S]+)$/);
+  if (sentence) return { title: sentence[1].trim(), body: sentence[2].trim() };
+  return { title: "Question", body: raw };
+}
+
 /** Back-compat: one prompt or nothing. Never a list of pages. */
 export function parseAgentQuestions(text: string): string[] {
   const prompt = questionPrompt(text);
@@ -35,6 +48,18 @@ export function questionChips(options: string[]): string[] {
     .slice(0, 4);
 }
 
+/** Pull one-tap answers out of a parked question that listed them as bullets. */
+export function parseBulletOptions(text: string): string[] {
+  const bullets = String(text || "")
+    .split("\n")
+    .map((line) => {
+      const match = line.match(/^\s*[-*]\s+(.+)$/);
+      return match ? match[1].replace(/\s+/g, " ").trim() : "";
+    })
+    .filter(Boolean);
+  return questionChips(bullets);
+}
+
 /**
  * @deprecated Prefer questionChips. Kept so older tests/callers still compile.
  * "Other…" is never added — the type-in is the other answer.
@@ -56,4 +81,4 @@ export function letteredOptions(options: string[], includeOther = false): Letter
   return rows;
 }
 
-export const SKIP_ANSWER = "Skip — use your best judgment and continue.";
+export const SKIP_ANSWER = "Skip, use your best judgment and continue.";

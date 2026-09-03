@@ -5,10 +5,9 @@
 // This is the "upload this to my X project" tool. When the user drags/pastes
 // a file (image, pdf, …) into the chat and asks the assistant to put it in a
 // project, the model has no way to do that today: the file lives only as an
-// ephemeral turn attachment, and the two existing tools — lykn_saveFileToVault
-// (persist a file as a vault note) and lykn_addProjectNeurons (cluster a
-// vault_<id> into a project) — would have to be chained, but the model has no
-// handle on the dragged file's bytes.
+// ephemeral turn attachment, and chaining a vault save with a separate
+// project-membership write would leave the model with no handle on the
+// dragged file's bytes.
 //
 // The in-app chat passes this turn's binary attachments to the tool layer as
 // ctx.turnAttachments (compact metadata) + ctx.turnImageUrls (the base64 image

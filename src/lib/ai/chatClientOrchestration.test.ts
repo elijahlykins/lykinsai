@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 
 import { buildAttachmentContext } from "./chatTurnPreparation";
 import { fetchYouTubeTranscriptWithWhisperRetry } from "./chatTranscription";
+import { editTargetFromArtifact } from "./chatArtifacts";
 import type { FocusedChatAttachment } from "@/lib/lyknChat/chatTurnTypes";
 import type { ChatAttachmentLike } from "@/lib/chat/chatAttachmentFile";
 
@@ -33,6 +34,20 @@ describe("send pipeline stage modules", () => {
     assert.match(src("src/lib/ai/chatRequestBuilder.ts"), /export async function buildChatRequestBody/);
     assert.match(src("src/lib/ai/chatStreamRunner.ts"), /export async function runChatStream/);
     assert.match(src("src/lib/ai/chatResultReconciliation.ts"), /export async function postProcessResponse/);
+  });
+
+  it("passes host chatId into local tools from send identity, not tool args", () => {
+    const runner = src("src/lib/ai/chatStreamRunner.ts");
+    assert.match(runner, /executeAwaitingLocalTool\(/);
+    assert.match(runner, /identity\?\.routeChatId \|\| p\.identity\?\.chatId/);
+    assert.doesNotMatch(runner, /chatId:\s*tc\.args/);
+    const launch = src("src/lib/ai/browserAgentLaunch.ts");
+    assert.match(launch, /hostChatId\(host\)/);
+    assert.match(launch, /Model args\.chatId is ignored/);
+    assert.doesNotMatch(launch, /const chatId = String\(args\.chatId/);
+    assert.doesNotMatch(launch, /getActiveThreadChatId/);
+    const executor = src("src/lib/ai/localToolExecutor.ts");
+    assert.match(executor, /runLocalToolNow\(tc\.name,[\s\S]*host\)/);
   });
 
   it("documents the load-bearing stage order in the facade header", () => {
@@ -101,5 +116,53 @@ describe("attachment type consolidation", () => {
       src("src/components/lyknChat/SentChatAttachment.tsx"),
       /export type SentChatAttachmentData = FocusedChatAttachment/,
     );
+  });
+});
+
+describe("edit target rides the sent prompt", () => {
+  it("names an installed app and its files", () => {
+    const target = editTargetFromArtifact(
+      {
+        id: "installed-app:app-1",
+        kind: "html",
+        title: "Todo",
+        toolName: "lykn_build_react_artifact",
+        sourceChatId: "chat-1",
+        installedAppId: "app-1",
+        files: [
+          { path: "App.jsx", content: "export default function App(){return null}" },
+          { path: "app.json", content: "{}" },
+        ],
+      } as any,
+      "chat-1",
+    );
+    assert.deepEqual(target, {
+      kind: "app",
+      title: "Todo",
+      paths: ["App.jsx", "app.json"],
+    });
+  });
+
+  it("ignores an artifact from another chat", () => {
+    assert.equal(
+      editTargetFromArtifact(
+        {
+          id: "art-1",
+          kind: "html",
+          title: "Other",
+          toolName: "lykn_build_react_artifact",
+          sourceChatId: "chat-OTHER",
+          code: "export default function App(){return null}",
+        } as any,
+        "chat-1",
+      ),
+      null,
+    );
+  });
+
+  it("stamps the send path and message chip", () => {
+    assert.match(src("src/hooks/useChatEngine.ts"), /editTargetFromArtifact/);
+    assert.match(src("src/hooks/useChatEngine.ts"), /pickEditArtifact/);
+    assert.match(src("src/components/lyknChat/ChatMessageItem.tsx"), /SentAppEditChip/);
   });
 });

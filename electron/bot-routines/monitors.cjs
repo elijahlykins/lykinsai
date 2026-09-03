@@ -509,7 +509,7 @@ function createMonitorRuntime({
         setStatus(routine, nextStatus, {
           notify: true,
           summary: loggedOut
-            ? "The watched page looks signed out. Open it and sign in — this monitor will not ask again until the page is back."
+            ? "The watched page looks signed out. Open it and sign in. This monitor will not ask again until the page is back."
             : "The watched tab navigated somewhere else. This monitor will not follow a random replacement page.",
         });
         store.setMonitorState(routine.id, { lastObservedAt: now() });

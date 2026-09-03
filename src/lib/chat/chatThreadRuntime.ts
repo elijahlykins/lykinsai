@@ -29,6 +29,8 @@ const RUNTIME_EVENT = "lykn_chat_thread_runtime_changed";
 
 const snapshots = new Map<string, ThreadSnapshot>();
 let activeChatId: string | null = null;
+const LAST_LYKN_CHAT_KEY = "lykn_last_home_chat_id";
+let lastLyknChatId = "";
 
 function emptySnapshot(): ThreadSnapshot {
   return {
@@ -56,8 +58,11 @@ export function dispatchThreadRuntimeChange(chatId?: string | null) {
   }
 }
 
-export function subscribeThreadRuntime(cb: () => void) {
-  const handler = () => cb();
+export function subscribeThreadRuntime(cb: (chatId?: string | null) => void) {
+  const handler = (event: Event) => {
+    const detail = (event as CustomEvent<{ chatId?: string | null }>).detail;
+    cb(detail?.chatId ?? null);
+  };
   window.addEventListener(RUNTIME_EVENT, handler);
   return () => window.removeEventListener(RUNTIME_EVENT, handler);
 }
@@ -68,6 +73,28 @@ export function getActiveThreadChatId() {
 
 export function setActiveThreadChatId(chatId: string | null) {
   activeChatId = chatId ? String(chatId) : null;
+}
+
+/** The last non-Bot LYKN board. Switching back from a Bot lands here. */
+export function rememberLyknChatId(chatId: string | null | undefined) {
+  const id = String(chatId || "").trim();
+  if (!id) return;
+  lastLyknChatId = id;
+  try {
+    sessionStorage.setItem(LAST_LYKN_CHAT_KEY, id);
+  } catch {
+    /* session memory is enough for this Studio window */
+  }
+}
+
+export function getLastLyknChatId() {
+  if (lastLyknChatId) return lastLyknChatId;
+  try {
+    lastLyknChatId = String(sessionStorage.getItem(LAST_LYKN_CHAT_KEY) || "").trim();
+  } catch {
+    lastLyknChatId = "";
+  }
+  return lastLyknChatId;
 }
 
 export function ensureThreadSnapshot(chatId: string): ThreadSnapshot {

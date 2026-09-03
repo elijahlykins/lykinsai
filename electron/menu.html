@@ -69,6 +69,7 @@
         gap: 2px;
         overflow-y: auto;
       }
+      .menu-item[hidden] { display: none !important; }
       .menu-item {
         display: flex;
         align-items: center;
@@ -100,7 +101,8 @@
       .menu-item.voice-active svg { color: #60a5fa; }
       .menu-item.listening { color: #f87171; background: rgba(248, 113, 113, 0.12); }
       .menu-item.listening svg { color: #f87171; }
-      .menu-sep { height: 1px; margin: 4px 6px; background: rgba(255, 255, 255, 0.1); flex: none; }
+      .menu-item.update-ready { color: #93c5fd; background: rgba(59, 120, 255, 0.16); }
+      .menu-item.update-ready svg { color: #93c5fd; }
 
       /* Past chats / Projects sub-views. */
       #history, #projects { display: none; flex-direction: column; flex: 1; min-height: 0; }
@@ -215,6 +217,15 @@
   <body>
     <div id="card">
       <div id="menu">
+        <button class="menu-item update-ready" id="mi-update" data-close="1" type="button" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" x2="12" y1="15" y2="3" />
+          </svg>
+          <span id="update-label">Restart to update</span>
+        </button>
+        <div class="menu-sep" id="mi-update-sep" hidden></div>
         <button class="menu-item" data-cmd="menu-new" data-close="1" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
@@ -249,7 +260,7 @@
           </svg>
           <span id="voice-label">Voice mode</span>
         </button>
-        <button class="menu-item" data-cmd="menu-live-watch" id="mi-watch" type="button">
+        <button class="menu-item" data-cmd="menu-live-watch" id="mi-watch" type="button" hidden>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
             <circle cx="12" cy="12" r="3" />
@@ -275,7 +286,7 @@
           Build mode
           <span class="menu-state" id="build-state">Off</span>
         </button>
-        <button class="menu-item" data-cmd="menu-agent" data-close="1" type="button">
+        <button class="menu-item" data-cmd="menu-agent" data-close="1" id="mi-agent" type="button" hidden>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 8V4H8" />
             <rect width="16" height="12" x="4" y="8" rx="2" />

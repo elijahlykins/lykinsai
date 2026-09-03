@@ -27,6 +27,7 @@
  */
 
 const { allowedActionTypes } = require("../../browser-agent/runtime/capabilities.cjs");
+const { browserOptInPrompt } = require("./browserOptInChoice.cjs");
 
 class BrowserExecutor {
   /**
@@ -118,15 +119,15 @@ class BrowserExecutor {
 }
 
 /**
- * The Bot's browser opt-in gate (the surviving, documented sliver of the old
- * "eject" bridge).
+ * Legacy Bot browser opt-in gate. Interactive bots now start the browser
+ * immediately through BrowserExecutor; this class remains so an already-
+ * parked question can still be answered, and so unit tests cover the old
+ * park-and-ask contract.
  *
- * Product behavior: a Bot always asks before opening the browser. This gate
- * parks the ORIGINAL tool instruction against the SAME canonical Task and
- * pauses it as waiting_for_user. On a yes, the host resumes that Task and
- * executes it through the canonical BrowserExecutor above — the instruction
- * that runs is the parked one, so no second user message ever becomes a
- * replacement browser objective.
+ * When the ask names a connectable service (Gmail, Drive, Slack, …) the
+ * question offers the plugin as well. This gate parks the ORIGINAL tool
+ * instruction against the SAME canonical Task and pauses it as
+ * waiting_for_user.
  */
 class BrowserOptInGate {
   constructor({ isDeclined = () => false, park } = {}) {
@@ -143,17 +144,18 @@ class BrowserOptInGate {
           "the user already chose to stay out of the browser for this task; answer another way or stop",
       };
     }
-    const question =
-      "This looks like something I'd need the browser for - want me to open it up and take care of it?";
+    const parked = String(instruction || task.objective).trim() || task.objective;
+    const prompt = browserOptInPrompt(instruction, task?.objective);
     this.park?.({
       taskId: task.id,
-      instruction: String(instruction || task.objective).trim() || task.objective,
+      instruction: parked,
+      plugin: prompt.plugin,
     });
     return {
       ok: true,
       terminal: "waiting_for_user",
-      question,
-      questionOptions: ["Yes, use the browser", "No, just answer here"],
+      question: prompt.question,
+      questionOptions: prompt.questionOptions,
     };
   }
 }

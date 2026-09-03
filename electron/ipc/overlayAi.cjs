@@ -1,6 +1,7 @@
 "use strict";
 
 const { bindOverlayIpcContext } = require("./overlayIpcContext.cjs");
+const { isTrustedLyknIpcSender, trustedLyknIpcOpts } = require("../trustedIpcSender.cjs");
 
 function registerOverlayAiIpc(d) {
   const {
@@ -242,7 +243,7 @@ function registerOverlayAiIpc(d) {
               const text = await fs.readFile(p, "utf8");
               out.push({ kind: "text", name, text });
             } else {
-              out.push({ kind: "text", name, text: "(Unsupported file type — not included.)" });
+              out.push({ kind: "text", name, text: "(Unsupported file type, not included.)" });
             }
           } catch {
             /* skip unreadable file */
@@ -490,7 +491,7 @@ function registerOverlayAiIpc(d) {
   
     // Voice Mode: fetch an ElevenLabs session (signed URL / conversation token)
     // with the user's auth attached, so the overlay can open a live voice session.
-    ipcMain.handle("lykn:voice-signed-url", async (_e, { instructions, timezone } = {}) => {
+    ipcMain.handle("lykn:voice-signed-url", async (_e, { instructions, timezone, desktop, localMode } = {}) => {
       try {
         const token = await getAuthToken();
         if (!token) return { error: "Sign in to LYKN first to use voice mode." };
@@ -501,6 +502,8 @@ function registerOverlayAiIpc(d) {
             instructions: String(instructions || ""),
             chatId: null,
             timezone: timezone || null,
+            desktop: desktop !== false,
+            localMode: localMode === true,
           }),
         });
         const data = await res.json().catch(() => ({}));
@@ -709,8 +712,9 @@ function registerOverlayAiIpc(d) {
     // Open a URL from overlay / Studio chat links. Always opens a fresh agent
     // tab in the LYKN browser (never the OS browser for http(s)).
     // Never navigate the overlay window itself.
-    ipcMain.on("lykn:open-url", (_e, payload) => {
-      // Accept legacy string payloads and { url, title } from newer callers.
+    ipcMain.on("lykn:open-url", (e, payload) => {
+      if (!isTrustedLyknIpcSender(e, trustedLyknIpcOpts({ app, path, appOrigin: APP_ORIGIN, appUrl: APP_URL }))) return;
+      // Accept legacy string payloads and { url, title, chatId } from newer callers.
       const url =
         typeof payload === "string"
           ? payload
@@ -719,7 +723,14 @@ function registerOverlayAiIpc(d) {
         typeof payload === "object" && payload
           ? String(payload.title || "")
           : "";
-      void openUrlPreferAgentBrowser(url, { title });
+      const sourceChatId =
+        typeof payload === "object" && payload
+          ? String(payload.chatId || "").trim()
+          : "";
+      void openUrlPreferAgentBrowser(url, {
+        title,
+        ...(sourceChatId ? { sourceChatId } : {}),
+      });
     });
   
     // macOS sharing-services picker (AirDrop, Messages, Mail, Notes, Photos…).
@@ -969,7 +980,7 @@ function registerOverlayAiIpc(d) {
             title: target.title || "",
             reading: true,
             message:
-              "LYKN can read this tab via Chrome Live Feed. Clicking and typing in the browser is macOS-only for now — ask about what's on screen instead.",
+              "LYKN can read this tab via Chrome Live Feed. Clicking and typing in the browser is macOS-only for now. Ask about what's on screen instead.",
           };
         }
         return {
@@ -1117,7 +1128,7 @@ function registerOverlayAiIpc(d) {
           error: "control_mac_only",
           results: [],
           message:
-            "Browser click-control is macOS-only for now. LYKN can still read your tab via Chrome Live Feed — ask about the page instead.",
+            "Browser click-control is macOS-only for now. LYKN can still read your tab via Chrome Live Feed. Ask about the page instead.",
         };
       }
       const browser = String(appName || "").trim();

@@ -23,11 +23,14 @@
 
 import { LYKN_TOOLS_BY_NAME, errorContent } from './index.js';
 import { EXTERIOR_TOOLS_BY_NAME } from './exterior/index.js';
+import { slimChatToolsForSurgicalEdit } from './artifactEditSchema.js';
+import { isOpenRouterTarget } from '../lib/inference/resolveGateway.js';
 import { delegateToSubModelTool } from './delegateToSubModel.js';
 import { listSubModelTasksTool } from './listSubModelTasks.js';
 import { getSubModelTaskTool } from './getSubModelTask.js';
 import { communicateWithModelTool } from './communicateWithModel.js';
 import { saveFileToVaultTool } from './saveFileToVault.js';
+import { writeDocumentTool } from './writeDocument.js';
 // In-app-only: deliberately NOT in mcp-tools/index.js so external MCP clients
 // can't create projects (they keep the user-only restriction). The in-product
 // assistant uses it only after the user agrees to its suggestion.
@@ -52,15 +55,19 @@ import { openAppTool } from './openApp.js';
 // these — they execute in the Electron main process. Included in the tool
 // schemas only when the caller enables Local Mode for the turn.
 import { LOCAL_CHAT_TOOLS_BY_NAME, LOCAL_TOOL_NAMES } from './localTools.js';
+import { searchConnectedToolsTool, callConnectedToolTool } from './connectedAppRegistry.js';
 
 const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
   ...LYKN_TOOLS_BY_NAME,
   ...EXTERIOR_TOOLS_BY_NAME,
+  [searchConnectedToolsTool.name]: searchConnectedToolsTool,
+  [callConnectedToolTool.name]: callConnectedToolTool,
   [delegateToSubModelTool.name]: delegateToSubModelTool,
   [listSubModelTasksTool.name]: listSubModelTasksTool,
   [getSubModelTaskTool.name]: getSubModelTaskTool,
   [communicateWithModelTool.name]: communicateWithModelTool,
   [saveFileToVaultTool.name]: saveFileToVaultTool,
+  [writeDocumentTool.name]: writeDocumentTool,
   [createProjectTool.name]: createProjectTool,
   [uploadToProjectTool.name]: uploadToProjectTool,
   [updateAssistantInstructionsTool.name]: updateAssistantInstructionsTool,
@@ -75,9 +82,9 @@ const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
 // salience when picking between similarly-described options. Cluster by
 // rough "this is how a single conversation flows":
 //
-//   discovery → read → attach Vault knowledge → mutate
-//   listProjects → searchVault → addProjectNeurons /
-//   removeProjectNeurons → updateProject / setActiveProject / deleteProject
+//   discovery → read → mutate
+//   listProjects → updateProject / setActiveProject / deleteProject
+//   personal facts stay on memory_* — there is no neuron load/cluster tool
 //
 // Read tools first because the agent loop's first call on most turns is
 // a read, and writes get more conservative when the model has already
@@ -91,19 +98,13 @@ export const CHAT_TOOL_NAMES = [
   'memory_forget',
   // ── Server-enforced preferences ──────────────────────────────────
   'lykn_getUserPreferences',
-  // ── Project / neuron reads ───────────────────────────────────────
+  // ── Project reads ────────────────────────────────────────────────
   'lykn_listProjects',
   'lykn_resolveProject',
   'lykn_getProjectState',
-  'lykn_getProjectNeurons',
-  'lykn_loadNeuron',
-  'lykn_loadNeurons',
   'lykn_getRecentActivity',
   // ── Project working-memory write (git-style, reversible) ─────────
   'lykn_pushProjectState',
-  // ── Project-cluster writes (reversible) ──────────────────────────
-  'lykn_addProjectNeurons',
-  'lykn_removeProjectNeurons',
   // Save a dragged-in chat file to the vault AND cluster it into a project in
   // one step ("upload this image to my <project>"). Acts on this turn's
   // attachments — see uploadToProject.js.
@@ -127,6 +128,7 @@ export const CHAT_TOOL_NAMES = [
   // preserved as a durable reference + download link. Reach for this after
   // build_template / build_spreadsheet / generate_image / communicate_with_model.
   'lykn_saveFileToVault',
+  'lykn_write_document',
   // URL-specialised vault save (rich link card, URL dedupe). The agent
   // should reach for this whenever the thing being saved is a link the
   // user pasted/dropped; createVaultNote stays the path for plain text
@@ -171,6 +173,9 @@ export const CHAT_TOOL_NAMES = [
   // application — both tool descriptions say so, because the ask sounds
   // identical ("open my notes").
   'lykn_open_app',
+  // Connected-app tool registry: search any app's actions, then call one.
+  'lykn_search_connected_tools',
+  'lykn_call_connected_tool',
   // ── Exterior capabilities (on-demand, server-executed) ───────────
   'lykn_web_search',
   'lykn_web_fetch',
@@ -328,20 +333,26 @@ export function resolveChatTools(toolNames, extraTools = []) {
   return [...core, ...extras];
 }
 
-export function buildOpenAiTools(toolNames, extraTools) {
+function prepareChatTools(toolNames, extraTools, opts) {
   const tools = resolveChatTools(toolNames, extraTools);
+  if (!tools.length) return [];
+  return opts?.surgicalEdit ? slimChatToolsForSurgicalEdit(tools) : tools;
+}
+
+export function buildOpenAiTools(toolNames, extraTools, opts) {
+  const tools = prepareChatTools(toolNames, extraTools, opts);
   if (!tools.length) return null;
   return tools.map(toOpenAIToolSchema);
 }
 
-export function buildAnthropicTools(toolNames, extraTools) {
-  const tools = resolveChatTools(toolNames, extraTools);
+export function buildAnthropicTools(toolNames, extraTools, opts) {
+  const tools = prepareChatTools(toolNames, extraTools, opts);
   if (!tools.length) return null;
   return tools.map(toAnthropicToolSchema);
 }
 
-export function buildGeminiTools(toolNames, extraTools) {
-  const tools = resolveChatTools(toolNames, extraTools);
+export function buildGeminiTools(toolNames, extraTools, opts) {
+  const tools = prepareChatTools(toolNames, extraTools, opts);
   if (!tools.length) return null;
   return [{ functionDeclarations: tools.map(toGeminiToolDeclaration) }];
 }
@@ -536,6 +547,12 @@ export function buildChatToolCtx(req, extras = {}) {
      */
     installedApps: sanitizeInstalledApps(req.body?.installedApps),
     /**
+     * Desktop teammates (LYKN bots), as { id, name, role }. They live in the
+     * renderer store, so the server only knows they exist because the desktop
+     * client sends them. local_ask_bot matches a spoken name against this.
+     */
+    lyknBots: sanitizeLyknBots(req.body?.lyknBots),
+    /**
      * The applications on the user's Mac, by name. lykn_open_app checks this to
      * tell an app they HAVE (open the real thing) from one they don't (the web
      * is the right answer) — which differs per machine, so it can't be a fixed
@@ -549,10 +566,10 @@ export function buildChatToolCtx(req, extras = {}) {
      */
     localMode: req.body?.localMode === true,
     /**
-     * What is in AI Drive — the artifacts and generated images LYKN has made
-     * for this user, as { id, name, folder }. `id` is the vault row, which is
-     * what a deep link into the drive needs. Same reason as installedApps: the
-     * server has no way to know what they have made unless it is told.
+     * What is in AI Drive — the docs, artifacts, and generated images LYKN has
+     * made for this user, as { id, name, folder }. `id` is the vault row, which
+     * is what a deep link into the drive needs. Same reason as installedApps:
+     * the server has no way to know what they have made unless it is told.
      */
     aiDrive: sanitizeAiDrive(req.body?.aiDrive),
     /**
@@ -565,6 +582,8 @@ export function buildChatToolCtx(req, extras = {}) {
     // In-app chat never searches the retired connected-apps vault library.
     // Files live in the Finder window: [AI DRIVE] + local_* for Mac folders.
     skipVaultSearch: true,
+    mcpManager: extras.mcpManager || null,
+    userMessage: typeof extras.userMessage === 'string' ? extras.userMessage : null,
   };
 }
 
@@ -577,12 +596,13 @@ function sanitizeAiDriveTotals(raw) {
   };
   return {
     artifacts: count(raw.artifacts),
+    docs: count(raw.docs),
     images: count(raw.images),
     complete: raw.complete === true,
   };
 }
 
-/** Vault-row id, display name and which of AI Drive's two folders it sits in. */
+/** Vault-row id, display name and which AI Drive folder it sits in. */
 function sanitizeAiDrive(raw) {
   if (!Array.isArray(raw)) return [];
   const out = [];
@@ -591,7 +611,9 @@ function sanitizeAiDrive(raw) {
     const id = typeof item.id === 'string' ? item.id.trim().slice(0, 120) : '';
     const name = typeof item.name === 'string' ? item.name.trim().slice(0, 120) : '';
     if (!id || !name) continue;
-    out.push({ id, name, folder: item.folder === 'images' ? 'images' : 'artifacts' });
+    const folder =
+      item.folder === 'images' ? 'images' : item.folder === 'docs' ? 'docs' : 'artifacts';
+    out.push({ id, name, folder });
   }
   return out;
 }
@@ -604,6 +626,24 @@ function sanitizeMacApps(raw) {
   for (const app of raw.slice(0, 200)) {
     const name = String(typeof app === 'string' ? app : app?.name || '').trim().slice(0, 80);
     if (name) out.push(name);
+  }
+  return out;
+}
+
+/** Desktop bot roster: id + name required, role optional. */
+export function sanitizeLyknBots(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const bot of raw.slice(0, 40)) {
+    if (!bot || typeof bot !== 'object') continue;
+    const id = typeof bot.id === 'string' ? bot.id.trim().slice(0, 80) : '';
+    const name = typeof bot.name === 'string' ? bot.name.trim().slice(0, 60) : '';
+    if (!id || !name) continue;
+    out.push({
+      id,
+      name,
+      role: typeof bot.role === 'string' ? bot.role.trim().slice(0, 80) : '',
+    });
   }
   return out;
 }
@@ -660,6 +700,7 @@ function sanitizeTurnAttachments(raw) {
 export function providerForModel(model) {
   const m = String(model || '').toLowerCase();
   if (!m) return null;
+  if (isOpenRouterTarget(model) || m.includes('/')) return 'openrouter';
   if (m.startsWith('gpt-') || m === 'o3' || m === 'o3-pro' || m === 'o4-mini') return 'openai';
   if (m.includes('claude')) return 'anthropic';
   if (m.includes('grok')) return 'grok';
@@ -672,5 +713,5 @@ export function providerForModel(model) {
 // the provider-id ↔ tool-support map.
 export function supportsTools(model) {
   const p = providerForModel(model);
-  return p === 'openai' || p === 'anthropic' || p === 'gemini' || p === 'grok';
+  return p === 'openai' || p === 'anthropic' || p === 'gemini' || p === 'grok' || p === 'openrouter';
 }

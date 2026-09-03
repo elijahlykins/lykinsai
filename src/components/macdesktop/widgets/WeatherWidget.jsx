@@ -251,7 +251,7 @@ export default function WeatherWidget({ size = 'small', props = {}, onChangeProp
         <>
           <div className={size === 'small' ? 'mt-1' : 'mt-1.5 flex items-baseline gap-2'}>
             <p className="text-[1.9rem] font-semibold leading-none tracking-tight tabular-nums text-black/90 dark:text-white/95">
-              {temp === null ? (isLoading ? '—' : '—') : `${temp}${deg}`}
+              {temp === null ? (isLoading ? '-' : '-') : `${temp}${deg}`}
             </p>
             {size !== 'small' && (
               <p className="truncate text-[0.72rem] text-black/55 dark:text-white/55">{label}</p>

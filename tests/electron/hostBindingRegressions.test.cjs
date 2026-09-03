@@ -107,6 +107,9 @@ test("desktop auth source still owns the OAuth and token bindings", () => {
   assert.match(src, /const LYKN_PROTOCOL =/);
   assert.match(src, /const READ_SUPABASE_TOKEN_JS =/);
   assert.match(src, /const HAS_SUPABASE_SESSION_JS =/);
+  assert.match(src, /const READ_SUPABASE_SESSION_JS =/);
+  assert.match(src, /hydrateDesktopSessionFromDisk/);
+  assert.match(src, /require\("\.\/desktopSessionStore\.cjs"\)/);
 });
 
 test("extracted hosts require the bindings they lost in the Electron split", () => {
@@ -130,6 +133,102 @@ test("extracted hosts require the bindings they lost in the Electron split", () 
   assert.match(extensionIpc, /require\("\.\.\/extensionInstaller\.cjs"\)/);
   assert.match(extensionIpc, /appDir: ELECTRON_DIR/);
   assert.doesNotMatch(extensionIpc, /appDir: __dirname/);
+
+  const agentBridge = read("ipc/agentBridge.cjs");
+  assert.match(agentBridge, /require\("\.\.\/agentTabIds\.cjs"\)/);
+  assert.match(agentBridge, /const MAX_AGENT_BROWSER_TABS = 20/);
+  assert.match(agentBridge, /runtime\(\)\.isHeadless\?/);
+  assert.match(agentBridge, /concealBotBrowserTab\(id\)/);
+
+  const agentRuntime = read("agentRuntime.cjs");
+  assert.match(agentRuntime, /workerAgents\(\)\.filter\(\(a\) => !a\.headless\)/);
+  assert.match(agentRuntime, /isHeadless: isHeadlessAgent/);
+  assert.match(agentRuntime, /if \(questionsOnly\) \{/);
+  assert.match(agentRuntime, /return runBrowserQuestion\(agent/);
+
+  const rail = fs.readFileSync(
+    path.resolve(__dirname, "..", "..", "src/components/studio/agentRail/StudioAgentRail.jsx"),
+    "utf8",
+  );
+  assert.doesNotMatch(rail, /questionsOnly:/);
+  assert.doesNotMatch(rail, /studioAgentSend/);
+  assert.match(rail, /AttachedChatThread/);
+  assert.match(rail, /BrowserAskComposer/);
+  assert.doesNotMatch(rail, /HomeChatBar/);
+  assert.match(rail, /ensureBrowserTabChat/);
+  assert.match(rail, /resolveRailChatId/);
+  assert.match(rail, /hydrateTabChatFromMain/);
+  assert.match(rail, /unbindBrowserTabChat/);
+  assert.doesNotMatch(rail, /getActiveThreadChatId/);
+  assert.doesNotMatch(rail, /consumePendingBrowserChat/);
+  assert.doesNotMatch(rail, /getActiveThreadChatId\(\)/);
+  const stageHtml = fs.readFileSync(
+    path.resolve(__dirname, "..", "..", "electron/agent-stage.html"),
+    "utf8",
+  );
+  assert.match(stageHtml, /Ask LYKN/);
+  assert.match(stageHtml, /<span class="label">Ask<\/span>/);
+  assert.match(agentBridge, /questionsOnly: !!questionsOnly/);
+  assert.match(agentBridge, /d\.openBrowserTaskChat = \(\) => d\.agentChatOpen/);
+  assert.doesNotMatch(agentBridge, /d\.openBrowserTaskChat = \(agentId\) => setAgentChatOpen\(true/);
+
+  const studio = fs.readFileSync(
+    path.resolve(__dirname, "..", "..", "src/pages/Studio.jsx"),
+    "utf8",
+  );
+  assert.match(studio, /if \(d\.openRail\)/);
+
+  assert.match(host, /function tabChatProjection/);
+  assert.match(host, /function clearTabSourceChatIds/);
+  assert.match(host, /function notifyStudioTabChatState/);
+  assert.match(host, /noteClosedTabChat\(id\)/);
+  assert.match(host, /sourceChatId: sourceChatId \|\| undefined/);
+  {
+    const start = host.indexOf("function openFreshStudioBrowserTab");
+    const end = host.indexOf("function fillEmptyStudioBrowser");
+    const fresh = host.slice(start, end);
+    assert.doesNotMatch(fresh, /sourceChatId/);
+  }
+  assert.match(agentBridge, /lykn:studio-clear-tab-chats/);
+  assert.match(agentBridge, /sourceChatId/);
+  assert.match(agentBridge, /untrustedSenderResult/);
+
+  const preload = fs.readFileSync(
+    path.resolve(__dirname, "..", "..", "electron/preload.cjs"),
+    "utf8",
+  );
+  assert.match(preload, /clearTabChatBindings/);
+  assert.match(preload, /bindTabChat/);
+  assert.match(preload, /getBrowserTabPageContext/);
+  assert.match(preload, /persistDesktopSession/);
+  assert.match(preload, /clearDesktopSession/);
+  const pagePreload = fs.readFileSync(
+    path.resolve(__dirname, "..", "..", "electron/agent-browser-preload.cjs"),
+    "utf8",
+  );
+  assert.doesNotMatch(pagePreload, /clearTabChatBindings/);
+  assert.doesNotMatch(pagePreload, /bindTabChat/);
+  assert.doesNotMatch(pagePreload, /persistDesktopSession/);
+  assert.doesNotMatch(pagePreload, /clearDesktopSession/);
+  assert.doesNotMatch(pagePreload, /studioOpenUrl/);
+  assert.doesNotMatch(pagePreload, /getBrowserTabPageContext/);
+  assert.doesNotMatch(pagePreload, /attachConversation/);
+  assert.doesNotMatch(pagePreload, /agentCreate/);
+
+  assert.match(host, /function applyTabSourceChatId/);
+  assert.match(host, /sourceChatId: inherit \|\| undefined/);
+  assert.match(host, /\.\.\.prev,/);
+  const runtime = read("agentRuntime.cjs");
+  assert.match(runtime, /sourceChatId: String\(sourceChatId \|\| ""\)\.trim\(\) \|\| undefined/);
+  assert.match(agentBridge, /applyTabSourceChatId\(target, lineageChatId\)/);
+  const executor = fs.readFileSync(
+    path.resolve(__dirname, "..", "..", "src/lib/ai/browserAgentLaunch.ts"),
+    "utf8",
+  );
+  assert.match(executor, /sourceChatId: chatId/);
+  assert.match(executor, /task: \{ chatId \}/);
+  assert.match(host, /async function openUrlPreferAgentBrowser\(url, \{ title, sourceChatId \}/);
+  assert.match(agentBridge, /ipcMain.handle\("lykn:studio-open-url", async \(e,/);
 });
 
 test("unpackaged extension install resolves from electron/, not electron/ipc", () => {

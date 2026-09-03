@@ -13,10 +13,7 @@
 const TOOL_RUNNING_STATUS: Record<string, string> = {
   // ── Synthesis / memory reads ───────────────────────────────────
   lykn_listProjects: "Connecting this to what you're on…",
-  lykn_getProjectNeurons: "Pulling up the project…",
   lykn_getProjectState: "Checking what you're on…",
-  lykn_loadNeuron: "Recalling the details…",
-  lykn_loadNeurons: "Recalling the details…",
   lykn_searchVault: "Checking AI Drive…",
   memory_list: "Checking what I know about you…",
   memory_read: "Reading that memory…",
@@ -28,8 +25,6 @@ const TOOL_RUNNING_STATUS: Record<string, string> = {
 
   // ── Synthesis / memory writes ──────────────────────────────────
   lykn_pushProjectState: "Updating what you're on…",
-  lykn_addProjectNeurons: "Organizing your thinking…",
-  lykn_removeProjectNeurons: "Tidying up the project…",
   lykn_setActiveProject: "Switching what you're on…",
   lykn_updateProject: "Updating the project…",
   lykn_deleteProject: "Removing the project…",
@@ -37,6 +32,8 @@ const TOOL_RUNNING_STATUS: Record<string, string> = {
   lykn_updateUserPreference: "Updating your settings…",
   lykn_open_settings: "Opening your settings…",
   lykn_open_app: "Opening it…",
+  lykn_search_connected_tools: "Looking up the right action…",
+  lykn_call_connected_tool: "Using the connected app…",
 
   // ── Exterior capabilities (the "building the thing out" cases) ──
   lykn_web_search: "Searching the web…",
@@ -54,6 +51,7 @@ const TOOL_RUNNING_STATUS: Record<string, string> = {
   lykn_render_video: "Rendering the video…",
   lykn_build_spreadsheet: "Building the spreadsheet…",
   lykn_manage_file: "Preparing the file…",
+  lykn_write_document: "Writing it out…",
   lykn_parse_document: "Reading the document…",
   lykn_process_image: "Looking at the image…",
   lykn_transcribe_audio: "Transcribing the audio…",
@@ -74,9 +72,49 @@ const TOOL_RUNNING_STATUS: Record<string, string> = {
   local_read_app: "Reading the app…",
   local_open_app: "Opening the app…",
   local_browser_agent: "Sending it to the browser agent…",
+  local_ask_bot: "Asking your bot…",
+  browser_agent: "Sending it to the browser agent…",
+  ask_bot: "Sending your bot…",
   local_open_path: "Opening it…",
   local_organize_desktop: "Tidying your desktop…",
 };
+
+/** Connected-app slugs (first token of a bridged MCP tool name) → brand. */
+const MCP_APP_LABELS: Record<string, string> = {
+  GMAIL: "Gmail",
+  GOOGLECALENDAR: "Google Calendar",
+  GOOGLEDRIVE: "Google Drive",
+  GOOGLEDOCS: "Google Docs",
+  GOOGLESHEETS: "Google Sheets",
+  GITHUB: "GitHub",
+  NOTION: "Notion",
+  SLACK: "Slack",
+  LINEAR: "Linear",
+  DISCORD: "Discord",
+  DROPBOX: "Dropbox",
+  HUBSPOT: "HubSpot",
+  SALESFORCE: "Salesforce",
+  JIRA: "Jira",
+  OUTLOOK: "Outlook",
+};
+
+/**
+ * Bridged connected-app tools arrive as "mcp_<connection>_<APP>_<ACTION>"
+ * (e.g. "mcp_8d05c2ab_GMAIL_FETCH_EMAILS"). Never show the connection hash;
+ * narrate the app and action: "Using Gmail: fetch emails…".
+ */
+function humaniseMcpToolName(name: string): string | null {
+  const match = /^mcp_[0-9a-f]{8}_(.+)$/i.exec(name);
+  if (!match) return null;
+  const tokens = match[1].split(/[_-]+/).filter(Boolean);
+  if (!tokens.length) return "Using a connected app…";
+  const slug = tokens[0].toUpperCase();
+  const app =
+    MCP_APP_LABELS[slug] ||
+    tokens[0].charAt(0).toUpperCase() + tokens[0].slice(1).toLowerCase();
+  const action = tokens.slice(1).join(" ").toLowerCase();
+  return action ? `Using ${app}: ${action}…` : `Using ${app}…`;
+}
 
 /**
  * Humanise an unmapped tool name into a readable activity line, e.g.
@@ -85,6 +123,8 @@ const TOOL_RUNNING_STATUS: Record<string, string> = {
  * leaking its snake_case identifier.
  */
 function humaniseToolName(name: string): string {
+  const mcp = humaniseMcpToolName(name);
+  if (mcp) return mcp;
   const cleaned = name.replace(/^lykn_/, "").replace(/[_-]+/g, " ").trim();
   if (!cleaned) return "Working on it…";
   return `Working on ${cleaned}…`;
@@ -142,6 +182,10 @@ function toolDetailStatus(name: string, args?: Record<string, unknown>): string 
   ) {
     const title = typeof args.title === "string" ? args.title.trim() : "";
     return title ? `Building ${truncateForStatus(title, 40)}…` : "";
+  }
+  if (name === "lykn_write_document") {
+    const title = typeof args.title === "string" ? args.title.trim() : "";
+    return title ? `Writing ${truncateForStatus(title, 40)}…` : "";
   }
   if (name === "lykn_render_video") {
     const title = typeof args.title === "string" ? args.title.trim() : "";

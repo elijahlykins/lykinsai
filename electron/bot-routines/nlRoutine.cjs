@@ -12,6 +12,7 @@
 const path = require("node:path");
 const { compileLocalCapabilities } = require("../task-runtime/executors/localCapabilities.cjs");
 const { originOf } = require("./browserObservation.cjs");
+const { looksLikeInboxWatch } = require("./inboxWatch.cjs");
 
 const DAY_WORDS = {
   sunday: 0,
@@ -101,6 +102,34 @@ function looksLikeScreenWatch(text) {
   );
 }
 
+/**
+ * The user is asking this bot to CREATE a standing routine, not to do the
+ * work once in chat. Used by Bot routing so "can you set a routine to
+ * monitor my email" cannot fall through to a reply-only refusal.
+ */
+function looksLikeCreateRoutineAsk(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (
+    /\b(?:set(?:\s+up)?|create|make|add|start|schedule)\b.{0,48}\b(?:a\s+)?(?:routine|recurring(?:\s+(?:task|job|check|watch))?)\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:watch|monitor|keep an eye on)\b.{0,80}\b(?:gmail|inbox|e-?mail|new mail|new message)\b/i.test(t) ||
+    /\b(?:gmail|inbox|e-?mail)\b.{0,80}\b(?:watch|monitor|ping|alert|notify)\b/i.test(t)
+  ) {
+    return true;
+  }
+  const timed =
+    /\b(?:every|each)\s+(?:\d+\s+)?(?:minutes?|mins?|hours?|hrs?|weekdays?)\b/i.test(t) ||
+    /\bevery\s+(?:morning|evening|night|weekday|day)\b/i.test(t);
+  if (!timed) return false;
+  return /\b(?:check|watch|monitor|review|summar|ping|alert|notify|scan|look at|look over)\b/i.test(t);
+}
+
 function isNotifyOnlyInstruction(text) {
   const t = String(text || "").toLowerCase();
   const tells = /\b(tell me|notify me|alert me|let me know|ping me)\b/.test(t);
@@ -165,6 +194,13 @@ function appNameFromText(text) {
 function parseTriggerFromText(rawText, context = {}) {
   const text = String(rawText || "").trim();
   if (!text) return null;
+
+  // Inbox watches default to a one-minute poll unless the user named a time.
+  // The poll is not the product event — new mail is. Creation still requires
+  // a live Gmail (or similar) MCP connection before this spec is stored.
+  if (looksLikeInboxWatch(text) && !/\bevery\s+\d*\s*(minutes?|mins?|hours?|hrs?)\b/i.test(text)) {
+    return { type: "schedule", schedule: { kind: "interval", everyMs: 60 * 1000 } };
+  }
 
   // Interval: "every 15 minutes", "every hour", "every 2 hours".
   const interval = /\bevery\s+(\d+)?\s*(minutes?|mins?|hours?|hrs?)\b/i.exec(text);
@@ -337,16 +373,30 @@ function compileRoutineCapabilities(instructions, trigger, { explicit } = {}) {
   if (/\b(run|rerun|re-run)\b.*\btests?\b/.test(text) || /\btests?\b.*\b(run|fail)/.test(text)) {
     caps.add("local.shell.execute");
   }
+  if (looksLikeInboxWatch(instructions)) {
+    caps.add("communication.email.search");
+    caps.add("communication.email.read");
+    caps.add("browser.read");
+    caps.add("browser.navigate");
+    caps.add("browser.interact");
+  }
   if (
     /\b(check|research|look up|monitor|track|compare|summar|price|pricing|competitor|news|weather|stock|market|website|page|dashboard)\b/.test(
       text,
     ) &&
-    !/\bonly\s+local\b/.test(text)
+    !/\bonly\s+local\b/.test(text) &&
+    !looksLikeInboxWatch(instructions)
   ) {
     caps.add("research_report");
   }
   if (/\b(image|picture|logo|illustration)\b/.test(text) && /\b(generate|create|make|draw)\b/.test(text)) {
     caps.add("generate_image");
+  }
+  if (
+    /\b(letter|memo|notes?|write[- ]?up|one[- ]?pager|document|essay)\b/.test(text) &&
+    /\b(write|draft|compose)\b/.test(text)
+  ) {
+    caps.add("write_document");
   }
   return [...caps];
 }
@@ -422,5 +472,6 @@ module.exports = {
   compileRoutineCapabilities,
   resolveRoutineSpec,
   isNotifyOnlyInstruction,
+  looksLikeCreateRoutineAsk,
   PART_OF_DAY_TIMES,
 };

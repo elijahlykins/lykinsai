@@ -8,11 +8,12 @@
 // still re-checks runChatTool / Local Mode / consequence policy.
 
 import { createRequire } from 'node:module';
-import { looksLikeLocalSystemAsk, mightBeBrowserTaskAsk } from './localTools.js';
+import { LOCAL_NAMED_FILE_RE, looksLikeLocalSystemAsk, mightBeBrowserTaskAsk } from './localTools.js';
 
 const require = createRequire(import.meta.url);
 const webSearchIntent = require('../lib/webSearchIntent.cjs');
 const artifactBuildIntent = require('../lib/artifactBuildIntent.cjs');
+const { looksLikeWrittenDocumentAsk } = require('../lib/basicDocument.cjs');
 
 export const MANAGED_SURFACE_INTENT =
   /\b(to-?dos?|to-?do\s*lists?|task\s*lists?|tasks?|checklists?|calendars?|agendas?|schedules?|scheduling|events?|reminders?|remind\s+me|my\s+(?:list|plate|day|week|month|plans?|agenda|schedule))\b/i;
@@ -127,7 +128,17 @@ export function messageWantsUrlFetch(msg) {
   if (!t) return false;
   if (/https?:\/\//i.test(t)) return true;
   if (
-    /\b(?:browse|open|visit|go\s+to|fetch|read|load)\b.{0,48}\b[\w.-]+\.(?:com|io|net|org|co|app|ai|dev|edu)\b/i.test(
+    /\b(?:browse|open|visit|go\s+to|fetch|read|load|scrape|pull\s+up|check\s+out)\b.{0,48}\b[\w.-]+\.(?:com|io|net|org|co|app|ai|dev|edu)\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  // Brand-name site asks carry no TLD ("open up the perplexity landing page",
+  // "scrape the acme website"). A site noun after a browse verb is still a
+  // fetch ask; bare "page" stays out so "open the settings page" doesn't arm.
+  if (
+    /\b(?:browse|open|visit|go\s+to|fetch|read|load|scrape|pull\s+up|check\s+out)\b.{0,60}\b(?:landing\s?pages?|home\s?pages?|websites?|web\s?sites?|web\s?pages?|site)\b/i.test(
       t,
     )
   ) {
@@ -230,6 +241,15 @@ export function messageWantsSavedRecall(msg) {
   ) {
     return true;
   }
+  // "pull up the dashboard I made", "open the doc you built for me" — things
+  // LYKN built live in AI Drive and open with the open-app tool.
+  if (
+    /\b(?:pull|bring|show|open|find|get|grab|look\s+up)\b.{0,60}\b(?:i|we|you)\s+(?:made|built|created|generated)\b/.test(
+      t,
+    )
+  ) {
+    return true;
+  }
   if (
     /\b(?:do\s+i\s+have|have\s+i|anything|something)\b.{0,40}\b(?:saved|in\s+(?:my\s+)?vault|in\s+the\s+vault|in\s+(?:my\s+)?ai\s*drive)\b/.test(
       t,
@@ -243,6 +263,10 @@ export function messageWantsSavedRecall(msg) {
 export function messageWantsVaultWrite(msg) {
   const t = String(msg || '');
   return /\b(?:save|add|put)\b.{0,40}\b(?:vault|note|notes)\b/i.test(t);
+}
+
+export function messageWantsWrittenDocument(msg) {
+  return looksLikeWrittenDocumentAsk(msg);
 }
 
 export function messageWantsUserRecallCore(msg) {
@@ -322,10 +346,84 @@ export function messageWantsLocalShell(msg) {
 export function messageWantsLocalFolderPeek(msg) {
   const t = String(msg || '').toLowerCase();
   if (!t.trim()) return false;
-  return (
+  if (
     /\b(folder|directory|files?|path)\b/.test(t) &&
-    /\b(see|look|show|what.?s in|what is in|list|open|read)\b/.test(t)
-  );
+    /\b(see|look|show|what.?s in|what is in|list|open|read|check)\b/.test(t)
+  ) {
+    return true;
+  }
+  if (/\b(list|show|check|look|see|read)\b.{0,32}\b(what.?s|whats|what is)\s+inside\b/.test(t)) {
+    return true;
+  }
+  // Follow-up about a named file from a dropped folder ("what's in agents.md").
+  if (
+    LOCAL_NAMED_FILE_RE.test(t) &&
+    /\b(what.?s in|what is in|read|open|show|look|see|check|list)\b/.test(t)
+  ) {
+    return true;
+  }
+  if (/\b(what.?s in|what is in|read|open|show)\b.{0,40}\b(this|that|the)\s+file\b/.test(t)) {
+    return true;
+  }
+  return false;
+}
+
+const DESKTOP_FOLDER_MARKERS =
+  /Desktop folder "|Attached folder "|call local_list_dir or local_read_file|Path: \/(?:Users|users|Volumes)\//;
+
+/** True when a prior turn in this chat attached a Mac folder listing. */
+export function conversationHasAttachedDesktopFolder(conversation) {
+  if (!Array.isArray(conversation)) return false;
+  return conversation.some((m) => DESKTOP_FOLDER_MARKERS.test(String(m?.content || '')));
+}
+
+/** Follow-up that wants a file from a folder already on the thread. */
+export function messageLooksLikeAttachedFileFollowUp(msg) {
+  const t = String(msg || '').toLowerCase();
+  if (!t.trim()) return false;
+  if (LOCAL_NAMED_FILE_RE.test(t)) return true;
+  if (/\b(this|that|the)\s+(file|folder|directory|listing)\b/.test(t)) return true;
+  if (/\b(what.?s in|what is in|read|open|show|look (?:at|inside)|check|list)\b/.test(t)) return true;
+  return false;
+}
+
+/** Prior user turns already named a Mac folder ("read my LYKN folder"). */
+export function conversationMentionedLocalFolder(conversation) {
+  if (!Array.isArray(conversation)) return false;
+  return conversation.slice(-8).some((m) => {
+    if (m?.role === 'assistant') return false;
+    const t = String(m?.content || '');
+    if (!t.trim()) return false;
+    return (
+      looksLikeLocalSystemAsk(t) ||
+      messageWantsLocalFolderPeek(t) ||
+      /\b(?:my|the|our)\s+[\w.+' -]{1,40}\s+folders?\b/i.test(t)
+    );
+  });
+}
+
+/** Short follow-up that continues a named-folder ask ("just list what's inside"). */
+export function messageLooksLikeFolderInspectFollowUp(msg) {
+  const t = String(msg || '').toLowerCase().trim();
+  if (!t || t.length > 140) return false;
+  if (/\b(list|show|check|look|see|read)\b.{0,32}\b(inside|in\s+(it|there|that)|contents?)\b/.test(t)) {
+    return true;
+  }
+  if (/\b(what.?s|whats|what is)\s+(inside|in\s+(it|there|that))\b/.test(t)) return true;
+  if (/^(just\s+)?(list|check|show|look)\s+it\b/.test(t)) return true;
+  // "ok check them" / "compare those" after the user already named folders.
+  if (
+    /^(?:(?:ok(?:ay)?|sure|yes|yep|yeah|please|go\s+ahead)[,!. ]*)*(?:check|compare|inspect|search|look(?:\s+at)?|read|list)\s+(?:them|those|it|both|the\s+(?:folders?|files?|two|copies))\b/.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (/^(?:ok(?:ay)?|sure|yes)[,!. ]+(?:check|compare|inspect|do\s+it|go\s+ahead)\b/.test(t)) {
+    return true;
+  }
+  if (/^(?:ok(?:ay)?[,!. ]*)?(?:go\s+ahead|do\s+it|please\s+do)[.!?]*$/.test(t)) return true;
+  return false;
 }
 
 export function messageWantsLocalDesktop(msg) {
@@ -348,6 +446,39 @@ export function messageWantsLocalApps(msg) {
     )
   ) {
     return true;
+  }
+  return false;
+}
+
+const ASK_BOT_KIND_RE =
+  /\b(?:ask|consult|check\s+with|talk\s+to|speak\s+(?:to|with)|get\s+(?:a\s+|the\s+)?(?:take|opinion|thoughts?)\s+(?:from|of))\b.{0,48}\b(?:bot|teammate)s?\b/i;
+
+const SEND_BOT_KIND_RE =
+  /\b(?:send|run|start|dispatch|launch|have)\b.{0,48}\b(?:bot|teammate)s?\b/i;
+
+const MY_BOTS_RE = /\b(?:my|your|the)\s+(?:bot|teammate)s?\b/i;
+
+const ASK_NAMED_SOMEONE_RE =
+  /\b(?:ask|consult|check\s+with|talk\s+to|speak\s+(?:to|with)|what\s+does)\s+(?!me\b|us\b|them\b|him\b|her\b|it\b|this\b|that\b|you\b|your\b|yourself\b|my\b|our\b|the\b|a\b|an\b)([A-Za-z][A-Za-z0-9_-]{1,40})\b/i;
+
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function botRoster(raw) {
+  return Array.isArray(raw) ? raw : [];
+}
+
+/** True when this turn wants LYKN to talk to a desktop bot and report back. */
+export function messageWantsBotAsk(msg, bots) {
+  const t = String(msg || '');
+  if (!t.trim()) return false;
+  if (ASK_BOT_KIND_RE.test(t) || SEND_BOT_KIND_RE.test(t) || MY_BOTS_RE.test(t)) return true;
+  if (ASK_NAMED_SOMEONE_RE.test(t)) return true;
+  for (const bot of botRoster(bots)) {
+    const name = String(bot?.name || '').trim();
+    if (name.length < 2) continue;
+    if (new RegExp(`\\b${escapeRegExp(name)}\\b`, 'i').test(t)) return true;
   }
   return false;
 }
@@ -422,17 +553,16 @@ export function resolveIntentChatToolNames(msg, opts = {}) {
   if (wantsVault) {
     add('lykn_open_app', 'lykn_createVaultNote', 'lykn_saveFileToVault', 'lykn_saveLinkToVault');
   }
+  if (messageWantsWrittenDocument(t)) add('lykn_write_document');
   if (wantsProject) {
     add(
       'lykn_listProjects',
       'lykn_resolveProject',
       'lykn_getProjectState',
-      'lykn_getProjectNeurons',
       'lykn_pushProjectState',
       'lykn_setActiveProject',
       'lykn_createProject',
       'lykn_updateProject',
-      'lykn_addProjectNeurons',
       'lykn_uploadToProject',
     );
   }
@@ -464,6 +594,7 @@ export function messageWantsAgentTools(msg, opts = {}) {
   if (opts.forcePageFetch || messageWantsPageFetch(t) || messageWantsUrlFetch(t)) return true;
   if (messageWantsCalc(t)) return true;
   if (messageWantsVaultWrite(t)) return true;
+  if (messageWantsWrittenDocument(t)) return true;
   if (
     /\b(?:create|make|generate|build)\b.{0,40}\b(?:image|picture|photo|chart|graph|diagram|deck|slideshow|spreadsheet|app|dashboard|video|mp4)\b/i.test(
       t,
@@ -471,7 +602,20 @@ export function messageWantsAgentTools(msg, opts = {}) {
   ) {
     return true;
   }
+  if (messageWantsBotAsk(t, opts.lyknBots)) return true;
   if (looksLikeLocalSystemAsk(t) || mightBeBrowserTaskAsk(t) || messageWantsLocalFolderPeek(t)) return true;
+  if (
+    conversationHasAttachedDesktopFolder(opts.conversation) &&
+    messageLooksLikeAttachedFileFollowUp(t)
+  ) {
+    return true;
+  }
+  if (
+    conversationMentionedLocalFolder(opts.conversation) &&
+    messageLooksLikeFolderInspectFollowUp(t)
+  ) {
+    return true;
+  }
   if (inferExternalCapabilityNeeds(t).length) return true;
   if (messageWantsUserRecallCore(t) || messageWantsMemoryWrite(t)) return true;
   if (messageWantsRemoteSession(t)) return true;

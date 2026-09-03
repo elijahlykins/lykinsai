@@ -82,15 +82,18 @@ test("refuses everything when Local Mode is off", async () => {
   assert.equal((await get(protocol.urlFor(file))).status, 403);
 });
 
-test("serves anything readable when the whole Mac is shared", async () => {
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "lykn-outside-"));
-  const file = path.join(outside, "ok.txt");
+test("whole-home share serves files under an approved home and refuses the rest of the disk", async () => {
+  const file = path.join(root, "ok.txt");
   fs.writeFileSync(file, "fine");
-  setLocalMode({ syncAll: true, syncedFolders: [] });
+  setLocalMode({ syncAll: true, syncedFolders: [root] });
 
   const res = await get(protocol.urlFor(file));
-
   assert.equal(res.status, 200);
+
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "lykn-outside-"));
+  const other = path.join(outside, "nope.txt");
+  fs.writeFileSync(other, "nope");
+  assert.equal((await get(protocol.urlFor(other))).status, 403);
 });
 
 test("a traversal out of a shared folder is still checked against the allowlist", async () => {

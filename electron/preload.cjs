@@ -64,11 +64,22 @@ contextBridge.exposeInMainWorld("lykn", {
   platform: process.platform,
   glassFallback,
   version: appVersion,
+  updateStatus: () => ipcRenderer.invoke("lykn:update-status"),
+  installUpdate: () => ipcRenderer.invoke("lykn:update-install"),
+  onUpdateStatus: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:update-status", fn);
+    return () => ipcRenderer.removeListener("lykn:update-status", fn);
+  },
   // Open a URL in the user's default browser (main validates http/https).
   // Needed for the browser-based Google sign-in: a plain window.open() to our
   // own origin would stay inside the shell window.
-  openExternal: (url, title) =>
-    ipcRenderer.send("lykn:open-url", { url: String(url || ""), title }),
+  openExternal: (url, title, opts = {}) =>
+    ipcRenderer.send("lykn:open-url", {
+      url: String(url || ""),
+      title,
+      chatId: typeof opts?.chatId === "string" ? opts.chatId : undefined,
+    }),
   // Native macOS sharing-services menu, anchored to the renderer button.
   nativeShare: (payload = {}) =>
     ipcRenderer.invoke("lykn:native-share", {
@@ -152,6 +163,7 @@ contextBridge.exposeInMainWorld("lykn", {
       attachments,
       agentId,
       fromSuggestion: !!opts?.fromSuggestion,
+      questionsOnly: !!opts?.questionsOnly,
       // Bot dispatches carry the structured identity (name/role/persona) so
       // the harness system prompt holds it every turn — never parsed back
       // out of the message text.
@@ -180,10 +192,23 @@ contextBridge.exposeInMainWorld("lykn", {
     return () => ipcRenderer.removeListener("lykn:bot-browser-shot", fn);
   },
   agentHistory: (agentId) => ipcRenderer.invoke("lykn:agent-history", agentId),
-  // Use LYKN pill — open/close the agent chat side panel.
+  // Ask LYKN pill — open/close the agent chat side panel.
   agentChatSet: (payload) =>
     ipcRenderer.invoke("lykn:agent-chat-set", payload || {}),
   agentChatGet: () => ipcRenderer.invoke("lykn:agent-chat-get"),
+  // Drop main-process tab→chat lineage on logout. Studio origin only.
+  clearTabChatBindings: () => ipcRenderer.invoke("lykn:studio-clear-tab-chats"),
+  bindTabChat: (tabId, chatId) =>
+    ipcRenderer.invoke("lykn:studio-bind-tab-chat", {
+      tabId: String(tabId || ""),
+      chatId: String(chatId || ""),
+    }),
+  // Trusted Studio only: bounded page text for an owned browser tab id.
+  // Invalid ids do not fall back to the active tab.
+  getBrowserTabPageContext: (tabId) =>
+    ipcRenderer.invoke("lykn:browser-tab-page-context", {
+      tabId: String(tabId || ""),
+    }),
   onAgentChatVisibility: (cb) => {
     const fn = (_e, p) => cb(p || {});
     ipcRenderer.on("lykn:agent-chat-visibility", fn);
@@ -256,6 +281,16 @@ contextBridge.exposeInMainWorld("lykn", {
     const fn = (_e, p) => cb(p || {});
     ipcRenderer.on("lykn:agent-done", fn);
     return () => ipcRenderer.removeListener("lykn:agent-done", fn);
+  },
+  onOpenAiDriveItem: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:open-ai-drive-item", fn);
+    return () => ipcRenderer.removeListener("lykn:open-ai-drive-item", fn);
+  },
+  onOpenAiDrive: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:open-ai-drive", fn);
+    return () => ipcRenderer.removeListener("lykn:open-ai-drive", fn);
   },
   onTaskEvent: (cb) => {
     const fn = (_e, p) => cb(p || {});
@@ -628,6 +663,14 @@ contextBridge.exposeInMainWorld("lykn", {
   micStatus: () => ipcRenderer.invoke("lykn:onboarding-mic-status"),
   ensureMic: () => ipcRenderer.invoke("lykn:ensure-mic"),
   openMicSettings: () => ipcRenderer.send("lykn:onboarding-open-mic-settings"),
+  persistDesktopSession: (session = {}) =>
+    ipcRenderer.invoke("lykn:auth-persist-session", {
+      access_token: String(session.access_token || ""),
+      refresh_token: String(session.refresh_token || ""),
+      email: String(session.email || ""),
+      user_id: String(session.user_id || ""),
+    }),
+  clearDesktopSession: () => ipcRenderer.invoke("lykn:auth-clear-desktop-session"),
   // Subscribe to deep-linked Supabase session tokens (see lykn://auth flow).
   onAuthTokens: (callback) => {
     authTokensCallback = typeof callback === "function" ? callback : null;

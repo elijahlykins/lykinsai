@@ -19,9 +19,16 @@ import { VOICE_FIRST_MESSAGE_OVERRIDE } from "@/lib/voice/voiceConfig";
 import { micErrorMessage, requestMicStream } from "@/lib/voice/micAccess";
 import { getVoiceId } from "@/lib/ai-prefs";
 import { TUNE_VOICE_TOOL, applyVoiceInstructionTune } from "@/lib/voice/tuneInstructions";
+import { applyVoiceToolClientEffects } from "@/lib/voice/applyVoiceToolResult";
+import { VOICE_CLIENT_TOOL_NAMES, VOICE_TOOL_STATUS_COPY } from "@/lib/voice/voiceToolNames";
+import {
+  isDesktopVoiceClient,
+  runVoiceDesktopTool,
+  snapshotLyknBots,
+} from "@/lib/voice/voiceDesktopTools";
+import { refreshLocalMode } from "@/lib/localMode";
 import VoiceModePopup from "./VoiceModePopup";
 import VoiceTechOrb from "./VoiceTechOrb";
-import { emitProjectsChanged } from "@/lib/synthesis/projectLiveSync";
 
 type VoiceUiState = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "error";
 
@@ -60,79 +67,8 @@ const STATUS_COPY: Record<VoiceUiState, string> = {
 // agent is actually doing ("Searching your vault…") instead of a stale
 // "Listening…". Keyed by the same tool names registered on the agent; anything
 // unmapped falls back to a generic "Working on it…".
-const TOOL_STATUS_COPY: Record<string, string> = {
-  search_vault: "Searching your vault…",
-  read_document: "Reading the document…",
-  display_document: "Pulling that up…",
-  web_search: "Searching the web…",
-  web_fetch: "Reading the page…",
-  list_projects: "Looking through your projects…",
-  get_project_state: "Checking the project…",
-  set_active_project: "Switching projects…",
-  create_project: "Starting a new project…",
-  update_project_state: "Updating the project…",
-  get_recent_activity: "Catching up on recent activity…",
-  create_reminder: "Setting a reminder…",
-  list_reminders: "Checking your reminders…",
-  update_reminder: "Updating the reminder…",
-  create_event: "Adding to your calendar…",
-  list_events: "Checking your calendar…",
-  update_event: "Updating the event…",
-  delete_event: "Removing the event…",
-  create_todo: "Adding a to-do…",
-  list_todos: "Checking your to-dos…",
-  update_todo: "Updating the to-do…",
-  delete_todo: "Removing the to-do…",
-  build_with_cursor: "Kicking off the build…",
-  check_cursor_build: "Checking the build…",
-  save_to_vault: "Saving to your vault…",
-  save_link_to_vault: "Saving the link to your vault…",
-  add_to_project: "Adding it to the project…",
-  [TUNE_VOICE_TOOL]: "Adjusting how it sounds…",
-};
-
-// Full LYKN tool surface exposed to the voice agent. Each name must
-// match a tool registered on the ElevenLabs agent and a case the server's
-// /api/ai/realtime/tool dispatch handles.
-const TOOL_NAMES = [
-  "search_vault",
-  "read_document",
-  "display_document",
-  "web_search",
-  "web_fetch",
-  "memory_list",
-  "memory_read",
-  "memory_patch",
-  "memory_create",
-  "memory_forget",
-  "list_projects",
-  "get_project_state",
-  "set_active_project",
-  "create_project",
-  "update_project_state",
-  "get_recent_activity",
-  "create_reminder",
-  "list_reminders",
-  "update_reminder",
-  "create_event",
-  "list_events",
-  "update_event",
-  "delete_event",
-  "create_todo",
-  "list_todos",
-  "update_todo",
-  "delete_todo",
-  "build_with_cursor",
-  "check_cursor_build",
-  "save_to_vault",
-  "save_link_to_vault",
-  // Add the file the user just shared in this session to a project ("add this
-  // to my <project>"). Dispatched server-side; see /api/ai/realtime/tool.
-  "add_to_project",
-  // Handled client-side (rewrites the user's saved voice instructions); see
-  // callTool's interception below — never forwarded to the server dispatch.
-  TUNE_VOICE_TOOL,
-] as const;
+const TOOL_STATUS_COPY = VOICE_TOOL_STATUS_COPY;
+const TOOL_NAMES = VOICE_CLIENT_TOOL_NAMES;
 
 async function authHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -145,7 +81,7 @@ async function authHeaders(): Promise<Record<string, string>> {
   return headers;
 }
 
-function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript, onAssistantReply, onDisplayDocument, onAttach }: LyknChatVoiceModeElevenProps) {
+function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript, onAssistantReply, onAttach }: LyknChatVoiceModeElevenProps) {
   const [uiState, setUiState] = useState<VoiceUiState>("idle");
   const [micLevel, setMicLevel] = useState(0);
   const [errorText, setErrorText] = useState("");
@@ -175,13 +111,11 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
   const buildInstructionsRef = useRef(buildInstructions);
   const onUserTranscriptRef = useRef(onUserTranscript);
   const onAssistantReplyRef = useRef(onAssistantReply);
-  const onDisplayDocumentRef = useRef(onDisplayDocument);
   const onAttachRef = useRef(onAttach);
   useEffect(() => { chatIdRef.current = chatId ?? null; }, [chatId]);
   useEffect(() => { buildInstructionsRef.current = buildInstructions; }, [buildInstructions]);
   useEffect(() => { onUserTranscriptRef.current = onUserTranscript; }, [onUserTranscript]);
   useEffect(() => { onAssistantReplyRef.current = onAssistantReply; }, [onAssistantReply]);
-  useEffect(() => { onDisplayDocumentRef.current = onDisplayDocument; }, [onDisplayDocument]);
   useEffect(() => { onAttachRef.current = onAttach; }, [onAttach]);
 
   // One client-tool handler shape for all four; each forwards to the same
@@ -195,6 +129,8 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
       // Self-tuning instructions are persisted in the user's LOCAL settings, so
       // this tool is handled in the browser instead of the server dispatch.
       if (name === TUNE_VOICE_TOOL) return await applyVoiceInstructionTune(params);
+      const desktop = await runVoiceDesktopTool(name, params);
+      if (desktop != null) return desktop;
       const headers = await authHeaders();
       const res = await fetch(`${API_BASE_URL}/api/ai/realtime/tool`, {
         method: "POST",
@@ -205,23 +141,9 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
       // The agent pulled a vault item up on screen (display_document). Open the
       // embedded reader, then strip the payload from the model-facing result so
       // the model speaks its short confirmation instead of the raw note JSON.
-      const display = (data as { display?: unknown })?.display;
-      if (display) {
-        try { onDisplayDocumentRef.current?.(display); } catch { /* ignore */ }
-        try { delete (data as { display?: unknown }).display; } catch { /* ignore */ }
-      }
-      // Voice project writes bypass the chat SSE path, so nudge Projects to
-      // refetch the projects list (create especially) without a manual refresh.
-      if (
-        (name === "create_project" || name === "set_active_project" || name === "add_to_project")
-        && (data as { ok?: boolean })?.ok !== false
-      ) {
-        const project = (data as { project?: { id?: string } })?.project;
-        emitProjectsChanged({
-          projectId: typeof project?.id === "string" ? project.id : null,
-        });
-      }
-      return JSON.stringify(data);
+      const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
+      await applyVoiceToolClientEffects(name, record);
+      return JSON.stringify(record);
     } catch {
       return JSON.stringify({ ok: false, error: "tool_request_failed" });
     } finally {
@@ -327,6 +249,9 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
           // Browser IANA timezone so the voice model resolves clock times
           // ("3pm") to the user's local instant instead of UTC.
           timezone: (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; } })(),
+          desktop: isDesktopVoiceClient(),
+          localMode: await refreshLocalMode(),
+          lyknBots: snapshotLyknBots(),
         }),
       });
       const data = await res.json().catch(() => ({}));

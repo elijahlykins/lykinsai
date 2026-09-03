@@ -2,7 +2,7 @@ import React, { memo, useEffect, useMemo, useState } from "react";
 import { ExternalLink, Globe } from "lucide-react";
 import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import { safeExternalUrl } from "@/lib/safeExternalUrl";
-import { handleLyknBrowserClick } from "@/lib/lyknChat/openInStudioBrowser";
+import { handleLyknBrowserClick, studioOpenChatOpts } from "@/lib/lyknChat/openInStudioBrowser";
 
 export interface LinkPreviewProps {
   url: string;
@@ -21,6 +21,8 @@ export interface LinkPreviewProps {
   variant?: "vault" | "canvas";
   /** Optional click override. If omitted, component renders a plain <a/> that opens the URL in a new tab. */
   onOpen?: () => void;
+  /** Owning conversation when this preview is rendered inside a LYKN chat. */
+  chatId?: string | null;
   className?: string;
   draggable?: boolean;
 }
@@ -243,6 +245,7 @@ export const LinkPreview = memo(function LinkPreview({
   oembedType,
   variant = "vault",
   onOpen,
+  chatId,
   className = "",
   draggable = false,
 }: LinkPreviewProps) {
@@ -269,6 +272,7 @@ export const LinkPreview = memo(function LinkPreview({
       <Shell
         url={url}
         onOpen={onOpen}
+        chatId={chatId}
         className={`block w-full h-full rounded-2xl overflow-hidden border border-white/40 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-md hover:bg-white/40 dark:hover:bg-white/10 transition-colors group/bm shadow-none ${className}`}
         draggable={draggable}
       >
@@ -313,6 +317,7 @@ export const LinkPreview = memo(function LinkPreview({
     <Shell
       url={url}
       onOpen={onOpen}
+      chatId={chatId}
       className={`block w-full h-full rounded-2xl overflow-hidden border border-white/40 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-md hover:bg-white/40 dark:hover:bg-white/10 transition-colors group/bm flex flex-col shadow-none ${className}`}
       draggable={draggable}
     >
@@ -501,12 +506,14 @@ function FaviconOrGlobe({ favicon, host }: { favicon?: string; host: string }) {
 function Shell({
   url,
   onOpen,
+  chatId,
   className,
   draggable,
   children,
 }: {
   url: string;
   onOpen?: () => void;
+  chatId?: string | null;
   className?: string;
   draggable?: boolean;
   children: React.ReactNode;
@@ -538,7 +545,7 @@ function Shell({
       className={className}
       draggable={draggable}
       title={safeHref}
-      onClick={(e) => handleLyknBrowserClick(e, safeHref)}
+      onClick={(e) => handleLyknBrowserClick(e, safeHref, studioOpenChatOpts(chatId))}
     >
       {children}
     </a>

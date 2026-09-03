@@ -56,7 +56,7 @@ export const getUserPreferencesTool = {
     '    overnight. Surface it in the project panel / overlay.',
     '',
     'CALL THIS at the start of any conversation that\'s about to write',
-    'durable state (createVaultNote, addProjectNeurons, …) so you can',
+    'durable state (createVaultNote, memory_create, …) so you can',
     'check memory_paused before promising persistence. Also call when',
     'the user asks "what are my settings?" or anything privacy-shaped.',
     '',

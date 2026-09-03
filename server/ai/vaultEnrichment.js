@@ -3,6 +3,7 @@ import fetch from 'node-fetch';
 import { chunkTextForSynthesis } from '../../synthesis-service.js';
 import { replaceSynthesisChunks } from './chatRetrieval.js';
 import { sha256 } from './promptUtils.js';
+import { getUserRowById, updateUserRowById } from '../../lib/security/userOwnedAccess.js';
 
 let supabaseAdmin = null;
 
@@ -33,12 +34,13 @@ export async function indexVaultNoteForSearch({ userId, noteId, authHeader = nul
   if (!userId || !noteId || !supabaseAdmin) return;
   try {
     const enr = await enrichVaultNoteSummary({ userId, noteId, supabaseAdmin });
-    const { data: after } = await supabaseAdmin
-      .from('vault_items')
-      .select('title, content, ai_summary')
-      .eq('id', noteId)
-      .eq('user_id', userId)
-      .maybeSingle();
+    const { data: after } = await getUserRowById(
+      supabaseAdmin,
+      'vault_items',
+      userId,
+      noteId,
+      'title, content, ai_summary',
+    );
     const t = String(after?.title || title || '').trim();
     const c = String(after?.content || content || '');
     const summary = (enr && enr.summary) || after?.ai_summary || '';
@@ -65,22 +67,23 @@ export async function indexVaultNoteForSearch({ userId, noteId, authHeader = nul
 
 export async function enrichVaultNoteSummary({ userId, noteId, supabaseAdmin: clientOverride }) {
   if (!userId || !noteId) return { ok: false, reason: 'missing_args' };
-  if (!process.env.OPENAI_API_KEY) return { ok: false, reason: 'openai_key_missing' };
   const client = clientOverride || supabaseAdmin;
   if (!client) return { ok: false, reason: 'no_supabase_admin' };
 
   try {
-    const { data: note, error: nErr } = await client
-      .from('vault_items')
-      .select('id, title, content, user_id, ai_summary, ai_content_hash')
-      .eq('id', noteId)
-      .eq('user_id', userId)
-      .maybeSingle();
+    const { data: note, error: nErr } = await getUserRowById(
+      client,
+      'vault_items',
+      userId,
+      noteId,
+      'id, title, content, user_id, ai_summary, ai_content_hash',
+    );
     if (nErr) {
       console.error('❌ enrichVaultNoteSummary: note lookup failed:', nErr?.message || nErr);
       return { ok: false, reason: 'note_lookup_failed' };
     }
     if (!note) return { ok: false, reason: 'not_found' };
+    if (!process.env.OPENAI_API_KEY) return { ok: false, reason: 'openai_key_missing' };
 
     // backfillStripAttachments is now marker-aware — for connector-synced
     // notes it preserves the body that lives AFTER the attachments marker
@@ -154,16 +157,12 @@ Use empty arrays if unknown. Be factual; infer only from the text.`;
         ? parsed.signals
         : {};
 
-    const { error: upErr } = await client
-      .from('vault_items')
-      .update({
-        ai_summary: summary || null,
-        ai_signals: signals,
-        ai_content_hash: contentHash,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', noteId)
-      .eq('user_id', userId);
+    const { error: upErr } = await updateUserRowById(client, 'vault_items', userId, noteId, {
+      ai_summary: summary || null,
+      ai_signals: signals,
+      ai_content_hash: contentHash,
+      updated_at: new Date().toISOString(),
+    }, 'id');
     if (upErr) {
       const msg = upErr.message || '';
       if (msg.includes('ai_summary') || msg.includes('ai_signals') || msg.includes('ai_content_hash') || upErr.code === 'PGRST204') {

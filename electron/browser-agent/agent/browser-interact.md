@@ -7,7 +7,7 @@
   changed, observe first.
 - One meaningful action at a time when the result could change what should
   happen next. Small mechanical sequences (focus then type) are fine.
-- Typing replaces or appends text in a field — check the field's current
+- Typing replaces or appends text in a field - check the field's current
   value first; do not blindly overwrite populated fields.
 - **Never retype into a field that already holds your text.** Typing appends by
   default, so a retry duplicates the content. If a field reads back differently
@@ -28,12 +28,12 @@
 - Do not overwrite already-populated fields unless the task requires changing
   them.
 - Fill fields with exactly the information the task calls for; do not invent
-  plausible values for fields you do not have data for — ask the user instead.
+  plausible values for fields you do not have data for - ask the user instead.
 - Validate important values after typing: the field's actual value is the
   evidence, not the fact that a type action ran.
 - Filling a form and submitting a form are different actions. Submission may
   be consequential (sending, purchasing, applying) and may require user
-  approval — check the safety rules before submitting.
+  approval - check the safety rules before submitting.
 - Watch for inline validation errors after filling or submitting; they are
   evidence the form was not accepted.
 
@@ -46,10 +46,10 @@ How to edit:
 
 - **Targeted change** (fix a sentence, rename something, adjust a phrase):
   use `replace_text` with `find` set to the exact existing snippet and `text`
-  set to its replacement. Only that occurrence changes; everything else —
-  content and formatting — is preserved.
+  set to its replacement. Only that occurrence changes; everything else -
+  content and formatting - is preserved.
 - **Short plain fields** (subject line, title, single-line inputs): replacing
-  the whole value is fine — use `type` with `mode: "replace"`.
+  the whole value is fine - use `type` with `mode: "replace"`.
 - **Appending** (add a paragraph, continue writing): use `type` normally; it
   inserts without destroying what is there.
 - **Multiple changes**: apply them as a series of `replace_text` edits, not
@@ -57,15 +57,15 @@ How to edit:
 
 ## Finishing what a dialog started
 
-A dialog you filled in is not done until you press its own commit button —
+A dialog you filled in is not done until you press its own commit button -
 Send, Share, Invite, Save, Done. Two rules make that reliable:
 
 - **Press the dialog's own control.** Its buttons are in the element list
   marked `[dialog]`; the commit is usually the last of them. Click it by
-  reference. If the element list genuinely does not offer one, press Enter —
+  reference. If the element list genuinely does not offer one, press Enter -
   most dialogs commit on it.
 - **Never click page chrome while a dialog is open.** The top bar, the apps
-  grid, the sidebar, the account avatar — clicking any of them dismisses the
+  grid, the sidebar, the account avatar - clicking any of them dismisses the
   dialog and throws away what you filled in. If you find yourself reopening
   the same dialog, that is what happened: the last thing you clicked was
   behind it, not in it.
@@ -79,18 +79,18 @@ something the first two did not.
 Share dialogs (Drive, Docs, Notion, Figma) have two routes to the same result,
 and one of them fails far more often than the other:
 
-1. **Add them as a recipient** — type the address into the "Add people" field
+1. **Add them as a recipient** - type the address into the "Add people" field
    and confirm. This is the better outcome when it works: the person gets
    access under their own account, and the item's visibility does not change.
-2. **Copy the link and send it** — use the dialog's "Copy link" button, then
+2. **Copy the link and send it** - use the dialog's "Copy link" button, then
    email that link to them. Check what the link actually grants first: if the
    dialog says access is restricted, the link is useless to them, so set
    general access to anyone-with-the-link before sending it, and say in the
    email that you did.
 
 Try the recipient field first. If it will not take the address after two real
-attempts — you click it, type, and the address does not appear as text or as a
-chip — stop repeating it. Take the Copy link route instead and tell the user
+attempts - you click it, type, and the address does not appear as text or as a
+chip - stop repeating it. Take the Copy link route instead and tell the user
 which one you used. Two failed attempts is the signal; a third is a fourth.
 
 Never leave a share half-done: either the person is on the recipient list, or
@@ -98,8 +98,11 @@ they have a working link, or you say plainly that neither happened.
 
 ## Writing a document into a tool
 
-When the work is a body of text — a page in Notion, a doc in Google Docs, an
-outline in Slides — the draft is given to you in the goal. Do not retype it,
+Only when the user asked to write in that app. Do not open Docs, Notion, or
+Word to file a report you already wrote.
+
+When the work is a body of text - a page in Notion, a doc in Google Docs, an
+outline in Slides - the draft is given to you in the goal. Do not retype it,
 and do not go looking for the writing area first:
 
 1. `paste_text` with the whole body. It finds and focuses the editor itself,
@@ -108,21 +111,24 @@ and do not go looking for the writing area first:
 3. Only if it is not: click into the body and paste again.
 
 Hunting for the writing surface before pasting is the way this goes wrong. An
-empty rich editor often has nothing to aim at — no label, no placeholder, no
-visible box — so clicking at where it looks like it should be lands on nothing
+empty rich editor often has nothing to aim at - no label, no placeholder, no
+visible box - so clicking at where it looks like it should be lands on nothing
 and the document never gets written. The paste knows where to go; use it.
 
-Type only what a paste cannot carry: a title field, a name, a single line.
+Do not click Rename or "Untitled document" afterwards unless the user asked
+you to name the file. Docs and Slides autosave; an untitled file with the
+body in it is the write done. A title is a short `type` with `mode: "replace"`
+on that field alone. Never put the document body into the filename.
 
 ## Fixing a value you got wrong
 
-You typed the wrong thing into a field — a mistyped address, the wrong name,
+You typed the wrong thing into a field - a mistyped address, the wrong name,
 text in the wrong box. Put it right the same way in every app:
 
 - `type` with `mode: "replace"` on that field. It empties the field first and
   types the correct value, and it works on plain inputs, rich-text boxes, and
   the recipient fields that turn what you type into a chip. Do NOT type the
-  correct value on its own — typing appends, so you end up holding both.
+  correct value on its own - typing appends, so you end up holding both.
 - If the wrong value has already become a **chip** (a committed recipient,
   tag or token), `mode: "replace"` clears it along with everything else in the
   field. Retyping the remaining values afterwards is expected and fine.
@@ -137,7 +143,7 @@ Rules:
 - Read the current content first (snapshot or `extract`) so `find` matches
   the text exactly as it appears.
 - If `replace_text` reports the snippet was not found, the passage may span
-  formatting boundaries — retry with a shorter exact fragment from one run of
+  formatting boundaries - retry with a shorter exact fragment from one run of
   plain text.
 - Wholesale rewrite is the last resort, only when the user explicitly asked
   to rewrite everything or nearly every sentence changes.

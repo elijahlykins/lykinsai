@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { safeNavHref } from "@/lib/safeExternalUrl";
-import { handleLyknBrowserClick } from "@/lib/lyknChat/openInStudioBrowser";
+import { handleLyknBrowserClick, studioOpenChatOpts } from "@/lib/lyknChat/openInStudioBrowser";
 
 /**
  * Notification-style bubble for one connector source inside a
@@ -18,6 +18,7 @@ import { handleLyknBrowserClick } from "@/lib/lyknChat/openInStudioBrowser";
  */
 export const LoadInBubble: React.FC<{
   msgId: string;
+  chatId?: string | null;
   group: {
     id: string;
     label: string;
@@ -28,7 +29,7 @@ export const LoadInBubble: React.FC<{
     latestRelative?: string;
     items: Array<{ id: string; title: string; subtitle?: string; href?: string }>;
   };
-}> = ({ msgId, group }) => {
+}> = ({ msgId, chatId, group }) => {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
   const iconCandidate =
@@ -124,7 +125,7 @@ export const LoadInBubble: React.FC<{
                               navigate(chipNav.href);
                               return;
                             }
-                            handleLyknBrowserClick(e, chipNav.href, chip.label);
+                            handleLyknBrowserClick(e, chipNav.href, chip.label, studioOpenChatOpts(chatId));
                           };
                           const chipFace = (
                             <span className="inline-flex max-w-[180px] items-center rounded-full border border-black/[0.08] dark:border-white/10 bg-black/[0.03] dark:bg-white/[0.04] px-1.5 py-[1px] text-[10.5px] font-medium text-black/70 dark:text-white/70 truncate">
@@ -172,7 +173,7 @@ export const LoadInBubble: React.FC<{
                   navigate(navHref.href);
                   return;
                 }
-                handleLyknBrowserClick(e, navHref.href);
+                handleLyknBrowserClick(e, navHref.href, studioOpenChatOpts(chatId));
               };
               return (
                 <a

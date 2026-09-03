@@ -34,7 +34,7 @@ function fmtMoney(cents, currency = "usd") {
 }
 
 function fmtDate(iso) {
-  if (!iso) return "—";
+  if (!iso) return "-";
   try {
     return new Date(iso).toLocaleDateString(undefined, {
       month: "short",
@@ -42,12 +42,12 @@ function fmtDate(iso) {
       year: "numeric",
     });
   } catch {
-    return "—";
+    return "-";
   }
 }
 
 function fmtWhen(iso) {
-  if (!iso) return "—";
+  if (!iso) return "-";
   const ms = new Date(iso).getTime() - Date.now();
   const abs = Math.abs(ms);
   const day = Math.round(abs / 86_400_000);
@@ -188,12 +188,12 @@ export default function AdminBilling() {
               <Kpi label="On trial" value={totals.trialing ?? 0} tone="warn" sub="card on file" />
               <Kpi
                 label="MRR"
-                value={data.mrr_cents == null ? "—" : fmtMoney(data.mrr_cents, data.mrr_currency)}
+                value={data.mrr_cents == null ? "-" : fmtMoney(data.mrr_cents, data.mrr_currency)}
                 sub="active + trialing, normalized monthly"
               />
               <Kpi
                 label="Trial → paid"
-                value={conversion.rate == null ? "—" : `${Math.round(conversion.rate * 100)}%`}
+                value={conversion.rate == null ? "-" : `${Math.round(conversion.rate * 100)}%`}
                 sub={`${conversion.converted ?? 0} of ${conversion.trials_started ?? 0} started`}
               />
               <Kpi label="Past due" value={totals.past_due ?? 0} tone={totals.past_due ? "bad" : undefined} />
@@ -298,7 +298,7 @@ export default function AdminBilling() {
                         <td className="px-4 py-2">
                           <StatusBadge status={s.status} cancelScheduled={s.cancel_at_period_end} />
                         </td>
-                        <td className="px-4 py-2 text-muted-foreground">{s.billing_period || "—"}</td>
+                        <td className="px-4 py-2 text-muted-foreground">{s.billing_period || "-"}</td>
                         <td className="px-4 py-2 text-muted-foreground">{fmtDate(s.current_period_end)}</td>
                       </tr>
                     ))}

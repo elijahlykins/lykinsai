@@ -135,6 +135,94 @@ export function onHomeChatFilesQueued(handler) {
   return () => window.removeEventListener(CHAT_FILES_QUEUED_EVENT, handler);
 }
 
+/**
+ * Staged builds on the chat bar. Unlike files, these are NOT take-once: Home
+ * can mount more than one bar (desktop pill + Chat window), and the in-page
+ * composer is CSS-hidden on Home. A one-consumer queue parked the chip on
+ * whichever listener ran first — often a bar the user cannot see.
+ *
+ * Module state is the source of truth. Every bar syncs from the event detail
+ * (and from this list on mount). Send and chip-remove clear it.
+ */
+/** @type {unknown[]} */
+let stagedChatArtifacts = [];
+
+const CHAT_ARTIFACTS_QUEUED_EVENT = "lykn-home-chat-artifacts-queued";
+
+/** @type {unknown[]} */
+let pendingChatArtifacts = [];
+
+export function homeChatArtifactKey(artifact) {
+  const id = String(artifact?.id || "").trim();
+  if (id) return id;
+  return String(artifact?.title || "").trim();
+}
+
+function emitStagedChatArtifacts() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent(CHAT_ARTIFACTS_QUEUED_EVENT, {
+      detail: { artifacts: stagedChatArtifacts.slice() },
+    }),
+  );
+}
+
+export function listStagedHomeChatArtifacts() {
+  return stagedChatArtifacts.slice();
+}
+
+/**
+ * Hand an already-made build to the chat bar. The chip is the artifact —
+ * sending then takes the edit route when the user asks for a change in Build.
+ */
+export function attachArtifactToHomeChat(artifact) {
+  if (!artifact || typeof artifact !== "object") return;
+  const key = homeChatArtifactKey(artifact);
+  if (key && stagedChatArtifacts.some((row) => homeChatArtifactKey(row) === key)) {
+    emitStagedChatArtifacts();
+    return;
+  }
+  stagedChatArtifacts = [...stagedChatArtifacts, artifact];
+  emitStagedChatArtifacts();
+}
+
+export function unstageHomeChatArtifact(key) {
+  const want = String(key || "").trim();
+  if (!want) return;
+  const next = stagedChatArtifacts.filter((row) => homeChatArtifactKey(row) !== want);
+  if (next.length === stagedChatArtifacts.length) return;
+  stagedChatArtifacts = next;
+  emitStagedChatArtifacts();
+}
+
+export function clearStagedHomeChatArtifacts() {
+  if (!stagedChatArtifacts.length) return;
+  stagedChatArtifacts = [];
+  emitStagedChatArtifacts();
+}
+
+/** Current staged builds. Does not consume — every visible bar needs the same list. */
+export function takeQueuedHomeChatArtifacts() {
+  return stagedChatArtifacts.slice();
+}
+
+export function onHomeChatArtifactsQueued(handler) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(CHAT_ARTIFACTS_QUEUED_EVENT, handler);
+  return () => window.removeEventListener(CHAT_ARTIFACTS_QUEUED_EVENT, handler);
+}
+
+/** Park artifacts on a home-bar send so the chat surface can claim them. */
+export function setPendingHomeChatArtifacts(artifacts) {
+  pendingChatArtifacts = Array.isArray(artifacts) ? artifacts.filter(Boolean) : [];
+}
+
+export function takePendingHomeChatArtifacts() {
+  const claimed = pendingChatArtifacts;
+  pendingChatArtifacts = [];
+  return claimed;
+}
+
 export function fileNameFromPath(p) {
   const parts = String(p || "")
     .replace(/\/+$/, "")

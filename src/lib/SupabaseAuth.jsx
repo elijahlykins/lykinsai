@@ -39,6 +39,19 @@ function kickoffInviteAcceptance(userId) {
   }, 2000);
 }
 
+function persistDesktopSession(session) {
+  if (typeof window === "undefined" || !window.lykn?.persistDesktopSession) return;
+  const access_token = session?.access_token;
+  const refresh_token = session?.refresh_token;
+  if (!access_token || !refresh_token) return;
+  void window.lykn.persistDesktopSession({
+    access_token,
+    refresh_token,
+    email: session.user?.email || "",
+    user_id: session.user?.id || "",
+  });
+}
+
 export function SupabaseAuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -105,6 +118,7 @@ export function SupabaseAuthProvider({ children }) {
         const wasSignedOut = !userRef.current;
         userRef.current = session.user;
         setUser(session.user);
+        persistDesktopSession(session);
         if (wasSignedOut) {
           kickoffVaultBackfill();
           kickoffInviteAcceptance(session.user.id);
@@ -133,6 +147,7 @@ export function SupabaseAuthProvider({ children }) {
         setUser(nextUser);
         setLoading(false);
         if (nextUser) {
+          persistDesktopSession(session);
           kickoffVaultBackfill();
           kickoffInviteAcceptance(nextUser.id);
         }
@@ -149,6 +164,11 @@ export function SupabaseAuthProvider({ children }) {
         userRef.current = null;
         setUser(null);
         resetVaultDescriptionBackfill();
+        try {
+          void window.lykn?.clearDesktopSession?.();
+        } catch {
+          /* web / tests */
+        }
         return;
       }
 
@@ -210,15 +230,24 @@ export function SupabaseAuthProvider({ children }) {
         if (error) {
           const again = (await supabase.auth.getSession())?.data?.session;
           if (again?.user) {
+            persistDesktopSession(again);
             setAuthError(null);
             return;
           }
           throw error;
         }
+        persistDesktopSession({ access_token, refresh_token });
         setAuthError(null);
       } catch (err) {
         console.error('[Auth] desktop token hand-off failed:', err);
         const msg = String(err?.message || '');
+        if (/refresh token|already used|invalid jwt|session/i.test(msg)) {
+          try {
+            await window.lykn?.clearDesktopSession?.();
+          } catch {
+            /* best-effort */
+          }
+        }
         setAuthError(
           /refresh token|already used|invalid jwt|session/i.test(msg)
             ? 'Sign-in expired during handoff. Click Continue with Google once more.'
@@ -404,6 +433,12 @@ export function SupabaseAuthProvider({ children }) {
     userRef.current = null;
     setUser(null);
 
+    try {
+      await window.lykn?.clearDesktopSession?.();
+    } catch {
+      /* web / tests */
+    }
+
     // Awaiting the supabase call ensures the auth tokens are cleared from
     // localStorage *before* the hard reload below — otherwise the new page
     // load can rehydrate the old session and momentarily look signed-in.
@@ -411,6 +446,15 @@ export function SupabaseAuthProvider({ children }) {
       await supabase.auth.signOut({ scope: everywhere ? 'global' : 'local' });
     } catch (err) {
       if (import.meta.env.DEV) console.warn('[Auth] signOut error:', err);
+    }
+
+    // Drop main-process tab→chat lineage before the renderer dies. The
+    // in-memory bind map goes with the reload; surviving Electron tabs
+    // must not rehydrate another user's conversation.
+    try {
+      await window.lykn?.clearTabChatBindings?.();
+    } catch {
+      /* web / tests */
     }
 
     // "Start from the beginning": wipe the prototype walkthrough storage

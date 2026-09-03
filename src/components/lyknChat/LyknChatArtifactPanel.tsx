@@ -1,16 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, Code2, Copy, Download, ExternalLink, Eye, FileDown, Loader2, Bookmark, Play, PackagePlus } from "lucide-react";
+import { Check, ChevronDown, Code2, Copy, Download, ExternalLink, Eye, FileDown, Loader2, Bookmark, MessageCircle, Play, PackagePlus } from "lucide-react";
 import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 import { API_BASE_URL } from "@/lib/api-config";
 import { supabase } from "@/lib/supabase";
 import {
-  isTrustedHtmlPreviewHost,
   safeAttachmentUrl,
   safeExternalUrl,
-  safeHtmlPreviewUrl,
   preferInlineHtmlPreview,
 } from "@/lib/safeExternalUrl";
-import { openArtifactInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
+import { openArtifactInStudioBrowser, studioOpenChatOpts } from "@/lib/lyknChat/openInStudioBrowser";
+import ArtifactHtmlPreview, { isTrustedArtifactMessage } from "@/components/lyknChat/ArtifactHtmlPreview";
 import {
   downloadArtifactAsPdf,
   downloadArtifactToComputer,
@@ -27,6 +26,7 @@ import {
 import { appIconFor } from "@/lib/apps/appIcon";
 import AppIconPicker from "@/components/apps/AppIconPicker";
 import LyknMediaPop, { MEDIA_POP_PANEL } from "@/components/lyknChat/LyknMediaPop";
+import { attachArtifactToHomeChat } from "@/lib/homeChatFiles";
 
 export type LyknChatArtifactPanelProps = {
   artifact: ChatArtifact | null;
@@ -49,51 +49,12 @@ export type LyknChatArtifactPanelProps = {
    * saved in it — rather than leaving a second copy in the dock.
    */
   installTargetId?: string | null;
+  /** Owning conversation when this panel opened from a chat. */
+  chatId?: string | null;
 };
 
-// Inline (srcDoc) HTML is same-origin with the app; dropping allow-same-origin
-// runs AI-generated scripts in a null origin so they can't reach our DOM or the
-// Supabase session in localStorage. Cross-origin previewUrl frames keep
-// allow-same-origin (they're isolated by their own origin) via safeHtmlPreviewUrl.
-const IFRAME_SANDBOX_SRCDOC =
-  "allow-scripts allow-popups allow-forms allow-presentation";
-
-/** Glass chrome buttons on the artifact title bar — same material as settings steppers. */
 const HDR_BTN =
   "lg-stepper inline-flex items-center gap-1 rounded-[8px] px-2 py-1.5 text-[11px] font-medium text-black/60 transition-colors hover:text-black/90 dark:text-white/65 dark:hover:text-white/95 disabled:opacity-50";
-
-/**
- * Accept runtime/console errors only from this artifact's iframe — not from
- * arbitrary tabs posting `{ source: "lykn-artifact" }`.
- * For sandboxed srcDoc (`origin === "null"`), require event.source to match
- * our preview iframe's contentWindow so any other null-origin frame can't spoof.
- */
-function isTrustedArtifactMessage(
-  ev: MessageEvent,
-  previewUrl: string | null | undefined,
-  iframe: HTMLIFrameElement | null,
-): boolean {
-  if (iframe?.contentWindow && ev.source === iframe.contentWindow) {
-    return true;
-  }
-  const origin = String(ev.origin || "");
-  // Never trust bare "null" without a contentWindow match above.
-  if (origin === "null") return false;
-  if (typeof window !== "undefined" && origin === window.location.origin) return true;
-  try {
-    if (previewUrl) {
-      const previewOrigin = new URL(previewUrl).origin;
-      if (origin === previewOrigin) return true;
-    }
-  } catch {
-    /* ignore bad preview URL */
-  }
-  try {
-    return isTrustedHtmlPreviewHost(new URL(origin).hostname);
-  } catch {
-    return false;
-  }
-}
 
 function badgeFor(artifact: ChatArtifact): string {
   if (artifact.kind === "html") {
@@ -111,7 +72,7 @@ function badgeFor(artifact: ChatArtifact): string {
  * the artifact and updates this window in place. Not a modal: the composer
  * stays usable underneath.
  */
-export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth, onClose, onSaveToVault, onArtifactUpdate, installTargetId }: LyknChatArtifactPanelProps) {
+export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth, onClose, onSaveToVault, onArtifactUpdate, installTargetId, chatId }: LyknChatArtifactPanelProps) {
   const open = !!artifact;
   // Keep the last artifact rendered while the popup scales out — otherwise the
   // content unmounts instantly and the close animation scales an empty shell.
@@ -388,6 +349,12 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
     }
   }, [artifact, onSaveToVault, saveState]);
 
+  const handleTakeToChat = useCallback(() => {
+    if (!shown) return;
+    attachArtifactToHomeChat(shown);
+    onClose();
+  }, [shown, onClose]);
+
   // Install: give this build a permanent home on the device — its own origin,
   // its own database, an icon in the dock. Offered only for artifacts that look
   // like real apps, because "Install" on a one-off landing page is noise.
@@ -543,6 +510,16 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
           <>
             <header className={`mb-2 flex items-center gap-2 rounded-2xl px-3 py-2 ${MEDIA_POP_PANEL}`}>
               <div className="flex shrink-0 items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleTakeToChat}
+                  className={HDR_BTN}
+                  title="Take to chat"
+                  aria-label="Take to chat"
+                >
+                  <MessageCircle className="h-3.5 w-3.5" />
+                  Chat
+                </button>
                 {hasCode && canPreview ? (
                   <div className="lg-stepper inline-flex overflow-hidden rounded-[8px]" role="tablist" aria-label="Artifact view">
                     <button
@@ -585,7 +562,7 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                     rel="noopener noreferrer"
                     onClick={(e) => {
                       // Inside the Studio: open in its docked browser, not the OS browser.
-                      if (shown && openArtifactInStudioBrowser(shown)) e.preventDefault();
+                      if (shown && openArtifactInStudioBrowser(shown, studioOpenChatOpts(shown.sourceChatId || chatId))) e.preventDefault();
                     }}
                     className={HDR_BTN}
                     title="Open in LYKN browser"
@@ -825,44 +802,12 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                   </div>
                 </div>
               ) : shown.kind === "html" ? (
-                // Prod: prefer a reminted/cross-origin file-proxy URL — srcdoc
-                // iframes inherit the parent CSP (`script-src 'self'`) and go
-                // blank. Local Electron/Vite: prefer srcDoc. File-proxy URLs
-                // are served from localhost while the app is on 127.0.0.1, and
-                // frame-ancestors used to allow only localhost — blank panel,
-                // while Open (inline HTML in the LYKN browser) still worked.
-                (() => {
-                  const previewSrc = livePreviewUrl || shown.previewUrl || "";
-                  const htmlPreview = previewSrc ? safeHtmlPreviewUrl(previewSrc) : null;
-                  const useSrcDoc =
-                    Boolean(shown.srcDoc) &&
-                    (!htmlPreview || preferInlineHtmlPreview(previewSrc));
-                  if (useSrcDoc) {
-                    return (
-                      <iframe
-                        ref={previewIframeRef}
-                        title={shown.title}
-                        srcDoc={shown.srcDoc}
-                        className="h-full w-full border-0 bg-white"
-                        sandbox={IFRAME_SANDBOX_SRCDOC}
-                        referrerPolicy="no-referrer"
-                      />
-                    );
-                  }
-                  if (htmlPreview) {
-                    return (
-                      <iframe
-                        ref={previewIframeRef}
-                        title={shown.title}
-                        src={htmlPreview.url}
-                        className="h-full w-full border-0 bg-white"
-                        sandbox={htmlPreview.sandbox}
-                        referrerPolicy="no-referrer"
-                      />
-                    );
-                  }
-                  return null;
-                })()
+                <ArtifactHtmlPreview
+                  title={shown.title}
+                  srcDoc={shown.srcDoc}
+                  previewUrl={livePreviewUrl || shown.previewUrl}
+                  iframeRef={previewIframeRef}
+                />
               ) : shown.kind === "video" && shown.previewUrl ? (
                 <div className="flex h-full w-full items-center justify-center bg-black">
                   <video
@@ -887,11 +832,9 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
 
             <footer className="border-t border-black/8 px-4 py-2.5 dark:border-white/10">
               <p className="text-center text-[11.5px] text-muted-foreground">
-                {shown.runtimeErrors?.length
-                  ? `${shown.runtimeErrors.length} preview error${shown.runtimeErrors.length === 1 ? "" : "s"} will be sent with your next message`
-                  : isMultiFile
-                    ? `${projectFiles!.length}-file project · ask in chat to refine`
-                    : "Ask in chat to refine this. It updates here automatically."}
+                {isMultiFile
+                  ? `${projectFiles!.length}-file project · ask in chat to refine`
+                  : "Ask in chat to refine this. It updates here automatically."}
               </p>
             </footer>
           </>

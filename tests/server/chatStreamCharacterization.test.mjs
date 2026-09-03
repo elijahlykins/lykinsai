@@ -19,6 +19,8 @@ test('stream registers local-tool-result before the SSE handler (shared bridge)'
   assert.match(streamSrc, /resolveLocalToolResult\(/);
   assert.match(streamSrc, /registerLocalToolStream\(/);
   assert.match(streamSrc, /releaseLocalToolStream\(/);
+  assert.match(streamSrc, /localToolStreams,/);
+  assert.match(streamSrc, /RETRYABLE_STATUSES,/);
 });
 
 test('SSE framing: token data, keepalive, error, served_model, single [DONE]', () => {
@@ -45,6 +47,9 @@ test('tool loop, MCP/local tools, and usage accounting remain on the stream path
   assert.match(streamSrc, /runAgentLoop\(/);
   assert.match(streamSrc, /CHAT_TOOLS/);
   assert.match(streamSrc, /LOCAL_TOOL_NAMES/);
+  assert.match(streamSrc, /streamClientToolsEnabled/);
+  assert.match(streamSrc, /buildLyknBotsSection/);
+  assert.match(streamSrc, /local_ask_bot/);
   assert.match(streamSrc, /logAiUsage\(/);
   assert.match(streamSrc, /resolveProductionChatMemory\(/);
   assert.match(streamSrc, /fetchProjectSection\(/);
@@ -54,4 +59,64 @@ test('invoke keeps returnActions as a live public contract', () => {
   assert.match(invokeSrc, /app\.post\('\/api\/ai\/invoke'/);
   assert.match(invokeSrc, /let \{ intent, text, returnActions,/);
   assert.match(invokeSrc, /const wantsActions = Boolean\(returnActions\)/);
+});
+
+test('stream and invoke build context after Auto routing and use a versioned cache key', () => {
+  assert.match(streamSrc, /buildPromptCacheKey\(/);
+  assert.match(invokeSrc, /personalizationFingerprint\(/);
+  assert.match(streamSrc, /shouldAttachRequestContext\(/);
+  assert.match(invokeSrc, /shouldAttachRequestContext\(/);
+  assert.match(streamSrc, /contextUsageMetadata\(/);
+  assert.match(invokeSrc, /contextUsageMetadata\(/);
+  assert.match(streamSrc, /modelTier: chatRoute\?\.modelTier/);
+  assert.match(invokeSrc, /modelTier: chatRoute\?\.modelTier/);
+});
+
+test('stream and invoke resolve Auto chat routing on the live path', () => {
+  assert.match(streamSrc, /resolveChatRoute\(/);
+  assert.match(invokeSrc, /resolveChatRoute\(/);
+  assert.match(streamSrc, /chatRouteUsageMetadata\(/);
+  assert.match(invokeSrc, /chatRouteUsageMetadata\(/);
+  assert.match(streamSrc, /openaiReasoningPayload\(/);
+  assert.match(streamSrc, /stream_options: \{ include_usage: true \}/);
+  assert.match(streamSrc, /isBillableComputeTool\(/);
+  assert.match(streamSrc, /planId: streamPlan\.planId/);
+  assert.match(invokeSrc, /planId: invokePlan\.planId/);
+});
+
+test('stream keeps abuse rate-limit middleware on the chat route', () => {
+  assert.match(streamSrc, /app\.post\('\/api\/ai\/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsageLimit/);
+  assert.match(invokeSrc, /app\.post\('\/api\/ai\/invoke', requireAuth, requireAppAccess, aiLimiter, checkAiUsageLimit/);
+});
+
+test('stream and invoke import resolveUserPlan from billingService', () => {
+  assert.match(streamSrc, /import \{ resolveUserPlan \} from '\.\.\/services\/billingService\.js'/);
+  assert.match(invokeSrc, /import \{ resolveUserPlan \} from '\.\.\/services\/billingService\.js'/);
+  assert.match(streamSrc, /await resolveUserPlan\(req\.user\?\.id, req\.user\?\.email\)/);
+  assert.match(invokeSrc, /await resolveUserPlan\(req\.user\?\.id, req\.user\?\.email\)/);
+});
+
+test('stream imports Cursor build helpers used after enrichment', () => {
+  assert.match(
+    streamSrc,
+    /import \{ claimUnannouncedBuilds, isCursorBuildsConfigured \} from '\.\.\/\.\.\/lib\/cursor\/cursorBuilds\.js'/,
+  );
+  assert.match(streamSrc, /isCursorBuildsConfigured\(\)/);
+  assert.match(streamSrc, /claimUnannouncedBuilds\(/);
+});
+
+test('browser side chat is ask-only and does not arm agent tools', () => {
+  assert.match(streamSrc, /BROWSER_ASK_ONLY_PROMPT/);
+  assert.match(streamSrc, /isBrowserAskRequest\(req\.body\)/);
+  assert.match(streamSrc, /if \(browserAsk\) prompt \+= "\\n\\n" \+ BROWSER_ASK_ONLY_PROMPT/);
+  assert.match(streamSrc, /localMode: streamLocalMode && !browserAsk/);
+  assert.match(streamSrc, /lyknBots: browserAsk \? \[\] : sanitizeLyknBots/);
+  assert.match(streamSrc, /!browserAsk &&/);
+  assert.match(streamSrc, /streamLocalMode = req\.body\?\.localMode === true && !browserAsk/);
+  assert.match(streamSrc, /if \(browserAsk && !streamDisclosure\.keepToolsOn\) useTools = false/);
+});
+
+test('invoke imports buildYouTubeSearchQuery from webEnrichment', () => {
+  assert.match(invokeSrc, /buildYouTubeSearchQuery/);
+  assert.match(invokeSrc, /from '\.\/webEnrichment\.js'/);
 });

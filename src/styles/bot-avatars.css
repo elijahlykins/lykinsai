@@ -19,36 +19,38 @@
   filter: none;
 }
 
-/* Idle: gentle bob + periodic blink. */
-.lykn-botface[data-mood='idle'] .bf-bob {
+/* Idle and working: gentle bob + periodic blink. Working keeps the bot's
+   own move instead of swapping to a generic scan. */
+.lykn-botface:is([data-mood='idle'], [data-mood='working']) .bf-bob {
   animation: lykn-bf-bob 4.2s ease-in-out infinite;
   animation-delay: var(--bf-delay, 0s);
 }
-.lykn-botface[data-mood='idle'] .bf-eyes {
+.lykn-botface:is([data-mood='idle'], [data-mood='working']) .bf-eyes {
   transform-box: fill-box;
   transform-origin: center;
   animation: lykn-bf-blink var(--bf-blink, 4.6s) linear infinite;
   animation-delay: var(--bf-delay, 0s);
 }
 
-/* Idle glance — every so often something catches its attention: eyes dart
+/* Glance — every so often something catches its attention: eyes dart
    left (left eye squinting, sizing it up), flick up, check right, settle.
    Runs on its own inner group so it composes with blink and the spin sweep. */
-.lykn-botface[data-mood='idle'] .bf-look {
+.lykn-botface:is([data-mood='idle'], [data-mood='working']) .bf-look {
   animation: lykn-bf-look var(--bf-look, 9s) ease-in-out infinite;
   animation-delay: var(--bf-delay, 0s);
 }
-.lykn-botface[data-mood='idle'] .bf-eye-l {
+.lykn-botface:is([data-mood='idle'], [data-mood='working']) .bf-eye-l {
   transform-box: fill-box;
   transform-origin: center;
   animation: lykn-bf-squint var(--bf-look, 9s) ease-in-out infinite;
   animation-delay: var(--bf-delay, 0s);
 }
 
-/* Idle personality move — the bot's signature quirk fires every --bf-quirk
-   seconds: mostly rest, then a quick spin / squish / wobble / hop. Squishy
-   moves anchor at the body's base so they read as jelly, not scaling UI. */
-.lykn-botface[data-mood='idle'] .bf-quirk {
+/* Personality move — the bot's signature quirk fires every --bf-quirk
+   seconds: mostly rest, then a quick spin / squish / wobble / hop / jump /
+   tilt / shake / stretch. Squishy moves anchor at the body's base so they
+   read as jelly, not scaling UI. */
+.lykn-botface:is([data-mood='idle'], [data-mood='working']) .bf-quirk {
   transform-box: view-box;
   transform-origin: 50% 80%;
   animation-duration: var(--bf-quirk, 8s);
@@ -60,27 +62,36 @@
    the whole way around (with a slight squash) while the eyes travel across
    the face, get clipped off the right edge, and wrap back in from the left.
    Same trick 2D games use to fake a sphere rotating. */
-.lykn-botface[data-mood='idle'][data-quirk='spin'] .bf-quirk {
+.lykn-botface:is([data-mood='idle'], [data-mood='working'])[data-quirk='spin'] .bf-quirk {
   animation-name: lykn-bf-quirk-spinbody;
 }
-.lykn-botface[data-mood='idle'][data-quirk='spin'] .bf-eyes-inner {
+.lykn-botface:is([data-mood='idle'], [data-mood='working'])[data-quirk='spin'] .bf-eyes-inner {
   animation: lykn-bf-quirk-spin var(--bf-quirk, 8s) ease-in-out infinite;
   animation-delay: var(--bf-delay, 0s);
 }
-.lykn-botface[data-mood='idle'][data-quirk='squish'] .bf-quirk {
+.lykn-botface:is([data-mood='idle'], [data-mood='working'])[data-quirk='squish'] .bf-quirk {
   animation-name: lykn-bf-quirk-squish;
 }
-.lykn-botface[data-mood='idle'][data-quirk='wobble'] .bf-quirk {
+.lykn-botface:is([data-mood='idle'], [data-mood='working'])[data-quirk='wobble'] .bf-quirk {
   animation-name: lykn-bf-quirk-wobble;
 }
-.lykn-botface[data-mood='idle'][data-quirk='hop'] .bf-quirk {
+.lykn-botface:is([data-mood='idle'], [data-mood='working'])[data-quirk='hop'] .bf-quirk {
   animation-name: lykn-bf-quirk-hop;
 }
-
-/* Working: eyes scan side to side, orbit ring spins. */
-.lykn-botface[data-mood='working'] .bf-eyes-inner {
-  animation: lykn-bf-scan 1.5s ease-in-out infinite;
+.lykn-botface:is([data-mood='idle'], [data-mood='working'])[data-quirk='jump'] .bf-quirk {
+  animation-name: lykn-bf-quirk-jump;
 }
+.lykn-botface:is([data-mood='idle'], [data-mood='working'])[data-quirk='tilt'] .bf-quirk {
+  animation-name: lykn-bf-quirk-tilt;
+}
+.lykn-botface:is([data-mood='idle'], [data-mood='working'])[data-quirk='shake'] .bf-quirk {
+  animation-name: lykn-bf-quirk-shake;
+}
+.lykn-botface:is([data-mood='idle'], [data-mood='working'])[data-quirk='stretch'] .bf-quirk {
+  animation-name: lykn-bf-quirk-stretch;
+}
+
+/* Working: a light orbit so the face still reads as busy next to status text. */
 .lykn-botface .bf-spin {
   transform-box: view-box;
   transform-origin: center;
@@ -279,5 +290,106 @@
   }
   98.5% {
     transform: translateY(0) scale(1.03, 0.97);
+  }
+}
+/* Two-beat jump: crouch, pop, land, then a higher second leap. */
+@keyframes lykn-bf-quirk-jump {
+  0%,
+  76%,
+  100% {
+    transform: translateY(0) scale(1, 1) rotate(0deg);
+  }
+  79% {
+    transform: translateY(1.6px) scale(1.2, 0.72) rotate(0deg);
+  }
+  82% {
+    transform: translateY(-9px) scale(0.9, 1.14) rotate(-4deg);
+  }
+  85% {
+    transform: translateY(1.2px) scale(1.18, 0.76) rotate(0deg);
+  }
+  88% {
+    transform: translateY(-17px) scale(0.86, 1.18) rotate(6deg);
+  }
+  91% {
+    transform: translateY(-15px) scale(0.94, 1.06) rotate(-2deg);
+  }
+  94% {
+    transform: translateY(1.6px) scale(1.24, 0.68) rotate(0deg);
+  }
+  97% {
+    transform: translateY(-2.8px) scale(0.96, 1.06) rotate(0deg);
+  }
+  99% {
+    transform: translateY(0) scale(1.03, 0.97) rotate(0deg);
+  }
+}
+/* Curious lean — tip, hold, then settle back. */
+@keyframes lykn-bf-quirk-tilt {
+  0%,
+  80%,
+  100% {
+    transform: rotate(0deg) translateX(0);
+  }
+  84% {
+    transform: rotate(-18deg) translateX(-2px);
+  }
+  90% {
+    transform: rotate(-16deg) translateX(-1.8px);
+  }
+  95% {
+    transform: rotate(4deg) translateX(0.6px);
+  }
+  98% {
+    transform: rotate(0deg) translateX(0);
+  }
+}
+/* Quick excited shiver. */
+@keyframes lykn-bf-quirk-shake {
+  0%,
+  80%,
+  100% {
+    transform: translateX(0) rotate(0deg);
+  }
+  82% {
+    transform: translateX(-2.6px) rotate(-7deg);
+  }
+  84% {
+    transform: translateX(2.6px) rotate(7deg);
+  }
+  86% {
+    transform: translateX(-2.2px) rotate(-5deg);
+  }
+  88% {
+    transform: translateX(2.2px) rotate(5deg);
+  }
+  90% {
+    transform: translateX(-1.3px) rotate(-3deg);
+  }
+  93% {
+    transform: translateX(1.3px) rotate(3deg);
+  }
+  96% {
+    transform: translateX(0) rotate(0deg);
+  }
+}
+/* Reach up tall, hold, then drop back into the bun. */
+@keyframes lykn-bf-quirk-stretch {
+  0%,
+  80%,
+  100% {
+    transform: scale(1, 1) translateY(0);
+  }
+  84% {
+    transform: scale(0.76, 1.3) translateY(-3.2px);
+  }
+  90% {
+    transform: scale(0.8, 1.24) translateY(-2.4px);
+  }
+  94% {
+    transform: scale(1.1, 0.88) translateY(0.6px);
+  }
+  97% {
+    transform: scale(1, 1) translateY(0);
   }
 }

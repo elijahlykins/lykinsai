@@ -5,26 +5,44 @@ export const BILLING_PERIODS = {
 
 // Plan IDs are used as primary keys throughout the app (DB `user_billing.plan`,
 // Stripe price map in server.js, PLAN_LIMITS below). Don't rename without a
-// migration. `free` is the default billing-row value, but in practice every
-// account passes the card-on-file trial checkout (/start-trial) before using
-// the app — PLAN_LIMITS.free mostly applies to lapsed subscriptions. The paid
-// tiers are Student ($20/mo or $12/mo billed annually, full Pro entitlements
-// for verified students),
-// Pro ($25/mo or $17/mo billed annually), which lifts the caps and unlocks
-// every frontier model, and Max ($100/mo or $75/mo billed annually), which
-// removes the monthly usage caps entirely. Legacy ids `studio_pro` /
-// `studio_max` may still appear on older billing rows — they resolve to the
-// same limits as `studio`.
+// migration. `free` is the default billing-row value and the marketing Free
+// card (`checkout: false` so it never hits Stripe).
 //
-// Every card's feature list leads with the three usage meters (LYKN Glass
-// requests, AI image generations, artifact builds) so tiers compare
-// like-for-like; keep the numbers in sync with PLAN_LIMITS below.
+// The model is one dollar-denominated usage balance for all metered work:
+// - Free accounts get a one-time $10 of usage at signup and can top up.
+// - Student / Pro / Max include normal chat (it never draws usage) and turn
+//   each subscription payment into that month's usage for everything else,
+//   at a better internal rate than top-ups (Max best, then Pro/Student).
+// Legacy ids `studio_pro` / `studio_max` may still appear on older billing
+// rows — they resolve to the same limits as `studio`.
+//
+// The authoritative plan catalog for the server is lib/billing/planCatalog.js;
+// keep prices and included-usage copy here in sync with it.
 export const PLANS = [
+  {
+    id: "free",
+    name: "Free",
+    tagline: "Start with $10 of free usage. No card required.",
+    monthlyPrice: 0,
+    annualPrice: 0,
+    cta: "Get started free",
+    ctaVariant: "outline",
+    highlighted: false,
+    checkout: false,
+    comingSoon: false,
+    features: [
+      { text: "$10 of usage included at signup", included: true, accent: true },
+      { text: "One simple balance for chat, images, and agents", included: true },
+      { text: "Top up anytime, from $5", included: true },
+      { text: "LYKN model", included: true },
+      { text: "No credit card required", included: true },
+    ],
+  },
   {
     id: "student",
     name: "Student",
     tagline: "Everything in Pro at a student price. Verify with your school email.",
-    monthlyPrice: 20,
+    monthlyPrice: 15,
     // $12/mo billed annually = $144/yr.
     annualPrice: 144,
     cta: "Get Student",
@@ -33,10 +51,11 @@ export const PLANS = [
     checkout: true,
     comingSoon: false,
     features: [
-      { text: "LYKN Glass: 1,000 requests/month", included: true },
-      { text: "300 AI image generations/month", included: true },
-      { text: "150 artifact builds/month", included: true, note: "Apps, dashboards, decks, docs" },
-      { text: "Unlimited neurons & Vault cards", included: true },
+      { text: "Chat included — never draws usage", included: true, accent: true },
+      { text: "Monthly usage for images, agents, and premium models", included: true, accent: true },
+      { text: "Better usage value than top-ups", included: true },
+      { text: "LYKN Memory", included: true },
+      { text: "Bots", included: true },
       { text: "All models: LYKN + frontier picks", included: true },
       { text: "All connections unlocked", included: true },
       {
@@ -49,8 +68,8 @@ export const PLANS = [
   {
     id: "studio",
     name: "Pro",
-    tagline: "Unlimited memory, every model, and serious monthly usage.",
-    monthlyPrice: 25,
+    tagline: "Chat included, plus monthly usage for everything else.",
+    monthlyPrice: 20,
     // $17/mo billed annually = $204/yr.
     annualPrice: 204,
     cta: "Upgrade to Pro",
@@ -60,10 +79,11 @@ export const PLANS = [
     checkout: true,
     comingSoon: false,
     features: [
-      { text: "LYKN Glass: 1,000 requests/month", included: true, accent: true },
-      { text: "300 AI image generations/month", included: true, accent: true },
-      { text: "150 artifact builds/month", included: true, accent: true, note: "Apps, dashboards, decks, docs" },
-      { text: "Unlimited neurons & Vault cards", included: true },
+      { text: "Chat included — never draws usage", included: true, accent: true },
+      { text: "Monthly usage for images, agents, and premium models", included: true, accent: true },
+      { text: "Better usage value than top-ups", included: true },
+      { text: "LYKN Memory", included: true },
+      { text: "Bots", included: true },
       { text: "All models: LYKN + frontier picks", included: true },
       { text: "All connections unlocked", included: true },
     ],
@@ -71,7 +91,7 @@ export const PLANS = [
   {
     id: "max",
     name: "Max",
-    tagline: "No monthly caps, for people who run their whole day through LYKN.",
+    tagline: "For people who run their whole day through LYKN.",
     monthlyPrice: 100,
     // $75/mo billed annually = $900/yr.
     annualPrice: 900,
@@ -82,9 +102,9 @@ export const PLANS = [
     checkout: true,
     comingSoon: false,
     features: [
-      { text: "LYKN Glass: unlimited requests", included: true, accent: true },
-      { text: "Unlimited AI image generations", included: true, accent: true },
-      { text: "Unlimited artifact builds", included: true, accent: true, note: "Apps, dashboards, decks, docs" },
+      { text: "Chat included — never draws usage", included: true, accent: true },
+      { text: "5× the monthly usage of Pro", included: true, accent: true },
+      { text: "Better usage value than top-ups", included: true },
       { text: "Everything in Pro", included: true },
       { text: "Priority support", included: true },
       { text: "Early access to new capabilities", included: true },
@@ -103,7 +123,8 @@ export const PLANS = [
     comingSoon: true,
     features: [
       { text: "Shared team workspace", included: true, accent: true },
-      { text: "Team-wide neurons & memory", included: true, accent: true },
+      { text: "Team-wide LYKN Memory", included: true, accent: true },
+      { text: "Bots", included: true },
       { text: "Admin controls & billing", included: true },
       { text: "Priority support", included: true },
     ],
@@ -112,40 +133,64 @@ export const PLANS = [
 
 export const FAQ_ITEMS = [
   {
+    id: "usage-balance",
+    question: "How does usage work?",
+    answer:
+      "Everything metered in LYKN — images, agents, premium models, research — draws from one dollar-denominated usage balance. You always see plain dollars, never credits or per-feature quotas. Subscriptions add monthly usage that resets each billing period; top-ups are yours until you spend them.",
+  },
+  {
+    id: "free-plan",
+    question: "What's included in Free?",
+    answer:
+      "Every new account starts with $10 of free usage — enough to genuinely try chat, images, and agents. No card is required. When it runs out you can top up from $5 or upgrade to a plan that includes chat.",
+  },
+  {
     id: "student-plan",
     question: "What is the Student plan?",
     answer:
-      "The Student plan is the full Pro experience at a student price: $20/month, or $12/month when billed annually ($144/year). You get unlimited synthesis neurons, unlimited Vault cards, every model in the picker, and every connection. Your LYKN account email must be a school address to unlock the student price.",
+      "The Student plan is the full Pro experience at a student price: $15/month, or $12/month when billed annually ($144/year). Chat is included, your subscription adds monthly usage for everything else, and you get LYKN Memory, Bots, every model in the picker, and every connection. Your LYKN account email must be a school address to unlock the student price.",
   },
   {
     id: "student-eligibility",
     question: "Who qualifies for the Student plan?",
     answer:
-      "Anyone whose LYKN account email is a school address — .edu, or international academic domains like .edu.au and .ac.uk. Sign up (or sign in with Google) using your school email and the Student plan unlocks automatically at checkout. If your school uses a different domain, reach out to support@lykn.io and we'll add it.",
+      "Anyone whose LYKN account email is a school address (.edu, or international academic domains like .edu.au and .ac.uk). Sign up (or sign in with Google) using your school email and the Student plan unlocks automatically at checkout. If your school uses a different domain, reach out to support@lykn.io and we'll add it.",
   },
   {
     id: "pro-included",
     question: "What does Pro include?",
     answer:
-      "Pro unlocks unlimited synthesis neurons, unlimited Vault cards, every model in the picker, and every connection, with generous monthly usage: 1,000 LYKN Glass requests, 300 AI image generations, and 150 artifact builds. It is $25/month on monthly billing or $17/month when billed annually ($204/year).",
+      "Pro includes normal LYKN chat — it never draws from your usage balance — plus monthly usage for images, agents, and premium models at a better rate than top-ups. You also get LYKN Memory, Bots, every model in the picker, and every connection. It is $20/month on monthly billing or $17/month when billed annually ($204/year). Existing $25 monthly subscribers stay at $25 for the current period and move to $20 at the next renewal.",
   },
   {
     id: "max-included",
     question: "What does Max include?",
     answer:
-      "Max is Pro with the monthly usage caps removed: unlimited LYKN Glass requests, unlimited AI image generations, and unlimited artifact builds, plus priority support and early access to new capabilities. It is $100/month on monthly billing or $75/month when billed annually ($900/year).",
+      "Max is everything in Pro with five times the monthly usage at the same plan rate — better value than top-ups — plus priority support and early access to new capabilities. It is $100/month on monthly billing or $75/month when billed annually ($900/year).",
+  },
+  {
+    id: "included-chat",
+    question: "Which models are included with a subscription?",
+    answer:
+      "On Student, Pro, and Max, LYKN's automatic routing is always included. Manually picking a model is also included as long as it costs no more than the models LYKN routes to automatically. Pricier frontier models are marked \"Uses usage\" in the picker and draw from your usage balance instead.",
+  },
+  {
+    id: "usage-expiry",
+    question: "Does my usage expire?",
+    answer:
+      "Monthly usage that comes with a subscription resets at the end of each billing period. Money you add yourself never expires — it stays until you spend it.",
   },
   {
     id: "free-trial",
-    question: "Is there a free trial?",
+    question: "Do I need a card to try LYKN?",
     answer:
-      "Yes. Every new account starts with a two-week free trial of the plan you pick — you add a card at signup but pay nothing today, and you can cancel anytime before the trial ends without being charged. After the trial your plan renews at its normal price unless you cancel.",
+      "No. Every new account starts with $10 of free usage and no card on file. You only add a payment method when you top up or subscribe.",
   },
   {
     id: "annual-savings",
     question: "How much do I save by paying yearly?",
     answer:
-      "Roughly a third off. Pro is $25/mo monthly or $17/mo when billed annually ($204/yr), and Max is $100/mo monthly or $75/mo when billed annually ($900/yr).",
+      "Roughly a third off. Pro is $20/mo monthly or $17/mo when billed annually ($204/yr), and Max is $100/mo monthly or $75/mo when billed annually ($900/yr).",
   },
   {
     id: "switch-or-cancel",
@@ -173,95 +218,77 @@ export const FAQ_ITEMS = [
   },
 ];
 
-// Per-plan hard limits. `Infinity` = no cap. `seats` is for team plans.
-// Enforcement hooks live in server.js (AI requests) and useUsageGate.js
-// (vault/grid). Blocks-per-grid enforcement is applied at the canvas layer.
+// Per-plan structural limits. `Infinity` = no cap. `seats` is for team plans.
+// Enforcement hooks live in useUsageGate.js (vault/grid); blocks-per-grid is
+// applied at the canvas layer. There are no per-feature monthly quotas —
+// metered work is priced through the dollar usage balance instead.
 //
-// `glassRequests`, `imageGens`, and `artifactBuilds` are the monthly usage
-// meters shown on every pricing card — keep them in sync with the PLANS
-// feature copy above. Server enforcement: `checkAiUsageLimit` in server.js
-// reads `glassRequests`; `imageGenQuota.js` covers image gens.
+// `unlimitedNormalChat` means normal chat is included with the subscription
+// and never draws from the usage balance (Auto routing, or a manual model at
+// or below the Auto tier — see lib/billing/usageEntitlements.js).
 export const PLAN_LIMITS = {
-  // Free accounts are metered by the one-time signup credit allowance
-  // (FREE_PLAN_CREDITS in server.js, enforced by requireAppAccess) rather
-  // than a monthly request cap — glassRequests stays uncapped so the credit
-  // meter is the single paywall trigger.
   free: {
-    requests: Infinity,
     vaultCards: 50,
     blocksPerGrid: 50,
     grids: Infinity,
     projects: Infinity,
     seats: 1,
     modelTier: "basic",
-    glassRequests: Infinity,
-    imageGens: 20,
-    artifactBuilds: 10,
+    unlimitedNormalChat: false,
   },
   // Student — full Pro entitlements at the discounted student price.
   student: {
-    requests: Infinity,
     vaultCards: Infinity,
     blocksPerGrid: Infinity,
     grids: Infinity,
     projects: Infinity,
     seats: 1,
     modelTier: "top+media",
-    glassRequests: 1000,
-    imageGens: 300,
-    artifactBuilds: 150,
+    unlimitedNormalChat: true,
   },
   studio: {
-    requests: Infinity,
     vaultCards: Infinity,
     blocksPerGrid: Infinity,
     grids: Infinity,
     projects: Infinity,
     seats: 1,
     modelTier: "top+media",
-    glassRequests: 1000,
-    imageGens: 300,
-    artifactBuilds: 150,
+    unlimitedNormalChat: true,
   },
-  // Max — Pro with the monthly usage caps removed.
   max: {
-    requests: Infinity,
     vaultCards: Infinity,
     blocksPerGrid: Infinity,
     grids: Infinity,
     projects: Infinity,
     seats: 1,
     modelTier: "top+media",
-    glassRequests: Infinity,
-    imageGens: Infinity,
-    artifactBuilds: Infinity,
+    unlimitedNormalChat: true,
   },
   // Legacy paid ids — same entitlements as Pro (grandfathered billing rows).
   studio_pro: {
-    requests: Infinity,
     vaultCards: Infinity,
     blocksPerGrid: Infinity,
     grids: Infinity,
     projects: Infinity,
     seats: 1,
     modelTier: "top+media",
-    glassRequests: 1000,
-    imageGens: 300,
-    artifactBuilds: 150,
+    unlimitedNormalChat: true,
   },
   studio_max: {
-    requests: Infinity,
     vaultCards: Infinity,
     blocksPerGrid: Infinity,
     grids: Infinity,
     projects: Infinity,
     seats: 1,
     modelTier: "top+media",
-    glassRequests: 1000,
-    imageGens: 300,
-    artifactBuilds: 150,
+    unlimitedNormalChat: true,
   },
 };
+
+export function planHasUnlimitedNormalChat(planId) {
+  const limits = PLAN_LIMITS[String(planId || "free")] || PLAN_LIMITS.free;
+  return Boolean(limits.unlimitedNormalChat);
+}
 
 // ---------------------------------------------------------------------------
 // Upload rate limits (per-user).
@@ -290,21 +317,13 @@ export const VAULT_UPLOAD_LIMITS = {
 };
 
 // ---------------------------------------------------------------------------
-// Credit top-ups (one-time purchases).
-//
-// A top-up is a `mode: 'payment'` Stripe checkout that grants credits into
-// `lykn_credit_wallets` (migration 123). Those credits are spent only once an
-// account has no included allowance left — a free account past
-// FREE_PLAN_CREDITS, or a subscriber past PLAN_LIMITS.glassRequests for the
-// month. They never expire and they don't reset monthly.
-//
-// `envVar` names the server env var holding that pack's Stripe price id;
-// server.js reads them into STRIPE_TOPUP_PRICE_MAP. A pack whose env var is
-// unset is hidden from the picker, so adding a pack here is safe before the
-// Stripe product exists. Create each price in Stripe as a ONE-TIME price (not
-// recurring) and keep the amount here in sync with it — this number is display
-// only; Stripe charges what its price says.
+// Historical credit packs. New customer purchases are retired.
+// Leftover wallet balances still spend until they hit zero.
+// The catalog remains so delayed Stripe webhooks can grant a pack that
+// already paid. `CREDIT_PACKS_FOR_SALE` is the server-side kill switch.
 // ---------------------------------------------------------------------------
+export const CREDIT_PACKS_FOR_SALE = false;
+
 export const CREDIT_PACKS = [
   {
     id: "topup_1000",
@@ -339,17 +358,9 @@ export function creditPackById(packId) {
   return CREDIT_PACKS.find((pack) => pack.id === packId) || null;
 }
 
-// What a credit buys, for the usage view. Display only — the authoritative
-// weights are CREDIT_COSTS in usageTracking.js; keep these in sync.
-export const CREDIT_COST_EXAMPLES = [
-  { label: "Chat message", credits: 1 },
-  { label: "Long or complex answer", credits: 3 },
-  { label: "Reading a large file", credits: 15 },
-  { label: "Image generation", credits: 15 },
-  { label: "Image edit", credits: 10 },
-  { label: "Video generation", credits: 35 },
-  { label: "Transcription", credits: 5 },
-];
+export function creditPacksForSale() {
+  return CREDIT_PACKS_FOR_SALE ? CREDIT_PACKS : [];
+}
 
 export const PLAN_LABELS = {
   free: "Free",

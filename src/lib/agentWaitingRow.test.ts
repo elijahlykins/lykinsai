@@ -90,3 +90,13 @@ test("a pause with no options offers none rather than undefined", () => {
   const row = agentWaitingRow({ waiting: true, step: "Waiting for you", waitingKind: "signin" });
   assert.deepEqual(row?.options, []);
 });
+
+test("a teammate handoff is a wait, not a question card", () => {
+  const row = agentWaitingRow(
+    { waiting: true, step: "Asking Cody…", waitingKind: "teammate" },
+    { label: "Asking Cody…", detail: "", kind: "teammate" },
+  );
+  assert.equal(row?.kind, "teammate");
+  assert.equal(row?.label, "Asking Cody…");
+  assert.notEqual(row?.kind, "question");
+});

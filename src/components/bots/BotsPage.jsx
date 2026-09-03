@@ -1,26 +1,33 @@
 // LYKN Bots — always-on agents you build once and message like coworkers.
 //
-// This window IS the builder — pick a look, name it, tell it how to work.
-// That becomes a durable persona (src/lib/bots/botStore.ts) paired with one
-// worker agent in electron/agentRuntime.cjs. There is no bot page beyond
-// this: every conversation happens in the regular chat (pick the Bot from
-// the chat bar's Bot menu), and the team strip below the builder is where
-// existing Bots live and can be dismissed. All state and runtime wiring
-// live in the shared botsClient singleton, so this window and the home chat
-// bar's Bot dropdown are two views of the same team.
+// This window is the builder and the roster. Pick a look, name it, tell it
+// how to work — that becomes a durable persona (src/lib/bots/botStore.ts)
+// paired with one worker agent in electron/agentRuntime.cjs. Clicking a Bot
+// opens /bots/:botId, where connections and custom skills live together.
+// Teach-a-task and Routines stay behind botStandingWorkUiEnabled until launch.
+// Conversation still happens in regular chat (pick the Bot from
+// the chat bar's Bot menu). Activity is a title-bar button on this window.
+// All state and runtime wiring live in the shared botsClient singleton, so
+// this window and the home chat bar's Bot dropdown are two views of the same
+// team.
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
+  Activity,
   ArrowDown,
   ArrowUp,
+  ChevronRight,
   Circle,
   Pencil,
   Pause,
   Play,
+  Plus,
   Save,
   Trash2,
   X,
   Zap,
 } from "lucide-react";
+import ActivityPanel from "@/components/activity/ActivityPanel";
 import BotAvatar, { BOT_QUIRKS, botMood, botPresence } from "@/components/bots/BotAvatar";
 import { inkById, inkColor } from "@/lib/appearance";
 import { useAppearance } from "@/lib/useAppearance";
@@ -31,14 +38,16 @@ import {
   BOT_FACES,
   botSeed,
 } from "@/lib/bots/botStore";
+import { botStandingWorkUiEnabled } from "@/lib/bots/botStandingWorkUi";
 import { addBot, botsAvailable, removeBot, setBotConnectionIds, useBots } from "@/lib/bots/botsClient";
-import { mcpFetch } from "@/lib/mcp/mcpApi";
+import { mcpFetch, openConnectionsSettings } from "@/lib/mcp/mcpApi";
+import { openStudioTab } from "@/lib/studioTabs";
 import {
   createRoutine,
   deleteRoutine,
-  routinesAvailable,
   runRoutineNow,
   setRoutineEnabled,
+  useActivity,
   useRoutines,
 } from "@/lib/routines/routinesClient";
 import {
@@ -53,7 +62,6 @@ import {
   updateWorkflow,
   useTeachSession,
   useWorkflows,
-  workflowsAvailable,
 } from "@/lib/workflows/workflowsClient";
 
 function botSnapshot(bot) {
@@ -67,24 +75,51 @@ function botSnapshot(bot) {
     color: bot.color,
     chatId: bot.chatId || "",
     connectionIds: bot.connectionIds,
+    skills: Array.isArray(bot.skills) ? bot.skills : [],
   };
 }
 
+export const BOTS_TOGGLE_ACTIVITY = "lykn-bots-toggle-activity";
+
+export function BotsActivityButton({ pressed = false, onClick }) {
+  const { tasks, routines } = useActivity();
+  const liveCount =
+    tasks.length +
+    (botStandingWorkUiEnabled()
+      ? routines.filter((r) => r.watching && !r.running).length
+      : 0);
+  return (
+    <button
+      type="button"
+      title="What your bots are doing"
+      aria-label="Activity"
+      aria-pressed={pressed}
+      onClick={onClick}
+      className={`relative inline-flex h-6 w-6 items-center justify-center rounded-full text-black/40 transition-colors hover:bg-black/[0.07] hover:text-black/75 dark:text-white/40 dark:hover:bg-white/[0.1] dark:hover:text-white/80 ${
+        pressed ? "text-black/75 dark:text-white/80" : ""
+      }`}
+    >
+      <Activity className="h-3.5 w-3.5" />
+      {liveCount > 0 ? (
+        <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-emerald-500" />
+      ) : null}
+    </button>
+  );
+}
+
 export default function BotsPage() {
+  const navigate = useNavigate();
   const desktop = botsAvailable();
   const { bots, agentStates, live } = useBots();
   const teaching = useTeachSession();
-  // Which Bot's routines are open below the team strip. Clicking a chip
-  // selects it; dismissing a Bot clears a stale selection.
-  const [selectedBotId, setSelectedBotId] = useState("");
-  const selectedBot = bots.find((b) => b.id === selectedBotId) || null;
+  const [pane, setPane] = useState("home");
   const teachingBot = bots.find((bot) => bot.id === teaching.session?.botId) || null;
 
   useEffect(() => {
-    if (teaching.active && teaching.session?.botId) {
-      setSelectedBotId(teaching.session.botId);
-    }
-  }, [teaching.active, teaching.session?.botId]);
+    const onToggle = () => setPane((p) => (p === "activity" ? "home" : "activity"));
+    window.addEventListener(BOTS_TOGGLE_ACTIVITY, onToggle);
+    return () => window.removeEventListener(BOTS_TOGGLE_ACTIVITY, onToggle);
+  }, []);
 
   if (!desktop) {
     return (
@@ -102,9 +137,15 @@ export default function BotsPage() {
   }
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto text-black/80 dark:text-white/85">
-      {teaching.active ? (
-        <div className="sticky top-3 z-10 mx-auto mt-3 flex max-w-md items-center gap-2 rounded-2xl border border-red-500/20 bg-white/95 px-4 py-2.5 shadow-sm backdrop-blur dark:bg-neutral-950/95">
+    <div className="relative h-full min-h-0 overflow-y-auto text-black/80 dark:text-white/85">
+      {botStandingWorkUiEnabled() && teaching.active ? (
+        <button
+          type="button"
+          onClick={() => {
+            if (teaching.session?.botId) navigate(`/bots/${teaching.session.botId}`);
+          }}
+          className="mx-auto mt-8 flex w-[calc(100%-2rem)] max-w-md items-center gap-2 rounded-2xl border border-red-500/20 bg-red-500/[0.06] px-4 py-2.5 text-left"
+        >
           <span className="relative flex h-2.5 w-2.5">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500 opacity-40" />
             <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-500" />
@@ -117,80 +158,81 @@ export default function BotsPage() {
               {teaching.session?.eventCount || 0} actions captured
             </p>
           </div>
-        </div>
+        </button>
       ) : null}
 
-      <BotBuilder first={bots.length === 0} onCreate={(draft) => addBot(draft)} />
+      {pane === "activity" ? (
+        <ActivityPanel onBack={() => setPane("home")} />
+      ) : (
+        <>
+          <BotBuilder
+            first={bots.length === 0}
+            onCreate={(draft) => {
+              const created = addBot(draft);
+              if (created?.id) navigate(`/bots/${created.id}`);
+            }}
+          />
 
-      {/* The team — every Bot you've built. Talk to them from the chat bar. */}
-      {bots.length > 0 ? (
-        <div className="mx-auto max-w-md px-6 pb-10">
-          <p className="text-center text-[11px] font-semibold uppercase tracking-wide text-black/35 dark:text-white/35">
-            Your Bots
-          </p>
-          <p className="mt-1 text-center text-[0.72rem] text-black/40 dark:text-white/40">
-            Message them from the Bot menu next to the chat bar.
-          </p>
-          <div className="mt-3 flex flex-wrap justify-center gap-2">
-            {bots.map((bot) => {
-              const agent = agentStates[bot.agentId];
-              const liveState = live[bot.agentId];
-              const presence = botPresence(bot, agent, liveState);
-              const selected = bot.id === selectedBotId;
-              return (
-                <span
-                  key={bot.id}
-                  className={`group flex cursor-pointer items-center gap-2 rounded-full py-1.5 pl-2 pr-2.5 transition-colors ${
-                    selected
-                      ? "bg-black/[0.09] ring-1 ring-black/20 dark:bg-white/[0.12] dark:ring-white/25"
-                      : "bg-black/[0.045] hover:bg-black/[0.07] dark:bg-white/[0.07] dark:hover:bg-white/[0.1]"
-                  }`}
-                  onClick={() =>
-                    setSelectedBotId(selected && !teaching.active ? "" : bot.id)
-                  }
-                >
-                  <BotAvatar
-                    face={bot.face}
-                    eyes={bot.eyes}
-                    color={bot.color}
-                    size={24}
-                    mood={botMood(bot, agent, liveState)}
-                    seed={botSeed(bot.id)}
-                  />
-                  <span className="text-[0.78rem] font-medium">{bot.name}</span>
-                  <span
-                    title={presence.label}
-                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${presence.dot}`}
-                  />
-                  <button
-                    type="button"
-                    title={`Dismiss ${bot.name}`}
-                    disabled={teaching.active && teaching.session?.botId === bot.id}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (selectedBotId === bot.id) setSelectedBotId("");
-                      removeBot(bot.id);
-                    }}
-                    className="rounded-full p-0.5 text-black/30 opacity-0 transition-opacity hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-20 group-hover:opacity-100 dark:text-white/30"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </span>
-              );
-            })}
-          </div>
-          {selectedBot ? <BotConnections bot={selectedBot} /> : null}
-          {selectedBot && workflowsAvailable() ? <BotWorkflows bot={selectedBot} /> : null}
-          {selectedBot && routinesAvailable() ? <BotRoutines bot={selectedBot} /> : null}
-        </div>
-      ) : null}
+          {bots.length > 0 ? (
+            <div className="mx-auto max-w-md px-6 pb-10">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-black/35 dark:text-white/35">
+                Your Bots
+              </p>
+              <ul className="mt-3 space-y-1.5">
+                {bots.map((bot) => {
+                  const agent = agentStates[bot.agentId];
+                  const liveState = live[bot.agentId];
+                  const presence = botPresence(bot, agent, liveState);
+                  return (
+                    <li key={bot.id}>
+                      <div
+                        className="group flex cursor-pointer items-center gap-3 rounded-2xl px-2.5 py-2 transition-colors hover:bg-black/[0.045] dark:hover:bg-white/[0.07]"
+                        onClick={() => navigate(`/bots/${bot.id}`)}
+                      >
+                        <BotAvatar
+                          face={bot.face}
+                          eyes={bot.eyes}
+                          color={bot.color}
+                          size={36}
+                          mood={botMood(bot, agent, liveState)}
+                          seed={botSeed(bot.id)}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-[0.85rem] font-medium">{bot.name}</p>
+                          <p className="truncate text-[0.7rem] text-black/40 dark:text-white/40">
+                            {presence.label}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          title={`Dismiss ${bot.name}`}
+                          disabled={teaching.active && teaching.session?.botId === bot.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (teaching.active && teaching.session?.botId === bot.id) return;
+                            removeBot(bot.id);
+                          }}
+                          className="rounded-lg p-1 text-black/30 opacity-0 transition-opacity hover:bg-red-500/10 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-20 group-hover:opacity-100 dark:text-white/30"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                        <ChevronRight className="h-4 w-4 text-black/25 dark:text-white/25" />
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
 
 /* ── Teaching and learned workflows ─────────────────────────────────────── */
 
-function BotWorkflows({ bot }) {
+export function BotWorkflows({ bot }) {
   const teaching = useTeachSession();
   const workflows = useWorkflows(bot.id);
   const teachingThisBot = teaching.active && teaching.session?.botId === bot.id;
@@ -286,10 +328,10 @@ function BotWorkflows({ bot }) {
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-wide text-black/35 dark:text-white/35">
-            {bot.name}&rsquo;s workflows
+            Teach a task
           </p>
           <p className="mt-1 text-[0.72rem] text-black/40 dark:text-white/40">
-            Show {bot.name} a task once, then reuse it.
+            Show {bot.name} a task once, then reuse it as a workflow.
           </p>
         </div>
         {!teaching.active ? (
@@ -1077,7 +1119,7 @@ function workflowStepLabel(step) {
   return `${step.kind} · ${step.action}${target ? ` · ${target}` : ""}`;
 }
 
-function BotConnections({ bot }) {
+export function BotConnections({ bot }) {
   const [connections, setConnections] = useState([]);
   useEffect(() => {
     let cancelled = false;
@@ -1100,21 +1142,38 @@ function BotConnections({ bot }) {
     const next = current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
     setBotConnectionIds(bot.id, next);
   };
+  const openConnections = () => {
+    openStudioTab("settings", "connections");
+    openConnectionsSettings();
+  };
 
   return (
     <div className="mt-6 rounded-2xl border border-black/10 p-4 dark:border-white/10">
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-black/35 dark:text-white/35">
-        Connections
-      </p>
-      <p className="mt-1 text-[0.72rem] text-black/40 dark:text-white/40">
-        {assigned == null
-          ? `${bot.name} can use every connected app until you pick a subset.`
-          : assigned.length === 0
-            ? `${bot.name} cannot use external apps.`
-            : `${bot.name} can only use the checked connections.`}
-      </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-black/35 dark:text-white/35">
+            Connections
+          </p>
+          <p className="mt-1 text-[0.72rem] text-black/40 dark:text-white/40">
+            {assigned == null
+              ? `${bot.name} can use every connected app until you pick a subset.`
+              : assigned.length === 0
+                ? `${bot.name} cannot use external apps.`
+                : `${bot.name} can only use the checked connections.`}
+          </p>
+        </div>
+        <button
+          type="button"
+          title="Add a connection"
+          aria-label="Add a connection"
+          onClick={openConnections}
+          className="shrink-0 rounded-full p-1.5 text-black/40 transition-colors hover:bg-black/[0.06] hover:text-black/80 dark:text-white/40 dark:hover:bg-white/[0.09] dark:hover:text-white/90"
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </button>
+      </div>
       {connections.length === 0 ? (
-        <p className="mt-3 text-[0.78rem] text-black/40">No MCP connections yet.</p>
+        <p className="mt-3 text-[0.78rem] text-black/40 dark:text-white/40">No MCP connections yet.</p>
       ) : (
         <ul className="mt-3 space-y-1.5">
           {connections.map((conn) => {
@@ -1124,7 +1183,9 @@ function BotConnections({ bot }) {
                 <label className="flex items-center gap-2 text-[0.8rem]">
                   <input type="checkbox" checked={checked} onChange={() => toggle(conn.id)} />
                   <span className="truncate">{conn.accountLabel || conn.name}</span>
-                  <span className="text-[0.68rem] text-black/40">{statusDot(conn.status)}</span>
+                  <span className="text-[0.68rem] text-black/40 dark:text-white/40">
+                    {statusDot(conn.status)}
+                  </span>
                 </label>
               </li>
             );
@@ -1153,18 +1214,7 @@ function timeAgo(iso) {
   return new Date(at).toLocaleDateString();
 }
 
-const RUN_STATUS_LABEL = {
-  running: "Running…",
-  completed: "Done",
-  failed: "Failed",
-  cancelled: "Stopped",
-  missed: "Missed (asleep)",
-  skipped: "Skipped (busy)",
-  waiting_for_user: "Needs you",
-  waiting_for_approval: "Needs approval",
-};
-
-function BotRoutines({ bot }) {
+export function BotRoutines({ bot }) {
   const routines = useRoutines(bot.id);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
@@ -1195,7 +1245,7 @@ function BotRoutines({ bot }) {
     } else {
       setError(
         String(result?.error || "").startsWith("could_not_parse_trigger")
-          ? "Say when it should run — like “every weekday at 8”, “when a PDF appears in Downloads”, or “watch this page”."
+          ? "Say when it should run, like “every weekday at 8”, “when a PDF appears in Downloads”, or “watch this page”."
           : result?.error || "Could not create that routine.",
       );
     }
@@ -1207,7 +1257,7 @@ function BotRoutines({ bot }) {
         {bot.name}&rsquo;s routines
       </p>
       <p className="mt-1 text-[0.72rem] text-black/40 dark:text-white/40">
-        Standing work {bot.name} runs on its own — on a schedule, or when something happens.
+        Standing work {bot.name} runs on its own, on a schedule, or when something happens.
       </p>
 
       {routines.length > 0 ? (
@@ -1240,7 +1290,7 @@ function BotRoutines({ bot }) {
           <p className="mt-1.5 text-[0.72rem] text-red-500/90">{error}</p>
         ) : (
           <p className="mt-1.5 text-[0.72rem] text-black/35 dark:text-white/35">
-            Describe the work and when — press Enter to add it.
+            Describe the work and when, then press Enter to add it.
           </p>
         )}
       </div>
@@ -1337,8 +1387,6 @@ function RoutineRow({ routine }) {
   );
 }
 
-export { RUN_STATUS_LABEL };
-
 /* ── The builder — look, name, instructions. That becomes the agent. ────── */
 
 /** A picker chip that is itself a live mini-character. */
@@ -1366,8 +1414,8 @@ function BotBuilder({ first = false, onCreate }) {
   const [color, setColor] = useState(BOT_COLOR_DEFAULT);
   const [name, setName] = useState("");
   const [persona, setPersona] = useState("");
-  // The big preview auditions every personality move in turn — spin,
-  // squish, wobble, hop — on the demo tempo (one move per cycle).
+  // The big preview auditions every personality move in turn on the
+  // demo tempo (one move per cycle).
   const [demoQuirk, setDemoQuirk] = useState(0);
   const nameRef = useRef(null);
   // For the swatch chips — "My accent" resolves to the workspace accent.
@@ -1408,11 +1456,11 @@ function BotBuilder({ first = false, onCreate }) {
       </h1>
       <p className="mt-1.5 max-w-sm text-center text-[0.8rem] leading-relaxed text-black/45 dark:text-white/45">
         Give it a look, a name, and how it should work. Then message it right
-        in your chat — pick it from the Bot menu next to the chat bar.
+        in your chat. Pick it from the Bot menu next to the chat bar.
       </p>
 
       {/* Shape — every chip is that body wearing the current eyes and color */}
-      <div className="mt-6 grid w-full grid-cols-8 gap-1.5">
+      <div className="mt-6 grid w-full grid-cols-6 gap-1.5">
         {BOT_FACES.map((opt, i) => (
           <PartChip
             key={opt.id}
@@ -1426,7 +1474,7 @@ function BotBuilder({ first = false, onCreate }) {
       </div>
 
       {/* Eyes — the current body trying on each eye style */}
-      <div className="mt-2 grid w-full grid-cols-8 gap-1.5">
+      <div className="mt-2 grid w-full grid-cols-6 gap-1.5">
         {BOT_EYES.map((opt, i) => (
           <PartChip
             key={opt.id}

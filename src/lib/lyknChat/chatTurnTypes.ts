@@ -141,6 +141,15 @@ export type PromptMessage = {
   aiNeurons?: ChatNeuronAttachment[];
   /** ISO timestamp when the user sent this message. */
   createdAt?: string;
+  /**
+   * App or build whose source rode this send, so the transcript shows the
+   * same attachment the composer tagged before send.
+   */
+  editTarget?: {
+    kind: "app" | "artifact";
+    title: string;
+    paths?: string[];
+  };
   /** Model id that produced aiResponse (for multi-model chat attribution). */
   aiModel?: string;
   /** ISO timestamp when the assistant reply finished streaming. */
@@ -151,9 +160,8 @@ export type PromptMessage = {
   /** The Bot task carrying this turn — lets the row re-attach to the live
    *  stream after the user leaves the chat mid-task and comes back. */
   botTaskId?: string;
-  /** True while the Bot's task is still running — the row shows an animated
-   *  thinking indicator with `botStatus` (and the `botTrail` of recent
-   *  statuses) under whatever has streamed so far. Cleared on the final
+  /** True while the Bot's task is still running — the row shows that Bot's
+   *  working face under whatever has streamed so far. Cleared on the final
    *  update, and by the re-attach pass when a task settled off-screen. */
   botWorking?: boolean;
   botStatus?: string;
@@ -274,6 +282,8 @@ export type FocusedChatAttachment = {
    *  be recovered and the image renders as "couldn't load image". */
   storagePath?: string;
   storageBucket?: string;
+  /** Absolute Mac path for a dragged-in desktop folder. */
+  localPath?: string;
   /** Open Graph metadata for `link`/`bookmark` attachments, populated by
    *  the /api/unfurl endpoint so the chat renders the same rich
    *  LinkPreview card the Vault shows (hero image, site name, title,
@@ -286,6 +296,11 @@ export type FocusedChatAttachment = {
   oembedType?: string;
   authorName?: string;
   authorHandle?: string;
+  /**
+   * Staged build the user took to chat. Structural so this file does not
+   * import chatArtifacts (that module already imports from here).
+   */
+  artifact?: unknown;
 };
 
 export type CreateAction =

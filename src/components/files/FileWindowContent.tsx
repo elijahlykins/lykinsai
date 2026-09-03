@@ -28,6 +28,7 @@ import {
   type ResolvedFile,
 } from "@/lib/files/fileSource";
 import {
+  attachArtifactToHomeChat,
   attachFilesToHomeChat,
   attachMacPathsToHomeChat,
 } from "@/lib/homeChatFiles";
@@ -188,36 +189,63 @@ export default function FileWindowContent({
 
   // The chat bar lives behind whatever window is asking about the file, so the
   // ask is queued and the bar claims it — the same route the Files window and
-  // a desktop icon already take.
+  // a desktop icon already take. A build taken to chat rides as an artifact
+  // chip even when the preview URL cannot be fetched.
   const askLykn = useCallback(async () => {
+    if (source.artifact) {
+      attachArtifactToHomeChat(source.artifact);
+      onAskedLykn?.();
+      return;
+    }
     if (source.path) {
       attachMacPathsToHomeChat([source.path]);
       onAskedLykn?.();
       return;
     }
     const resolved = fileRef.current;
-    if (!resolved?.url) return;
     setBusy("ask");
+    let attached = false;
     try {
-      const response = await fetch(resolved.url);
-      if (!response.ok) return;
-      const blob = await response.blob();
-      if (!blob.size) return;
-      attachFilesToHomeChat([
-        new File([blob], resolved.name, {
-          type: blob.type || resolved.mime || "",
-          lastModified: Date.now(),
-        }),
-      ]);
-      // Only once the file is really on its way. A window that vanished on a
-      // failed read would leave the user with no file and no explanation.
-      onAskedLykn?.();
-    } catch {
-      /* nothing to attach; the bar stays as it was */
+      // The bytes address first: the preview URL can be iframe-only (the
+      // drive's file proxy refuses a cross-origin fetch), so an opener that
+      // knows the raw storage address supplies it via resolveAttachUrl.
+      const candidates: string[] = [];
+      if (source.resolveAttachUrl) {
+        try {
+          const url = String((await source.resolveAttachUrl()) || "").trim();
+          if (url) candidates.push(url);
+        } catch {
+          /* fall through to the preview address */
+        }
+      }
+      if (resolved?.url && !candidates.includes(resolved.url)) {
+        candidates.push(resolved.url);
+      }
+      for (const url of candidates) {
+        try {
+          const response = await fetch(url);
+          if (!response.ok) continue;
+          const blob = await response.blob();
+          if (!blob.size) continue;
+          attachFilesToHomeChat([
+            new File([blob], resolved?.name || source.name || "file", {
+              type: blob.type || resolved?.mime || source.mime || "",
+              lastModified: Date.now(),
+            }),
+          ]);
+          attached = true;
+          break;
+        } catch {
+          /* try the next address */
+        }
+      }
     } finally {
       setBusy("");
     }
-  }, [source.path, onAskedLykn]);
+    // Close only when a chip actually landed — closing with nothing attached
+    // reads as the button doing nothing.
+    if (attached) onAskedLykn?.();
+  }, [source, onAskedLykn]);
 
   const download = useCallback(async () => {
     const resolved = fileRef.current;
@@ -257,7 +285,7 @@ export default function FileWindowContent({
         )}
         <Action
           icon={MessageCircle}
-          label="Ask LYKN about this"
+          label={source.artifact ? "Take to chat" : "Ask LYKN about this"}
           busy={busy === "ask"}
           onClick={() => void askLykn()}
         />

@@ -1,6 +1,7 @@
 "use strict";
 
 const { bindOverlayIpcContext } = require("./overlayIpcContext.cjs");
+const { untrustedSenderResult, trustedLyknIpcOpts } = require("../trustedIpcSender.cjs");
 
 function registerLocalFilesIpc(d) {
   const {
@@ -191,22 +192,35 @@ function registerLocalFilesIpc(d) {
     }
   };
 
+  const senderOpts = trustedLyknIpcOpts({ app, path, appOrigin: APP_ORIGIN, appUrl: APP_URL });
+  const requireTrusted = (handler) => async (e, ...args) => {
+    const denied = untrustedSenderResult(e, senderOpts);
+    if (denied) return denied;
+    return handler(e, ...args);
+  };
+
     ipcMain.handle("lykn:mac-sync-get", () =>
       macSyncState(localSystem.readLocalMode(app.getPath("userData")))
     );
-    ipcMain.handle("lykn:mac-sync-set", (_e, { syncAll, syncedFolders } = {}) => {
+    ipcMain.handle("lykn:mac-sync-set", (e, { syncAll, syncedFolders } = {}) => {
+      const denied = untrustedSenderResult(e, senderOpts);
+      if (denied) return denied;
       const next = localSystem.writeMacSync(app.getPath("userData"), { syncAll, syncedFolders });
       broadcastToAllWindows("lykn:mac-sync-changed", macSyncState(next));
       return macSyncState(next);
     });
     // One folder's switch, from its page in the Vault. Main works out what that
     // means for the allowlist so the renderer never has to reason about it.
-    ipcMain.handle("lykn:mac-sync-folder", (_e, { folder, synced } = {}) => {
+    ipcMain.handle("lykn:mac-sync-folder", (e, { folder, synced } = {}) => {
+      const denied = untrustedSenderResult(e, senderOpts);
+      if (denied) return denied;
       const next = localSystem.writeFolderSync(app.getPath("userData"), { folder, synced });
       broadcastToAllWindows("lykn:mac-sync-changed", macSyncState(next));
       return macSyncState(next);
     });
     ipcMain.handle("lykn:mac-sync-pick-folder", async (e) => {
+      const denied = untrustedSenderResult(e, senderOpts);
+      if (denied) return denied;
       const parent = BrowserWindow.fromWebContents(e.sender) || BrowserWindow.getFocusedWindow();
       const res = await dialog.showOpenDialog(parent, {
         title: "Choose folders to sync with LYKN",
@@ -219,14 +233,14 @@ function registerLocalFilesIpc(d) {
     });
   
     // --- Mac Files browser (renderer-facing, gated on Local Mode + allowlist) -
-    ipcMain.handle("lykn:mac-fs-list", async (_e, { path: dirPath } = {}) => {
+    ipcMain.handle("lykn:mac-fs-list", requireTrusted(async (_e, { path: dirPath } = {}) => {
       const cfg = localSystem.readLocalMode(app.getPath("userData"));
       if (!cfg.enabled) return { ok: false, error: "local_mode_off" };
       return localSystem.run("local_list_dir", { path: dirPath }, {
         userDataPath: app.getPath("userData"),
       });
-    });
-    ipcMain.handle("lykn:mac-fs-open", async (_e, { path: targetPath, reveal } = {}) => {
+    }));
+    ipcMain.handle("lykn:mac-fs-open", requireTrusted(async (_e, { path: targetPath, reveal } = {}) => {
       const cfg = localSystem.readLocalMode(app.getPath("userData"));
       if (!cfg.enabled) return { ok: false, error: "local_mode_off" };
       const abs = localSystem.resolveUserPath(targetPath);
@@ -245,15 +259,15 @@ function registerLocalFilesIpc(d) {
       } catch (err) {
         return { ok: false, error: err?.message || "open failed" };
       }
-    });
+    }));
     // --- Files browser (the Vault's Locations sidebar) ------------------------
     // Richer than mac-fs-list above: sorting, hidden files, sidebar roots, the
     // editing operations, and a watcher so the view tracks the real disk. Each
     // op re-checks Local Mode and the allowlist inside macFiles itself.
-    ipcMain.handle("lykn:files-list", (_e, args = {}) => macFiles.list(args));
-    ipcMain.handle("lykn:files-thumbnail", (_e, args = {}) => macFiles.thumbnail(args));
-    ipcMain.handle("lykn:files-roots", () => macFiles.roots());
-    const teachFileOperation = (action, operation) => async (_e, args = {}) => {
+    ipcMain.handle("lykn:files-list", requireTrusted((_e, args = {}) => macFiles.list(args)));
+    ipcMain.handle("lykn:files-thumbnail", requireTrusted((_e, args = {}) => macFiles.thumbnail(args)));
+    ipcMain.handle("lykn:files-roots", requireTrusted(() => macFiles.roots()));
+    const teachFileOperation = (action, operation) => requireTrusted(async (_e, args = {}) => {
       const result = await operation(args);
       if (result?.ok !== false) {
         recordTeach({
@@ -264,15 +278,15 @@ function registerLocalFilesIpc(d) {
         });
       }
       return result;
-    };
+    });
     ipcMain.handle("lykn:files-mkdir", teachFileOperation("create_directory", (args) => macFiles.mkdir(args)));
     ipcMain.handle("lykn:files-rename", teachFileOperation("rename", (args) => macFiles.rename(args)));
     ipcMain.handle("lykn:files-move", teachFileOperation("move", (args) => macFiles.move(args)));
     ipcMain.handle("lykn:files-copy", teachFileOperation("copy", (args) => macFiles.copy(args)));
     ipcMain.handle("lykn:files-duplicate", teachFileOperation("duplicate", (args) => macFiles.duplicate(args)));
     ipcMain.handle("lykn:files-trash", teachFileOperation("trash", (args) => macFiles.trash(args)));
-    ipcMain.handle("lykn:files-watch", (_e, args = {}) => macFiles.watch(args));
-    ipcMain.handle("lykn:files-unwatch", (_e, args = {}) => macFiles.unwatch(args));
+    ipcMain.handle("lykn:files-watch", requireTrusted((_e, args = {}) => macFiles.watch(args)));
+    ipcMain.handle("lykn:files-unwatch", requireTrusted((_e, args = {}) => macFiles.unwatch(args)));
   
     /**
      * Write bytes the renderer already holds into ~/Downloads.
@@ -284,7 +298,7 @@ function registerLocalFilesIpc(d) {
      * they're often a `lykn-blob://` or a data URL that only the renderer can
      * read.
      */
-    ipcMain.handle("lykn:save-to-downloads", async (_e, { name, bytes } = {}) => {
+    ipcMain.handle("lykn:save-to-downloads", requireTrusted(async (_e, { name, bytes } = {}) => {
       try {
         const buf = Buffer.from(bytes || []);
         if (!buf.length) return { ok: false, error: "empty" };
@@ -295,14 +309,14 @@ function registerLocalFilesIpc(d) {
       } catch (err) {
         return { ok: false, error: err?.message || "write failed" };
       }
-    });
+    }));
   
     /**
      * The same bytes, but somewhere the user points at. The Mac's own save sheet
      * is the folder picker — it names the file and chooses the folder in one
      * step, and it is the panel people already know for "put this over there".
      */
-    ipcMain.handle("lykn:save-file-as", async (e, { name, bytes, filters } = {}) => {
+    ipcMain.handle("lykn:save-file-as", requireTrusted(async (e, { name, bytes, filters } = {}) => {
       try {
         const buf = Buffer.from(bytes || []);
         if (!buf.length) return { ok: false, error: "empty" };
@@ -322,7 +336,7 @@ function registerLocalFilesIpc(d) {
       } catch (err) {
         return { ok: false, error: err?.message || "write failed" };
       }
-    });
+    }));
   
     // The real, localized locations of the user's folders — Settings needs the
     // absolute Desktop path to mirror it and to add it to the sync allowlist.
@@ -349,16 +363,16 @@ function registerLocalFilesIpc(d) {
         return { ok: false, error: err?.message || "app scan failed", apps: [] };
       }
     });
-    ipcMain.handle("lykn:mac-app-launch", async (_e, { path: bundlePath } = {}) => {
+    ipcMain.handle("lykn:mac-app-launch", requireTrusted(async (_e, { path: bundlePath } = {}) => {
       const result = await appDock.launchApp(bundlePath);
       if (result?.ok !== false) {
         recordTeach({ kind: "app", action: "launch", target: { app: bundlePath } });
       }
       return result;
-    });
-    ipcMain.handle("lykn:mac-app-quit", (_e, { path: bundlePath } = {}) =>
+    }));
+    ipcMain.handle("lykn:mac-app-quit", requireTrusted((_e, { path: bundlePath } = {}) =>
       appDock.quitApp(bundlePath)
-    );
+    ));
     ipcMain.handle("lykn:mac-apps-running", () => appDock.getRunningApps());
     // Studio dock subscribes while visible; polling stops when nobody listens.
     const runningAppWatchers = new Map(); // webContents.id -> unsubscribe

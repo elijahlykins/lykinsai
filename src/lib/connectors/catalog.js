@@ -280,10 +280,10 @@ export const CONNECTORS = [
     auth: "Google OAuth",
     pulls: ["Upcoming events (30 days)"],
     realtime: "Polling (60 min)",
-    status: "verification",
-    statusLabel: "Pending Google review",
+    status: "soon",
+    statusLabel: "Temporarily unavailable",
     summary:
-      "Imports events from your primary calendar onto your LYKN calendar (read-only) and into your Vault. Pre-verification: Google Cloud test users only.",
+      "Google Calendar import is unplugged for now. LYKN calendar stays native until this connector is restored.",
   },
   {
     id: "gmail",
@@ -526,10 +526,10 @@ export const CONNECTORS = [
     authMode: "token",
     pulls: ["Events (−7 to +30 days)"],
     realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
+    status: "soon",
+    statusLabel: "Temporarily unavailable",
     summary:
-      "Syncs your iCloud calendars onto your LYKN calendar (read-only) and into your Vault. Uses an app-specific password, never your Apple ID password.",
+      "Apple Calendar import is unplugged for now. LYKN calendar stays native until this connector is restored.",
     accessNote:
       "Read-only over iCloud CalDAV. The app-specific password is encrypted at rest and grants only calendar access. Revoke it any time at appleid.apple.com or here.",
     connectFields: [
@@ -1382,7 +1382,8 @@ export const CONNECTORS = [
   // ── Automation & AI ──────────────────────────────────────────────
   // Universal bring-your-own-API-key tile. Unlike every other connector,
   // this isn't a single provider - it's an entry point to attach ANY app by
-  // base URL + API key. The grid opens CustomApiDialog (customApi flag) where
+  // base URL + API key. Historical flag: the Custom API settings card was
+  // removed; managed connections and MCP servers cover these apps now.
   // the user manages their own list of connections. The LYKN agent then acts
   // on them via lykn_call_app.
   {

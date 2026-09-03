@@ -20,6 +20,7 @@
 import crypto from 'crypto';
 import { chunkTextForSynthesis } from '../../synthesis-service.js';
 import { runVaultReconciler } from '../../jobs/vaultReconcilerJob.js';
+import { getUserRowById } from '../../lib/security/userOwnedAccess.js';
 
 // Moved with the reindex/purge routes — they are its only consumers.
 const SYNTHESIS_ALLOWED_SOURCES = new Set(['vault_note', 'grid_board', 'conversation_exchange']);
@@ -45,9 +46,6 @@ export function registerSynthesisRoutes(app, {
     try {
       const userId = req.user?.id;
       if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-      if (!process.env.OPENAI_API_KEY) {
-        return res.status(503).json({ error: 'Embeddings not configured' });
-      }
       const { sourceType, sourceId, text, metadata = {} } = req.body || {};
       if (!SYNTHESIS_ALLOWED_SOURCES.has(String(sourceType))) {
         return res.status(400).json({ error: 'Invalid sourceType' });
@@ -59,25 +57,29 @@ export function registerSynthesisRoutes(app, {
       // pollute their own retrieval space with embeddings keyed to arbitrary
       // (or non-existent) `vault_note` ids, burn embed quota, and confuse
       // future RAG queries. We only verify what we can: vault notes live in
-      // the `notes` table; conversation exchanges + grid boards have their
+      // vault_items; conversation exchanges + grid boards have their
       // own checks downstream (board ids are user-prefixed; conversation
-      // exchanges resolve via the user's own session). Service role here is
-      // OK because the `.eq('user_id', userId)` filter is the actual gate.
+      // exchanges resolve via the user's own session).
       if (sourceType === 'vault_note') {
         if (!supabaseAdmin) {
           return res.status(503).json({ error: 'Database not configured' });
         }
-        const { data: owned, error: ownErr } = await supabaseAdmin
-          .from('vault_items')
-          .select('id')
-          .eq('id', sid)
-          .eq('user_id', userId)
-          .maybeSingle();
+        const { data: owned, error: ownErr } = await getUserRowById(
+          supabaseAdmin,
+          'vault_items',
+          userId,
+          sid,
+          'id',
+        );
         if (ownErr) {
           console.error('❌ Synthesis reindex ownership check:', ownErr?.message || ownErr);
           return res.status(500).json({ error: 'Reindex failed' });
         }
         if (!owned) return res.status(404).json({ error: 'Source not found' });
+      }
+
+      if (!process.env.OPENAI_API_KEY) {
+        return res.status(503).json({ error: 'Embeddings not configured' });
       }
 
       const chunks = chunkTextForSynthesis(String(text || ''));
@@ -292,12 +294,13 @@ export function registerSynthesisMaintenanceRoutes(app, {
       // Re-embed for synthesis retrieval with the new summary prepended to
       // the chunk corpus — improves retrieval precision because the summary
       // acts as a dense per-chunk semantic key.
-      const { data: noteAfter } = await client
-        .from('vault_items')
-        .select('title, content')
-        .eq('id', noteId)
-        .eq('user_id', userId)
-        .maybeSingle();
+      const { data: noteAfter } = await getUserRowById(
+        client,
+        'vault_items',
+        userId,
+        noteId,
+        'title, content',
+      );
       if (noteAfter) {
         const baseText = backfillVaultText(noteAfter.title, noteAfter.content);
         const embedRaw = result.summary ? `Summary (AI):\n${result.summary}\n\n${baseText}` : baseText;

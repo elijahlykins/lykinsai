@@ -11,14 +11,14 @@
   are under Campaigns / All campaigns.
 - A new email asks for a template first. The choice matters a lot:
   - **"Code your own" / "Paste in code"** takes a block of HTML directly. When
-    the content is written elsewhere, this is by far the most reliable route —
+    the content is written elsewhere, this is by far the most reliable route -
     one paste instead of a dozen drags.
   - **A drag-and-drop layout** requires dragging content blocks from the right
     panel into the canvas. Clicking a block in the palette does nothing; it has
     to be dragged.
   - **"Replicate" on an existing campaign** copies its layout and styling, then
     only the text needs changing. This is the right choice whenever the user
-    refers to matching their previous emails — it inherits the format exactly
+    refers to matching their previous emails - it inherits the format exactly
     instead of trying to recreate it.
 - Replicate lives in the campaign row's dropdown menu on the Campaigns list
   (the "..." / caret at the end of the row).
@@ -30,7 +30,7 @@
 - Text blocks need a click to select, then editing happens in a small toolbar
   overlay. Existing placeholder copy is replaced in place rather than cleared
   and retyped.
-- The content panel on the right scrolls inside itself — scroll it with its own
+- The content panel on the right scrolls inside itself - scroll it with its own
   element as the target, not the page.
 - Subject line and preview text are set from the campaign settings area
   ("Subject" / "Add subject"), not inside the canvas.
@@ -42,7 +42,7 @@
 
 - The recipients/audience selector is part of the campaign setup, separate from
   the content. A campaign cannot send without one, and the Send button stays
-  disabled until it is set — a disabled Send usually means audience, subject or
+  disabled until it is set - a disabled Send usually means audience, subject or
   from-name is missing, not that the click failed.
 - "Send" delivers to the whole selected audience and cannot be undone. That is a
   consequential action: only do it when the request explicitly asked to send,

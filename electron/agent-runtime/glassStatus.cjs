@@ -20,18 +20,18 @@ function createGlassStatus(host) {
   function deliverableKickoffText(skill) {
     switch (skill) {
       case "research":
-        return "On it — I'll research this and put a report together. It'll open in a subtab here when it's ready.";
+        return "On it. I'll research this and put a report together. It'll open in a subtab here when it's ready.";
       case "report-edit":
-        return "On it — updating the report now. The refreshed version will replace the open one.";
+        return "On it. Updating the report now. The refreshed version will replace the open one.";
       case "build":
-        return "On it — building that for you now. It'll open in a subtab here when it's ready.";
+        return "On it. Building that for you now. It'll open in a subtab here when it's ready.";
       case "image":
-        return "On it — generating your image. It'll open in a subtab here in a moment.";
+        return "On it. Generating your image. It'll open in a subtab here in a moment.";
       case "tool-create":
       case "sheets-create":
-        return "On it — setting that up in the tool now.";
+        return "On it. Setting that up in the tool now.";
       case "sheets-fill":
-        return "On it — putting the research into Sheets now.";
+        return "On it. Putting the research into Sheets now.";
       default:
         return "";
     }
@@ -54,7 +54,7 @@ function createGlassStatus(host) {
       const url = shareableArtifactUrl(agent);
       const title = agent.lastArtifact.title || "the artifact";
       if (url && !text.includes(url)) {
-        return [text, `Built **${title}** — [open it here](${url}).`].filter(Boolean).join("\n\n");
+        return [text, `Built **${title}**. [Open it here](${url}).`].filter(Boolean).join("\n\n");
       }
       return text || `Built **${title}**.`;
     }
@@ -80,33 +80,33 @@ function createGlassStatus(host) {
     // deliverable, fall through to the real answer at the bottom.
     if (skill === "build" && agent?.lastArtifact?.code) {
       const title = agent.lastArtifact.title || "artifact";
-      return `Finished — **${title}** is open in the browser.`;
+      return `Finished. **${title}** is open in the browser.`;
     }
     if (skill === "image" && agent?.lastImage?.url) {
-      return `Finished — image is open in the browser.`;
+      return `Finished. Image is open in the browser.`;
     }
     if ((skill === "research" || skill === "report-edit") && agent?.lastResearchReport) {
-      return `Finished — research report is open in the browser.`;
+      return `Finished. Research report is open in the browser.`;
     }
     if (skill === "sheets-fill") {
       const short = String(answer || "")
         .replace(/\n{3,}/g, "\n\n")
         .trim()
         .slice(0, 420);
-      return short || `Finished — research report pasted into Google Sheets.`;
+      return short || `Finished. Research report pasted into Google Sheets.`;
     }
     if (skill === "tool-create" || skill === "sheets-create") {
       const full = String(answer || "")
         .replace(/\n{3,}/g, "\n\n")
         .trim()
         .slice(0, 6000);
-      return full || `Finished — created in the requested tool.`;
+      return full || `Finished. Created in the requested tool.`;
     }
     if (multi && stepCount > 1) {
-      return `Finished — ${stepCount} steps done. Outputs are in the browser.`;
+      return `Finished. ${stepCount} steps done. Outputs are in the browser.`;
     }
     if (openedInBrowser) {
-      return `Finished — output is open in the browser.`;
+      return `Finished. Output is open in the browser.`;
     }
     // Conversational answers render in full in the response area.
     const full = String(answer || "")

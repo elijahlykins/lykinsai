@@ -58,7 +58,7 @@ export const AI_SURFACES = [
     guestAccessible: false,
     metered: true,
     optimization:
-      "Cap max_completion_tokens (currently up to 4096), aggressively truncate history before sending, downgrade unified-auto default to a flash-tier model, prompt-cache the static system prompt where the provider supports it.",
+      "Auto-route LYKN turns via server/ai/chatRouting, then build a stable cacheable prefix in server/ai/contextPipeline. Log cached vs uncached input. Do not dump duplicate request context.",
     risks: [
       "Vision images count as ~1.5k–4k tokens each — expensive on every turn the image is in context.",
       "Synthesis retrieval fires an embedding call per full-enrichment turn.",
@@ -107,6 +107,7 @@ export const AI_SURFACES = [
       "gpt-5.6-terra (BROWSER_AGENT_MODEL)",
       "claude-opus-5 (plan/judge overrides)",
       "gpt-4.1-mini (learn/route/offer/monitor_semantic/monitor_vision)",
+      "gpt-5.6-terra (describe local images/recordings)",
       "holo3-1-35b-a3b (ground)",
     ],
     actionTypes: [
@@ -120,6 +121,7 @@ export const AI_SURFACES = [
       "browser_agent_ground",
       "browser_agent_monitor_semantic",
       "browser_agent_monitor_vision",
+      "browser_agent_describe",
     ],
     tier: "high",
     guestAccessible: false,

@@ -19,5 +19,5 @@
     "types": ["vite/client", "node"]
   },
   "include": ["src/**/*", "remotion/**/*"],
-  "exclude": ["node_modules", "dist", "out", "src/vite-plugins", "src/components/ui", "src/api"]
+  "exclude": ["node_modules", "dist", "out", ".worktrees", "src/vite-plugins", "src/components/ui", "src/api"]
 }

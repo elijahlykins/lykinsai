@@ -12,10 +12,16 @@
 //   stripe            — the Stripe client (null when STRIPE_SECRET_KEY unset)
 //   handleStripeEvent — the billing event processor (stays in server.js with
 //                       the rest of the shared billing infrastructure)
+//   webhookLimiter    — IP-keyed perimeter rate limiter. This route registers
+//                       before the global /api/ limiter mounts, so without
+//                       this it would be the only unlimited unauthenticated
+//                       POST surface. Runs BEFORE express.raw so a limited
+//                       request is rejected without buffering its body.
+//                       Stripe retries 429s with backoff — no events lost.
 
 import express from 'express';
 
-export function registerStripeWebhook(app, { stripe, handleStripeEvent }) {
+export function registerStripeWebhook(app, { stripe, handleStripeEvent, webhookLimiter }) {
   // ============================================
   // STRIPE WEBHOOK — must be mounted BEFORE express.json()
   // ============================================
@@ -24,6 +30,7 @@ export function registerStripeWebhook(app, { stripe, handleStripeEvent }) {
   // Buffer here while every other route still gets parsed JSON.
   app.post(
     '/api/stripe/webhook',
+    webhookLimiter,
     express.raw({ type: 'application/json' }),
     async (req, res) => {
       if (!stripe) {

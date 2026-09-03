@@ -495,7 +495,7 @@ export default function StartTrial() {
           </div>
 
           <p className="mt-2.5 text-[11px] text-slate-400 max-w-xl mx-auto">
-            Card required to start. Payments by Stripe — LYKN never sees your card.
+            Card required to start. Payments by Stripe. LYKN never sees your card.
           </p>
 
           <button

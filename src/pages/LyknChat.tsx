@@ -27,7 +27,7 @@ import { useAuth } from "@/lib/SupabaseAuth";
 import { useUsageGate } from "@/lib/useUsageGate";
 import UpgradeModal from "@/components/UpgradeModal";
 
-import { useThinkingStatus } from "@/hooks/useThinkingStatus";
+import { isLiveBuildStatus, useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { copyMarkdownAsRich } from "@/lib/copyRichClipboard";
 import { getAiPrefs } from "@/lib/ai-prefs";
 
@@ -69,11 +69,8 @@ import {
   STUDIO_VIEW_MODES,
   STUDIO_VIEW_SUBTITLES,
   StudioComposerStrip,
-  StudioFollowUpSuggestions,
   StudioModePill,
   StudioResearchSidebar,
-  buildFollowUpItems,
-  researchFollowUpItems,
 } from "@/components/lyknChat/StudioChatChrome";
 import ChatBarToolbar from "@/components/lyknChat/ChatBarToolbar";
 import { useChatVaultSaves } from "@/hooks/useChatVaultSaves";
@@ -601,6 +598,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   const {
     chatInputRef, chatInputHasText, setChatInput, handleChatInputChange,
     isChatLoading, setIsChatLoading, chatStatusText, setChatStatusText,
+    inFlightBuild,
     focusedChatAttachments, setFocusedChatAttachments,
     expandedAiMsgIds, expandedUserPromptIds, chatReactions, setChatReactions,
     copiedMsgId, setCopiedMsgId,
@@ -708,7 +706,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     handleStudioModeSelect,
     handleStudioNewChat,
     handleComposerChipInsert,
-    handleStudioFollowUp,
     studioGuardedSend,
     handleImagineBatchCommit,
     imagineSeedBatches,
@@ -716,11 +713,11 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     appSourceStrip,
     editingAppId,
     latestResearch,
-    latestBuildTopic,
     hasChatTurns,
     hideSuggestionPills,
   } = useStudioChatSession({
     handleChatSend,
+    handleStopAi,
     setChatInput,
     setComposerMode,
     composerMode,
@@ -754,9 +751,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     researchSourcePrefsRef,
   });
 
-  const keepBuildThinking =
-    studioView === "build" ||
-    (typeof composerMode === "string" && composerMode.startsWith("create:"));
+  const keepBuildThinking = inFlightBuild || isLiveBuildStatus(chatStatusText);
   const thinkingStatus = useThinkingStatus(isChatLoading, chatStatusText, keepBuildThinking);
 
   // Save-to-vault paths (images, links, attachments, reports, artifacts) —
@@ -1218,6 +1213,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           chatInputRef={chatInputRef}
           onChatInputChange={handleChatInputChange}
           onSend={studioGuardedSend}
+          chatId={routeChatId || chatId || undefined}
           pinComposerToBottom={
             studioView === "imagine" && imagineStarted && chatMessages.length === 0
           }
@@ -1294,6 +1290,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
             !!latestResearch?.report ? (
               <StudioResearchSidebar
                 sources={latestResearch.sources}
+                chatId={routeChatId || chatId || undefined}
                 canSave={!!latestResearch.report}
                 saving={researchReportSaving}
                 onSave={handleSaveResearchReport}
@@ -1317,52 +1314,32 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
             ) : null
           }
           composerAbove={
-            (isGlassChat && studioView === "research") ||
-            (isGlassChat &&
-              studioView === "build" &&
-              (!!activeArtifact ||
-                (!hasChatTurns &&
-                  !studioChipsDismissed &&
-                  !appSourceStrip &&
-                  !hideSuggestionPills))) ||
-            (isMainAgentChat && CUSTOM_MODELS_ENABLED) ? (
-              <>
-                {isGlassChat &&
-                studioView === "research" &&
-                !isChatLoading &&
-                !hideSuggestionPills &&
-                !!latestResearch?.report ? (
-                  <StudioFollowUpSuggestions
-                    items={researchFollowUpItems(latestResearch.topic)}
-                    disabled={isChatLoading}
-                    onSelect={handleStudioFollowUp}
-                  />
-                ) : isGlassChat &&
-                  studioView === "build" &&
-                  !isChatLoading &&
-                  !hideSuggestionPills &&
-                  !!activeArtifact ? (
-                  <StudioFollowUpSuggestions
-                    items={buildFollowUpItems(latestBuildTopic)}
-                    disabled={isChatLoading}
-                    onSelect={handleStudioFollowUp}
-                  />
-                ) : isGlassChat &&
+            <>
+              {(isGlassChat &&
+                (studioView === "research" || studioView === "build") &&
+                !hasChatTurns &&
+                !studioChipsDismissed &&
+                !appSourceStrip &&
+                !hideSuggestionPills) ||
+              (isMainAgentChat && CUSTOM_MODELS_ENABLED) ? (
+                <>
+                  {isGlassChat &&
                   (studioView === "research" || studioView === "build") &&
                   !hasChatTurns &&
                   !studioChipsDismissed &&
                   !appSourceStrip &&
                   !hideSuggestionPills ? (
-                  <StudioComposerStrip
-                    view={studioView}
-                    onInsert={handleComposerChipInsert}
-                  />
-                ) : null}
-                {isMainAgentChat && CUSTOM_MODELS_ENABLED ? (
-                  <SubAgentTasksStrip chatId={chatId} enabled={isMainAgentChat} />
-                ) : null}
-              </>
-            ) : null
+                    <StudioComposerStrip
+                      view={studioView}
+                      onInsert={handleComposerChipInsert}
+                    />
+                  ) : null}
+                  {isMainAgentChat && CUSTOM_MODELS_ENABLED ? (
+                    <SubAgentTasksStrip chatId={chatId} enabled={isMainAgentChat} />
+                  ) : null}
+                </>
+              ) : null}
+            </>
           }
           composerPlaceholder={
             isGlassChat ? STUDIO_COMPOSER_PLACEHOLDERS[studioView] : undefined

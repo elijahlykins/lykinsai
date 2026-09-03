@@ -473,6 +473,16 @@ function showOverlay() {
   if (d.panelCardOpen && !d.overlayCollapsed) showPanelWindow();
   if (d.agentSidebarOpen && !d.overlayCollapsed) showAgentSidebarWindow();
   d.overlayWindow.webContents.send("lykn:overlay-shown");
+  try {
+    d.checkForAppUpdates?.();
+  } catch (_) {
+    /* updater not ready */
+  }
+  try {
+    d.broadcastUpdateStatus?.();
+  } catch (_) {
+    /* updater not ready */
+  }
 }
 
 function toggleOverlay() {

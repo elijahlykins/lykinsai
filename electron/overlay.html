@@ -769,6 +769,12 @@
         width: 24px;
         height: 24px;
       }
+      /* Optical nudge: the mark sits a hair low and left of the status line. */
+      .thinking > .lykn-outline-spinner {
+        position: relative;
+        top: -2px;
+        left: 3px;
+      }
       .lykn-outline-spinner path {
         stroke-dasharray: 1;
         animation: lyknOutlineDraw 3.6s ease-in-out infinite;
@@ -1145,6 +1151,7 @@
         gap: 2px;
         flex: none;
       }
+      .menu-item[hidden] { display: none !important; }
       .menu-item {
         display: flex;
         align-items: center;
@@ -1205,6 +1212,49 @@
         border: 1px solid rgba(56, 189, 248, 0.28);
       }
       #night-brief.show { display: flex; }
+      #app-update {
+        display: none;
+        flex-direction: column;
+        gap: 6px;
+        margin: 0 12px 8px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: rgba(59, 120, 255, 0.14);
+        border: 1px solid rgba(59, 120, 255, 0.32);
+      }
+      #app-update.show { display: flex; }
+      .app-update-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .app-update-title {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #93c5fd;
+      }
+      .app-update-body {
+        font-size: 12px;
+        line-height: 1.35;
+        color: var(--text);
+      }
+      .app-update-restart {
+        -webkit-app-region: no-drag;
+        align-self: flex-start;
+        border: none;
+        background: rgba(255, 255, 255, 0.16);
+        color: var(--text);
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 5px 10px;
+        border-radius: 999px;
+        cursor: pointer;
+      }
+      .app-update-restart:hover { background: rgba(255, 255, 255, 0.22); }
       .night-brief-head {
         display: flex;
         align-items: center;
@@ -2013,6 +2063,15 @@
         <div class="night-brief-project" id="night-brief-project"></div>
         <div class="night-brief-body" id="night-brief-body"></div>
       </div>
+      <div id="app-update" hidden>
+        <div class="app-update-head">
+          <span class="app-update-title" id="app-update-title">LYKN update</span>
+        </div>
+        <div class="app-update-body" id="app-update-body"></div>
+        <button type="button" class="app-update-restart" id="app-update-restart" hidden>
+          Restart to update
+        </button>
+      </div>
       <div id="thread"></div>
       <div class="drop-hint">Drop files to attach…</div>
       <div class="attachments" id="attachments"></div>
@@ -2084,7 +2143,7 @@
               </svg>
               <span id="listen-label">Transcribe</span>
             </button>
-            <button class="menu-item" id="menu-live-watch" type="button" aria-pressed="false">
+            <button class="menu-item" id="menu-live-watch" type="button" aria-pressed="false" hidden>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
                 <circle cx="12" cy="12" r="3" />
@@ -2110,7 +2169,7 @@
               Build mode
               <span class="menu-state" id="build-state">Off</span>
             </button>
-            <button class="menu-item" id="menu-agent" type="button">
+            <button class="menu-item" id="menu-agent" type="button" hidden>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M12 8V4H8" />
                 <rect width="16" height="12" x="4" y="8" rx="2" />

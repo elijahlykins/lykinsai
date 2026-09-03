@@ -20,6 +20,7 @@
 // ============================================================================
 
 import { Link } from "react-router-dom";
+import { studioSettingsPath } from "@/lib/settingsDeepLink";
 import { ArrowLeft } from "lucide-react";
 import { openCookiePreferences } from "@/lib/analytics";
 
@@ -303,7 +304,7 @@ export function CookiePolicyBody() {
               life="Cleared when the tab closes"
             />
             <StorageRow
-              k="lykn:free-credits-nudge-dismissed, lykn_intake_skipped_<user>"
+              k="lykn:usage-nudge-dismissed, lykn_intake_skipped_<user>"
               purpose="One-per-session prompts, so you see them once and not on every screen"
               life="Cleared when the tab closes"
             />
@@ -443,7 +444,7 @@ export function CookiePolicyBody() {
           If you want the server-side counterparts gone too, meaning your
           account, Markdown Memory, Vault, projects, and conversations, delete your account from{" "}
           <Link
-            to="/settings"
+            to={studioSettingsPath("account")}
             className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
           >
             Settings

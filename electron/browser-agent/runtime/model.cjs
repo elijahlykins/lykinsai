@@ -3,7 +3,7 @@
  *
  * All reasoning goes through this layer so browser control, state, skills and
  * memory never depend on one model provider. The Electron main process holds
- * no API keys — calls go to the LYKN server's generic structured endpoint
+ * no API keys - calls go to the LYKN server's generic structured endpoint
  * (POST /api/desktop/agent-model), which routes to whatever provider is
  * configured server-side.
  *
@@ -34,13 +34,13 @@ const PLAN_SCHEMA = {
     successCondition: {
       type: "string",
       description:
-        "One sentence: the observable state of the world that means this task is DONE — what a screenshot of the final page would show. Specific to this task, checkable, no vague words like \"successfully\".",
+        "One sentence: the observable state of the world that means this task is DONE - what a screenshot of the final page would show. Specific to this task, checkable, no vague words like \"successfully\".",
     },
     doNot: {
       type: "array",
       items: { type: "string" },
       description:
-        "2-5 adjacent actions the user's literal request does NOT license — the tempting extras next to this task (for \"check my email\": drafting replies, organizing the inbox). Short imperative phrases.",
+        "2-5 adjacent actions the user's literal request does NOT license - the tempting extras next to this task (for \"check my email\": drafting replies, organizing the inbox). Short imperative phrases.",
     },
     constraints: { type: "array", items: { type: "string" }, description: "Hard requirements from the user's request" },
     knownFacts: { type: "object", additionalProperties: true, description: "Facts already known from the request" },
@@ -50,7 +50,7 @@ const PLAN_SCHEMA = {
       type: "array",
       items: { type: "string" },
       description:
-        "Optional. 2-4 concrete answers to `clarification` the user can pick with one tap, each a complete answer in their voice (a subject line, a date, a name) — never \"Yes\"/\"No\" and never a restatement of the question. They can always type something else instead, so offer these only when you can genuinely propose good answers.",
+        "Optional. 2-4 concrete answers to `clarification` the user can pick with one tap, each a complete answer in their voice (a subject line, a date, a name) - never \"Yes\"/\"No\" and never a restatement of the question. They can always type something else instead, so offer these only when you can genuinely propose good answers.",
     },
   },
   required: ["plan"],
@@ -92,7 +92,7 @@ const DECISION_SCHEMA = {
           type: "string",
           enum: ["append", "replace"],
           description:
-            "type only: replace = put the whole field right, clearing whatever is in it first (including a value already committed as a chip). This is how you FIX a value you typed wrong — plain typing appends, which leaves both.",
+            "type only: replace = put the whole field right, clearing whatever is in it first (including a value already committed as a chip). This is how you FIX a value you typed wrong - plain typing appends, which leaves both.",
         },
         direction: { type: "string", enum: ["up", "down"] },
         key: { type: "string" },
@@ -109,7 +109,7 @@ const DECISION_SCHEMA = {
         toX: { type: "number", description: "drag only: drop position, 0-1000 horizontal" },
         toY: { type: "number", description: "drag only: drop position, 0-1000 vertical" },
       },
-      // An action without a type is meaningless — executeAction rejects it as
+      // An action without a type is meaningless - executeAction rejects it as
       // unknown_action_type. Declaring it required also anchors providers whose
       // structured-output dialect free-forms objects that have no `required`:
       // Gemini's responseSchema omitted the `target` element ref on 3 of 3
@@ -122,10 +122,10 @@ const DECISION_SCHEMA = {
       type: "array",
       description:
         "Optional. A short sequence to run in one go INSTEAD of stopping after `action`, for when the " +
-        "result of each step cannot change what the next one should be — scrolling down a long list to " +
+        "result of each step cannot change what the next one should be - scrolling down a long list to " +
         "make it load, or navigate → wait → screenshot. Every entry must be one of scroll, wait, screenshot, " +
         "navigate, go_back, go_forward, open_tab, switch_tab, and NONE may name an element (no target, " +
-        "no coordinates) — element references stop meaning anything once the first step has run. " +
+        "no coordinates) - element references stop meaning anything once the first step has run. " +
         "The first entry must equal `action`. Maximum 6. Anything else is ignored and only `action` runs.",
       items: {
         type: "object",
@@ -147,13 +147,17 @@ const DECISION_SCHEMA = {
     },
     expectedOutcome: { type: "string", description: "What the page should show if this action works" },
     risk: { type: "string", enum: ["read", "low", "consequential"] },
-    answer: { type: "string", description: "Final user-facing answer when kind=finish" },
+    answer: {
+      type: "string",
+      description:
+        "kind=finish: the final report the user keeps. After an action: what you did and what they now have. After findings (inbox, listing, comparison, research): a full markdown report with a title, a short summary, headed sections, lists or a table, and sources or links when you have them. Write enough that they do not need to reopen the tab.",
+    },
     question: { type: "string", description: "Question/approval request when kind=ask_user" },
     questionOptions: {
       type: "array",
       items: { type: "string" },
       description:
-        "Optional, ask_user only. 2-4 concrete answers to `question` the user can pick with one tap, each a complete answer in their voice — never \"Yes\"/\"No\", never a restatement of the question, and never offered for a credential or a code (those are theirs to type). They can always type something else instead.",
+        "Optional, ask_user only. 2-4 concrete answers to `question` the user can pick with one tap, each a complete answer in their voice - never \"Yes\"/\"No\", never a restatement of the question, and never offered for a credential or a code (those are theirs to type). They can always type something else instead.",
     },
     replanReason: { type: "string" },
     constraints: {
@@ -210,7 +214,7 @@ function decisionSchemaFor(allowedActions) {
  * where its misroutes come from: "check who my folder is shared with" reads as
  * a question and goes to a chat model that has no browser, so the user is told
  * "I'm checking now…" and nothing happens. Keywords cannot tell the difference
- * between a question about what is on screen and an errand phrased as one —
+ * between a question about what is on screen and an errand phrased as one -
  * that is a judgement about meaning, which is what a model is for.
  */
 const ROUTE_SCHEMA = {
@@ -233,7 +237,7 @@ const ROUTE_SCHEMA = {
  *
  * Bots (headless teammates) have every LYKN tool: plain chat, image
  * generation, artifact building, research reports, local-machine tasks, and
- * — with the user's permission — the browser. Keyword heuristics kept
+ * - with the user's permission - the browser. Keyword heuristics kept
  * mistaking ordinary chat for browser errands, so the Bot asked "want me to
  * use the browser?" constantly. This is the judgement call that replaces
  * them: one small model decision per tool-shaped prompt.
@@ -243,9 +247,9 @@ const BOT_ROUTE_SCHEMA = {
   properties: {
     tool: {
       type: "string",
-      enum: ["chat", "image", "build", "research", "local", "browser"],
+      enum: ["chat", "image", "build", "research", "local", "browser", "routine"],
       description:
-        "chat = reply directly. image = generate a picture. build = build an app/site/tool artifact. research = an in-depth researched report. local = act on the user's own computer. browser = open the teammate's real browser and operate a live website or the user's online account (send, buy, book, post, check their mail).",
+        "chat = reply directly. image = generate a picture. build = build an app/site/tool artifact. research = an in-depth researched report. local = act on the user's own computer. browser = open the teammate's real browser and operate a live website or the user's online account (send, buy, book, post, check their mail). routine = set up standing or recurring work this teammate will run on its own later (a schedule, inbox watch, or file/page watch). Creating a routine does not run the work now.",
     },
     reason: { type: "string", description: "One short sentence, for the trace." },
   },
@@ -265,7 +269,7 @@ const LEARN_SCHEMA = {
       type: "array",
       items: { type: "string" },
       description:
-        "Durable facts about the PERSON that would help on an unrelated task later — how they refer to things, a preference they stated, a detail about their work. Never task content, never secrets. Usually empty.",
+        "Durable facts about the PERSON that would help on an unrelated task later - how they refer to things, a preference they stated, a detail about their work. Never task content, never secrets. Usually empty.",
     },
   },
   required: ["notes"],
@@ -307,7 +311,7 @@ function normalizeAnswerOptions(raw) {
     out.push(text);
     if (out.length >= 4) break;
   }
-  // One option is not a choice — it is a suggestion the user cannot compare
+  // One option is not a choice - it is a suggestion the user cannot compare
   // against anything, and it reads as the agent having already decided.
   return out.length >= 2 ? out : [];
 }
@@ -338,7 +342,7 @@ function sleep(ms, signal) {
  * A timeout signal built on a real, clearable timer.
  *
  * `AbortSignal.timeout` keeps its timer unref'd, so a process whose event loop
- * has nothing else pending exits before the timeout ever fires — which is
+ * has nothing else pending exits before the timeout ever fires - which is
  * exactly the state a run is in while its only outstanding work is one model
  * call. In the test runner that surfaced as the whole suite being cancelled
  * ("Promise resolution is still pending but the event loop has already
@@ -397,10 +401,15 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
     }
 
     if (!res.ok && UNAVAILABLE_STATUSES.has(res.status)) {
-      // Not signed in, rate limited, or the service is down — all recoverable
+      // Not signed in, rate limited, or the service is down - all recoverable
       // by falling back, none of them a reason to fail the user's task with
-      // "Could not decide the next step".
-      throw new AgentModelUnavailableError(`agent model unavailable (${res.status})`);
+      // "Could not decide the next step". Carry the server's reason along:
+      // a bare "(502)" made an OpenRouter parse defect indistinguishable from
+      // a gateway outage.
+      const detail = await res.text().catch(() => "");
+      throw new AgentModelUnavailableError(
+        `agent model unavailable (${res.status})${detail ? `: ${detail.slice(0, 200)}` : ""}`,
+      );
     }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
@@ -433,7 +442,7 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
     /**
      * Generic structured call for sibling harnesses (the Bot harness drives
      * its own decision schema through this). Same auth, retry, timeout and
-     * usage accounting as every named stage — one client, many loops.
+     * usage accounting as every named stage - one client, many loops.
      */
     structured(stage, opts) {
       return call(stage, opts);
@@ -448,7 +457,7 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
         plan: Array.isArray(out.plan) ? out.plan.map(String).filter(Boolean) : [],
         successCondition: String(out.successCondition || "").trim(),
         doNot: Array.isArray(out.doNot) ? out.doNot.map(String).filter(Boolean) : [],
-        // null, not [] — replanTask has to tell "the model said nothing about
+        // null, not [] - replanTask has to tell "the model said nothing about
         // constraints" apart from "the model says none of them still apply",
         // and collapsing both to [] made dropping a constraint impossible.
         constraints: Array.isArray(out.constraints) ? out.constraints.map(String) : null,
@@ -460,14 +469,14 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
     },
 
     async decide({ system, user, imageUrl, signal, allowedActions = null }) {
-      // Raised with `narration`: the running commentary is a few dozen tokens
-      // per round, and a decision truncated mid-JSON is a lost round.
+      // Raised so a finish report can be a real write-up. Narration is only
+      // a few dozen tokens; a 1100-token cap cut findings off mid-section.
       const out = await call("decide", {
         system,
         user,
         imageUrl,
         schema: decisionSchemaFor(allowedActions),
-        maxTokens: 1100,
+        maxTokens: 4000,
         signal,
       });
       const kind = ["act", "finish", "ask_user", "replan"].includes(out.kind) ? out.kind : "act";
@@ -492,7 +501,7 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
 
     /**
      * Decide whether an ask needs the browser. Small, cheap and quick by
-     * design — it runs before a turn starts, so it must never be what the
+     * design - it runs before a turn starts, so it must never be what the
      * user waits on. The caller keeps its own answer for when this fails.
      */
     async route({ ask, liveUrl = "", pageTitle = "", recent = "", signal }) {
@@ -500,14 +509,14 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
         system: [
           "You decide where one request should run.",
           "",
-          'Answer "browser" when carrying it out means going somewhere, opening something, or acting in the user\'s own account: their files, mail, calendar, or any app state that is not already on the screen. Checking who a document is shared with is "browser" — sharing lives behind a dialog. So is anything asking to do something on a page.',
-          'Answer "chat" when the request can be answered from the page already on screen, from the conversation, or from ordinary knowledge — summarising what is visible, an opinion, a definition, a calculation.',
+          'Answer "browser" when carrying it out means going somewhere, opening something, or acting in the user\'s own account: their files, mail, calendar, or any app state that is not already on the screen. Checking who a document is shared with is "browser" - sharing lives behind a dialog. So is anything asking to do something on a page.',
+          'Answer "chat" when the request can be answered from the page already on screen, from the conversation, or from ordinary knowledge - summarising what is visible, an opinion, a definition, a calculation.',
           "",
           "The user is looking at a browser tab, and the assistant answering as \"chat\" cannot see anything except the current page's text. If carrying out the request needs one click, it is \"browser\".",
         ].join("\n"),
         user: [
           `REQUEST: ${String(ask || "").slice(0, 600)}`,
-          liveUrl ? `THE TAB IS ON: ${liveUrl}${pageTitle ? ` — "${pageTitle}"` : ""}` : "No tab is open.",
+          liveUrl ? `THE TAB IS ON: ${liveUrl}${pageTitle ? ` - "${pageTitle}"` : ""}` : "No tab is open.",
           recent ? `RECENT CONVERSATION:\n${recent.slice(0, 600)}` : "",
         ]
           .filter(Boolean)
@@ -524,7 +533,7 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
 
     /**
      * Pick the tool a Bot prompt should run on. Same contract as route():
-     * small, capped, and never what the user waits on — the caller keeps
+     * small, capped, and never what the user waits on - the caller keeps
      * its own answer (usually "just chat") for when this fails.
      */
     async botRoute({ ask, recent = "", localMode = false, signal }) {
@@ -532,18 +541,20 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
         system: [
           "You are a dispatcher. One message from a user to their AI teammate is in front of you, and your only job is to name the tool that carries it. You never answer the message yourself and you never refuse it.",
           "",
-          'The teammate really can do all of this. In particular it can open a real browser signed in to the user\'s own accounts and operate it — send mail, buy, book, post, fill and submit forms. Answering "browser" is exactly what makes that happen (the teammate asks the user\'s permission first). Never answer "chat" because a task seems beyond a chat assistant — whether something is possible is not your call.',
+          'The teammate really can do all of this. In particular it can open a real browser signed in to the user\'s own accounts and operate it - send mail, buy, book, post, fill and submit forms. Answering "browser" is exactly what makes that happen (the teammate starts the browser immediately). It can also set a standing routine it will run later. Never answer "chat" because a task seems beyond a chat assistant - whether something is possible is not your call.',
           "",
-          '"chat" — questions, opinions, explanations, WRITING or editing text (including drafting an email or message the user has not asked to send), math, brainstorming, advice, summaries of the conversation. A message that merely MENTIONS a website, app, or product is still chat.',
+          '"chat" - questions, opinions, explanations, WRITING or editing text (including drafting an email or message the user has not asked to send), math, brainstorming, advice, summaries of the conversation. A message that merely MENTIONS a website, app, or product is still chat.',
           '"image" only when the user asks to generate, draw, or design a picture: art, a logo, a photo, a visual.',
           '"build" only when the user asks to build a working deliverable: an app, website, page, game, or interactive tool.',
-          '"research" only when the user asks for a deep, sourced report or thorough investigation — not for a quick factual answer.',
+          '"research" only when the user asks for a deep, sourced report or thorough investigation - not for a quick factual answer.',
           localMode
             ? '"local" when the work happens on the user\'s own computer: their local files, folders, or installed apps.'
-            : 'Never answer "local" — that tool is switched off right now.',
-          '"browser" when carrying the request out means OPERATING a live website or the user\'s own online account: sending their mail, checking their inbox or calendar, buying, booking, or ordering something, filling in or submitting a form, posting or messaging somewhere, or reading data that exists only behind their login (their inbox, calendar, files, dashboards). Drafting an email is chat; SENDING one is browser — "ok now send it to him" after a draft is browser.',
+            : 'Never answer "local" - that tool is switched off right now.',
+          '"browser" when carrying the request out means OPERATING a live website or the user\'s own online account: sending their mail, checking their inbox or calendar, buying, booking, or ordering something, filling in or submitting a form, posting or messaging somewhere, or reading data that exists only behind their login (their inbox, calendar, files, dashboards). Drafting an email is chat; SENDING one is browser - "ok now send it to him" after a draft is browser.',
+          '"routine" when the user asks for standing or recurring work this teammate will do on its own later: "set a routine", "watch my email", "every weekday at 8 check…", "when a PDF lands in Downloads", "keep an eye on this page". Creating a routine records the work; it does not run it now. A one-off "check this now" is not routine.',
           "",
-          'A wrong "browser" interrupts the user with "want me to open the browser?", so when a message only MIGHT be an errand — thinking out loud, asking whether something is possible — prefer "chat". But a plain instruction to send, buy, book, post, or check something in their account is "browser", never "chat".',
+          'A wrong "browser" opens the real browser, so when a message only MIGHT be an errand - thinking out loud, asking whether something is possible - prefer "chat". But a plain instruction to send, buy, book, post, or check something in their account is "browser", never "chat".',
+          "This message is a NEW task. Prior assistant output is only for resolving pronouns (who \"him\" is, what \"that\" is). Never answer \"chat\" just because a similar result is already in the conversation. If they asked to do the work, or to do it again, name the tool that does it.",
         ].join("\n"),
         user: [
           `MESSAGE: ${String(ask || "").slice(0, 600)}`,
@@ -555,7 +566,7 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
         maxTokens: 120,
         signal,
       });
-      const tool = ["chat", "image", "build", "research", "local", "browser"].includes(out.tool)
+      const tool = ["chat", "image", "build", "research", "local", "browser", "routine"].includes(out.tool)
         ? out.tool
         : "chat";
       return {
@@ -591,7 +602,7 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
      * Its own route rather than another `stage`: the agent-model endpoint
      * speaks three JSON-schema dialects, this speaks the grounder's, and they
      * would share the middleware and nothing else. A 404 or 503 raises
-     * AgentModelUnavailableError so the caller can end the run loudly — a holo
+     * AgentModelUnavailableError so the caller can end the run loudly - a holo
      * run that quietly degraded to element refs would be worthless.
      *
      * @returns {Promise<{found:boolean, x?:number, y?:number, confidence:string, note:string}>}
@@ -635,7 +646,7 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
 }
 
 // Schemas are exported so the eval harness can drive the same contracts the
-// production agent uses — a harness that mirrors them by hand would silently
+// production agent uses - a harness that mirrors them by hand would silently
 // drift and make the comparison meaningless.
 module.exports = {
   createAgentModel,

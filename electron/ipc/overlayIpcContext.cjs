@@ -46,6 +46,7 @@ function bindOverlayIpcContext(d) {
   const closeAgentFinishedPopup = (...a) => d.closeAgentFinishedPopup(...a);
   const closeStudioBrowserSession = (...a) => d.closeStudioBrowserSession(...a);
   const commitAgentBrowserHistory = (...a) => d.commitAgentBrowserHistory(...a);
+  const concealBotBrowserTab = (...a) => d.concealBotBrowserTab(...a);
   const createMainWindow = (...a) => d.createMainWindow(...a);
   const describeBrowserTabProblem = (...a) => d.describeBrowserTabProblem(...a);
   const destroyAgentBrowserWindow = (...a) => d.destroyAgentBrowserWindow(...a);
@@ -146,6 +147,10 @@ function bindOverlayIpcContext(d) {
   const agentBrowserViews = d.agentBrowserViews;
   const agentBrowserMeta = d.agentBrowserMeta;
   const agentBrowserLabels = d.agentBrowserLabels;
+  const tabChatProjection = (...a) =>
+    d.tabChatProjection ? d.tabChatProjection(...a) : {};
+  const applyTabSourceChatId = (...a) => d.applyTabSourceChatId?.(...a);
+  const clearTabSourceChatIds = (...a) => d.clearTabSourceChatIds?.(...a);
   const {
     collectBrowserInteractables,
     collectBrowserPageContext,
@@ -226,6 +231,7 @@ function bindOverlayIpcContext(d) {
     closeAgentFinishedPopup,
     closeStudioBrowserSession,
     commitAgentBrowserHistory,
+    concealBotBrowserTab,
     createMainWindow,
     describeBrowserTabProblem,
     destroyAgentBrowserWindow,
@@ -326,6 +332,9 @@ function bindOverlayIpcContext(d) {
     agentBrowserViews,
     agentBrowserMeta,
     agentBrowserLabels,
+    tabChatProjection,
+    applyTabSourceChatId,
+    clearTabSourceChatIds,
     collectBrowserInteractables,
     collectBrowserPageContext,
     executeBrowserActions,

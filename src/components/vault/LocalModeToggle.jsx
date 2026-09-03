@@ -103,19 +103,20 @@ export default function LocalModeToggle({ variant = "pill" }) {
             <DialogDescription asChild>
               <div className="space-y-2 text-sm">
                 <p>
-                  Local mode lets LYKN work directly on this computer. When it is
-                  on, LYKN can:
+                  Local mode lets LYKN work directly on this computer, but only
+                  in folders you choose. When it is on, LYKN can:
                 </p>
                 <ul className="list-disc pl-5 space-y-1">
-                  <li>Read, search, and list files in your synced folders</li>
-                  <li>Create and edit files</li>
-                  <li>Run terminal commands</li>
+                  <li>Read, search, and list files in the folders you approve</li>
+                  <li>Create and edit files in those folders</li>
+                  <li>Run terminal commands with those folders as the working directory</li>
                 </ul>
                 <p className="text-black/60 dark:text-white/60">
-                  Files stay on this Mac. LYKN asks before it looks through your
-                  files, and asks again for every action that writes, deletes, or
-                  could change your system. You choose which folders it can see,
-                  and can turn Local mode off anytime from this switch.
+                  Enabling Local mode does not share your whole home folder.
+                  After you turn it on, pick the folders LYKN may use. You can
+                  share the whole home folder later if you want. Files stay on
+                  this Mac. Consequential commands (delete-like, download, clone)
+                  still ask first. You can turn Local mode off anytime.
                 </p>
               </div>
             </DialogDescription>
@@ -130,7 +131,10 @@ export default function LocalModeToggle({ variant = "pill" }) {
             </button>
             <button
               type="button"
-              onClick={sync.confirmEnable}
+              onClick={async () => {
+                await sync.confirmEnable();
+                setFoldersOpen(true);
+              }}
               className="rounded-lg px-3 py-1.5 text-sm font-medium bg-black text-white dark:bg-white dark:text-black hover:opacity-90 transition-opacity"
             >
               Enable Local mode
@@ -170,7 +174,7 @@ export default function LocalModeToggle({ variant = "pill" }) {
                   <div className="space-y-1.5">
                     {sync.empty && (
                       <p className="text-xs text-black/50 dark:text-white/50 px-1">
-                        No folders synced yet — LYKN can't see any files.
+                        No folders synced yet. LYKN can't see any files.
                       </p>
                     )}
                     {sync.folders.map((folder) => (

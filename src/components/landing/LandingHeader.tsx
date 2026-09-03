@@ -1,63 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChevronDown, Menu, X } from "lucide-react";
-import lyknLogo from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-BLUE-web.png";
-import lyknLogoWhite from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-NEUTRAL-web.png";
+import lyknLogoMark from "@/assets/FINAL/LYKN-LOGO-B-Open/SVG/LYKN-Logo-Primary-B-Open-BLACK.svg";
 import { desktopHotkeyLabel } from "@/lib/desktopHotkey";
 
-const DEMO_VIDEO_SRC = "/videos/lykn-demo.mp4";
 const HOTKEY = desktopHotkeyLabel();
 
-/** Fullscreen lightbox playing the product demo. Closes on ✕, backdrop
-    click, or Escape. */
-function DemoLightbox({ onClose }: { onClose: () => void }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    // Freeze the page behind the lightbox while it's open.
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prev;
-    };
-  }, [onClose]);
-
-  return (
-    <div
-      className="lkn-demo-lightbox"
-      role="dialog"
-      aria-modal="true"
-      aria-label="LYKN demo video"
-      onClick={onClose}
-    >
-      <div className="lkn-demo-frame" onClick={(e) => e.stopPropagation()}>
-        <button
-          type="button"
-          className="lkn-demo-close"
-          onClick={onClose}
-          aria-label="Close demo"
-        >
-          ✕
-        </button>
-        <video src={DEMO_VIDEO_SRC} controls autoPlay playsInline />
-      </div>
-    </div>
-  );
-}
-
 interface LandingHeaderProps {
-  /** When false the header is transparent and shows the white logo (used over
-      the Glass hero before the user scrolls). Defaults to the solid state. */
+  /** Kept for callers. The header is always the floating wordmark + links. */
   scrolled?: boolean;
   /** Optional override for the logo / brand click (defaults to navigating home). */
   onBrandClick?: () => void;
 }
 
-/** Entries in the Product dropdown — each capability's product page. */
-const PRODUCT_ITEMS = [
+/** Entries in the Features dropdown — every capability with a product page. */
+const FEATURE_ITEMS = [
   {
     id: "chat",
     name: "Chat",
@@ -95,10 +52,22 @@ const PRODUCT_ITEMS = [
     to: "/product/browser",
   },
   {
-    id: "drive",
-    name: "Drive",
-    desc: "Your vault — every file, note, and artifact in one place.",
-    to: "/product/drive",
+    id: "agents",
+    name: "Agents",
+    desc: "AI teammates for inbox, research, and routines.",
+    to: "/product/agents",
+  },
+  {
+    id: "sync",
+    name: "Sync with Mac",
+    desc: "Your Desktop, files, and wallpaper inside LYKN.",
+    to: "/product/sync",
+  },
+  {
+    id: "desktop",
+    name: "Desktop",
+    desc: "The Mac app - Home, chat, and your files already in sync.",
+    to: "/product/desktop",
   },
   {
     id: "glass",
@@ -116,12 +85,19 @@ export default function LandingHeader({
   onBrandClick,
 }: LandingHeaderProps) {
   const navigate = useNavigate();
-  const [demoOpen, setDemoOpen] = useState(false);
-  const [prodOpen, setProdOpen] = useState(false);
+  const [featOpen, setFeatOpen] = useState(false);
   // Slide-down menu behind the hamburger on phones (the inline nav is hidden
-  // there — see the .lkn-menu-btn / .lkn-mobile-menu rules in index.css).
+  // there — see the .lkn-menu-btn / .lkn-mobile-menu rules in landing.css).
   const [menuOpen, setMenuOpen] = useState(false);
-  const prodRef = useRef<HTMLDivElement>(null);
+  const featRef = useRef<HTMLDivElement>(null);
+  const brandRef = useRef<HTMLButtonElement>(null);
+  const navRef = useRef<HTMLElement>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+  const [onDark, setOnDark] = useState({
+    brand: false,
+    nav: false,
+    end: false,
+  });
   const goToSignup = () => navigate("/download");
   const goHome = () => navigate("/");
 
@@ -149,33 +125,114 @@ export default function LandingHeader({
   // Hover open/close with a short grace period on leave, so the menu stays
   // put while the cursor travels down into it (or briefly strays off it)
   // instead of vanishing the moment the pointer leaves the trigger.
-  const prodCloseTimer = useRef<number | null>(null);
-  const cancelProdClose = () => {
-    if (prodCloseTimer.current !== null) {
-      window.clearTimeout(prodCloseTimer.current);
-      prodCloseTimer.current = null;
+  const featCloseTimer = useRef<number | null>(null);
+  const cancelFeatClose = () => {
+    if (featCloseTimer.current !== null) {
+      window.clearTimeout(featCloseTimer.current);
+      featCloseTimer.current = null;
     }
   };
-  const openProd = () => {
-    cancelProdClose();
-    setProdOpen(true);
+  const openFeat = () => {
+    cancelFeatClose();
+    setFeatOpen(true);
   };
-  const scheduleProdClose = () => {
-    cancelProdClose();
-    prodCloseTimer.current = window.setTimeout(() => setProdOpen(false), 220);
+  const scheduleFeatClose = () => {
+    cancelFeatClose();
+    featCloseTimer.current = window.setTimeout(() => setFeatOpen(false), 220);
   };
-  useEffect(() => cancelProdClose, []);
+  useEffect(() => cancelFeatClose, []);
 
-  // Close the Product dropdown on any outside click or Escape.
+  // White chrome only where that chunk of the bar sits on a dark surface.
+  // Logo, middle links, and Download are probed separately so a dark stage
+  // under the center of the hero does not bleach the wordmark on the light left.
   useEffect(() => {
-    if (!prodOpen) return;
+    let frame = 0;
+    const SKIP = ".lkn-header, .gl-top-blur";
+    const pointHitsDark = (x: number, y: number) => {
+      if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) {
+        return false;
+      }
+      const stack = document.elementsFromPoint(x, y);
+      for (const node of stack) {
+        if (!(node instanceof Element)) continue;
+        if (node.closest(SKIP)) continue;
+        const dark = node.closest("[data-header-tone='dark']");
+        if (!dark) return false;
+        // Slideshow wallpaper is masked off at the top while the section
+        // is still sliding in; don't bleach the nav over that mist band.
+        const pin = dark.closest(".ls-pin");
+        if (pin instanceof HTMLElement) {
+          const merge = Number.parseFloat(
+            pin.style.getPropertyValue("--ls-merge") || "0",
+          );
+          if (Number.isFinite(merge) && merge > 0.12) return false;
+        }
+        return true;
+      }
+      return false;
+    };
+    const regionHitsDark = (el: HTMLElement | null) => {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return false;
+      const y = r.top + r.height / 2;
+      const xs = [
+        r.left + Math.min(8, r.width / 2),
+        r.left + r.width * 0.35,
+        r.left + r.width * 0.5,
+        r.right - Math.min(8, r.width / 2),
+      ];
+      return xs.some((x) => pointHitsDark(x, y));
+    };
+    const probe = () => {
+      frame = 0;
+      const next = {
+        brand: regionHitsDark(brandRef.current),
+        nav: regionHitsDark(navRef.current),
+        end: regionHitsDark(endRef.current),
+      };
+      setOnDark((prev) =>
+        prev.brand === next.brand &&
+        prev.nav === next.nav &&
+        prev.end === next.end
+          ? prev
+          : next,
+      );
+    };
+    const onScroll = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(probe);
+    };
+    probe();
+    const boot = window.setTimeout(probe, 900);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    const mo = new MutationObserver(onScroll);
+    mo.observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["data-header-tone"],
+    });
+    return () => {
+      window.clearTimeout(boot);
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      mo.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, []);
+
+  // Close the Features dropdown on any outside click or Escape.
+  useEffect(() => {
+    if (!featOpen) return;
     const onDown = (e: MouseEvent) => {
-      if (prodRef.current && !prodRef.current.contains(e.target as Node)) {
-        setProdOpen(false);
+      if (featRef.current && !featRef.current.contains(e.target as Node)) {
+        setFeatOpen(false);
       }
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setProdOpen(false);
+      if (e.key === "Escape") setFeatOpen(false);
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
@@ -183,74 +240,63 @@ export default function LandingHeader({
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [prodOpen]);
+  }, [featOpen]);
 
-  const goToProduct = (item: (typeof PRODUCT_ITEMS)[number]) => {
-    setProdOpen(false);
-    if (item.to) {
-      navigate(item.to);
-      return;
-    }
-    // LYKN Glass lives as a section on the landing page (#about). Scroll to
-    // it in place when we're already there, otherwise go home first.
-    const el = document.getElementById("about");
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
-    } else {
-      navigate("/");
-      setTimeout(() => {
-        document
-          .getElementById("about")
-          ?.scrollIntoView({ behavior: "smooth", block: "start" });
-      }, 350);
-    }
+  const goToFeature = (item: (typeof FEATURE_ITEMS)[number]) => {
+    setFeatOpen(false);
+    navigate(item.to);
   };
 
   return (
-    <header className={`lkn-header ${scrolled ? "is-scrolled" : ""}`}>
+    <header
+      className={`lkn-header${scrolled ? " is-scrolled" : ""}${
+        onDark.brand ? " is-brand-dark" : ""
+      }${onDark.nav ? " is-nav-dark" : ""}${onDark.end ? " is-end-dark" : ""}`}
+    >
       <div className="lkn-header-inner">
         <button
           type="button"
+          ref={brandRef}
           className="lkn-brand"
           onClick={onBrandClick ?? goHome}
           aria-label="LYKN home"
         >
-          <img
-            src={scrolled ? lyknLogo : lyknLogoWhite}
-            alt="LYKN"
+          <span
             className="lkn-brand-logo"
+            style={{ ["--lkn-wordmark" as string]: `url("${lyknLogoMark}")` }}
+            aria-hidden="true"
           />
         </button>
 
-        <nav className="lkn-nav" aria-label="Primary">
+        <nav className="lkn-nav" ref={navRef} aria-label="Primary">
           <div
             className="lkn-prod"
-            ref={prodRef}
-            onMouseEnter={openProd}
-            onMouseLeave={scheduleProdClose}
+            ref={featRef}
+            onMouseEnter={openFeat}
+            onMouseLeave={scheduleFeatClose}
           >
             <button
               type="button"
               className="lkn-nav-link lkn-prod-trigger"
               aria-haspopup="true"
-              aria-expanded={prodOpen}
-              onClick={() => setProdOpen((o) => !o)}
+              aria-expanded={featOpen}
+              onClick={() => setFeatOpen((o) => !o)}
             >
-              Product
+              Features
               <ChevronDown
-                className={`lkn-prod-chev${prodOpen ? " is-open" : ""}`}
+                className={`lkn-prod-chev${featOpen ? " is-open" : ""}`}
                 aria-hidden="true"
               />
             </button>
-            {prodOpen && (
-              <div className="lkn-prod-menu" role="menu" aria-label="Product">
-                {PRODUCT_ITEMS.map((item) => (
+            {featOpen && (
+              <div className="lkn-prod-menu" role="menu" aria-label="Features">
+                {FEATURE_ITEMS.map((item) => (
                   <button
                     key={item.id}
                     type="button"
                     role="menuitem"
                     className="lkn-prod-item"
-                    onClick={() => goToProduct(item)}
+                    onClick={() => goToFeature(item)}
                   >
                     <span className="lkn-prod-name">{item.name}</span>
                     <span className="lkn-prod-desc">{item.desc}</span>
@@ -262,54 +308,47 @@ export default function LandingHeader({
           <button type="button" className="lkn-nav-link" onClick={() => navigate("/pricing")}>
             Pricing
           </button>
-          <button type="button" className="lkn-nav-link" onClick={() => navigate("/templates")}>
-            Templates
+          <button type="button" className="lkn-nav-link" onClick={() => navigate("/security")}>
+            Security
           </button>
           <button type="button" className="lkn-nav-link" onClick={() => navigate("/news")}>
             News
           </button>
-          <button type="button" className="lkn-nav-link" onClick={() => navigate("/download")}>
-            Download
-          </button>
+        </nav>
+
+        <div className="lkn-header-end" ref={endRef}>
           <div className="lkn-nav-auth">
-            <button
-              type="button"
-              className="lkn-nav-signin"
-              onClick={() => setDemoOpen(true)}
-            >
-              Watch Demo
-            </button>
             <button type="button" className="lkn-nav-signup" onClick={goToSignup}>
               Download
             </button>
           </div>
-        </nav>
 
-        {/* Hamburger — only rendered visible on phones (CSS), where the inline
-            nav above is hidden. */}
-        <button
-          type="button"
-          className="lkn-menu-btn"
-          aria-label={menuOpen ? "Close menu" : "Open menu"}
-          aria-expanded={menuOpen}
-          onClick={() => setMenuOpen((o) => !o)}
-        >
-          {menuOpen ? <X aria-hidden="true" /> : <Menu aria-hidden="true" />}
-        </button>
+          {/* Hamburger — only rendered visible on phones (CSS), where the inline
+              nav above is hidden. */}
+          <button
+            type="button"
+            className="lkn-menu-btn"
+            aria-label={menuOpen ? "Close menu" : "Open menu"}
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((o) => !o)}
+          >
+            {menuOpen ? <X aria-hidden="true" /> : <Menu aria-hidden="true" />}
+          </button>
+        </div>
       </div>
 
-      {/* Slide-down mobile menu: product entries, the page links, and the
-          two CTAs, all full-width for thumbs. */}
+      {/* Slide-down mobile menu: feature entries, the page links, and the
+          Download pill, all full-width for thumbs. */}
       {menuOpen && (
         <nav className="lkn-mobile-menu" aria-label="Primary">
           <div className="lkn-mobile-group">
-            <span className="lkn-mobile-label">Product</span>
-            {PRODUCT_ITEMS.map((item) => (
+            <span className="lkn-mobile-label">Features</span>
+            {FEATURE_ITEMS.map((item) => (
               <button
                 key={item.id}
                 type="button"
                 className="lkn-mobile-link"
-                onClick={() => menuGo(() => goToProduct(item))}
+                onClick={() => menuGo(() => goToFeature(item))}
               >
                 <span className="lkn-mobile-link-name">{item.name}</span>
                 <span className="lkn-mobile-link-desc">{item.desc}</span>
@@ -327,9 +366,9 @@ export default function LandingHeader({
             <button
               type="button"
               className="lkn-mobile-link"
-              onClick={() => menuGo(() => navigate("/templates"))}
+              onClick={() => menuGo(() => navigate("/security"))}
             >
-              <span className="lkn-mobile-link-name">Templates</span>
+              <span className="lkn-mobile-link-name">Security</span>
             </button>
             <button
               type="button"
@@ -338,22 +377,8 @@ export default function LandingHeader({
             >
               <span className="lkn-mobile-link-name">News</span>
             </button>
-            <button
-              type="button"
-              className="lkn-mobile-link"
-              onClick={() => menuGo(() => navigate("/download"))}
-            >
-              <span className="lkn-mobile-link-name">Download</span>
-            </button>
           </div>
           <div className="lkn-mobile-ctas">
-            <button
-              type="button"
-              className="lkn-nav-signin"
-              onClick={() => menuGo(() => setDemoOpen(true))}
-            >
-              Watch Demo
-            </button>
             <button
               type="button"
               className="lkn-nav-signup"
@@ -364,8 +389,6 @@ export default function LandingHeader({
           </div>
         </nav>
       )}
-
-      {demoOpen && <DemoLightbox onClose={() => setDemoOpen(false)} />}
     </header>
   );
 }

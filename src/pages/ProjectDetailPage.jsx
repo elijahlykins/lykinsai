@@ -1597,7 +1597,7 @@ export default function ProjectDetailPage({ windowed = false }) {
               type="button"
               disabled={busy}
               onClick={handleToggleStatus}
-              title={isActive ? "Archive — hides it from AI context" : "Reactivate this project"}
+              title={isActive ? "Archive, hides it from AI context" : "Reactivate this project"}
               className={actionBtn(false)}
             >
               {isActive ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}

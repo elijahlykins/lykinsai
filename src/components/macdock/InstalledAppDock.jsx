@@ -120,7 +120,7 @@ export default function InstalledAppDock({
                     e.preventDefault();
                     setMenuFor((id) => (id === app.id ? null : app.id));
                   }}
-                  title={app.description ? `${app.name} — ${app.description}` : app.name}
+                  title={app.description ? `${app.name} - ${app.description}` : app.name}
                   aria-label={`Open ${app.name}`}
                   className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full text-white/80 transition-colors hover:bg-white/15 hover:text-white"
                 >

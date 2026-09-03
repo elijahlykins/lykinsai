@@ -13,14 +13,14 @@ Procedure:
    quantity, deadline).
 2. Extract preferences separately from requirements.
 3. Search appropriate websites.
-4. Evaluate multiple relevant products — never assume the first or sponsored
+4. Evaluate multiple relevant products - never assume the first or sponsored
    result is best.
 5. Compare the attributes that matter: price, shipping, availability, rating,
    review count, specifications, seller, return policy.
 6. Eliminate anything violating a hard requirement, then rank by preferences.
 7. Present or select the best result based on the user's actual constraints.
 
-Before completing a purchase (consequential — requires approval):
+Before completing a purchase (consequential - requires approval):
 
 - Verify the exact product and variation (size, color, model).
 - Verify quantity.

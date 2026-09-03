@@ -119,11 +119,19 @@ test("pictures go to Image Gen and everything else to Artifacts", () => {
       title: "A cabin at dusk",
       content: withAttachments([{ name: "cabin.png", type: "image" }]),
     }),
+    row({
+      id: "n8",
+      source: "ai_artifact",
+      tags: ["generated", "document"],
+      title: "Cover Letter",
+      content: withAttachments([{ name: "Cover-Letter.html", type: "html" }]),
+    }),
   ]);
 
   assert.deepEqual(items, [
     { id: "n1", name: "Sales Dashboard.html", folder: "artifacts" },
     { id: "n2", name: "cabin.png", folder: "images" },
+    { id: "n8", name: "Cover-Letter.html", folder: "docs" },
   ]);
 });
 

@@ -17,7 +17,6 @@
 // lykn_pushProjectState surfaces so each tool has one job):
 //   • Mark a project active (setActiveProject)
 //   • Push working memory kv-state (pushProjectState)
-//   • Mutate clustered neurons (addProjectNeurons / removeProjectNeurons)
 //   • Delete the project (deleteProject)
 //
 // Strict on project_id: bad/foreign id is a hard `project_not_found`
@@ -25,6 +24,7 @@
 // lykn_listProjects first to pick the right id.
 
 import { jsonContent, errorContent } from './index.js';
+import { getUserRowById, updateUserRowById, userOwnedTable } from '../lib/security/userOwnedAccess.js';
 
 const NAME_MAX = 120;
 const DESC_MAX = 320;
@@ -57,8 +57,8 @@ export const updateProjectTool = {
     'merge into the existing project via lykn_setActiveProject.',
     '',
     'Archive (status="archived") hides the project from the default',
-    'lykn_listProjects view but does NOT delete its state or clustered',
-    'neurons. Re-activate by calling this tool with status="active",',
+    'lykn_listProjects view but does NOT delete its working memory.',
+    'Re-activate by calling this tool with status="active",',
     'or simply call lykn_setActiveProject({ project_id }) which auto-',
     'reactivates archived projects when resumed.',
     '',
@@ -110,12 +110,13 @@ export const updateProjectTool = {
       );
     }
 
-    const { data: existing, error: findErr } = await ctx.supabaseAdmin
-      .from('lykn_projects')
-      .select('id, name, description, status, created_by_client, created_at, last_active_at')
-      .eq('user_id', ctx.userId)
-      .eq('id', projectId)
-      .maybeSingle();
+    const { data: existing, error: findErr } = await getUserRowById(
+      ctx.supabaseAdmin,
+      'lykn_projects',
+      ctx.userId,
+      projectId,
+      'id, name, description, status, created_by_client, created_at, last_active_at',
+    );
     if (findErr) {
       return errorContent(`project lookup failed: ${findErr.message}`);
     }
@@ -138,10 +139,8 @@ export const updateProjectTool = {
       // The unique constraint would surface this as a 23505 anyway, but
       // we'd rather give the model a structured error it can reason
       // about than a Postgres error string.
-      const { data: collision } = await ctx.supabaseAdmin
-        .from('lykn_projects')
+      const { data: collision } = await userOwnedTable(ctx.supabaseAdmin, 'lykn_projects', ctx.userId)
         .select('id, name')
-        .eq('user_id', ctx.userId)
         .eq('name_key', newKey)
         .neq('id', projectId)
         .maybeSingle();
@@ -168,15 +167,23 @@ export const updateProjectTool = {
       patch.status = args.status;
     }
 
-    const { data: updated, error: updErr } = await ctx.supabaseAdmin
-      .from('lykn_projects')
-      .update(patch)
-      .eq('id', projectId)
-      .eq('user_id', ctx.userId)
-      .select('id, name, description, status, created_by_client, created_at, last_active_at')
-      .single();
+    const { data: updated, error: updErr } = await updateUserRowById(
+      ctx.supabaseAdmin,
+      'lykn_projects',
+      ctx.userId,
+      projectId,
+      patch,
+      'id, name, description, status, created_by_client, created_at, last_active_at',
+    );
     if (updErr) {
       return errorContent(`project update failed: ${updErr.message}`);
+    }
+    if (!updated) {
+      return jsonContent({
+        ok: false,
+        reason: 'project_not_found',
+        message: 'That project_id is not in the user\'s project list. Call lykn_listProjects to discover the right id.',
+      });
     }
 
     const changes = [];

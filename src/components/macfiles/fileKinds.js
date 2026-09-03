@@ -33,8 +33,9 @@ const RULES = [
   { re: /^(xls|xlsx|numbers|csv|tsv|ods)$/, icon: FileSpreadsheet, label: "Spreadsheet" },
   { re: /^(ppt|pptx|key|odp)$/, icon: Presentation, label: "Presentation" },
   { re: /^(zip|tar|gz|tgz|bz2|xz|rar|7z|dmg|iso)$/, icon: Archive, label: "Archive" },
+  { re: /^(html|htm)$/, icon: FileText, label: "Web Page" },
   {
-    re: /^(js|jsx|ts|tsx|py|rb|go|rs|java|c|h|cpp|cs|swift|kt|php|sh|zsh|sql|html|css|scss|json|yaml|yml|toml|xml)$/,
+    re: /^(js|jsx|ts|tsx|py|rb|go|rs|java|c|h|cpp|cs|swift|kt|php|sh|zsh|sql|css|scss|json|yaml|yml|toml|xml)$/,
     icon: Code2,
     label: "Code",
   },

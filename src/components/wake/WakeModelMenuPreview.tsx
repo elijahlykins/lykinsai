@@ -46,7 +46,7 @@ export default function WakeModelMenuPreview({
       aria-hidden
       className={`${lightMode ? PANEL_CLS_LIGHT : PANEL_CLS} w-[15rem] max-h-[16rem] overflow-hidden ${lightMode ? "text-black" : "text-white"}`}
     >
-      {MODEL_GROUPS.map((group, gi) => (
+      {MODEL_GROUPS.filter((group) => group.id === "lykn" || group.id === "frontier").map((group, gi) => (
         <React.Fragment key={group.id}>
           {gi > 0 && <div className={`-mx-1 my-1 h-px ${dividerCls}`} />}
           <div>

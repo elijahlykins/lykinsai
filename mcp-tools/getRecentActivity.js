@@ -7,8 +7,7 @@
 // uniform stream:
 //   { kind, node_id, label, at, status? }
 //
-// node_id is in the same format lykn_loadNeuron accepts, so the
-// model can drill into any item directly.
+// node_id is a vault_<uuid> when the row is a vault item.
 
 import { jsonContent, errorContent } from './index.js';
 
@@ -36,8 +35,7 @@ export const getRecentActivityTool = {
     '',
     'USE AT THE START OF A SESSION to catch up on what the user has',
     'been working with lately — the cheapest way to load the same',
-    'priors they have in their head. Pair with loadNeuron to dig into',
-    'any specific item.',
+    'priors they have in their head.',
     '',
     'INPUTS:',
     '  • days — lookback window, 1-90, default 7.',
@@ -45,8 +43,7 @@ export const getRecentActivityTool = {
     '    [vault, project]. Defaults to both.',
     '  • limit — total cap on returned rows, 1-60, default 60.',
     '',
-    'Each item: { kind, node_id, label, at, status? }. `node_id` is in',
-    'lykn_loadNeuron-acceptable format for direct hydration.',
+    'Each item: { kind, node_id, label, at, status? }.',
     '',
     'CHEAP — two indexed range scans. Safe to call once per session.',
   ].join('\n'),

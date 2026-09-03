@@ -36,10 +36,23 @@ function createStreamChatHost(host) {
     if (!token) {
       throw new Error("Sign in to LYKN first. Open the main LYKN window and log in, then try again.");
     }
+    const questionsOnly = !!opts.questionsOnly;
+    const isLive = () =>
+      questionsOnly ? gen === agent.askGeneration : gen === agent.generation;
     // browse-summary must not reuse prior "please sign in" turns — they override the scrape.
-    const history = skill === "browse-summary" ? [] : agent.history.slice(-12);
+    // Browser-rail questions use their own thread so Bot work never mixes in.
+    const history = questionsOnly
+      ? (Array.isArray(agent.askHistory) ? agent.askHistory : []).slice(-12)
+      : skill === "browse-summary"
+        ? []
+        : agent.history.slice(-12);
     const textLimit =
-      skill === "browse-summary" || skill === "build" || skill === "report-edit" ? 14000 : 4000;
+      skill === "browse-summary" ||
+      skill === "build" ||
+      skill === "report-edit" ||
+      skill === "research"
+        ? 14000
+        : 4000;
     let effectiveText = String(text || "");
 
     // Live page awareness. Conversational turns always get the open page as
@@ -69,7 +82,8 @@ function createStreamChatHost(host) {
       !(skill === "build" && (agent.lastArtifact?.code || agent.lastResearchReport));
     // Headless agents (Bots) must not read the user's open page — they aren't
     // connected to the browser, so their answers come from the conversation.
-    if ((skill === "general" || screenSourced || livePageDefault) && !agent.headless) {
+    // Browser-rail questions still ground on the tab even when a Bot owns it.
+    if ((skill === "general" || screenSourced || livePageDefault) && (!agent.headless || questionsOnly)) {
       try {
         const wc = resolvePageContextWebContents(agent);
         if (wc && !wc.isDestroyed?.()) {
@@ -241,7 +255,7 @@ function createStreamChatHost(host) {
       }
     }
     const botSoftChatPrompt =
-      softChat && agent.headless && agent.botProfile
+      !questionsOnly && softChat && agent.headless && agent.botProfile
         ? [
             `You are ${agent.botProfile.name || "the user's Bot"}${
               agent.botProfile.role ? `, their ${agent.botProfile.role}` : ""
@@ -249,7 +263,8 @@ function createStreamChatHost(host) {
             agent.botProfile.persona
               ? `Working style the user gave you:\n${agent.botProfile.persona}`
               : "",
-            "Stay in this Bot identity. Have a normal, concise conversation.",
+            "Stay in this Bot identity. Do not introduce yourself unless they ask who you are.",
+            "Small talk and one-fact answers stay short. A write-up, briefing, comparison, or anything they will keep is a formatted markdown report: title, short summary, headed sections, lists or a table, sources when you have them. Longer is better than a teaser.",
             "Do not call tools, invent a plan, or announce work for this reply-only turn.",
             "Never silently broaden the user's request or offer unrelated follow-up work.",
             `User: ${clipped}`,
@@ -257,8 +272,21 @@ function createStreamChatHost(host) {
             .filter(Boolean)
             .join("\n\n")
         : "";
+    const botPolicy = agent.botProfile?.modelPolicy || { mode: "lykn" };
+    const requestedModel = botPolicy.mode === "my_setup"
+      ? "lykn-setup"
+      : botPolicy.mode === "model" && botPolicy.modelId
+        ? botPolicy.modelId
+        : "lykn";
     const body = {
-      model: "lykn",
+      model: requestedModel,
+      modelPolicy: {
+        mode: botPolicy.mode || "lykn",
+        routeId: botPolicy.routeId || null,
+        modelId: botPolicy.modelId || null,
+        botId: agent.botProfile?.id || null,
+      },
+      botId: agent.botProfile?.id || null,
       intent: "ask",
       text: clipped,
       prompt: toolDraft
@@ -286,6 +314,8 @@ function createStreamChatHost(host) {
               (mainLinkedBrowserId
                 ? `Currently watching browser/tab for sub-agent id ${mainLinkedBrowserId.slice(0, 8)}.\n`
                 : `No browser linked yet — the user can click a sub-agent browser tab while chatting with you.\n`) +
+              `You are the chief of staff. Do the work yourself when you already can, especially a folder or file listing they attached, or "what's in this". ` +
+              `Delegate only specialist work you cannot finish (implement / refactor / debug a codebase, or a long browser/tab loop).\n` +
               `When the user wants work done in a browser/tab, DELEGATE to that sub-agent. Do not pretend you browsed yourself.\n` +
               `When they want an EXISTING research report put into an open Google Sheet, that is a combine action ` +
               `(has_report + sheets on the roster) — never start a new research crawl for that.\n` +
@@ -300,9 +330,18 @@ function createStreamChatHost(host) {
               `Never stay silent after delegating.\n` +
               `You are ALREADY in Agent Mode — never tell them to switch modes.\n\n` +
               `User: ${clipped}`
+            : questionsOnly
+              ? `You are LYKN answering a question in the browser sidebar.\n` +
+                `Answer the question. Do not operate the page, click, navigate, fill forms, send mail, or start a task.\n` +
+                `When [PAGE CONTENT] / FULL PAGE TEXT is in the prompt, that IS the open tab — answer from it.\n` +
+                `Never say you don't have the page or need a screenshot when PAGE CONTENT is present.\n` +
+                `If they asked you to do something on the web rather than answer a question, say you can talk about what's on screen, and that a Bot can do the work.\n` +
+                `Do NOT invent a working plan, call tools, or include “Want me to…” follow-up questions.\n\n` +
+                `User: ${clipped}`
             : softChat
               ? botSoftChatPrompt ||
                 (`You are LYKN — a sharp, friendly teammate chatting in the browser sidebar. ` +
+                `Do not introduce yourself unless they ask who you are. Just answer.\n` +
                 `You are also a real browser agent: when the user asks, you can open sites, click, type, fill forms, ` +
                 `and complete multi-step tasks in their tabs — but only when they ask for work, never during chat.\n` +
                 `Have a normal conversation. When [PAGE CONTENT] / FULL PAGE TEXT is in the prompt, that IS what is on their screen — ` +
@@ -399,7 +438,15 @@ function createStreamChatHost(host) {
                 composerMode: "create:webapp",
                 forceArtifact: true,
                 artifactType: "webapp",
-                skipWebSearch: true,
+                // Sighted fresh builds skip search — their content comes from
+                // the conversation or the open page. A headless Bot build has
+                // no page and may be the task's ONLY pass over the topic
+                // ("research X and turn it into a deck" is one build call, no
+                // report first), so it must be allowed to ground itself; the
+                // server's enrichment classifier still decides whether this
+                // brief actually needs the web. A report already produced
+                // this task IS the content — keep search off then.
+                skipWebSearch: !agent.headless || !!agent.lastResearchReport,
                 forceWebSearch: false,
                 deepResearch: false,
               }
@@ -467,8 +514,12 @@ function createStreamChatHost(host) {
     }
 
     const send = (channel, payload) => {
-      if (gen !== agent.generation) return;
-      sendToAgentChannels(agent.id, channel, payload);
+      if (!isLive()) return;
+      sendToAgentChannels(
+        agent.id,
+        channel,
+        questionsOnly ? { ...(payload || {}), ask: true } : payload,
+      );
     };
 
     emitProgress(agent.id, {
@@ -484,6 +535,7 @@ function createStreamChatHost(host) {
                 ? "Editing image…"
                 : "Thinking…",
       skill,
+      ...(questionsOnly ? { ask: true } : {}),
     });
     send("lykn:agent-status", {
       status:
@@ -520,13 +572,21 @@ function createStreamChatHost(host) {
         if (skill === "browse-summary" || skill === "browse" || skill === "general") {
           text = stripInlineWantMeSuggestions(text);
         }
-        agent.partialText = text;
+        if (questionsOnly) {
+          agent.askPartialText = text;
+          agent.askStep =
+            text.length > 80
+              ? `Writing… (${text.length.toLocaleString()} chars)`
+              : "Thinking…";
+        } else {
+          agent.partialText = text;
+        }
         const n = text.length;
         const status =
           n > 80
             ? `Writing output… (${n.toLocaleString()} chars)`
-            : String(agent.step || "Working…").trim() || "Working…";
-        agent.step = status;
+            : String((questionsOnly ? agent.askStep : agent.step) || "Working…").trim() || "Working…";
+        if (!questionsOnly) agent.step = status;
         send("lykn:agent-status", { status });
         send("lykn:agent-delta", {
           text,
@@ -536,7 +596,10 @@ function createStreamChatHost(host) {
         });
       } else if (channel === "lykn:answer-status") {
         const status = String(payload?.status || "").trim();
-        if (status) agent.step = status;
+        if (status) {
+          if (questionsOnly) agent.askStep = status;
+          else agent.step = status;
+        }
         send("lykn:agent-status", payload);
       } else if (channel === "lykn:answer-sources") send("lykn:agent-sources", payload);
       else if (channel === "lykn:answer-error") send("lykn:agent-error", payload);
@@ -573,7 +636,7 @@ function createStreamChatHost(host) {
       agentMode: true,
       agentId: agent.id,
       onAgentDeliverable: (d) => {
-        if (gen !== agent.generation || !d) return;
+        if (!isLive() || !d) return;
         if (d.kind === "artifact" && d.code) {
           agent.lastArtifact = {
             toolName: d.toolName || "lykn_build_react_artifact",
@@ -588,7 +651,7 @@ function createStreamChatHost(host) {
         }
       },
     });
-    if (gen !== agent.generation) return "";
+    if (!isLive()) return "";
     return stripInlineWantMeSuggestions(accumulated);
   }
 

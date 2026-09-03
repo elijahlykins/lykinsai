@@ -11,7 +11,7 @@ export default function LoadingScreen({ isLoading, children }: LoadingScreenProp
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--app-background,#ececeb)]">
-      <LyknLogoRevealLoader size={88} className="text-[#1a4ee2] dark:text-white" />
+      <LyknLogoRevealLoader size={88} className="text-[#0968c4] dark:text-white" />
     </div>
   );
 }

@@ -1,10 +1,10 @@
 /**
- * The Bot harness — one loop for every task a LYKN Bot runs, with or without
+ * The Bot harness - one loop for every task a LYKN Bot runs, with or without
  * the browser.
  *
  * Shape:
  *   decide (structured JSON against BOT_DECISION_SCHEMA)
- *     → use_tool: progressive disclosure — first selection of a tool loads
+ *     → use_tool: progressive disclosure - first selection of a tool loads
  *       its full doc instead of running; with the doc in context the call
  *       executes, gated by approval when consequential
  *     → verify the output actually advanced the goal; recover with guidance
@@ -18,7 +18,7 @@
  * agent uses, so the Electron process holds no API keys.
  *
  * The harness owns the loop and the prompts; it does NOT own capability.
- * Callers inject `executors` — one async function per tool name — so the
+ * Callers inject `executors` - one async function per tool name - so the
  * same loop runs in production (executors bound to streamChat, the local
  * runner, the browser pipeline) and in tests (fakes).
  */
@@ -30,6 +30,48 @@ const taskState = require("./runtime/taskState.cjs");
 
 const DEFAULT_MAX_ROUNDS = 12;
 const MAX_RECOVERIES = 2;
+
+const TEAMMATE_CONSULT_RE = /\b(talk(?:ing)?\s+to|ask|consult)\b/i;
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function collaboratorsNamedInGoal(goal, collaborators) {
+  const text = String(goal || "");
+  return (Array.isArray(collaborators) ? collaborators : []).filter((bot) => {
+    const name = String(bot?.name || "").trim();
+    if (name.length < 2) return false;
+    return new RegExp(`\\b${escapeRegExp(name)}\\b`, "i").test(text);
+  });
+}
+
+/** The user named a teammate to consult, and that hand-off has not happened. */
+function teammateConsultPending(state) {
+  const names = (Array.isArray(state?.collaborators) ? state.collaborators : [])
+    .map((bot) => String(bot?.name || "").trim())
+    .filter(Boolean);
+  if (!names.length) return false;
+  const goal = String(state?.goal || "");
+  if (!TEAMMATE_CONSULT_RE.test(goal)) return false;
+  const mentioned = names.some((name) => new RegExp(`\\b${escapeRegExp(name)}\\b`, "i").test(goal));
+  if (!mentioned) return false;
+  return !state.events.some(
+    (event) =>
+      event?.kind === "deliver" && /\[\[\s*ask\s+/i.test(String(event.answer || event.question || "")),
+  );
+}
+
+/**
+ * A deliver answer that is itself a multi-section markdown document. A short
+ * close quoting one heading stays under the length gate; only a genuine
+ * re-write of the report trips both conditions.
+ */
+function looksLikeFullReport(text) {
+  const t = String(text || "");
+  if (t.length < 1200) return false;
+  return (t.match(/^#{1,3}\s+\S/gm) || []).length >= 2;
+}
 
 function normalizeDecision(raw) {
   const out = raw && typeof raw === "object" ? raw : {};
@@ -45,7 +87,7 @@ function normalizeDecision(raw) {
     question: String(out.question || "").trim(),
     questionOptions: normalizeAnswerOptions(out.questionOptions),
     // The task brief the model defines on its first decision (see the output
-    // contract) — pinned into every later round's user message.
+    // contract) - pinned into every later round's user message.
     successCondition: String(out.successCondition || "").trim(),
     doNot: Array.isArray(out.doNot) ? out.doNot.map(String).filter(Boolean) : [],
   };
@@ -95,7 +137,7 @@ async function runBotTask({
     primaryTool: registry.getTool(primaryTool, { localMode }) ? primaryTool : "",
     successCondition: canonicalSuccess,
     doNot: Array.isArray(task?.doNot) ? task.doNot : [],
-    collaborators: Array.isArray(task?.collaborators) ? task.collaborators : [],
+    collaborators: collaboratorsNamedInGoal(canonicalGoal, task?.collaborators),
     authoritativeBrief: !!task,
   });
   const system = contextRouter.buildDecisionSystem({ bot, localMode });
@@ -105,6 +147,9 @@ async function runBotTask({
     status,
     answer: String(answer || "").trim(),
     events: state.events,
+    // Even a failed or parked finish keeps the verified work: a report that
+    // ran before the round budget died still reaches the user as a card.
+    deliverables: state.deliverables,
     ...extra,
   });
 
@@ -126,11 +171,10 @@ async function runBotTask({
         system,
         user,
         schema: contextRouter.BOT_DECISION_SCHEMA,
-        // The deliver answer — the whole final message the user reads — is
-        // written inside this same decision JSON. 700 tokens was enough for
-        // tool rounds but cut real deliveries off mid-sentence; the budget
-        // has to fit the longest honest summary, not just a tool call.
-        maxTokens: 1800,
+        // The deliver answer is written inside this same decision JSON.
+        // Informational reports (inbox, listings, comparisons) need room
+        // for a real markdown write-up, not a 1-4 sentence teaser.
+        maxTokens: 4000,
         signal,
       }),
     );
@@ -143,19 +187,35 @@ async function runBotTask({
     if (decision.kind === "deliver") {
       // Empty-handed delivery gets one pushback: the record shows nothing
       // ran, and routing already judged this ask task-shaped. The model may
-      // still deliver next round (a refusal, an impossibility) — but it has
-      // to do so knowingly. A record that already shows engagement — a
-      // declined approval, a park, a noted dead end — is NOT empty-handed:
+      // still deliver next round (a refusal, an impossibility) - but it has
+      // to do so knowingly. A record that already shows engagement - a
+      // declined approval, a park, a noted dead end - is NOT empty-handed:
       // delivering honestly after the user said no is exactly right.
       const engaged = state.events.some((e) => e.kind !== "doc");
+      const routedWork = registry.getTool(primaryTool, { localMode }) && primaryTool !== "reply"
+        ? primaryTool
+        : "";
       if (state.executed === 0 && !engaged && !state.deliverPushbackUsed) {
         state.deliverPushbackUsed = true;
-        taskState.recordNote(state, "delivery attempted before any tool ran — pushed back");
-        extraNote =
-          "NOTE: You are delivering but no tool has run this task. If the goal needs work, do the work first. Deliver now only if the task genuinely requires no tool (or must be declined), and say why in the answer.";
+        taskState.recordNote(state, "delivery attempted before any tool ran - pushed back");
+        extraNote = routedWork
+          ? `NOTE: You are delivering but no tool has run this task. Routing already chose \`${routedWork}\`. A prior conversation result is not this task's work - run that tool now. Deliver without it only for a genuine refusal.`
+          : "NOTE: You are delivering but no tool has run this task. If the goal needs work, do the work first. Deliver now only if the task genuinely requires no tool (or must be declined), and say why in the answer.";
         continue;
       }
-      const answer = decision.answer || "Done.";
+      let answer = decision.answer || "Done.";
+      // A deliver that re-writes a report the user already has as a document
+      // card is the "second report" bug: in chat the close replaces the
+      // streamed text, so a full re-write reads as a brand-new report being
+      // written out. Swap it for a short close that points at the card.
+      const reportCard = state.deliverables.find(
+        (d) => d.kind === "html" && (d.tool === "research_report" || d.tool === "edit_report"),
+      );
+      if (reportCard && looksLikeFullReport(answer)) {
+        answer = reportCard.title
+          ? `Your report "${reportCard.title}" is ready - it's in the document above.`
+          : "Your report is ready - it's in the document above.";
+      }
       onProgress({ phase: "delivered", answer });
       return finish("completed", answer);
     }
@@ -175,7 +235,7 @@ async function runBotTask({
     if (!tool) {
       taskState.recordNote(
         state,
-        `selected unknown tool "${decision.tool || "(none)"}" — pick a name from the Tool Index exactly as written`,
+        `selected unknown tool "${decision.tool || "(none)"}" - pick a name from the Tool Index exactly as written`,
       );
       continue;
     }
@@ -194,7 +254,7 @@ async function runBotTask({
     }
 
     if (!decision.instruction) {
-      taskState.recordNote(state, `called \`${tool.name}\` with an empty instruction — nothing ran`);
+      taskState.recordNote(state, `called \`${tool.name}\` with an empty instruction - nothing ran`);
       continue;
     }
 
@@ -233,8 +293,8 @@ async function runBotTask({
     }
     result = result && typeof result === "object" ? result : { ok: false, output: "" };
 
-    // An executor can end the whole turn itself — the browser tool parking
-    // its opt-in question, the local runner waiting on a file approval.
+    // An executor can end the whole turn itself - the browser run needing
+    // a mid-task answer, the local runner waiting on a file approval.
     if (result.terminal === "waiting_for_user" || result.terminal === "waiting_for_approval") {
       taskState.recordToolRun(state, {
         tool: tool.name,
@@ -268,7 +328,7 @@ async function runBotTask({
       state.recoveries += 1;
       state.guidance =
         state.recoveries <= MAX_RECOVERIES
-          ? `\`${tool.name}\` failed: ${String(result.summary || output || "no output").slice(0, 300)}. Adjust the instruction or approach and try once more — or deliver honestly.`
+          ? `\`${tool.name}\` failed: ${String(result.summary || output || "no output").slice(0, 300)}. Adjust the instruction or approach and try once more - or deliver honestly.`
           : "You are out of retries. Deliver honestly with what is done and what failed.";
       onProgress({ phase: "recovering", tool: tool.name });
       continue;
@@ -292,7 +352,7 @@ async function runBotTask({
           signal,
         });
       } catch {
-        v = null; // verification must never kill a run — the record shows the raw output
+        v = null; // verification must never kill a run - the record shows the raw output
       }
       if (v) {
         taskState.recordVerification(state, {
@@ -315,9 +375,24 @@ async function runBotTask({
 
     state.guidance = "";
 
-    // A terminal tool that was the whole task ends it — the reply text
-    // already reached the user, and a delivery on top of it would repeat it.
-    if (tool.terminal && state.executed === 1) {
+    // The run held up (or was unverifiable) — keep its deliverable so the
+    // final chat message carries the work as a card, whatever the model
+    // writes in its deliver answer. Replaces an earlier copy from the same
+    // tool, so a verify-retry rewrite yields one card, not two.
+    if (result.deliverable && typeof result.deliverable === "object") {
+      taskState.recordDeliverable(state, { tool: tool.name, deliverable: result.deliverable });
+    }
+
+    // A successful terminal tool is the delivery. A verify-retry that
+    // rewrote the same report used to leave executed > 1 and keep looping
+    // into the browser and Google Docs. A named teammate consult is still
+    // outstanding: do not stop; the next round must deliver [[ask Name]].
+    if (tool.terminal) {
+      if (teammateConsultPending(state)) {
+        extraNote =
+          "That output already reached the user. A named teammate still needs to be consulted. Deliver only [[ask Name: the question]] now - do not re-run the same tool.";
+        continue;
+      }
       onProgress({ phase: "delivered", answer: output });
       return finish("completed", output);
     }
@@ -331,14 +406,14 @@ async function runBotTask({
     "failed",
     done
       ? `I ran out of working room before finishing. Completed so far: ${done}. Ask me to continue and I'll pick it up from there.`
-      : "I couldn't get this done — I ran out of working room before completing any of it. Try rephrasing, or break the task into smaller pieces.",
+      : "I couldn't get this done. I ran out of working room before completing any of it. Try rephrasing, or break the task into smaller pieces.",
   );
 }
 
 module.exports = {
   runBotTask,
   DEFAULT_MAX_ROUNDS,
-  // Exported for tests and the eval harness — they must drive the exact
+  // Exported for tests and the eval harness - they must drive the exact
   // contracts production uses.
   BOT_DECISION_SCHEMA: contextRouter.BOT_DECISION_SCHEMA,
   buildDecisionSystem: contextRouter.buildDecisionSystem,

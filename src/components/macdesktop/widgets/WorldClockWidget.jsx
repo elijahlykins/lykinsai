@@ -65,7 +65,7 @@ function partsIn(date, tz) {
       day: `${out.weekday}, ${out.month} ${out.day}`,
     };
   } catch {
-    return { time: '—', day: '' };
+    return { time: '-', day: '' };
   }
 }
 

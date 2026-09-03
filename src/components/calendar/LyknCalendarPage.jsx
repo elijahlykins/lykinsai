@@ -29,6 +29,7 @@ import DatePickerPopover from "@/components/ui/DatePickerPopover";
 import TimePickerPopover, { formatTimeLabel } from "@/components/ui/TimePickerPopover";
 import MenuSelectPopover from "@/components/ui/MenuSelectPopover";
 import { Switch } from "@/components/ui/switch";
+import { EXTERNAL_CALENDAR_SYNC_ENABLED } from "@/lib/calendar/calendarConfig";
 
 // ────────────────────────────────────────────────────────────────────────
 // LyknCalendarPage — Calendar as a Studio (and standalone) popup page.
@@ -315,7 +316,7 @@ export default function LyknCalendarPage({ windowed = false }) {
   }, []);
 
   useEffect(() => {
-    if (!syncParam) return;
+    if (!EXTERNAL_CALENDAR_SYNC_ENABLED || !syncParam) return;
     setView("sync");
     void refreshConnections();
   }, [syncParam, refreshConnections]);
@@ -459,6 +460,11 @@ export default function LyknCalendarPage({ windowed = false }) {
   const handleRefreshAll = useCallback(async () => {
     setRefreshingAll(true);
     try {
+      if (!EXTERNAL_CALENDAR_SYNC_ENABLED) {
+        await loadEvents();
+        toast({ title: "Calendar refreshed" });
+        return;
+      }
       let conns = [];
       try {
         const res = await authedFetch("/api/calendar/connections");
@@ -708,18 +714,20 @@ export default function LyknCalendarPage({ windowed = false }) {
                     onClick={handleRefreshAll}
                     disabled={refreshingAll}
                     className="w-7 h-7 rounded-md hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center text-black/60 dark:text-white/60 transition-colors disabled:opacity-50"
-                    title="Refresh: re-pull connected calendars"
+                    title="Refresh calendar"
                   >
                     <RefreshCw className={`w-4 h-4 ${refreshingAll ? "animate-spin" : ""}`} />
                   </button>
-                  <button
-                    type="button"
-                    onClick={openSyncView}
-                    className="w-7 h-7 rounded-md hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center text-black/60 dark:text-white/60 transition-colors"
-                    title="Connect Google / Apple calendars"
-                  >
-                    <Link2 className="w-4 h-4" />
-                  </button>
+                  {EXTERNAL_CALENDAR_SYNC_ENABLED && (
+                    <button
+                      type="button"
+                      onClick={openSyncView}
+                      className="w-7 h-7 rounded-md hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center text-black/60 dark:text-white/60 transition-colors"
+                      title="Connect Google / Apple calendars"
+                    >
+                      <Link2 className="w-4 h-4" />
+                    </button>
+                  )}
                   <button type="button" onClick={goPrevMonth} className="w-7 h-7 rounded-md hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center transition-colors" title="Previous month">
                     <ChevronLeft className="w-4 h-4" />
                   </button>
@@ -927,7 +935,7 @@ export default function LyknCalendarPage({ windowed = false }) {
           </>
         )}
 
-        {view === "sync" && (
+        {EXTERNAL_CALENDAR_SYNC_ENABLED && view === "sync" && (
           <>
             <div className={`flex flex-col space-y-1.5 text-left ${headerCls}`}>
               <div className="flex items-center gap-2">

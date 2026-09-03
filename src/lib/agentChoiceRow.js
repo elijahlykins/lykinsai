@@ -40,6 +40,7 @@ export function agentChoiceRow(choice, activeAgentId) {
     agentId: choice.agentId || activeAgentId,
     choiceId: String(choice.choiceId || ""),
     type: String(choice.type || ""),
+    tool: String(choice.tool || ""),
     message: String(choice.message || ""),
     buttons,
   };

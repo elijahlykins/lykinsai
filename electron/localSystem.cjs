@@ -3,8 +3,15 @@
  *
  * Everything here runs in the Electron main process. Tools are only reachable
  * when the user flips the Local switch in the Vault (persisted per-device in
- * userData/local-mode.json). Reads auto-run; writes/deletes and risky shell
- * commands require explicit approval (`approved: true` on re-invoke).
+ * userData/local-mode.json). Access is confined to approved roots: either
+ * folders the user picked, or (if they explicitly share the whole home folder)
+ * the home directory. Enabling Local Mode does not grant whole-home access
+ * unless that switch is on.
+ *
+ * Reads, writes, and ordinary commands inside an approved root auto-run.
+ * Deletes and downloads require explicit approval (`approved: true` on re-invoke).
+ * Shell commands are still zsh -lc; they are guarded by cwd + path-token
+ * checks, not an OS sandbox.
  */
 
 const fs = require("fs");
@@ -39,12 +46,17 @@ function configure(userDataPath) {
 // which holds the api base and the auth token; reads work without it, they
 // just lose the last-resort extractor.
 let extractionOpts = null;
-function configureExtraction({ apiBase, getAuthToken } = {}) {
-  extractionOpts = apiBase && typeof getAuthToken === "function" ? { apiBase, getAuthToken } : null;
+function configureExtraction(opts = {}) {
+  const { apiBase, getAuthToken, fetchImpl } = opts || {};
+  extractionOpts =
+    apiBase && typeof getAuthToken === "function"
+      ? { apiBase, getAuthToken, fetchImpl: typeof fetchImpl === "function" ? fetchImpl : undefined }
+      : null;
 }
 
 /** Documents local_read_file extracts to text instead of refusing as binary. */
 const RICH_DOC_RE = /\.(pdf|docx?|rtf|xlsx|pptx|odt)$/i;
+const MEDIA_READ_CAP_BYTES = 80 * 1024 * 1024;
 
 function normalizeSyncedFolders(folders) {
   const out = [];
@@ -56,15 +68,22 @@ function normalizeSyncedFolders(folders) {
   return out.slice(0, 100);
 }
 
+function inferSyncAll(data) {
+  if (!data || typeof data !== "object") return false;
+  if (Object.prototype.hasOwnProperty.call(data, "syncAll")) return data.syncAll !== false;
+  // Legacy files written before the allowlist existed implied whole-home
+  // only while Local Mode was already on. A disabled legacy file must not
+  // inherit whole-home when the user later enables it.
+  return data.enabled === true;
+}
+
 function readLocalMode(userDataPath) {
   try {
     const data = JSON.parse(fs.readFileSync(settingPath(userDataPath), "utf8"));
     return {
       enabled: data?.enabled === true,
       updatedAt: Number(data?.updatedAt) || 0,
-      // Missing key → true, so configs written before synced folders existed
-      // keep their original whole-home behavior.
-      syncAll: data?.syncAll !== false,
+      syncAll: inferSyncAll(data),
       syncedFolders: normalizeSyncedFolders(data?.syncedFolders),
       excludedFolders: normalizeSyncedFolders(data?.excludedFolders),
     };
@@ -72,7 +91,7 @@ function readLocalMode(userDataPath) {
     return {
       enabled: false,
       updatedAt: 0,
-      syncAll: true,
+      syncAll: false,
       syncedFolders: [],
       excludedFolders: [],
     };
@@ -215,43 +234,26 @@ function isLocalToolName(name) {
 // ---------------------------------------------------------------------------
 
 /**
- * CONSEQUENTIAL commands — approval is about commitment, irreversibility,
- * money, credentials, and external impact, not about "the terminal ran".
- * These patterns are matched against the WHOLE command string, so a routine
- * command chained with a consequential one (`npm test && rm -rf dist`) is
- * still consequential.
+ * Approval is only for delete and download. These patterns are matched
+ * against the WHOLE command string, so a routine command chained with a
+ * delete or download (`npm test && rm -rf dist`) still asks.
  *
- * Ordinary development work — running tests and builds, installing packages
- * for the requested work, git status/diff/commit, writing files via
- * redirection, moving/copying files — is ROUTINE and executes without a
- * human pause when the task holds a shell capability. That is the product
- * contract for a capable computer agent; the destructive/external tier below
- * is the defense-in-depth that remains.
+ * Reads, writes, installs, git, process control, and other ordinary work
+ * run without a pause once Local Mode is on.
  */
 const CONSEQUENTIAL_COMMAND_PATTERNS = [
-  /\bsudo\b/i, // privilege escalation
-  /\brm\b/i, // deletion (files.delete capability still gates the shape)
+  /\brm\b/i,
   /\brmdir\b/i,
   /\bshred\b|\bsrm\b/i,
-  /\bchmod\b/i, // permission changes
-  /\bchown\b|\bchgrp\b/i,
-  /\bkill(all)?\b|\bpkill\b/i, // process termination can lose unsaved work
-  /\bshutdown\b|\breboot\b|\bhalt\b/i,
-  /\bdiskutil\b|\bmkfs\b|\bdd\b|\bfdisk\b/i, // disk surgery
-  /\blaunchctl\b|\bdefaults\s+write\b/i, // system configuration
-  /\bcrontab\b/i,
-  /\bsecurity\b/i, // macOS keychain / credentials
-  /\bpasswd\b/i,
-  /\bgit\s+push\b/i, // leaves the machine
-  /\bgit\s+reset\s+--hard\b/i, // destroys local work
+  /\bunlink\b/i,
+  /\btrash\b/i,
+  /\bgit\s+reset\s+--hard\b/i,
   /\bgit\s+clean\s+-[a-z]*f/i,
-  /\b(npm|yarn|pnpm)\s+(publish|unpublish|deprecate)\b/i, // public registry
-  /\b(npm|yarn|pnpm)\s+(login|adduser|token)\b/i, // credentials
-  /curl[^|;&]*\|\s*(ba|z)?sh/i, // pipe-to-shell installs
-  /wget[^|;&]*\|\s*(ba|z)?sh/i,
-  /\bosascript\b/i, // arbitrary app scripting
-  /\btruncate\b/i,
-  /\bmkfifo\b|\bmknod\b/i,
+  /\bcurl\b/i,
+  /\bwget\b/i,
+  /\baria2c?\b/i,
+  /\b(scp|sftp)\b/i,
+  /\bgit\s+clone\b/i,
 ];
 
 /**
@@ -270,11 +272,10 @@ const SAFE_COMMAND_PREFIXES = [
  * Classify one shell command by CONSEQUENCE, independent of capability.
  *
  * @returns {{ tier: "routine"|"consequential", readOnly: boolean, reason: string }}
- *   routine       — ordinary reversible work: run without a human pause when
- *                   the task's capabilities license the command.
- *   consequential — commitment/irreversibility/credentials/system/external:
- *                   always requires live approval, standing authorization or
- *                   not.
+ *   routine       - ordinary work: run without a human pause when the
+ *                   task's capabilities license the command.
+ *   consequential - delete or download: always requires live approval,
+ *                   standing authorization or not.
  */
 function classifyCommandConsequence(command, cwd) {
   const cmd = String(command || "").trim();
@@ -283,10 +284,6 @@ function classifyCommandConsequence(command, cwd) {
   const matched = CONSEQUENTIAL_COMMAND_PATTERNS.find((re) => re.test(cmd));
   if (matched) {
     return { tier: "consequential", readOnly: false, reason: `matches ${matched}` };
-  }
-  const resolvedCwd = cwd ? resolveUserPath(cwd) : homeDir();
-  if (!isInsideHome(resolvedCwd)) {
-    return { tier: "consequential", readOnly: false, reason: "cwd outside home" };
   }
   return { tier: "routine", readOnly, reason: "" };
 }
@@ -305,8 +302,9 @@ function resolveUserPath(p) {
 }
 
 function isInsideHome(absPath) {
-  const home = path.resolve(homeDir());
-  const rel = path.relative(home, absPath);
+  const home = canonicalPath(homeDir());
+  const target = canonicalPath(absPath);
+  const rel = path.relative(home, target);
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
@@ -352,9 +350,11 @@ function coverDepth(absPath, folders) {
 }
 
 /**
- * Allowlist gate for the synced-folders model. With syncAll (default, matches
- * pre-allowlist installs) every path is allowed exactly as before; otherwise
- * the path must live inside one of the user's synced folders.
+ * Allowlist gate for approved local roots.
+ *
+ * - syncAll: the home directory is approved (not the rest of the disk).
+ *   Extra syncedFolders still count, so a volume outside home can be added.
+ * - otherwise: the path must live inside one of the user's synced folders.
  *
  * A folder whose sync the user switched off is excluded either way. The more
  * specific rule wins when the two lists overlap, so switching off Home and then
@@ -366,8 +366,98 @@ function isAllowedPath(absPath, config) {
   const target = canonicalPath(absPath);
   const excluded = coverDepth(target, config.excludedFolders);
   if (excluded >= 0 && coverDepth(target, config.syncedFolders) <= excluded) return false;
-  if (config.syncAll !== false) return true;
+  if (config.syncAll !== false) {
+    if (isInsideHome(target)) return true;
+    return coverDepth(target, config.syncedFolders) >= 0;
+  }
   return coverDepth(target, config.syncedFolders) >= 0;
+}
+
+function isDevicePath(absPath) {
+  const p = String(absPath || "");
+  return (
+    p === "/dev/null" ||
+    p === "/dev/stdin" ||
+    p === "/dev/stdout" ||
+    p === "/dev/stderr" ||
+    p === "/dev/tty" ||
+    p.startsWith("/dev/fd/") ||
+    p === "/dev/random" ||
+    p === "/dev/urandom"
+  );
+}
+
+function tokenizeShell(command) {
+  const tokens = [];
+  const re = /"([^"\\]|\\.)*"|'([^']*)'|[^\s]+/g;
+  const text = String(command || "");
+  let m;
+  while ((m = re.exec(text))) {
+    let t = m[0];
+    if (t.startsWith('"') && t.endsWith('"') && t.length >= 2) {
+      t = t.slice(1, -1).replace(/\\"/g, '"');
+    } else if (t.startsWith("'") && t.endsWith("'") && t.length >= 2) {
+      t = t.slice(1, -1);
+    }
+    if (t) tokens.push(t);
+  }
+  return tokens;
+}
+
+function stripPathPunct(raw) {
+  return String(raw || "").replace(/[),.;]+$/g, "");
+}
+
+function looksLikeUserPath(tok) {
+  const s = stripPathPunct(tok);
+  if (!s || s === "-" || s.startsWith("-")) return false;
+  if (/^(https?:|git@|ssh:|file:)/i.test(s)) return false;
+  if (s === "~" || s.startsWith("~/") || s.startsWith("/") || s === ".." || s.startsWith("../") || s.startsWith("./")) {
+    return true;
+  }
+  return s.includes("/");
+}
+
+function resolveCommandPath(raw, cwd) {
+  const s = stripPathPunct(raw);
+  if (!s) return "";
+  if (/^(https?:|git@|ssh:|file:)/i.test(s)) return "";
+  if (s === "~" || s.startsWith("~/")) return resolveUserPath(s);
+  if (s.startsWith("/")) return path.resolve(s);
+  return path.resolve(String(cwd || homeDir()), s);
+}
+
+/**
+ * Filesystem targets a shell command string is trying to name.
+ * This is a guardrail, not an OS sandbox: constructed paths inside
+ * interpreters can still bypass it.
+ */
+function commandPathTargets(command, cwd) {
+  const root = path.resolve(String(cwd || homeDir()));
+  const out = [];
+  const seen = new Set();
+  const add = (abs) => {
+    if (!abs || isDevicePath(abs) || seen.has(abs)) return;
+    seen.add(abs);
+    out.push(abs);
+  };
+  for (const tok of tokenizeShell(command)) {
+    if (looksLikeUserPath(tok)) add(resolveCommandPath(tok, root));
+    const inner = String(tok).match(/(?:~|\/|\.\.\/|\.\/)[^\s"'`;|&<>)]+/g) || [];
+    for (const piece of inner) {
+      if (/^(https?:|git@|ssh:|file:)/i.test(piece)) continue;
+      add(resolveCommandPath(piece, root));
+    }
+    if (!looksLikeUserPath(tok) && tok !== "." && !tok.startsWith("-")) {
+      const candidate = path.resolve(root, tok);
+      try {
+        if (fs.lstatSync(candidate).isSymbolicLink()) add(canonicalPath(candidate));
+      } catch {
+        /* not on disk */
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -376,11 +466,6 @@ function isAllowedPath(absPath, config) {
  */
 function checkToolAccess(name, args = {}, config) {
   if (!config) return { allowed: true };
-  // Nothing to enforce when the whole home folder is shared and no folder has
-  // been switched off.
-  if (config.syncAll !== false && !(config.excludedFolders || []).length) {
-    return { allowed: true };
-  }
   const paths = [];
   switch (name) {
     case "local_list_dir":
@@ -394,13 +479,19 @@ function checkToolAccess(name, args = {}, config) {
     case "local_open_path":
       paths.push(resolveUserPath(args.path));
       break;
-    case "local_run_command":
-      paths.push(args.cwd ? resolveUserPath(args.cwd) : homeDir());
+    case "local_run_command": {
+      const cwd = args.cwd ? resolveUserPath(args.cwd) : homeDir();
+      paths.push(cwd);
+      for (const p of commandPathTargets(String(args.command || ""), cwd)) {
+        paths.push(p);
+      }
       break;
+    }
     default:
       return { allowed: true };
   }
   for (const p of paths) {
+    if (!p) return { allowed: false, blockedPath: p };
     if (!isAllowedPath(p, config)) return { allowed: false, blockedPath: p };
   }
   return { allowed: true };
@@ -415,11 +506,12 @@ function classifyRisk(name, args = {}) {
     case "local_list_dir":
     case "local_read_file":
     case "local_search_files":
-    case "local_pull_file":
+    case "local_write_file":
+    case "local_edit_file":
     case "local_synced_folders":
     case "local_running_apps":
     case "local_read_app":
-    // Opening an app is what a dock click does — visible, non-destructive.
+    // Opening an app is what a dock click does - visible, non-destructive.
     case "local_open_app":
     // Opening a path mirrors a direct Files-window click.
     case "local_open_path":
@@ -427,44 +519,14 @@ function classifyRisk(name, args = {}) {
     // and the user can drag them back.
     case "local_organize_desktop":
       return { risky: false, summary: "" };
-    case "local_write_file": {
+    case "local_pull_file": {
       const target = resolveUserPath(args.path);
-      const outside = target && !isInsideHome(target);
       return {
         risky: true,
-        summary: `Write file: ${target || "(unknown path)"}${outside ? " (outside home folder)" : ""}`,
-      };
-    }
-    case "local_edit_file": {
-      const target = resolveUserPath(args.path);
-      const outside = target && !isInsideHome(target);
-      // Show the user what's being swapped, diff-style, so the approval card
-      // is meaningful — but keep it short, it renders in a small <pre>.
-      const preview = (mark, text) => {
-        const s = String(text ?? "");
-        return `${mark} ${s.length > 200 ? s.slice(0, 200) + "…" : s}`;
-      };
-      // Document edits say where the result lands: a lossy regeneration that
-      // overwrites the original is a different approval from one that writes
-      // a sibling copy.
-      const isDoc = RICH_DOC_RE.test(target || "") && !/\.pptx$/i.test(target || "");
-      const verb = isDoc
-        ? args.overwrite === true
-          ? "Edit document (overwrites the original)"
-          : "Edit document (writes an '(edited)' copy beside the original)"
-        : "Edit file";
-      return {
-        risky: true,
-        summary:
-          `${verb}: ${target || "(unknown path)"}${outside ? " (outside home folder)" : ""}\n` +
-          `${preview("-", args.oldText)}\n${preview("+", args.newText)}`,
+        summary: `Download ${target || "(unknown path)"} into this chat`,
       };
     }
     case "local_run_command": {
-      // Consequence-based, not "unknown = approval": routine development
-      // commands (tests, builds, installs, git status/commit, redirection
-      // into working files) run without a pause; commitment, destruction,
-      // credentials, system config, and external pushes still require one.
       const cmd = String(args.command || "").trim();
       const consequence = classifyCommandConsequence(cmd, args.cwd);
       const risky = consequence.tier === "consequential";
@@ -526,7 +588,10 @@ async function readFileTool(args = {}) {
   if (!file) return { ok: false, error: "path is required" };
   const st = await fsp.stat(file);
   if (st.isDirectory()) return { ok: false, error: `${file} is a directory — use local_list_dir` };
-  if (st.size > 10 * 1024 * 1024) {
+  const mediaReader = require("./mediaReader.cjs");
+  const isMedia = mediaReader.isReadableMediaPath(file);
+  const sizeCap = isMedia ? MEDIA_READ_CAP_BYTES : 10 * 1024 * 1024;
+  if (st.size > sizeCap) {
     return { ok: false, error: `File too large to read (${Math.round(st.size / 1024 / 1024)} MB)` };
   }
   // Rich documents (PDF, Word, Excel, PowerPoint, ODT) extract to text — the
@@ -534,6 +599,11 @@ async function readFileTool(args = {}) {
   // hit the binary sniff below and the agent was told to give up.
   if (RICH_DOC_RE.test(file)) {
     return readDocumentFile(file, st);
+  }
+  // Images and recordings go through vision the same way documents go through
+  // text extraction. Refusing them as binary left every agent blind.
+  if (isMedia) {
+    return readMediaFile(file, st, mediaReader);
   }
   const buf = await fsp.readFile(file);
   // Cheap binary sniff: NUL byte in the first 8KB.
@@ -570,6 +640,42 @@ async function readDocumentFile(file, st) {
     pageCount: out.pageCount ?? undefined,
     content: out.text,
     truncated: out.truncated === true,
+  };
+}
+
+async function readMediaFile(file, st, mediaReader) {
+  let opts = {};
+  if (extractionOpts) {
+    const token = await extractionOpts.getAuthToken().catch(() => null);
+    if (token) {
+      opts = {
+        apiBase: extractionOpts.apiBase,
+        token,
+        fetchImpl: extractionOpts.fetchImpl,
+      };
+    }
+  }
+  const out = await mediaReader.describeMediaFile(file, opts);
+  if (!out.ok) {
+    const why =
+      out.error === "file_too_large"
+        ? out.detail || `File too large to look at (${Math.round(st.size / 1024 / 1024)} MB)`
+        : `Could not look at this ${path.extname(file).slice(1) || "media"} file`;
+    return {
+      ok: false,
+      error: `${why}. Use local_pull_file to hand the file itself to the user's chat instead.`,
+    };
+  }
+  return {
+    ok: true,
+    path: file,
+    size: st.size,
+    kind: out.kind,
+    mime: out.mime,
+    format: out.format || path.extname(file).slice(1).toLowerCase(),
+    content: out.content,
+    imageDataUrl: out.imageDataUrl,
+    vision: out.vision === true,
   };
 }
 
@@ -872,7 +978,7 @@ function syncedFoldersTool(config) {
     excludedFolders: excluded,
     note:
       (config.syncAll !== false
-        ? "Everything under the home folder is synced."
+        ? "The home folder is synced. Paths outside it are blocked unless also on the folder list."
         : "Only these folders are synced — reads and writes outside them are blocked.") +
       (excluded.length
         ? ` The user switched sync off for these, so they are blocked too: ${excluded.join(", ")}.`
@@ -1264,16 +1370,33 @@ async function run(name, args = {}, { approved = false, userDataPath = "", signa
     return { ok: false, error: `Unknown local tool: ${name}` };
   }
   const config = readLocalMode(userDataPath || defaultUserDataPath);
-  // Synced-folders allowlist: when the user picked specific folders, every
-  // filesystem tool is confined to them.
-  if (config.syncAll === false) {
-    // Home-folder defaults would be blocked — root the call in the first
-    // synced folder instead.
+  const approvedRoot = (config.syncedFolders || [])[0] || "";
+  const needsApprovedRoot = [
+    "local_list_dir",
+    "local_read_file",
+    "local_search_files",
+    "local_pull_file",
+    "local_write_file",
+    "local_edit_file",
+    "local_run_command",
+    "local_open_path",
+  ].includes(name);
+  if (config.syncAll === false && !approvedRoot && needsApprovedRoot) {
+    return {
+      ok: false,
+      code: "local_mode_no_roots",
+      error:
+        "Local Mode is on, but no folders are approved. Ask the user to pick a folder in Local Mode settings. Enabling Local Mode does not grant the whole home folder.",
+    };
+  }
+  // When the user picked specific folders, default filesystem tools into the
+  // first approved root instead of $HOME (which would then be blocked).
+  if (config.syncAll === false && approvedRoot) {
     if (name === "local_run_command" && !args.cwd) {
-      args = { ...args, cwd: config.syncedFolders[0] || homeDir() };
+      args = { ...args, cwd: approvedRoot };
     }
     if ((name === "local_list_dir" || name === "local_search_files") && !args.path) {
-      args = { ...args, path: config.syncedFolders[0] || homeDir() };
+      args = { ...args, path: approvedRoot };
     }
   }
   const access = checkToolAccess(name, args, config);
@@ -1289,12 +1412,16 @@ async function run(name, args = {}, { approved = false, userDataPath = "", signa
           "so nothing inside it can be read. They can switch it back on from that folder in the Vault.",
       };
     }
-    const folders = (config.syncedFolders || []).join(", ") || "(none)";
+    const folders =
+      config.syncAll !== false
+        ? `home (${homeDir()})`
+        : (config.syncedFolders || []).join(", ") || "(none)";
     return {
       ok: false,
+      code: "local_mode_path_denied",
       error:
         `Path not synced: ${access.blockedPath}. LYKN can only access the folders the user ` +
-        `synced: ${folders}. Ask the user to add the folder in Local Mode settings if needed.`,
+        `approved: ${folders}. Ask the user to add the folder in Local Mode settings if needed.`,
     };
   }
   const risk = classifyRisk(name, args);
@@ -1352,4 +1479,6 @@ module.exports = {
   resolveUserPath,
   run,
   checkToolAccess,
+  commandPathTargets,
+  inferSyncAll,
 };

@@ -15,15 +15,17 @@ import { openFileWindow } from "@/lib/files/fileWindows";
 import { isGenericBuildStatus, isLiveBuildStatus } from "@/hooks/useThinkingStatus";
 import { extractChatArtifacts, sortArtifactsForDisplay, extractLeakedHtmlDocument, buildLeakedHtmlArtifact, type ChatArtifact } from "@/lib/ai/chatArtifacts";
 import ChatNeuronCard from "@/components/lyknChat/ChatNeuronCard";
+import { SentAppEditChip } from "@/components/lyknChat/AppSourceStrip";
 import SentChatAttachment, { type SentChatAttachmentData } from "@/components/lyknChat/SentChatAttachment";
 import { chatAttachmentSaveKeys } from "@/lib/chat/chatAttachmentFile";
 import { SiteFavicon } from "@/components/SiteFavicon";
 import type { PromptMessage } from "@/lib/lyknChat/chatTurnTypes";
 import { safeExternalUrl, safeNavHref } from "@/lib/safeExternalUrl";
-import { handleLyknBrowserClick } from "@/lib/lyknChat/openInStudioBrowser";
+import { handleLyknBrowserClick, studioOpenChatOpts } from "@/lib/lyknChat/openInStudioBrowser";
 import { copyMarkdownAsRich } from "@/lib/copyRichClipboard";
 import BotAvatar from "@/components/bots/BotAvatar";
 import { botSeed } from "@/lib/bots/botStore";
+import BotWaitingChoices from "@/components/bots/BotWaitingChoices";
 import {
   LoadInBubble,
   LoadInUserSectionEditor,
@@ -66,9 +68,12 @@ function isBuildSlotStatus(status?: string): boolean {
 type MessageItemProps = {
   msg: PromptMessage;
   idx: number;
+  isLatest?: boolean;
   /** Studio Research page shows source links in the right rail, so the
    *  per-message chips under the response are hidden there. */
   hideMessageSources?: boolean;
+  /** Owning lykn_chats.id for this rendered message. Never inferred from Home. */
+  chatId?: string | null;
   isAiExpanded: boolean;
   isUserPromptExpanded: boolean;
   reaction: "like" | "dislike" | null | undefined;
@@ -342,7 +347,9 @@ function AiImageBatch({
 
 const ChatMessageItem = React.memo(function MessageItem({
   msg, idx,
+  isLatest = false,
   hideMessageSources = false,
+  chatId = null,
   isAiExpanded, isUserPromptExpanded,
   reaction, isCopied,
   savedMediaUrls, savedYouTubeIds,
@@ -357,6 +364,8 @@ const ChatMessageItem = React.memo(function MessageItem({
 }: MessageItemProps) {
   const aiResponse = msg.aiResponse || "";
   const navigate = useNavigate();
+  const linkOpts = studioOpenChatOpts(chatId);
+  const aiOpen = isAiExpanded || (isLatest && !!msg.bot);
   const [isEditingPrompt, setIsEditingPrompt] = useState(false);
   const [editDraft, setEditDraft] = useState("");
 
@@ -379,12 +388,22 @@ const ChatMessageItem = React.memo(function MessageItem({
     <React.Fragment>
       {msg.role === "user" && !isLoadInGreeting && (
         <div className="flex flex-col items-end gap-2">
-          {msg.attachments && msg.attachments.length > 0 && (
+          {(msg.editTarget || (msg.attachments && msg.attachments.length > 0)) && (
             <div className="max-w-[80%] flex flex-wrap gap-2 justify-end">
-              {msg.attachments.map((att) => (
+              {msg.editTarget ? (
+                <SentAppEditChip
+                  title={msg.editTarget.title}
+                  paths={msg.editTarget.paths}
+                  kind={msg.editTarget.kind}
+                />
+              ) : null}
+              {(msg.attachments || [])
+                .filter((att) => !(msg.editTarget && att.type === "artifact"))
+                .map((att) => (
                 <SentChatAttachment
                   key={att.id}
                   att={att}
+                  chatId={chatId}
                   isSaved={
                     att.videoId
                       ? savedYouTubeIds.has(att.videoId)
@@ -490,17 +509,17 @@ const ChatMessageItem = React.memo(function MessageItem({
             {!isLoadInGreeting && (
               <button
                 type="button"
-                title={isAiExpanded ? "Collapse response" : "Expand response"}
-                aria-label={isAiExpanded ? "Collapse response" : "Expand response"}
+                title={aiOpen ? "Collapse response" : "Expand response"}
+                aria-label={aiOpen ? "Collapse response" : "Expand response"}
                 className={`flex items-center gap-2 transition-all text-left ${
-                  isAiExpanded
+                  aiOpen
                     ? "h-6 w-6 justify-center rounded-md text-black/35 hover:bg-black/5 hover:text-black/70 dark:text-white/35 dark:hover:bg-white/10 dark:hover:text-white/70"
                     : "w-full px-0 py-0.5"
                 }`}
                 onClick={() => toggleAiExpanded(msg.id)}
               >
-                <ChevronRight className={`w-4 h-4 flex-shrink-0 transition-transform duration-200 ${isAiExpanded ? "rotate-90" : "text-black/40 dark:text-white/40"}`} />
-                {!isAiExpanded && (
+                <ChevronRight className={`w-4 h-4 flex-shrink-0 transition-transform duration-200 ${aiOpen ? "rotate-90" : "text-black/40 dark:text-white/40"}`} />
+                {!aiOpen && (
                   <span className="text-sm text-black/60 dark:text-white/60 truncate leading-tight flex-1">
                     {(msg as any).aiImageUrl
                       ? "Generated image"
@@ -513,7 +532,7 @@ const ChatMessageItem = React.memo(function MessageItem({
             <div className={
               isLoadInGreeting
                 ? "mt-0"
-                : `grid transition-[grid-template-rows,opacity] duration-200 ease-in-out ${isAiExpanded ? "grid-rows-[1fr] opacity-100 mt-1" : "grid-rows-[0fr] opacity-0"}`
+                : `grid transition-[grid-template-rows,opacity] duration-200 ease-in-out ${aiOpen ? "grid-rows-[1fr] opacity-100 mt-1" : "grid-rows-[0fr] opacity-0"}`
             }>
               <div className="overflow-hidden min-h-0 group/aifocused">
                 {msg.bot ? (
@@ -597,7 +616,11 @@ const ChatMessageItem = React.memo(function MessageItem({
                         </h1>
                       ) : null}
                       {bodyRest ? (
-                        <div className="lykn-chat-ai-text text-[14px] leading-[1.25] break-words text-black/85 dark:text-white/85">
+                        <div
+                          className={`lykn-chat-ai-text text-[14px] break-words text-black/85 dark:text-white/85 ${
+                            msg.bot ? "lykn-bot-report leading-[1.65]" : "leading-[1.25]"
+                          }`}
+                        >
                           <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={mdComponents}>
                             {normalizeChecklistSyntax(bodyRest)}
                           </ReactMarkdown>
@@ -605,29 +628,37 @@ const ChatMessageItem = React.memo(function MessageItem({
                       ) : null}
                       {leakedArtifact ? (
                         <div className="mt-2 flex flex-col gap-2 max-w-[min(100%,42rem)] w-full">
-                          <ChatArtifactCard artifact={leakedArtifact} onOpen={onOpenArtifact ? () => onOpenArtifact(leakedArtifact) : undefined} />
+                          <ChatArtifactCard artifact={leakedArtifact} chatId={chatId} onOpen={onOpenArtifact ? () => onOpenArtifact(leakedArtifact) : undefined} />
                         </div>
                       ) : htmlPending ? (
                         <div className="mt-2 max-w-[min(100%,42rem)] w-full">
                           <ArtifactBuildingPlaceholder status={inlineThinkingStatus} trail={buildThoughtTrail} />
                         </div>
-                      ) : inlineThinkingStatus && !isBuildSlotStatus(inlineThinkingStatus) ? (
+                      ) : inlineThinkingStatus &&
+                        !isBuildSlotStatus(inlineThinkingStatus) &&
+                        !(msg.bot && msg.botWorking) ? (
                         <div className="mt-3">
-                          <ThinkingIndicator status={inlineThinkingStatus} trail={buildThoughtTrail} />
+                          <ThinkingIndicator
+                            status={inlineThinkingStatus}
+                            trail={buildThoughtTrail}
+                            bot={msg.bot}
+                          />
                         </div>
                       ) : null}
                     </div>
                   );
                 })()}
                 {msg.bot && msg.botWorking ? (
-                  // The Bot is still working this turn: a live animated status
-                  // line (with the trail of what it just did) under whatever
-                  // has streamed, instead of a static "Thinking…" string.
-                  <div className={`px-4 pb-3 ${String(aiResponse || "").trim() ? "" : "-mt-1"}`}>
+                  <div className={`px-4 pb-3 text-sm text-black/70 dark:text-white/60 ${String(aiResponse || "").trim() ? "" : "-mt-1"}`}>
                     <ThinkingIndicator
                       status={msg.botStatus || "Thinking…"}
-                      trail={msg.botTrail}
+                      bot={msg.bot}
                     />
+                  </div>
+                ) : null}
+                {msg.bot && isLatest && !msg.botWorking ? (
+                  <div className="px-4 pb-3">
+                    <BotWaitingChoices botId={msg.bot.id} />
                   </div>
                 ) : null}
                 {Array.isArray(msg.aiResponseSections) && msg.aiResponseSections.length > 0 && (
@@ -706,6 +737,7 @@ const ChatMessageItem = React.memo(function MessageItem({
                               <LoadInBubble
                                 key={`${msg.id}-${sec.id}-grp-${group.id}`}
                                 msgId={msg.id}
+                                chatId={chatId}
                                 group={group}
                               />
                             ))}
@@ -744,16 +776,19 @@ const ChatMessageItem = React.memo(function MessageItem({
                               }
                               const isInternal = chipNav.kind === "internal";
                               const onChipClick = (e: React.MouseEvent) => {
-                                if (!isInternal) return;
-                                if (
-                                  e.metaKey ||
-                                  e.ctrlKey ||
-                                  e.shiftKey ||
-                                  (e as any).button === 1
-                                )
+                                if (isInternal) {
+                                  if (
+                                    e.metaKey ||
+                                    e.ctrlKey ||
+                                    e.shiftKey ||
+                                    (e as any).button === 1
+                                  )
+                                    return;
+                                  e.preventDefault();
+                                  navigate(chipNav.href);
                                   return;
-                                e.preventDefault();
-                                navigate(chipNav.href);
+                                }
+                                handleLyknBrowserClick(e, chipNav.href, chip.label, linkOpts);
                               };
                               return (
                                 <a
@@ -1024,7 +1059,7 @@ const ChatMessageItem = React.memo(function MessageItem({
                             href={yt.url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            onClick={(e) => handleLyknBrowserClick(e, yt.url, "YouTube")}
+                            onClick={(e) => handleLyknBrowserClick(e, yt.url, "YouTube", linkOpts)}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-white/25 bg-white/35 backdrop-blur-sm text-black/70 hover:border-black/30 hover:shadow-sm transition-all"
                           >
                             <Play className="w-3 h-3" /> Open on YouTube
@@ -1044,7 +1079,7 @@ const ChatMessageItem = React.memo(function MessageItem({
                         href={href}
                         target="_blank"
                         rel="noopener noreferrer"
-                        onClick={(e) => handleLyknBrowserClick(e, href, src.title)}
+                        onClick={(e) => handleLyknBrowserClick(e, href, src.title, linkOpts)}
                         className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all"
                       >
                         <SiteFavicon url={href} className="h-3.5 w-3.5" />
@@ -1066,7 +1101,7 @@ const ChatMessageItem = React.memo(function MessageItem({
                           href={href}
                           target="_blank"
                           rel="noopener noreferrer"
-                          onClick={(e) => handleLyknBrowserClick(e, href, domain)}
+                          onClick={(e) => handleLyknBrowserClick(e, href, domain, linkOpts)}
                           className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all"
                         >
                           <SiteFavicon url={href} className="h-3.5 w-3.5" />
@@ -1154,7 +1189,7 @@ const ChatMessageItem = React.memo(function MessageItem({
               return (
                 <div className="px-1 flex flex-col gap-2 max-w-[min(100%,42rem)] w-full">
                   {artifacts.map((art) => (
-                    <ChatArtifactCard key={art.id} artifact={art} />
+                    <ChatArtifactCard key={art.id} artifact={art} chatId={chatId} />
                   ))}
                 </div>
               );
@@ -1212,7 +1247,7 @@ const ChatMessageItem = React.memo(function MessageItem({
                       ) : null}
                       {leaked ? (
                         <div className="px-4 pb-3 pt-1 flex flex-col gap-2 max-w-[min(100%,42rem)] w-full">
-                          <ChatArtifactCard artifact={leaked} onOpen={onOpenArtifact ? () => onOpenArtifact(leaked) : undefined} />
+                          <ChatArtifactCard artifact={leaked} chatId={chatId} onOpen={onOpenArtifact ? () => onOpenArtifact(leaked) : undefined} />
                         </div>
                       ) : pending ? (
                         <div className="px-4 pb-3 pt-1 max-w-[min(100%,42rem)] w-full">
@@ -1232,7 +1267,7 @@ const ChatMessageItem = React.memo(function MessageItem({
                         href={href}
                         target="_blank"
                         rel="noopener noreferrer"
-                        onClick={(e) => handleLyknBrowserClick(e, href, src.title)}
+                        onClick={(e) => handleLyknBrowserClick(e, href, src.title, linkOpts)}
                         className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all"
                       >
                         <SiteFavicon url={href} className="h-3.5 w-3.5" />
@@ -1254,7 +1289,7 @@ const ChatMessageItem = React.memo(function MessageItem({
                           href={href}
                           target="_blank"
                           rel="noopener noreferrer"
-                          onClick={(e) => handleLyknBrowserClick(e, href, domain)}
+                          onClick={(e) => handleLyknBrowserClick(e, href, domain, linkOpts)}
                           className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all"
                         >
                           <SiteFavicon url={href} className="h-3.5 w-3.5" />

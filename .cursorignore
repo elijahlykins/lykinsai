@@ -1,0 +1,15 @@
+# Full extra checkouts. Cursor and tsserver must not index these.
+.worktrees/
+
+# Dependency and build output
+node_modules/
+dist/
+out/
+release/
+/models/
+/models-cache/
+
+# Local scratch
+.local-migration/
+eval/runs/
+eval/mind2web/cache/

@@ -99,6 +99,7 @@ import {
   USER_RECALL_TURN_PROMPT,
   USER_RECALL_DEEPEN_PROMPT,
   GREETING_TURN_PROMPT,
+  messageIsHelloGreeting,
   messageIsPureGreeting,
   isCasualOverlayAck,
   LYKN_CHAT_PERSONA_STATIC,
@@ -133,6 +134,7 @@ import {
   runYouTubeSearchIfNeeded,
   URL_DETECT_RE,
   needsYouTubeSearch,
+  buildYouTubeSearchQuery,
   BOARD_CONTEXT_FOCUSED_CHARS,
 } from './webEnrichment.js';
 import {
@@ -142,6 +144,26 @@ import {
   resolveLocalToolResult,
 } from './localToolBridge.js';
 import { localTimeContextLine } from './timeContext.js';
+import { resolveUserPlan } from '../services/billingService.js';
+import {
+  assertChatTurnBillable,
+  chatRouteUsageMetadata,
+  resolveChatRoute,
+} from './chatRouting/index.js';
+import { loadTurnModelContext } from '../../lib/models/userModelSettings.js';
+import {
+  isOpenRouterTarget,
+  resolveInferenceTarget,
+} from '../../lib/inference/index.js';
+import {
+  buildPromptCacheKey,
+  cacheUsageMetrics,
+  classifyPromptSections,
+  contextUsageMetadata,
+  conversationMemoryBudget,
+  personalizationFingerprint,
+  shouldAttachRequestContext,
+} from './contextPipeline/index.js';
 import {
   MODEL_CATALOG,
   LYKN_ROUTED_MODELS,
@@ -546,7 +568,10 @@ export function registerAiInvokeRoute(app, {
         const contextText = String(input?.context || "").trim().slice(0, ctxBudget);
         const kbBudget = input?.projectId ? AI_BUDGETS.projectSummaryInProject : AI_BUDGETS.projectSummary;
         const kb = String(input?.knowledgeBase || "").trim().slice(0, kbBudget);
-        const convo = compressConversation(input?.conversation);
+        const convo = compressConversation(input?.conversation, {
+          tier: input?.modelTier || 'standard',
+          currentUserText: latestUserMessage,
+        });
 
         const focusedBricksNote = "";
 
@@ -571,18 +596,21 @@ export function registerAiInvokeRoute(app, {
           // identity when a published custom model is active).
           staticPersona,
 
-          // Dynamic per-call sections (everything below the first [MARKER] is
-          // treated as 'user' content by splitPromptForProvider — uncached).
+          // Semi-stable prefix (cacheable): identity, prefs, intent, project id.
           assistantIdentitySection,
           userPromptSection,
           `[INTENT]\n${String(input?.intent || "ask").trim().toLowerCase() || "ask"}`,
           input?.projectId ? `[PROJECT_ID]\n${String(input.projectId)}` : "",
           responseLengthNote,
           focusedBricksNote,
-          convo ? `[CONVERSATION — each line shows role, timestamp, and (for assistant) which model wrote it. Prior assistant lines are from other models, not you.]\n${convo}` : "",
-          conversationMemory ? `[CONVERSATION_MEMORY — past exchanges from other projects/vault]\n${sanitizeStaleSurfaceLanguage(String(conversationMemory).slice(0, 6000))}` : "",
+          convo ? `[CONVERSATION — each line shows role and (for assistant) which model wrote it. Prior assistant lines are from other models, not you.]\n${convo}` : "",
+          conversationMemory
+            ? `[CONVERSATION_MEMORY — past exchanges from other projects/vault]\n${sanitizeStaleSurfaceLanguage(String(conversationMemory).slice(0, conversationMemoryBudget(input?.modelTier || 'standard')))}`
+            : "",
           wsCtx ? `[WORKSPACE_CONTEXT]\n${wsCtx}` : "",
-          rawPrompt ? `[REQUEST_CONTEXT]\n${rawPrompt}` : "",
+          shouldAttachRequestContext(rawPrompt, latestUserMessage, convo)
+            ? `[REQUEST_CONTEXT]\n${rawPrompt}`
+            : "",
           kb ? `[WHAT_IM_ON]\n[PROJECT_KNOWLEDGE]\nProject knowledge for the active focus — connect the screen / topic here when it fits.\n${kb}` : "",
           contextText ? `[CONTEXT]\n${contextText}` : "",
           imageNote,
@@ -610,7 +638,7 @@ export function registerAiInvokeRoute(app, {
           LYKN_VOICE_DIRECT,
           "",
           "ASSISTANT TEXT VOICE (applies to the 'assistant' field only):",
-          "- The 'assistant' string is shown to the user as a chat message — it MUST follow the VOICE rule above. Default to I / you when describing what was done on the board.",
+          "- The 'assistant' string is shown to the user as a chat message.",
           "- 'I added a heading and a checklist for you.' — fine as-is.",
           "- 'Here's your task board.' — fine as-is.",
           "- 'I cleaned up your grid.' — fine as-is.",
@@ -644,7 +672,7 @@ export function registerAiInvokeRoute(app, {
           "",
           "Rules:",
           "- The assistant text should be helpful, natural, and direct — refer to yourself as 'I' and the user as 'you' (e.g. 'I added a heading and a checklist — open the second one when you\\'re ready'). Explain what blocks were created and why.",
-          "- If the user is ideating or unclear, ask 2-4 follow-up questions in follow_up_questions (e.g. 'Where do you want to go next?'). Natural 'we' is fine sparingly when something is genuinely shared, but the default is 'I / you'.",
+          "- If the user is ideating or unclear, ask 2-4 follow-up questions in follow_up_questions.",
           "- If the user explicitly asks to create/make/add a paper/doc, you MUST include {\"type\":\"create_sheet\"}.",
           "- If the user asks for a table, comparison, chart, or structured data display, use {\"type\":\"create_table\"} with headers and rows — this creates a visual table on the grid.",
           "- Only use {\"type\":\"create_spreadsheet\"} when the user explicitly says 'spreadsheet' or needs formulas, data entry, or a large data grid (budget, tracker, etc.).",
@@ -872,6 +900,36 @@ export function registerAiInvokeRoute(app, {
 
       const normalizedIntent = String(intent || "").trim().toLowerCase();
       const isChatIntent = normalizedIntent === "ask" || normalizedIntent === "chat" || normalizedIntent === "question";
+      let chatRoute = null;
+      if (!customModelCtx.customModel) {
+        const turnPolicy = await loadTurnModelContext({ userId: req.user?.id, body: req.body });
+        chatRoute = await resolveChatRoute({
+          requestedModel: model,
+          text: extractPureUserMessage(text, prompt) || text || '',
+          planId: invokePlan.planId,
+          hasImages: imageUrls.length > 0,
+          hasLargeContext: Boolean(
+            (context && String(context).length > 4000)
+            || (String(prompt || '').length > 12000),
+          ),
+          deepResearch: Boolean(deepResearch),
+          conversationLength: Array.isArray(conversation) ? conversation.length : 0,
+          userSettings: turnPolicy.settings,
+          modelPolicy: turnPolicy.policy,
+          resolvedRoute: turnPolicy.resolvedRoute,
+        });
+        // Billing preflight: a premium manual model (priced above the Auto
+        // advanced tier) meters the Usage Balance even on a paid plan, so an
+        // empty balance blocks before any provider spend.
+        const chatBilling = await assertChatTurnBillable({
+          userId: req.user?.id,
+          planId: invokePlan.planId,
+          chatRoute,
+        });
+        if (!chatBilling.allowed) {
+          return res.status(chatBilling.status).json(chatBilling.body);
+        }
+      }
       if (!wantsActions && isChatIntent) {
         prompt = buildLyknChatPrompt({
           prompt,
@@ -882,6 +940,7 @@ export function registerAiInvokeRoute(app, {
           projectId,
           conversation,
           intent: normalizedIntent || "ask",
+          modelTier: chatRoute?.modelTier || 'standard',
         });
       }
 
@@ -1012,7 +1071,7 @@ export function registerAiInvokeRoute(app, {
         prompt += "\n\n" + sanitizeStaleSurfaceLanguage(projectSection.text);
       }
       if (memorySection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(memorySection);
-      if (wantsPureGreeting) prompt += "\n\n" + GREETING_TURN_PROMPT;
+      if (messageIsHelloGreeting(invokeMsg)) prompt += "\n\n" + GREETING_TURN_PROMPT;
       else if (wantsUserRecallDeepen) prompt += "\n\n" + USER_RECALL_DEEPEN_PROMPT;
       else if (wantsUserRecall) prompt += "\n\n" + USER_RECALL_TURN_PROMPT;
       if (customModelKnowledge) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(customModelKnowledge);
@@ -1024,45 +1083,37 @@ export function registerAiInvokeRoute(app, {
         const evidence = String(searchResults || '');
         if (evidence.includes('[DEEP_RESEARCH_EVIDENCE]')) {
           prompt +=
-            '\n\n[RESEARCH_MODE — Deep research is armed. Treat [DEEP_RESEARCH_EVIDENCE] as your primary evidence and follow [RESEARCH_REPORT_INSTRUCTIONS]. ' +
-            'Deliver as markdown in your reply ONLY — do not call lykn_build_* or create a side-panel artifact.]';
+            '\n\n[RESEARCH_MODE - Deep research is armed. [DEEP_RESEARCH_EVIDENCE] is the evidence pack. Follow [RESEARCH_REPORT_INSTRUCTIONS].]';
         } else if (evidence.includes('[WEB_SEARCH_RESULTS]')) {
           prompt +=
-            '\n\n[RESEARCH_MODE — Deep research is armed. Multi-query research was unavailable, so use [WEB_SEARCH_RESULTS] as your evidence. ' +
-            'Write a thorough markdown report and end with a **Sources** section listing markdown links ONLY from those results — never invent URLs. ' +
-            'Do not call lykn_build_* or create a side-panel artifact.]';
+            '\n\n[RESEARCH_MODE - Deep research is armed. Multi-query research was unavailable. [WEB_SEARCH_RESULTS] is the evidence for this turn.]';
         } else {
           prompt +=
-            '\n\n[RESEARCH_MODE — Deep research was requested but live multi-source evidence was unavailable. ' +
-            'Say so briefly, answer carefully from general knowledge with clear uncertainty, and do not invent URLs or a fake Sources list. ' +
-            'Do not fall back to building an interactive artifact.]';
+            '\n\n[RESEARCH_MODE - Deep research was requested but live multi-source evidence was unavailable.]';
         }
       }
       if (customModelCtx.overlay) {
         prompt = applyCustomModelOverlayToPrompt(prompt, customModelCtx.overlay);
       }
 
-      // Handle unified-auto mode — prefer Gemini Flash (cheapest by far),
-      // and if no Google key is configured fall back to gpt-4.1-nano. The
-      // legacy gpt-4o / gpt-3.5-turbo fallbacks were ~25× and ~2× more
-      // expensive respectively for the exact same chat workload, so this
-      // is a pure cost win for the rare case Google goes down or the key
-      // is missing.
       let actualModel = model;
-      if (model === 'unified-auto') {
-        if (process.env.GOOGLE_API_KEY) {
-          actualModel = 'gemini-flash-latest';
-          console.log(`🔄 Unified mode: using ${actualModel} (free tier)`);
-        } else if (process.env.OPENAI_API_KEY) {
-          actualModel = 'gpt-4.1-nano';
-          console.log(`🔄 Unified mode: using ${actualModel} (cheap fallback)`);
-        } else {
-          actualModel = 'gpt-4.1-nano';
-          console.log(`🔄 Unified mode: using ${actualModel} (last-resort fallback)`);
+      if (customModelCtx.customModel) {
+        if (LYKN_ROUTED_MODELS[model]) {
+          actualModel = resolveLyknAlias(model);
+          console.log(`🟣 LYKN alias (${model}) → ${actualModel}`);
+        } else if (model === 'unified-auto') {
+          actualModel = process.env.GOOGLE_API_KEY ? 'gemini-flash-latest' : 'gpt-4.1-nano';
         }
-      } else if (LYKN_ROUTED_MODELS[model]) {
-        actualModel = resolveLyknAlias(model);
-        console.log(`🟣 LYKN alias (${model}) → ${actualModel}`);
+      } else if (chatRoute) {
+        actualModel = chatRoute.modelId;
+        if (chatRoute.routingSource !== 'override') {
+          console.log(
+            `🟣 Auto route (${chatRoute.routingSource}): ${chatRoute.modelTier} → ${actualModel} `
+            + `[${chatRoute.reasoningEffort}] ${chatRoute.reason}`,
+          );
+        } else {
+          console.log(`🟣 Explicit model ${model} → ${actualModel}`);
+        }
       }
 
       // Skip sending images when AI only needs to compute block positions (organize/move/resize)
@@ -1090,7 +1141,7 @@ export function registerAiInvokeRoute(app, {
         if (_ii > 0) { actualModel = _invokeModels[_ii]; console.log(`🔄 Invoke fallback → ${actualModel} (attempt ${_ii + 1}/${_invokeModels.length})`); }
         try {
 
-      if (isTogetherModel(actualModel)) {
+      if (isTogetherModel(actualModel) && customModelCtx.overlay?.loraActive) {
         if (!process.env.TOGETHER_API_KEY) {
           return res.status(503).json({
             error: 'Together API key not configured. Set TOGETHER_API_KEY for LoRA inference.',
@@ -1146,16 +1197,23 @@ export function registerAiInvokeRoute(app, {
           output_tokens: tData?.usage?.completion_tokens || 0,
         };
 
-      } else if (isOpenAIModel(actualModel)) {
-        if (!process.env.OPENAI_API_KEY) {
-          console.error('❌ OPENAI_API_KEY not found in environment variables');
-          return res.status(500).json({ 
-            error: 'OpenAI API key not configured. Please set OPENAI_API_KEY in your .env file.' 
+      } else if (isOpenRouterTarget(actualModel) || isOpenAIModel(actualModel)) {
+        const inferTarget = resolveInferenceTarget(actualModel);
+        if (!process.env[inferTarget.keyVar]) {
+          console.error(`❌ ${inferTarget.keyVar} not found in environment variables`);
+          return res.status(500).json({
+            error: `${inferTarget.keyVar} is not configured.`,
           });
         }
         const openAIResult = await invokeOpenAIModel(actualModel, prompt, effectiveImageUrls, {
           userId: req.user?.id,
           wantsActions,
+          reasoningEffort: chatRoute?.reasoningEffort || 'none',
+          personalizationVersion: personalizationFingerprint({
+            userPrompt,
+            aiName,
+            responseLength,
+          }),
           // No intent passed: classifyActionType pre-generation always returns
           // 'chat_short' (2500 cap) because responseLength is 0, which silently
           // capped real chat replies at ~1700 words and made MAX_TOKENS the
@@ -1563,6 +1621,25 @@ export function registerAiInvokeRoute(app, {
           provider: detectProvider(actualModel),
           inputTokens: usageData.input_tokens,
           outputTokens: usageData.output_tokens,
+          cachedInputTokens: usageData.cached_input_tokens || 0,
+          reasoningTokens: usageData.reasoning_tokens || 0,
+          planId: invokePlan.planId,
+          metadata: {
+            ...chatRouteUsageMetadata(chatRoute, { planId: invokePlan.planId }),
+            gateway: isOpenRouterTarget(actualModel) ? 'openrouter' : 'direct',
+            upstream_cost_usd: Number.isFinite(Number(usageData.cost_usd))
+              ? usageData.cost_usd
+              : undefined,
+            ...contextUsageMetadata(
+              classifyPromptSections({
+                ...splitPromptForProvider(prompt),
+              }),
+              cacheUsageMetrics({
+                inputTokens: usageData.input_tokens,
+                cachedInputTokens: usageData.cached_input_tokens || 0,
+              }),
+            ),
+          },
         });
       }).catch(() => {});
 

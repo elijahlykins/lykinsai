@@ -27,6 +27,7 @@ function attachLiveWatch(d) {
   const agentRecentVisits = d.agentRecentVisits;
   const { broadcastToAllWindows } = require("../services/initializeElectronServices.cjs");
   const { screenFingerprint } = require("../browserAct.cjs");
+  const { GLASS_LIVE_WATCH_ENABLED } = require("./glassFeatures.cjs");
   const overlayConstants = d.constants;
   const {
     OVERLAY_WIDTH, OVERLAY_SIDE_WIDTH, OVERLAY_WATCH_SIDE_WIDTH, OVERLAY_MAX_WIDTH,
@@ -141,6 +142,7 @@ function buildLiveWatchRulesSection() {
 }
 
 function isLiveWatchEnabled() {
+  if (!GLASS_LIVE_WATCH_ENABLED) return false;
   return !!readOverlaySettings().liveWatch;
 }
 
@@ -296,6 +298,7 @@ function scheduleLiveWatchTick(delayMs) {
 }
 
 function stopLiveWatch() {
+  if (!d.liveWatchState) return;
   d.liveWatchState.enabled = false;
   if (d.liveWatchTimer) {
     clearTimeout(d.liveWatchTimer);
@@ -325,6 +328,10 @@ function stopLiveWatch() {
 }
 
 async function startLiveWatch() {
+  if (!GLASS_LIVE_WATCH_ENABLED) {
+    stopLiveWatch();
+    return { ok: false, error: "unplugged", ...getLiveWatchStatus() };
+  }
   const access = await ensureScreenRecordingAccess();
   if (!access.ok) {
     return { ok: false, error: "no_permission", ...access };
@@ -343,6 +350,10 @@ async function startLiveWatch() {
 
 async function setLiveWatchEnabled(on) {
   const enabled = !!on;
+  if (!GLASS_LIVE_WATCH_ENABLED && enabled) {
+    stopLiveWatch();
+    return { ok: false, error: "unplugged", enabled: false, ...getLiveWatchStatus() };
+  }
   if (enabled) {
     const result = await startLiveWatch();
     if (!result.ok) return result;
@@ -762,6 +773,8 @@ async function liveWatchTick() {
   d.startLiveWatch = startLiveWatch;
   d.stopLiveWatch = stopLiveWatch;
   d.tryLiveWatchBrowserScrape = tryLiveWatchBrowserScrape;
+
+  if (!GLASS_LIVE_WATCH_ENABLED) stopLiveWatch();
 }
 
 module.exports = { attachLiveWatch };

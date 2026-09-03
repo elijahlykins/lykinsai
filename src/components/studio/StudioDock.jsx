@@ -209,7 +209,7 @@ export function CircleIconButton({
       >
         <Icon
           className={`${
-            Icon === BrowserMark ? "h-6 w-6" : "h-[1.05rem] w-[1.05rem]"
+            Icon === BrowserMark ? "h-[1.25rem] w-[1.25rem]" : "h-[1.05rem] w-[1.05rem]"
           } flex-shrink-0`}
         />
         {/* Always mounted so the label slides/fades with the width animation

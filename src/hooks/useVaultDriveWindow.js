@@ -29,14 +29,15 @@ import {
   parseStorageTarget,
   vaultPdfEmbedUrl,
 } from "@/lib/vault/vaultCardHelpers";
-import { resolveRenderType } from "@/lib/vault/attachmentType";
+import { looksLikeHtmlAttachment, resolveRenderType } from "@/lib/vault/attachmentType";
 import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import { safeHtmlPreviewUrl } from "@/lib/safeExternalUrl";
 
 const resolveAttachmentType = resolveRenderType;
 
 // AI Drive holds what LYKN made, and only that. Uploads, connector syncs and
-// notes stay on the Vault page; two folders is the whole structure. Shared with
+// notes stay on the Vault page; Docs, Artifacts, and Image Gen are the whole
+// structure. Shared with
 // aiDriveContents.ts, which lists the same items for the AI — the drive the
 // model is told about has to be the drive the user is looking at.
 export const DRIVE_FOLDERS = AI_DRIVE_FOLDERS.map((f) => ({ id: f.id, name: f.name }));
@@ -47,7 +48,7 @@ export const DRIVE_FOLDERS = AI_DRIVE_FOLDERS.map((f) => ({ id: f.id, name: f.na
 // as text are noise.
 const TEXT_PREVIEW_EXTS = new Set([
   "txt", "md", "markdown", "csv", "tsv", "json", "jsx", "tsx", "js", "mjs",
-  "cjs", "ts", "css", "html", "htm", "xml", "yml", "yaml", "py", "rb", "sh",
+  "cjs", "ts", "css", "xml", "yml", "yaml", "py", "rb", "sh",
   "sql", "log",
 ]);
 
@@ -142,7 +143,9 @@ export function useVaultDriveWindow({
   const driveArtFor = useCallback((card) => {
     if (card.kind !== "attachment") return {};
     const att = card.attachment || {};
-    const type = String(card.type || "");
+    const type = looksLikeHtmlAttachment(card.attachment)
+      ? "html"
+      : String(card.type || "");
     const resolved = resolvedAttachmentUrls[card.id] || "";
     if (type === "image") {
       if (resolved) return { thumb: resolved };
@@ -253,40 +256,47 @@ export function useVaultDriveWindow({
    * artifact goes through the file proxy, whose relaxed script policy is what
    * interactive React/Babel builds need to actually run.
    */
-  const resolveCardMediaUrl = useCallback(async (card, type) => {
+  /**
+   * The raw, fetchable address for a card's bytes — a local blob or a signed
+   * cloud URL. This is what image attachments fetch, and what take-to-chat on
+   * an html window fetches too (the proxied preview address below is
+   * iframe-only and refuses a cross-origin fetch).
+   */
+  const resolveCardBytesUrl = useCallback(async (card) => {
     if (!card) return "";
     const att = card.attachment || {};
-
-    const bytesUrl = async () => {
-      const target = parseStorageTarget(att);
-      if (target?.bucket && target?.path) {
-        if (isLocalTarget(target)) return localBlobUrl(target.path) || "";
-        const cacheKey = `full:${target.bucket}:${target.path}`;
-        const cached = readCachedSignedUrl(signedUrlCacheRef.current, cacheKey);
-        if (cached) return cached;
-        try {
-          const { data } = await supabase.storage
-            .from(target.bucket)
-            .createSignedUrl(target.path, SIGNED_URL_TTL_SECONDS);
-          if (data?.signedUrl) {
-            writeCachedSignedUrl(signedUrlCacheRef.current, cacheKey, data.signedUrl);
-            return data.signedUrl;
-          }
-        } catch {
-          /* fall back to whatever address the card already carries */
+    const target = parseStorageTarget(att);
+    if (target?.bucket && target?.path) {
+      if (isLocalTarget(target)) return localBlobUrl(target.path) || "";
+      const cacheKey = `full:${target.bucket}:${target.path}`;
+      const cached = readCachedSignedUrl(signedUrlCacheRef.current, cacheKey);
+      if (cached) return cached;
+      try {
+        const { data } = await supabase.storage
+          .from(target.bucket)
+          .createSignedUrl(target.path, SIGNED_URL_TTL_SECONDS);
+        if (data?.signedUrl) {
+          writeCachedSignedUrl(signedUrlCacheRef.current, cacheKey, data.signedUrl);
+          return data.signedUrl;
         }
+      } catch {
+        /* fall back to whatever address the card already carries */
       }
-      return resolvedAttachmentUrls[card.id] || String(att.url || "").trim();
-    };
+    }
+    return resolvedAttachmentUrls[card.id] || String(att.url || "").trim();
+  }, [resolvedAttachmentUrls, signedUrlCacheRef]);
 
-    if (type !== "html") return bytesUrl();
+  const resolveCardMediaUrl = useCallback(async (card, type) => {
+    if (!card) return "";
+
+    if (type !== "html") return resolveCardBytesUrl(card);
 
     const proxied = await resolveHtmlArtifactOpenUrl(card);
     if (proxied) return proxied;
     // Nothing hosted it — a build that only exists on this device, or the proxy
     // is down. Frame the markup itself; a blob URL is its own opaque origin, so
     // the artifact still runs without reaching anything of the user's.
-    const direct = await bytesUrl();
+    const direct = await resolveCardBytesUrl(card);
     if (!direct) return "";
     try {
       const resp = await fetch(direct);
@@ -295,7 +305,7 @@ export function useVaultDriveWindow({
     } catch {
       return "";
     }
-  }, [resolveHtmlArtifactOpenUrl, resolvedAttachmentUrls]);
+  }, [resolveCardBytesUrl, resolveHtmlArtifactOpenUrl]);
 
   /**
    * The folders the vault actually has — the distinct names rows are filed
@@ -351,7 +361,62 @@ export function useVaultDriveWindow({
     // in. A generated image and a downloaded one are both just files, and
     // there was no reason left for them to behave differently.
     const att = card.attachment || {};
-    const type = resolveAttachmentType(att) || card.type;
+    const type = looksLikeHtmlAttachment(att)
+      ? "html"
+      : resolveAttachmentType(att) || card.type;
+    if (card.kind === "attachment" && type === "html") {
+      openFileWindow({
+        itemId: card.id,
+        name: att.name || card.title || "Document",
+        mime: att.mimeType || att.mime || "text/html",
+        media: "html",
+        resolveUrl: () => resolveCardMediaUrl(card, "html"),
+        // The proxied preview address above is iframe-only; take-to-chat
+        // fetches these raw bytes instead — the same address images use.
+        resolveAttachUrl: () => resolveCardBytesUrl(card),
+        picks: [
+          {
+            id: "project",
+            label: "Add to project",
+            icon: FolderKanban,
+            empty: "No projects yet.",
+            options: () =>
+              projectsRef.current.map((project) => ({
+                id: String(project.id),
+                label: project.name,
+              })),
+            onPick: (projectId) => addCardToProject(card, projectId),
+          },
+          {
+            id: "move",
+            label: "Move to",
+            icon: FolderInput,
+            options: () => {
+              const note = notesRef.current.find(
+                (n) => String(n?.id) === String(card.noteId),
+              );
+              const at = String(note?.folder || "").trim();
+              return [
+                { id: AI_DRIVE_FOLDER, label: "AI Drive", current: at === AI_DRIVE_FOLDER },
+                ...(canSaveFileAs()
+                  ? [{ id: MOVE_TO_DEVICE, label: "A folder on this Mac…" }]
+                  : []),
+                ...vaultFoldersRef.current.map((name) => ({
+                  id: name,
+                  label: name,
+                  current: at === name,
+                })),
+              ];
+            },
+            onPick: (choice) =>
+              choice === MOVE_TO_DEVICE
+                ? saveCardToDevice(card, "html")
+                : moveCardToFolder(card, choice),
+          },
+        ],
+      });
+      return;
+    }
     if (card.kind === "attachment" && !DRIVE_LINK_TYPES.has(type)) {
       openFileWindow({
         itemId: card.id,
@@ -410,6 +475,7 @@ export function useVaultDriveWindow({
   }, [
     closeAllVaultPopovers,
     isChatPickMode,
+    resolveCardBytesUrl,
     resolveCardMediaUrl,
     addCardToProject,
     moveCardToFolder,

@@ -24,6 +24,7 @@ const DEFAULT_BROWSER_CAPABILITIES = [
 function defaultBotCapabilities({ localMode = false } = {}) {
   return [
     "reply",
+    "write_document",
     "research_report",
     "edit_report",
     "build_artifact",

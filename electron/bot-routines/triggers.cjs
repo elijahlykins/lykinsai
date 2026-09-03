@@ -239,10 +239,10 @@ function describeTrigger(trigger, { describeScheduleFn } = {}) {
     return `When "${trigger.name}" ${trigger.event === "exited" ? "exits" : "starts"}`;
   }
   if (trigger.type === "browser") {
-    return `Watch ${describeBrowserTarget(trigger)} — ${describeBrowserCondition(trigger)}`;
+    return `Watch ${describeBrowserTarget(trigger)}: ${describeBrowserCondition(trigger)}`;
   }
   if (trigger.type === "screen") {
-    return `Watch ${describeScreenTarget(trigger)} — ${describeScreenCondition(trigger)}`;
+    return `Watch ${describeScreenTarget(trigger)}: ${describeScreenCondition(trigger)}`;
   }
   return "Unknown trigger";
 }

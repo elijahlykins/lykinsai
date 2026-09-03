@@ -26,6 +26,13 @@ function createBrowsePresentation(host) {
    */
   const STEP_DETAIL_SEP = " · ";
 
+  function joinStepDetails(parts) {
+    return (Array.isArray(parts) ? parts : [])
+      .map((part) => String(part || "").trim())
+      .filter(Boolean)
+      .join(STEP_DETAIL_SEP);
+  }
+
   /**
    * The reasoning behind a step, as it rides inside the step marker's markdown
    * title. Quotes would close the title early and parens would close the link,
@@ -190,6 +197,16 @@ function createBrowsePresentation(host) {
       if (url) last.url = url;
       if (detail) last.detail = sanitizeStepDetail(detail);
       if (note && !last.note) last.note = note;
+      return;
+    }
+    // A newer thinking placeholder replaces the previous one. Otherwise each
+    // decide-round stacks another "Thinking…" row above the live spinner.
+    if (last && last.transient && transient) {
+      last.label = title;
+      if (url) last.url = url;
+      if (detail) last.detail = sanitizeStepDetail(detail);
+      if (note && !last.note) last.note = note;
+      last.status = "live";
       return;
     }
     // A real step replaces the thinking placeholder it was decided behind
@@ -373,6 +390,8 @@ function createBrowsePresentation(host) {
       case "fill":
       case "write":
         return label ? `Typing into “${label}”` : "Filling in a field";
+      case "paste_text":
+        return "Pasting into the document";
       case "replace_text":
         return label ? `Editing “${label}”` : "Editing the text";
       case "select":
@@ -644,13 +663,13 @@ function createBrowsePresentation(host) {
       bits.find((p) => /\d{1,2}:\d{2}|\b(am|pm)\b|yesterday|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i.test(p)) ||
       bits[2] ||
       "";
-    const body = extractReadablePageSnippets(pageText, { maxLines: 5, maxChars: 1100 });
-    let msg = "Opened Gmail";
-    if (sender) msg += `. The email is from **${sender}**`;
-    if (subject) msg += `: “${subject}”`;
-    if (time) msg += ` (${time})`;
-    msg += ".";
-    if (body) msg += `\n\n${body}`;
+    const body = extractReadablePageSnippets(pageText, { maxLines: 10, maxChars: 2800 });
+    const title = subject || sender || "Opened email";
+    let msg = `## ${title}\n\n`;
+    if (sender) msg += `From **${sender}**`;
+    if (time) msg += sender ? ` · ${time}` : time;
+    if (sender || time) msg += ".\n\n";
+    if (body) msg += body;
     return ensureHelpfulAgentClose(msg, {
       goal: "email",
       url,
@@ -665,10 +684,11 @@ function createBrowsePresentation(host) {
     const lines = list.map((r, i) => `${i + 1}. ${r}`);
     const wantsUnanswered = /\b(unanswered|reply|respond|need to)\b/i.test(goal || "");
     const msg =
-      `Here are the top emails in this agent's Gmail inbox:\n\n` +
+      `## Inbox\n\n` +
+      `Here is what is waiting in this inbox:\n\n` +
       `${lines.join("\n")}\n\n` +
       (wantsUnanswered
-        ? `These look like the ones most likely to need a reply — say which number to open.`
+        ? `These look like the ones most likely to need a reply. Say which number to open.`
         : `I can open any of these, draft a reply, or skim unread only.`);
     return ensureHelpfulAgentClose(msg, { goal, url: "https://mail.google.com", title: "Gmail" });
   }
@@ -775,18 +795,18 @@ function createBrowsePresentation(host) {
     if (!opts.midStep) {
       let summary = stripInlineWantMeSuggestions(String(msg || "").trim())
         .replace(/\n{3,}/g, "\n\n")
-        .slice(0, 1800)
+        .slice(0, 16000)
         .trim();
       if (summary.length < 20) {
         const title = String(opts.title || agent.lastBrowseTitle || "").trim();
         summary = title
-          ? `Done — finished up on **${title.slice(0, 100)}**.`
-          : "Done — the browser work for this ask is finished.";
+          ? `Done. Finished up on **${title.slice(0, 100)}**.`
+          : "Done. The browser work for this ask is finished.";
       }
       const tip = suggestionText(
         Array.isArray(agent.lastSuggestions) ? agent.lastSuggestions[0] : "",
       );
-      appendix = [summary, tip ? `**Next step:** ${tip} — just say the word.` : ""]
+      appendix = [summary, tip ? `**Next step:** ${tip}. Just say the word.` : ""]
         .filter(Boolean)
         .join("\n\n");
     }
@@ -904,6 +924,8 @@ function createBrowsePresentation(host) {
   }
 
   return {
+    STEP_DETAIL_SEP,
+    joinStepDetails,
     sanitizeStepLabel,
     sanitizeStepDetail,
     tidyStepDetail,

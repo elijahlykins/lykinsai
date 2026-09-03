@@ -33,6 +33,7 @@ const visionPolicy = require("./runtime/visionPolicy.cjs");
 const contextRouter = require("./runtime/contextRouter.cjs");
 const batchPolicy = require("./runtime/batch.cjs");
 const deadEnd = require("./runtime/deadEnd.cjs");
+const { rewriteDocsWriteAction } = require("../docsTitleGuard.cjs");
 
 const DEFAULT_MAX_ROUNDS = 24;
 
@@ -50,6 +51,47 @@ const START_OVER_LABEL_RE =
 function pageShowsDeliveryComplete(snapshot) {
   const text = `${snapshot?.visibleText || ""} ${snapshot?.title || ""}`;
   return DELIVERY_COMPLETE_PAGE_RE.test(text);
+}
+
+/**
+ * Plan steps the user's literal ask did not license — tempting extras the
+ * planner still writes (especially "draft a reply" after "check my email").
+ * Finish pushback must not hard-continue the loop for these, or a finished
+ * report gets cut off and the agent starts a new errand the user never asked.
+ */
+function planStepIsOptionalExtra(step, userAsk, doNot = []) {
+  const s = String(step || "").toLowerCase();
+  const ask = String(userAsk || "").toLowerCase();
+  if (!s) return false;
+  const banned = (Array.isArray(doNot) ? doNot : []).map((d) => String(d || "").toLowerCase());
+  if (
+    banned.some((d) => {
+      if (!d) return false;
+      if (/\brepl(?:y|ies)|respond/.test(d) && /\b(reply|respond|response|draft)\b/.test(s)) {
+        return true;
+      }
+      if (/\bsend/.test(d) && /\b(send|sent)\b/.test(s)) return true;
+      if (/\borganiz/.test(d) && /\b(organiz|label|archive|delete|star)\b/.test(s)) {
+        return true;
+      }
+      return d.length > 10 && s.includes(d.slice(0, 24));
+    })
+  ) {
+    return true;
+  }
+  const reviewOnly =
+    /\b(check|review|look\s+(?:at|over|through)|see|scan|summarize|summarise|flag|unanswered|unread)\b/.test(
+      ask,
+    ) &&
+    /\b(email|e-mail|mail|inbox|gmail|messages?)\b/.test(ask) &&
+    !/\b(reply|respond|response|compose|draft|write|send|forward)\b/.test(ask);
+  if (
+    reviewOnly &&
+    /\b(reply|respond|response|compose|draft|send|forward|organiz|archive|label)\b/.test(s)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function looksLikeRestartingDelivery(decision, snapshot) {
@@ -752,6 +794,7 @@ async function runTask({
   let openStepsPushbacks = 0;
   // One reminder that a finished plan is a reason to stop, not keep browsing.
   let planCompleteNudges = 0;
+  let docsTitleSkips = 0;
   // Facts the MODEL reported (plus user hand-back notes) — the loop's own
   // bookkeeping facts (a dismissed cookie wall, a dead-end URL) also live in
   // working memory, and counting those as progress let a run that had only
@@ -1123,7 +1166,10 @@ async function runTask({
       // half-done. Make the agent account for them once before accepting it —
       // unless the committing action already succeeded. Pushing back after a
       // real send is how the agent reopened Compose and ran the task again.
-      const openSteps = task.plan.filter((p) => !p.done).map((p) => p.step);
+      const openSteps = task.plan
+        .filter((p) => !p.done)
+        .map((p) => p.step)
+        .filter((step) => !planStepIsOptionalExtra(step, userAsk || goal, task.doNot));
       // A completed delivery only excuses open steps on a ONE-outcome ask.
       // On "email Alice and text Bob", the first send must not wave through a
       // finish that leaves the text unsent.
@@ -1325,9 +1371,46 @@ async function runTask({
     const before = snapshot;
     // The decision's reason is the human-readable "next step" — surface it so
     // the UI can narrate one step at a time instead of a pre-baked plan.
-    const targetEl = decision.action?.target
+    let targetEl = decision.action?.target
       ? snapshot?.byRef?.get?.(String(decision.action.target))
       : null;
+    // Docs: Rename is a filename box. Body writes and a third title type
+    // used to land there and append forever. Rewrite or refuse before acting.
+    const titleRewrite = rewriteDocsWriteAction(decision.action, {
+      targetLabel: targetEl?.label || decision.action?.label || "",
+      history: task.recentActions,
+    });
+    if (titleRewrite?.skip) {
+      docsTitleSkips += 1;
+      debug.log("docs_title_repeat_blocked", {
+        label: targetEl?.label || "",
+        text: String(decision.action?.text || "").slice(0, 80),
+        skips: docsTitleSkips,
+      });
+      taskState.addFact(task, titleRewrite.fact);
+      const leftover = String(decision.action?.text || "").trim();
+      if (docsTitleSkips >= 2 && leftover) {
+        decision = {
+          ...decision,
+          action: { type: "paste_text", text: leftover, mode: "replace" },
+        };
+        targetEl = null;
+      } else {
+        recovering = true;
+        recoveryHint = titleRewrite.fact;
+        continue;
+      }
+    }
+    if (titleRewrite?.action) {
+      debug.log("docs_title_rewritten", {
+        from: decision.action?.type,
+        to: titleRewrite.action.type,
+        reason: titleRewrite.reason,
+      });
+      decision = { ...decision, action: titleRewrite.action };
+      if (titleRewrite.action.type === "paste_text") targetEl = null;
+      if (titleRewrite.fact) taskState.addFact(task, titleRewrite.fact);
+    }
     // A batch runs the whole planned sequence; everything else is one action.
     // `decision.steps` is only ever populated when normalizeDecision admitted
     // it, so this branch never needs to re-check what is in it. Declared here,
@@ -1546,6 +1629,7 @@ async function runTask({
     // 8. Update task state.
     taskState.recordAction(task, {
       action: decision.action,
+      targetLabel: targetEl?.label || decision.action?.label || "",
       expectedOutcome: decision.expectedOutcome,
       result: verification.success ? "success" : "failure",
       // A deferred verdict was taken on faith, not shown — it must not later
@@ -1817,4 +1901,5 @@ module.exports = {
   questionsSimilar,
   isSingleOutcomeGoal,
   requiresHumanInput,
+  planStepIsOptionalExtra,
 };

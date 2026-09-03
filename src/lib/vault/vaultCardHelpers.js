@@ -12,12 +12,15 @@ import {
   stripAttachmentsMarker,
   withAttachmentsMarker,
 } from "@/lib/vault/attachmentsMarker";
+import { isWrittenDocument } from "@/lib/vault/aiDriveContents";
 import { isVerticalSocialContent } from "@/lib/media/socialEmbed";
 
-/** Which of the two folders an item belongs in, or "" when it isn't AI output. */
+/** Which AI Drive folder an item belongs in, or "" when it isn't AI output. */
 export function driveFolderIdFor(card) {
   if (!card?.aiGenerated) return "";
-  return card.kind === "attachment" && String(card.type || "") === "image" ? "images" : "artifacts";
+  if (card.kind === "attachment" && String(card.type || "") === "image") return "images";
+  if (isWrittenDocument(card.tags)) return "docs";
+  return "artifacts";
 }
 
 // Marker parsing is delegated to `attachmentsMarker.ts` so all consumers

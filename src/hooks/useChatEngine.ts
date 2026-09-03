@@ -24,15 +24,23 @@ import type {
   OrchestratorResult,
 } from "@/lib/lyknChat/chatTurnTypes";
 import type { CachedYouTubeTranscript } from "@/lib/ai/chatTranscription";
-import { type ChatArtifact, toArtifactEditContext } from "@/lib/ai/chatArtifacts";
+import { type ChatArtifact, toArtifactEditContext, editTargetFromArtifact } from "@/lib/ai/chatArtifacts";
 import { resolveArtifactSendPlan } from "@/lib/ai/artifactSendPlan";
+import {
+  artifactFromAttachment,
+  pickEditArtifact,
+} from "@/lib/lyknChat/artifactChatAttach";
+import { homeChatArtifactKey, unstageHomeChatArtifact } from "@/lib/homeChatFiles";
 import { detectImageAsk, imagineSwitchNotice } from "@/lib/ai/studioModeIntent";
+import { resolveChatSendTarget, type ChatSendOpts } from "@/lib/ai/chatSendTarget";
+import { hydrateThreadSnapshot } from "@/lib/lyknChat/hydrateThreadSnapshot";
+import { persistOffRouteThread } from "@/lib/lyknChat/persistThreadChat";
 import { useChatDictation } from "@/hooks/useChatDictation";
 import { useChatComposerAttachments } from "@/hooks/useChatComposerAttachments";
 import { useChatThreadProjection } from "@/hooks/useChatThreadProjection";
 import { useChatMarkdownComponents } from "@/components/lyknChat/chatMarkdownComponents";
 import { AI_TEMPORARY_FAILURE_TEXT, AI_GUEST_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
-import { forgetAppEdit } from "@/lib/apps/editApp";
+import { appEditArtifactById, forgetAppEdit } from "@/lib/apps/editApp";
 import {
   bindThreadStateCallbacks,
   ensureThreadSnapshot,
@@ -41,6 +49,7 @@ import {
   patchThreadSnapshot,
   registerStreamAbortController,
 } from "@/lib/chat/chatThreadRuntime";
+import { stopBotsWorkingOnChat } from "@/lib/bots/botsClient";
 
 export type { PromptMessage, FocusedChatAttachment, CreateAction, OrchestratorResult };
 
@@ -149,8 +158,8 @@ export interface UseChatEngineReturn {
   youtubeTranscriptCacheRef: React.MutableRefObject<Record<string, CachedYouTubeTranscript>>;
 
   /* Callbacks */
-  handleChatSend: () => Promise<void>;
-  handleStopAi: () => void;
+  handleChatSend: (opts?: ChatSendOpts) => Promise<void>;
+  handleStopAi: (targetChatId?: string) => void;
   handleDictateToggle: () => void;
   /* Voice Mode controls. */
   toggleVoiceMode: () => void;
@@ -199,6 +208,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const chatInputRef = useRef("");
   const [chatInputHasText, setChatInputHasText] = useState(false);
   const [isChatLoading, setIsChatLoading] = useState(false);
+  const [inFlightBuild, setInFlightBuild] = useState(false);
   const [chatFlowMode, setChatFlowMode] = useState<"idle" | "clarifying" | "generating">("idle");
   const [chatStatusText, setChatStatusText] = useState("");
   const [expandedAiMsgIds, setExpandedAiMsgIds] = useState<Set<string>>(new Set());
@@ -443,37 +453,43 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   // chatMarkdownComponents.ts — identity/caching semantics are preserved
   // there (a fresh components object per render would break ReactMarkdown's
   // memoization).
-  const buildChatMarkdownComponents = useChatMarkdownComponents(assistantTaskChecks, updateTaskCheck);
+  const buildChatMarkdownComponents = useChatMarkdownComponents(
+    assistantTaskChecks,
+    updateTaskCheck,
+    routeChatId || chatId,
+  );
 
   const getKnowledgeBaseContext = useCallback(() => getCachedKbText(), [getCachedKbText]);
 
   /* ---------- handleChatSend (delegates to orchestrator) ---------- */
 
-  const handleChatSend = useCallback(async () => {
-    const text = chatInputRef.current.trim();
-    // Allow sending with no text as long as something else is attached
-    // (vault drops / files / a pending brick action). Mirrors ChatGPT,
-    // where an image/file alone is a valid turn.
-    const hasAttachment =
-      focusedChatAttachments.length > 0 ||
-      Boolean(pendingBrickActionDataRef.current?.videoId);
+  const handleChatSend = useCallback(async (opts?: ChatSendOpts) => {
+    const target = resolveChatSendTarget(opts, routeChatId, chatId);
+    const { streamChatId, browserSend, offRoute } = target;
+    if (browserSend && !target.explicitChatId) return;
+    const text = String(opts?.text ?? chatInputRef.current).trim();
+    const railAttachments = browserSend ? (opts?.attachments || []) : [];
+    const hasAttachment = browserSend
+      ? railAttachments.length > 0
+      : focusedChatAttachments.length > 0 ||
+        Boolean(pendingBrickActionDataRef.current?.videoId);
     if (!text && !hasAttachment) return;
+    if (!streamChatId) return;
 
-    const sendMode = composerModeRef.current;
-    const streamChatId = String(routeChatId || chatId || "");
-    // Per-board guard: block a second send for THIS chat only. Other
-    // chats in the thread can stream at the same time.
+    const sendMode = browserSend ? "none" : composerModeRef.current;
+    if (streamChatId) await hydrateThreadSnapshot(streamChatId, user?.id);
     if (sendingBoardsRef.current.has(streamChatId)) return;
     const targetSnap = streamChatId ? getThreadSnapshot(streamChatId) : null;
     if (targetSnap?.isChatLoading) return;
 
     chatUserScrolledUpRef.current = false;
-    window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
+    if (!browserSend) {
+      window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
+    }
     const now = Date.now();
-    // Scope the dupe-send signature to the target chat — a single global
-    // signature silently swallowed sends of the same text into a different
-    // chat within the debounce window.
-    const sig = `${streamChatId}|${text.length > 100 ? text.slice(0, 100) : text}`;
+    const sig = `${streamChatId}|${text.length > 100 ? text.slice(0, 100) : text}|${
+      browserSend ? railAttachments.length : focusedChatAttachments.length
+    }`;
     if (lastSendSigRef.current.text === sig && now - lastSendSigRef.current.at < 900) return;
     lastSendSigRef.current = { text: sig, at: now };
 
@@ -487,7 +503,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     // is the only lane that arms lykn_generate_image / the batch canvas.
     if (sendMode !== "image" && detectImageAsk(text)) {
       const notice = imagineSwitchNotice();
-      setChatInput("");
+      if (!browserSend) setChatInput("");
       bindThreadStateCallbacks(streamChatId, {
         setChatStatusText,
         setChatMessages,
@@ -537,15 +553,25 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     });
     isSendingRef.current = true;
     sendingBoardsRef.current.add(streamChatId);
-    const sentAttachments = [...focusedChatAttachments];
-    const brickActionData = pendingBrickActionDataRef.current;
-    pendingBrickActionDataRef.current = null;
+    const sentAttachments = browserSend ? [...railAttachments] : [...focusedChatAttachments];
+    const brickActionData = browserSend ? null : pendingBrickActionDataRef.current;
+    if (!browserSend) pendingBrickActionDataRef.current = null;
     if (brickActionData?.videoId && !sentAttachments.some((a: any) => a.videoId === brickActionData.videoId)) {
       sentAttachments.push({ type: "youtube", videoId: brickActionData.videoId, url: `https://www.youtube.com/watch?v=${brickActionData.videoId}`, name: `YouTube ${brickActionData.videoId}` } as any);
     }
-    setChatInput("");
-    setComposerMode("none");
-    setFocusedChatAttachments([]);
+    if (!browserSend) {
+      setChatInput("");
+      setComposerMode("none");
+      setFocusedChatAttachments([]);
+      // A staged build rides this send now — clear it from every chat bar
+      // (the Home pill mirrors the same staged list) so the chip doesn't
+      // linger there after the prompt goes out.
+      for (const att of sentAttachments) {
+        if (att.type === "artifact") {
+          unstageHomeChatArtifact(homeChatArtifactKey(att.artifact));
+        }
+      }
+    }
     threadState.setIsChatLoading(true);
     threadState.setChatStatusText("");
     threadState.setChatFlowMode("idle");
@@ -559,7 +585,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     // after typed turns (it mutates only the snapshot's aiThread).
     try {
       const reconcileSnap = ensureThreadSnapshot(streamChatId);
-      const reactMsgs = chatMessagesRef.current || [];
+      const reactMsgs = !offRoute ? (chatMessagesRef.current || []) : [];
       if (reactMsgs.length > reconcileSnap.chatMessages.length) {
         const missing = reactMsgs.slice(reconcileSnap.chatMessages.length);
         reconcileSnap.chatMessages = [...reconcileSnap.chatMessages, ...missing];
@@ -576,6 +602,36 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     } catch { /* reconciliation is best-effort; never block a send */ }
 
     const promptId = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    const thisChatId = String(streamChatId || "").trim();
+    const attachedArtifact = browserSend
+      ? null
+      : sentAttachments.map(artifactFromAttachment).find(Boolean) || null;
+    let editArtifact = browserSend
+      ? null
+      : pickEditArtifact({
+          attached: attachedArtifact,
+          panel: activeArtifactRef.current,
+          chatId: thisChatId,
+        });
+    // "Edit in Build mode" race: this chat is linked to an installed app but
+    // its source hasn't finished attaching yet (fast first message), or the
+    // panel still holds another chat's build. Read the app's source now so
+    // this turn edits THAT app instead of silently commissioning a new one.
+    if (!browserSend && thisChatId) {
+      const linkedAppId = artifactAppRef.current.get(thisChatId) || "";
+      const editArtifactBelongsHere =
+        !!editArtifact && String(editArtifact.sourceChatId || "").trim() === thisChatId;
+      if (linkedAppId && !editArtifactBelongsHere) {
+        try {
+          const seed = await appEditArtifactById(linkedAppId);
+          if (seed) {
+            editArtifact = { ...seed, sourceChatId: thisChatId };
+            if (!offRoute && !activeArtifactRef.current) setActiveArtifact(editArtifact);
+          }
+        } catch { /* source unavailable — proceed without the app attached */ }
+      }
+    }
+    const editTarget = browserSend ? null : editTargetFromArtifact(editArtifact, thisChatId);
     // Keep the FULL prompt as the message content. The bubble UI handles
     // long-prompt collapse + "show more" affordance via expandedUserPromptIds
     // — the user must always be able to read back what they actually sent.
@@ -588,11 +644,9 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       ...(sentAttachments.length ? { attachments: sentAttachments } : {}),
     }]);
     const sendSnap = ensureThreadSnapshot(streamChatId);
-    chatMessagesRef.current = sendSnap.chatMessages;
+    if (!offRoute) chatMessagesRef.current = sendSnap.chatMessages;
 
     try {
-      const editArtifact = activeArtifactRef.current;
-      const thisChatId = String(streamChatId || "").trim();
       // Build/refine/discuss intent classification lives in
       // src/lib/ai/artifactSendPlan.ts (pure; extracted verbatim from this
       // block). The side effects driven by its outputs stay here below.
@@ -611,11 +665,17 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         sendMode,
         streamChatId,
         editArtifact,
-        studioModeInstructions: studioModeInstructionsRef?.current,
+        studioModeInstructions: browserSend ? undefined : studioModeInstructionsRef?.current,
         sentAttachments,
         aiThread: sendSnap.aiThread,
         linkedAppId: artifactAppRef.current.get(thisChatId),
       });
+      setInFlightBuild(Boolean(createArmed || refiningOpenArtifact));
+      if ((refiningOpenArtifact || attachedArtifact) && editTarget) {
+        threadState.setChatMessages((prev) =>
+          prev.map((m) => (m.id === promptId ? { ...m, editTarget } : m)),
+        );
+      }
       // Commissioning something new, rather than the open build's next
       // version: whatever comes back is its own software, so it must not
       // install over the app this chat had been editing.
@@ -638,15 +698,15 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       await orchestrateChatSend({
         text,
         promptId,
-        composerMode: effectiveComposerMode,
-        // Studio mode session (Build / Imagine / Research): per-mode system
-        // prompt injected server-side into [ACTIVE_MODE] on every turn.
-        modeInstructions: studioModeInstructionsRef?.current || undefined,
+        composerMode: browserSend ? "none" : effectiveComposerMode,
+        modeInstructions: browserSend ? undefined : (studioModeInstructionsRef?.current || undefined),
         researchSourcePref: researchSourcePrefsRef?.current || undefined,
         // Thread the open panel for surgical edits while Create/Build is armed,
         // including clear follow-up mutations in a sticky Build session. Chat
         // mode sends a discuss-only stub so discussion cannot patch it.
-        activeArtifact: refiningOpenArtifact
+        activeArtifact: browserSend
+          ? null
+          : refiningOpenArtifact
           ? toArtifactEditContext(editArtifact as ChatArtifact)
           : discussOpenArtifact
             ? {
@@ -671,8 +731,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         identity: {
           selectedModel,
           customModelId: customModelId ?? null,
-          chatId,
-          routeChatId,
+          chatId: streamChatId,
+          routeChatId: streamChatId,
           projectId,
           scopedProjectId: scopedProjectId ?? null,
           scopedProjectName: scopedProjectName ?? null,
@@ -682,7 +742,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         context: {
           getKnowledgeBaseContext,
           getCachedWorkspaceSummary,
-          titleRef,
+          titleRef: offRoute ? { current: "New Chat" } : titleRef,
         },
         youtube: {
           youtubeTranscriptCache: youtubeTranscriptCacheRef.current,
@@ -700,6 +760,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           typeResponseIntoChat: (pid: string, full: string) => typeResponseIntoChat(pid, full, streamChatId),
           maybeRunConversationSummary: () => maybeRunConversationSummary(streamChatId),
         },
+        surfaceContext: browserSend ? opts?.surfaceContext : undefined,
       });
     } catch (err: any) {
       if (err?.name === "AbortError" && sendAbort !== activeAiAbortRef.current) { threadState.setChatStatusText(""); return; }
@@ -710,18 +771,24 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       threadState.setChatStatusText(errMsg);
       threadState.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: errMsg } : m)));
     } finally {
-      if (activeAiAbortRef.current && activeAiAbortRef.current !== sendAbort) {
-        return;
-      }
+      const stillOwnsGlobalAbort = !activeAiAbortRef.current || activeAiAbortRef.current === sendAbort;
       threadState.setIsChatLoading(false);
+      setInFlightBuild(false);
       patchThreadSnapshot(streamChatId, { abortController: null, isChatLoading: false });
       sendingBoardsRef.current.delete(streamChatId);
       streamRuntimeRef.current.delete(streamChatId);
       isSendingRef.current = sendingBoardsRef.current.size > 0;
       threadState.setChatFlowMode("idle");
-      window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
-      if (user?.id) {
+      if (offRoute) {
+        void persistOffRouteThread(streamChatId, user?.id);
+      } else if (user?.id && stillOwnsGlobalAbort) {
         setTimeout(() => window.dispatchEvent(new Event("lyknchat_flush_save")), 300);
+      }
+      if (stillOwnsGlobalAbort && !browserSend) {
+        window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
+      }
+      if (stillOwnsGlobalAbort && activeAiAbortRef.current === sendAbort) {
+        activeAiAbortRef.current = null;
       }
     }
   }, [
@@ -731,13 +798,13 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     typeResponseIntoChat, maybeRunConversationSummary,
   ]);
 
-  const handleStopAi = useCallback(() => {
-    // Stop only the chat the user is currently viewing — other chats in
-    // the thread keep streaming.
-    const bid = String(getActiveThreadChatId() || streamChatIdRef.current || chatId || routeChatId || "");
+  const handleStopAi = useCallback((targetChatId?: string) => {
+    const mounted = String(getActiveThreadChatId() || chatId || routeChatId || "");
+    const bid = String(targetChatId || mounted || streamChatIdRef.current || "");
     const snap = bid ? getThreadSnapshot(bid) : null;
-    (snap?.abortController || activeAiAbortRef.current)?.abort();
-    activeAiAbortRef.current = null;
+    const controller = snap?.abortController || (!targetChatId ? activeAiAbortRef.current : null);
+    controller?.abort();
+    if (activeAiAbortRef.current === controller) activeAiAbortRef.current = null;
     if (bid) registerStreamAbortController(bid, null);
     const sr = bid ? streamRuntimeRef.current.get(bid) : null;
     if (sr) {
@@ -748,15 +815,23 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       sr.streamTargetTextRef.current = ""; sr.streamDisplayedLenRef.current = 0; sr.streamPromptIdRef.current = null;
     }
     flushTypingForStop(bid);
+    try {
+      stopBotsWorkingOnChat(bid);
+    } catch {
+      /* bot stop is best-effort; the stream abort already happened */
+    }
     if (bid) {
       sendingBoardsRef.current.delete(bid);
       streamRuntimeRef.current.delete(bid);
-      patchThreadSnapshot(bid, { isChatLoading: false });
+      patchThreadSnapshot(bid, { isChatLoading: false, chatFlowMode: "idle", chatStatusText: "Stopped" });
     }
     isSendingRef.current = sendingBoardsRef.current.size > 0;
-    setIsChatLoading(false);
-    setChatFlowMode("idle");
-    setChatStatusText("Stopped");
+    if (!bid || bid === mounted) {
+      setIsChatLoading(false);
+      setInFlightBuild(false);
+      setChatFlowMode("idle");
+      setChatStatusText("Stopped");
+    }
   }, [chatId, routeChatId, patchThreadMessages, flushTypingForStop]);
 
   /* ---------- Voice Mode ---------- */
@@ -797,6 +872,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     chatMessages, setChatMessages,
     chatInputRef, chatInputHasText, setChatInput, handleChatInputChange,
     isChatLoading, setIsChatLoading,
+    inFlightBuild,
     chatFlowMode, chatStatusText, setChatStatusText,
     focusedChatAttachments, setFocusedChatAttachments,
     expandedAiMsgIds, expandedUserPromptIds, chatReactions, setChatReactions,

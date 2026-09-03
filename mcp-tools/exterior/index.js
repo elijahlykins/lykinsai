@@ -12,6 +12,7 @@ import { generateDiagram } from '../../lib/exterior/generateDiagram.js';
 import { getCurrentTime } from '../../lib/exterior/currentTime.js';
 import { runPythonSnippet } from '../../lib/exterior/runPython.js';
 import { generateChatImage } from '../../lib/exterior/generateImage.js';
+import { authorizeImageUsage } from '../../lib/billing/usageBalance.js';
 import { logAiUsage } from '../../usageTracking.js';
 import { jsonContent, errorContent } from '../index.js';
 import { CAPABILITY_TOOLS } from './capabilityTools.js';
@@ -290,9 +291,9 @@ export const generateImageTool = {
     '    the previous pixels instead of regenerated from words — this is what',
     '    keeps the subject consistent across refinements.',
     '',
-    'QUOTA: If the tool returns image_gen_monthly_limit_reached, the user',
-    'hit their monthly cap — tell them honestly and do NOT pretend an image',
-    'was created. (The cap is currently lifted, so this should not occur.)',
+    'BILLING: If the tool returns insufficient_usage_balance, the user is out',
+    'of usage — tell them honestly (they can top up or upgrade) and do NOT',
+    'pretend an image was created.',
     '',
     'WHEN NOT TO CALL:',
     '  • User only wants a diagram or flowchart — use lykn_generate_diagram.',
@@ -375,9 +376,12 @@ export const generateImageTool = {
       userId: ctx.userId,
       supabaseAdmin: ctx.supabaseAdmin,
       logUsage: (info) => logAiUsage(info),
+      authorizeUsage: ({ actionType }) => authorizeImageUsage(ctx.userId, ctx.planId, actionType),
     });
     if (!result.ok) {
-      const msg = result.message || result.error || 'image_generation_failed';
+      const msg = result.error === 'insufficient_usage_balance'
+        ? (result.message || 'Add funds to continue with this action.')
+        : (result.message || result.error || 'image_generation_failed');
       // Keep the hint attached: it tells the model whether to retry (transient
       // provider error), rephrase (moderation), or report the failure honestly.
       return errorContent(result.hint ? `${msg} — ${result.hint}` : msg);

@@ -618,6 +618,71 @@ test('MCP observations redact credential-shaped fields', () => {
   assert.equal(observation.data.ok, true);
 });
 
+test('large truncated observations stay readable; secrets still scrubbed', () => {
+  // Regression: a >32KB Gmail-style payload containing "nextPageToken" used
+  // to collapse into the single string "[redacted]" because redaction ran
+  // AFTER bounding and treated the whole truncation preview as one secret.
+  const messages = [];
+  for (let i = 0; i < 400; i += 1) {
+    messages.push({ id: `msg_${i}`, subject: `Weekly update ${i}`, snippet: 'Hello there. '.repeat(12) });
+  }
+  const wrapped = wrapUntrustedObservation({
+    data: { messages, nextPageToken: 'page-2-cursor' },
+    access_token: 'atk_secretvalue_secretvalue_secret',
+  });
+  assert.equal(wrapped.truncated, true);
+  // Oversized results now shrink structurally (arrays capped, strings capped)
+  // instead of collapsing into one flat preview string, so item fields stay
+  // readable while secrets remain scrubbed.
+  const serialized = JSON.stringify(wrapped.data);
+  assert.match(serialized, /Weekly update/);
+  assert.doesNotMatch(serialized, /atk_secretvalue/);
+  assert.equal(wrapped.data.access_token, '[redacted]');
+  assert.ok(Array.isArray(wrapped.data.data.messages));
+
+  // Prose that merely mentions "token" survives intact.
+  const small = wrapUntrustedObservation({
+    note: 'Use the nextPageToken to fetch the following page of results.',
+  });
+  assert.equal(small.data.note, 'Use the nextPageToken to fetch the following page of results.');
+
+  // Secret-shaped substrings inside prose are scrubbed in place.
+  const inline = wrapUntrustedObservation({
+    text: 'the key is ghp_abcdefghijklmnopqrstuvwxyz123456 ok',
+  });
+  assert.match(inline.data.text, /\[redacted\]/);
+  assert.match(inline.data.text, /the key is/);
+  assert.doesNotMatch(inline.data.text, /ghp_/);
+});
+
+test('oversized embedded-JSON tool results keep every item readable', () => {
+  // Regression: Mailchimp's campaign report list (one huge JSON string inside
+  // content[0].text) blew the 32KB bound and was chopped as a flat string —
+  // the model saw total_items: 5 and zero campaign names. Shrinking must
+  // parse the embedded JSON and keep each item's identifying fields.
+  const reports = [];
+  for (let i = 1; i <= 5; i += 1) {
+    reports.push({
+      id: `campaign_${i}`,
+      campaign_title: `Spring Launch ${i}`,
+      emails_sent: 100 + i,
+      opens: { opens_total: 40 + i, detail_blob: 'x'.repeat(9_000) },
+    });
+  }
+  const body = JSON.stringify({ total_items: 5, reports });
+  assert.ok(body.length > 32_000, 'fixture must exceed the tool result bound');
+  const wrapped = wrapUntrustedObservation(
+    { content: [{ type: 'text', text: body }] },
+    { connectionId: 'mailchimp', toolName: 'MAILCHIMP_LIST_CAMPAIGN_REPORTS' },
+  );
+  assert.equal(wrapped.truncated, true);
+  const text = JSON.stringify(wrapped.data);
+  for (let i = 1; i <= 5; i += 1) {
+    assert.match(text, new RegExp(`Spring Launch ${i}`), `campaign ${i} title must survive`);
+  }
+  assert.match(text, /total_items/);
+});
+
 test('approval token is bound to user, tool, and args', () => {
   resetMcpApprovalTokensForTests();
   const token = mintMcpApprovalToken({

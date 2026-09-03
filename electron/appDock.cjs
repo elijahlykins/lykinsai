@@ -247,7 +247,7 @@ async function getRunningApps() {
     return {
       ok: false,
       error:
-        "Could not read running apps — macOS Automation permission for System Events " +
+        "Could not read running apps. macOS Automation permission for System Events " +
         "may be denied. " + res.error,
     };
   }

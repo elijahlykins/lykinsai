@@ -10,6 +10,14 @@ const menuEl = document.getElementById("menu");
 const historyListEl = document.getElementById("history-list");
 const projectsListEl = document.getElementById("projects-list");
 
+function applyGlassFeatureVisibility() {
+  const watchEl = document.getElementById("mi-watch");
+  const agentEl = document.getElementById("mi-agent");
+  if (watchEl) watchEl.hidden = window.lyknMenu?.glassLiveWatchEnabled !== true;
+  if (agentEl) agentEl.hidden = window.lyknMenu?.glassAgentModeEnabled !== true;
+}
+applyGlassFeatureVisibility();
+
 function escapeHtml(s) {
   return String(s || "").replace(
     /[&<>"']/g,
@@ -43,9 +51,9 @@ async function refreshState() {
   try {
     s = await window.lyknMenu.getState();
   } catch (_) {
-    return;
+    s = null;
   }
-  if (!s) return;
+  if (s) {
   currentSessionId = s.currentSessionId || null;
   const voice = document.getElementById("mi-voice");
   voice.classList.toggle("voice-active", !!s.voiceActive);
@@ -94,7 +102,33 @@ async function refreshState() {
     projectState.classList.toggle("on", !!name);
     projectState.title = name || "No project scoped";
   }
+  }
+  const updateRow = document.getElementById("mi-update");
+  const updateSep = document.getElementById("mi-update-sep");
+  const updateLabel = document.getElementById("update-label");
+  if (updateRow) {
+    let update = null;
+    try {
+      update = await window.lyknMenu.updateStatus?.();
+    } catch (_) {
+      update = null;
+    }
+    const ready = Boolean(update?.ready);
+    updateRow.hidden = !ready;
+    if (updateSep) updateSep.hidden = !ready;
+    if (updateLabel && ready) {
+      const ver = String(update?.pendingVersion || "").trim();
+      updateLabel.textContent = ver ? `Restart to update ${ver}` : "Restart to update";
+    }
+  }
 }
+
+document.getElementById("mi-update")?.addEventListener("click", () => {
+  window.lyknMenu.close();
+  if (typeof window.lyknMenu.installUpdate === "function") {
+    void window.lyknMenu.installUpdate();
+  }
+});
 
 /* ── Menu commands ──────────────────────────────────────────────────────── */
 

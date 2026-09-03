@@ -1,57 +1,87 @@
 import { useEffect } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import LandingHeader from "@/components/landing/LandingHeader";
-import GlassBackdrop from "@/components/landing/GlassBackdrop";
-import WakeVoiceTourPreview from "@/components/wake/WakeVoiceTourPreview";
-import WakePreviewFit from "@/components/wake/WakePreviewFit";
+import { LyknWordmark } from "@/components/landing/LyknWordmark";
+import { SiteFooter } from "./GlassLanding";
 import {
   CapBuildDemo,
   CapChatDemo,
   CapImagineDemo,
-  SiteFooter,
-} from "./GlassLanding";
-import {
-  CapBrowserDemo,
-  CapDriveDemo,
-  CapGlassDemo,
-  CapResearchDemo,
-} from "@/components/landing/CapResearchBrowserDemos";
+  CapResearchCard,
+  CapVoiceDemo,
+} from "@/components/landing/LandingCapabilities";
+import { CapGlassDemo } from "@/components/landing/CapResearchBrowserDemos";
+import HeroDesktopStage from "@/components/landing/HeroDesktopStage";
+import { AgentsVisual, SyncVisual } from "@/components/landing/LandingSlideshow";
+import { useLandingLightTheme } from "@/components/landing/useLandingLightTheme";
+import slideGlass from "@/assets/slide-glass-blue.jpg";
 import { desktopHotkeyLabel } from "@/lib/desktopHotkey";
 import "./GlassLanding.css";
+import "@/components/landing/landingIcy.css";
 import "./CapabilityPage.css";
 
 const HOTKEY = desktopHotkeyLabel();
 
-const GRAD_TEXT_SELECTORS = [".cappg .cappg-headline"];
-const MIX_TEXT_SELECTORS = [
-  ".cappg .cappg-lede",
-  ".cappg .cappg-body",
-  ".cappg .cappg-more-label",
-  ".cappg .gl-footer-tagline",
-  ".cappg .gl-footer-col-title",
-  ".cappg .gl-footer-link",
-  ".cappg .gl-footer-bottom",
-];
-
 type CapId =
   | "glass"
+  | "desktop"
   | "chat"
   | "build"
   | "imagine"
   | "voice"
   | "research"
   | "browser"
-  | "drive";
+  | "agents"
+  | "sync";
 
-/** The Voice page's demo: the full walkthrough preview with the "Hear it"
-    toggle. Wrapped in `.dark` so the surface keeps Voice Mode chrome. */
-function CapVoiceHearDemo() {
+/** The hero's live desktop render — the Desktop page's demo. */
+function CapDesktopLive() {
   return (
-    <div className="dark cappg-voice-live">
-      <WakePreviewFit designWidth={760} always>
-        <WakeVoiceTourPreview />
-      </WakePreviewFit>
+    <div className="cappg-desk" aria-hidden="true">
+      <HeroDesktopStage />
     </div>
+  );
+}
+
+/** The live desktop with the browser window popped up, same as the home
+    page's Browser tab. */
+function CapBrowserLive() {
+  return (
+    <div className="cappg-desk" aria-hidden="true">
+      <HeroDesktopStage appWindow="browser" />
+    </div>
+  );
+}
+
+/** A slideshow visual (agents roster, sync window) framed over the blurred
+    blue glass wallpaper, like the Voice card. */
+function CapSlideVisual({ children }: { children: JSX.Element }) {
+  return (
+    <div className="cappg-slide" aria-hidden="true">
+      <img
+        className="cappg-slide-wall"
+        src={slideGlass}
+        alt=""
+        draggable={false}
+      />
+      {children}
+    </div>
+  );
+}
+
+function CapAgentsDemo() {
+  return (
+    <CapSlideVisual>
+      <AgentsVisual />
+    </CapSlideVisual>
+  );
+}
+
+function CapSyncDemo() {
+  return (
+    <CapSlideVisual>
+      <SyncVisual />
+    </CapSlideVisual>
   );
 }
 
@@ -67,6 +97,15 @@ interface CapContent {
 
 /** Copy + live demo for each capability page (/product/:capId). */
 const CAPS: Record<CapId, CapContent> = {
+  desktop: {
+    name: "Desktop",
+    headline: "Your Mac,\nalready in sync.",
+    lede:
+      "LYKN desktop is Home on your Mac. The chat bar sits on your wallpaper, your Desktop folder is right there, and Finder files open in place.",
+    body:
+      "Sync with Mac keeps your real Desktop, folders, and wallpaper inside LYKN. Ask about a file from the same bar you use to chat, build, research, or imagine. Glass is still one shortcut away when you need LYKN over another app.",
+    demo: CapDesktopLive,
+  },
   glass: {
     name: "Glass",
     headline: "AI on every\nscreen you use.",
@@ -80,7 +119,7 @@ const CAPS: Record<CapId, CapContent> = {
     lede:
       "Summon LYKN over whatever you're working on and just ask. It reads the screen, remembers your projects, and answers like it's been in the room the whole time.",
     body:
-      "Chat can schedule events, draft emails, update boards, and save notes mid-conversation, and the same thread stays with you across the overlay, Studio, and desktop.",
+      "Chat can schedule events, draft emails, update boards, and save notes mid-conversation, and the same thread stays with you across the overlay and the desktop.",
     demo: CapChatDemo,
   },
   build: {
@@ -108,7 +147,7 @@ const CAPS: Record<CapId, CapContent> = {
       "Voice mode is a real-time conversation. Think out loud, get answers back instantly, and keep your hands on your work.",
     body:
       "No push-to-talk and no waiting for a transcript. Interrupt, redirect, or change your mind mid-sentence. Voice shares the same memory and projects as Chat.",
-    demo: CapVoiceHearDemo,
+    demo: CapVoiceDemo,
   },
   research: {
     name: "Research",
@@ -117,25 +156,34 @@ const CAPS: Record<CapId, CapContent> = {
       "Research mode digs into current sources and writes a structured report you can cite, refine, and turn into the next artifact.",
     body:
       "Findings land as takeaways, debates, and citations, not a wall of text. Follow the sources, hand them to Browser, or extend the same report with a follow-up.",
-    demo: CapResearchDemo,
+    demo: CapResearchCard,
   },
   browser: {
     name: "Browser",
     headline: "A browser that\nworks with you.",
     lede:
-      "LYKN Browser is an agent that opens pages, extracts what matters, and acts on the web inside Studio, not a tab you babysit.",
+      "LYKN Browser is an agent that opens pages, extracts what matters, and acts on the web on your desktop, not a tab you babysit.",
     body:
       "Ask it to navigate, pull pricing, fill forms, or save rows back to your work. It docks beside chat, and closed sessions land in history like a real browser.",
-    demo: CapBrowserDemo,
+    demo: CapBrowserLive,
   },
-  drive: {
-    name: "Drive",
-    headline: "Everything LYKN\nmakes, kept.",
+  agents: {
+    name: "Agents",
+    headline: "AI teammates,\nalways on the job.",
     lede:
-      "Drive is your vault: notes, research reports, builds, images, and files from every mode, searchable and ready for the next ask.",
+      "Spin up an agent for a job - inbox triage, research, or a repeating workflow - and it gets to work from your desktop with your context.",
     body:
-      "Artifacts save as you work, stay tied to your projects, and stay askable later. Open, export, or hand a file back into Chat, Build, or Research.",
-    demo: CapDriveDemo,
+      "Each agent is a real teammate with its own character, memory, and skills. Message it like a coworker, hand it routines that run on a schedule, and check its progress right from the dock.",
+    demo: CapAgentsDemo,
+  },
+  sync: {
+    name: "Sync with Mac",
+    headline: "Your files,\nright where you left them.",
+    lede:
+      "Your real Desktop folder, Finder files, and wallpaper show up on Home. Drop a file there and it lands on disk.",
+    body:
+      "No importing and no second copy of your life. LYKN reads the same folders your Mac does, so you can ask about any file from the same bar you use to chat, build, research, or imagine.",
+    demo: CapSyncDemo,
   },
 };
 
@@ -146,16 +194,28 @@ const CAP_ORDER: CapId[] = [
   "voice",
   "research",
   "browser",
-  "drive",
-  "glass",
+  "agents",
+  "sync",
+  "desktop",
 ];
+
+const DARK_DEMOS = new Set<CapId>([
+  "build",
+  "imagine",
+  "browser",
+  "agents",
+  "glass",
+  "desktop",
+  "sync",
+]);
 
 export default function CapabilityPage() {
   const navigate = useNavigate();
   const { capId: rawCapId } = useParams();
   const capId = String(rawCapId || "")
     .trim()
-    .toLowerCase() as CapId;
+    .toLowerCase()
+    .replace(/^studio$/, "desktop") as CapId;
   const cap = Object.prototype.hasOwnProperty.call(CAPS, capId)
     ? CAPS[capId]
     : null;
@@ -164,16 +224,12 @@ export default function CapabilityPage() {
     window.scrollTo(0, 0);
   }, [capId]);
 
+  useLandingLightTheme();
+
   if (!cap) {
     return (
       <div className="glass-land cappg">
         <LandingHeader onBrandClick={() => navigate("/")} />
-        <GlassBackdrop
-          gradTextSelectors={GRAD_TEXT_SELECTORS}
-          mixTextSelectors={MIX_TEXT_SELECTORS}
-          wander
-          wanderPath="right"
-        />
         <main className="cappg-main">
           <h1 className="cappg-headline">Product not found</h1>
           <p className="cappg-lede">
@@ -183,7 +239,7 @@ export default function CapabilityPage() {
           <div className="cappg-ctas">
             <button
               type="button"
-              className="gl-hero-cta"
+              className="lkn-nav-signup"
               onClick={() => navigate("/product/chat")}
             >
               Open Chat
@@ -196,23 +252,15 @@ export default function CapabilityPage() {
   }
 
   const Demo = cap.demo;
-  const others = CAP_ORDER.filter((id) => id !== capId);
 
   return (
     <div className="glass-land cappg">
       <LandingHeader onBrandClick={() => navigate("/")} />
 
-      <GlassBackdrop
-        key={capId}
-        gradTextSelectors={GRAD_TEXT_SELECTORS}
-        mixTextSelectors={MIX_TEXT_SELECTORS}
-        wander
-        wanderPath="right"
-      />
-
       <main className="cappg-main">
         <div className="cappg-grid">
           <div className="cappg-copy">
+            <p className="cappg-kicker">{cap.name}</p>
             <h1
               className={`cappg-headline${
                 cap.headline.includes("\n") ? " cappg-headline--manual" : ""
@@ -225,33 +273,23 @@ export default function CapabilityPage() {
             <div className="cappg-ctas">
               <button
                 type="button"
-                className="gl-hero-cta"
+                className="lkn-nav-signup"
                 onClick={() => navigate("/download")}
+                aria-label="Download LYKN"
               >
-                Download LYKN
+                Download <LyknWordmark decorative />
               </button>
-            </div>
-
-            <div className="cappg-more">
-              <p className="cappg-more-label">Explore the rest of LYKN</p>
-              <div className="cappg-more-links">
-                {others.map((id) => (
-                  <Link key={id} to={`/product/${id}`}>
-                    {CAPS[id].name} <span aria-hidden="true">→</span>
-                  </Link>
-                ))}
-              </div>
             </div>
           </div>
 
-          <div className="cappg-stagecol">
-            <div className="cappg-stage">
-              <article className="gl-cap-card cappg-card">
-                <Demo key={capId} />
-                <div className="gl-cap-foot">
-                  <span className="gl-cap-name">{cap.name}</span>
-                </div>
-              </article>
+          <div className="cappg-visual">
+            <div
+              className={`cappg-stage${
+                DARK_DEMOS.has(capId) ? " is-dark" : ""
+              }`}
+              data-header-tone={DARK_DEMOS.has(capId) ? "dark" : undefined}
+            >
+              <Demo key={capId} />
             </div>
           </div>
         </div>

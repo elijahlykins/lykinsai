@@ -6,6 +6,56 @@
 // UI/prompt-visible contracts, keep them exactly as-is.
 import type { FocusedChatAttachment, PromptMessage } from "@/lib/lyknChat/chatTurnTypes";
 
+const FOLDER_PATH_RE = /^Path:\s+(\/[^\n]+)$/m;
+
+export function isDesktopFolderAttachment(a: FocusedChatAttachment | undefined | null): boolean {
+  if (!a) return false;
+  const t = (a.type || "").toLowerCase();
+  if (t === "folder") return true;
+  const listing = String(a.vaultContent || a.extractedText || "");
+  return t === "vault" && /Attached folder "|Path: \//.test(listing);
+}
+
+export function folderPathFromAttachment(a: FocusedChatAttachment): string {
+  const stored = String(a.localPath || "").trim();
+  if (stored) return stored;
+  const listing = String(a.vaultContent || a.extractedText || "");
+  const m = listing.match(FOLDER_PATH_RE);
+  return m ? m[1].trim() : "";
+}
+
+/** Folders already on this thread (plus any on the send) so a follow-up
+ *  like "what's in agents.md" still has the path to call local_read_file. */
+export function collectThreadFolderAttachments(
+  chatMessages: PromptMessage[],
+  sentAttachments: FocusedChatAttachment[],
+): FocusedChatAttachment[] {
+  const seen = new Set<string>();
+  const out: FocusedChatAttachment[] = [];
+  const consider = (a: FocusedChatAttachment) => {
+    if (!isDesktopFolderAttachment(a)) return;
+    const key = folderPathFromAttachment(a) || a.vaultContent || a.name;
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    out.push(a);
+  };
+  for (const a of sentAttachments) consider(a);
+  for (const m of chatMessages) {
+    const atts = Array.isArray(m.attachments) ? m.attachments : [];
+    for (const a of atts) consider(a);
+  }
+  return out;
+}
+
+export function attachmentsForPrompt(
+  sentAttachments: FocusedChatAttachment[],
+  chatMessages: PromptMessage[],
+): FocusedChatAttachment[] {
+  if (sentAttachments.some(isDesktopFolderAttachment)) return sentAttachments;
+  const prior = collectThreadFolderAttachments(chatMessages, []);
+  return prior.length ? [...sentAttachments, ...prior] : sentAttachments;
+}
+
 export function buildAttachmentContext(sentAttachments: FocusedChatAttachment[]): string {
   if (!sentAttachments.length) return "";
   return "\n\n[Attached content]\n" + sentAttachments.map((a) => {
@@ -25,7 +75,8 @@ export function buildAttachmentContext(sentAttachments: FocusedChatAttachment[])
         `Desktop folder "${label}" — the user attached THIS folder from their Mac. ` +
         `Answer from this listing only. If you need more detail, call local_list_dir or local_read_file ` +
         `on this exact path — not other folders, the rest of the disk, or the vault. ` +
-        `You may offer to read a specific file inside this folder.\n` +
+        `You may offer to read a specific file inside this folder. ` +
+        `Do not hand this off to another model or bot — summarize it yourself.\n` +
         (listing || "(empty listing)")
       );
     }
@@ -56,6 +107,11 @@ export function buildAttachmentContext(sentAttachments: FocusedChatAttachment[])
       return `Image "${label}"${safeUrl ? ` — ${safeUrl}` : ""}${desc}${ocr}`;
     }
     if (t === "link") return `Link "${label}"${safeUrl ? ` — ${safeUrl}` : ""}${parts.length ? `\nContent: ${parts.join("\n")}` : ""}`;
+    if (t === "artifact") {
+      const art = a.artifact as { toolName?: string; title?: string } | undefined;
+      const kind = String(art?.toolName || "build").replace(/^lykn_/, "").replace(/_/g, " ");
+      return `Attached artifact "${label}" (${kind}). The user included this build with their prompt.`;
+    }
     if (parts.length) return `${label}: ${parts.join("\n")}`;
     if (safeUrl) return `${t || "File"} "${label}" — ${safeUrl}`;
     return `${t || "File"}: ${label}`;

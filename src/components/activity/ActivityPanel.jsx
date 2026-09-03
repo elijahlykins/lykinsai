@@ -1,11 +1,10 @@
-// LYKN Activity — the one place to see what your Bots are doing right now
-// and what their routines have been up to. Running tasks can be stopped
-// here, routines paused/run/deleted, and the recent-run history read at a
-// glance. Data comes straight from the main-process activity snapshot
-// (electron/ipc/routines.cjs) so this window agrees with notifications and
-// the Bot pages by construction.
+// LYKN Activity — what your Bots are doing right now. Running tasks can be
+// stopped here. Routine lists stay behind botStandingWorkUiEnabled until
+// that feature launches. Data comes from the main-process activity snapshot
+// (electron/ipc/routines.cjs).
 import { useEffect, useState } from "react";
-import { Pause, Play, Square, Trash2, Zap } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { ArrowLeft, Pause, Play, Square, Trash2, Zap } from "lucide-react";
 import { mcpFetch, openConnectionsSettings } from "@/lib/mcp/mcpApi";
 import {
   deleteRoutine,
@@ -15,7 +14,8 @@ import {
   stopTask,
   useActivity,
 } from "@/lib/routines/routinesClient";
-import { RUN_STATUS_LABEL } from "@/components/bots/BotsPage";
+import { RUN_STATUS_LABEL } from "@/components/activity/runStatus";
+import { botStandingWorkUiEnabled } from "@/lib/bots/botStandingWorkUi";
 
 function timeAgo(iso) {
   const at = Date.parse(String(iso || ""));
@@ -27,7 +27,9 @@ function timeAgo(iso) {
   return new Date(at).toLocaleDateString();
 }
 
-export default function ActivityPanel() {
+export default function ActivityPanel({ onBack } = {}) {
+  const navigate = useNavigate();
+  const goBack = onBack || (() => navigate("/bots"));
   const { tasks, routines, recentRuns } = useActivity();
   const [attention, setAttention] = useState([]);
 
@@ -58,8 +60,16 @@ export default function ActivityPanel() {
   const runningTasks = tasks;
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto px-6 py-6 text-black/80 dark:text-white/85">
+    <div className="h-full min-h-0 overflow-y-auto px-6 pb-6 pt-4 text-black/80 dark:text-white/85">
       <div className="mx-auto max-w-lg">
+        <button
+          type="button"
+          onClick={goBack}
+          className="mb-5 inline-flex items-center gap-1.5 text-xs text-black/45 transition-colors hover:text-black/75 dark:text-white/45 dark:hover:text-white/80"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Bots
+        </button>
         {attention.length > 0 ? (
           <Section title="Needs Attention" hint="">
             {attention.map((item, index) => (
@@ -92,6 +102,7 @@ export default function ActivityPanel() {
           </Section>
         ) : null}
 
+        {botStandingWorkUiEnabled() ? (
         <Section
           title="Watching"
           hint={watching.length ? "" : "No monitors are watching right now."}
@@ -133,6 +144,7 @@ export default function ActivityPanel() {
             </li>
           ))}
         </Section>
+        ) : null}
 
         <Section
           title="Running"
@@ -150,7 +162,7 @@ export default function ActivityPanel() {
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[0.8rem] font-medium">
                   {task.botName || "Agent"}
-                  {task.routineId ? (
+                  {botStandingWorkUiEnabled() && task.routineId ? (
                     <span className="text-black/40 dark:text-white/45">
                       {" "}
                       · {routineName(task.routineId) || "routine"}
@@ -171,7 +183,7 @@ export default function ActivityPanel() {
               </div>
               <button
                 type="button"
-                title="Stop this task — the routine keeps watching"
+                title="Stop this task"
                 onClick={() => stopTask(task.taskId)}
                 className="flex items-center gap-1 rounded-full bg-black/[0.05] px-2.5 py-1 text-[0.7rem] font-medium text-black/60 transition-colors hover:bg-red-500/10 hover:text-red-500 dark:bg-white/[0.08] dark:text-white/60"
               >
@@ -181,13 +193,15 @@ export default function ActivityPanel() {
           ))}
         </Section>
 
-        {/* Routines across every Bot */}
+        {/* Routines across every Bot — hidden until standing-work UI launches. */}
+        {botStandingWorkUiEnabled() ? (
+        <>
         <Section
           title="Routines"
           hint={
             routines.length
               ? ""
-              : "No routines yet — ask a Bot for standing work, or add one on its page."
+              : "No routines yet. Ask a Bot for standing work, or add one on its page."
           }
         >
           {routines.map((routine) => (
@@ -277,6 +291,8 @@ export default function ActivityPanel() {
             </li>
           ))}
         </Section>
+        </>
+        ) : null}
       </div>
     </div>
   );

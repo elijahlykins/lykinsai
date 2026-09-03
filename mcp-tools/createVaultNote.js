@@ -56,8 +56,7 @@ export const createVaultNoteTool = {
     '  • A first draft of writing they wanted captured',
     '',
     'After saving, the note lands in AI Drive inside the Vault Finder',
-    'window. Open it later with lykn_open_app by title. It also counts as',
-    'a `vault_<id>` neuron in lykn_addProjectNeurons.',
+    'window. Open it later with lykn_open_app by title.',
     '',
     'BEFORE calling, ASK the user once: "Want me to drop this into your',
     'vault?" — the user\'s vault is their personal space and silently',
@@ -124,7 +123,7 @@ export const createVaultNoteTool = {
     const title = titleRaw || null;
 
     // Block meta "I noted / pulled your Porsche" notes. Models sometimes
-    // create these instead of calling lykn_loadNeurons when the user asked
+    // create these instead of calling lykn_open_app when the user asked
     // to SEE existing vault media — which pollutes search and confuses
     // later pulls.
     const looksMetaAck =

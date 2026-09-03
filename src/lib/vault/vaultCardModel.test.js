@@ -268,7 +268,7 @@ test("studio surface (AI Drive) shows both drive folders even when empty", () =>
   const shown = visible([], { studioSurface: true });
   assert.deepEqual(
     shown.map((c) => [c.kind, c.folderId]),
-    [["drive-folder", "artifacts"], ["drive-folder", "images"]],
+    [["drive-folder", "docs"], ["drive-folder", "artifacts"], ["drive-folder", "images"]],
   );
 });
 
@@ -290,6 +290,40 @@ test("AI-generated images file into the drive, not the vault page", () => {
     const driveShown = visible(cards, { studioSurface: true, openDriveFolder: "images" });
     assert.ok(driveShown.some((c) => c.id === aiCard.id));
   }
+});
+
+test("a file-typed .html attachment still renders as an html page", () => {
+  const n = note({
+    id: "doc2",
+    title: "Landing notes",
+    source: "ai_artifact",
+    tags: ["generated", "document"],
+    content: withAttachmentsMarker("", [
+      { type: "file", name: "Landing-notes.html", mimeType: "text/html" },
+    ]),
+  });
+  const cards = build([n]);
+  const docCard = cards.find((c) => c.kind === "attachment");
+  assert.equal(docCard?.type, "html");
+});
+
+test("written documents file into AI Drive / Docs", () => {
+  const n = note({
+    id: "doc1",
+    title: "Cover Letter",
+    source: "ai_artifact",
+    tags: ["html", "generated", "document"],
+    content: withAttachmentsMarker("", [
+      { type: "html", url: "https://x.test/letter.html", name: "Cover-Letter.html" },
+    ]),
+  });
+  const cards = build([n]);
+  const docCard = cards.find((c) => c.kind === "attachment");
+  assert.ok(docCard?.aiGenerated);
+  const docsShown = visible(cards, { studioSurface: true, openDriveFolder: "docs" });
+  assert.ok(docsShown.some((c) => c.id === docCard.id));
+  const artifactsShown = visible(cards, { studioSurface: true, openDriveFolder: "artifacts" });
+  assert.ok(!artifactsShown.some((c) => c.id === docCard.id));
 });
 
 // ─── filterVisibleCards ──────────────────────────────────────────────

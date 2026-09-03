@@ -241,10 +241,9 @@ test('legacy personal-memory tools and nightly jobs are absent', () => {
   assert.ok(!render.includes('runConcepts.js'));
 });
 
-test('retained project-neuron product paths expose Vault membership only', () => {
+test('retained project membership paths do not expose legacy neuron kinds', () => {
   for (const relative of [
-    '../../mcp-tools/addProjectNeurons.js',
-    '../../mcp-tools/getProjectNeurons.js',
+    '../../mcp-tools/uploadToProject.js',
     '../../src/lib/userProjects.ts',
     '../../lib/projectContext.js',
   ]) {
@@ -253,10 +252,8 @@ test('retained project-neuron product paths expose Vault membership only', () =>
     assert.ok(!src.includes('fact_<'), `${relative} must not expose legacy fact nodes`);
     assert.ok(!src.includes('concept_<'), `${relative} must not expose legacy concept nodes`);
   }
-  const add = readFileSync(join(HERE, '../../mcp-tools/addProjectNeurons.js'), 'utf8');
-  assert.match(add, /\^vault_/);
-  const read = readFileSync(join(HERE, '../../mcp-tools/getProjectNeurons.js'), 'utf8');
-  assert.match(read, /\.like\('node_id', 'vault_%'\)/);
+  const upload = readFileSync(join(HERE, '../../mcp-tools/uploadToProject.js'), 'utf8');
+  assert.match(upload, /vault_/);
 });
 
 test('episodic prompt copy does not revive User Facts', () => {
@@ -273,7 +270,8 @@ test('chat load-in calendar greeting reads lykn_events', () => {
 
 test('stopped chat send does not clobber a successor stream', () => {
   const src = readFileSync(join(HERE, '../../src/hooks/useChatEngine.ts'), 'utf8');
-  assert.match(src, /activeAiAbortRef\.current !== sendAbort/);
+  assert.match(src, /sendAbort !== activeAiAbortRef\.current/);
+  assert.match(src, /activeAiAbortRef\.current === sendAbort/);
 });
 
 test('getMemoryThreadState starts empty so a missing chatId still works', () => {

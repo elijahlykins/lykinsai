@@ -206,7 +206,7 @@
         <li>You should see <strong>LYKN Chrome Live Feed</strong> in your extensions list.</li>
       </ol>
       <div class="callout">
-        The folder is <strong>not</strong> on your Desktop — it’s in a hidden
+        The folder is <strong>not</strong> on your Desktop, it’s in a hidden
         Application Support directory. Use ⌘⇧G + paste, or click
         <strong>Show folder in Finder</strong> below.
       </div>
@@ -223,7 +223,7 @@
 
     <div class="status" id="status"></div>
     <p class="hint" id="hint" hidden>
-      Leave this window open — it closes automatically once LYKN sees the feed.
+      Leave this window open. It closes automatically once LYKN sees the feed.
     </p>
 
     <script>
@@ -257,7 +257,7 @@
           const s = await api.bridgeStatus();
           if (s?.connected) {
             statusEl.className = "status ok";
-            statusEl.textContent = "Connected — you’re set.";
+            statusEl.textContent = "Connected, you’re set.";
             setTimeout(() => api.close(), 700);
           }
         } catch (_) {}
@@ -272,7 +272,7 @@
         try {
           const result = await api.installOneClick("chrome");
           if (result?.ok && result.mode === "store") {
-            statusEl.textContent = "Opened the Chrome Web Store — click Add to Chrome there.";
+            statusEl.textContent = "Opened the Chrome Web Store. Click Add to Chrome there.";
           } else if (result?.ok) {
             showManualSteps(result.path, result.browser);
           } else {
@@ -305,7 +305,7 @@
             hintEl.hidden = false;
           }
           statusEl.textContent = result?.ok
-            ? "Finder opened on save-to-lykn — select that folder in Chrome."
+            ? "Finder opened on save-to-lykn. Select that folder in Chrome."
             : (result?.error || "Couldn’t open Finder.");
         } catch (_) {
           statusEl.textContent = "Couldn’t open Finder.";
@@ -318,7 +318,7 @@
             lastPath = result.path;
             pathEl.textContent = lastPath;
             statusEl.className = "status";
-            statusEl.textContent = "Path copied — in Chrome’s picker press ⌘⇧G, then ⌘V.";
+            statusEl.textContent = "Path copied. In Chrome’s picker press ⌘⇧G, then ⌘V.";
           }
         } catch (_) {
           statusEl.textContent = "Couldn’t copy path.";

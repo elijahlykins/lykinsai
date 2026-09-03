@@ -76,17 +76,18 @@ export const WINDOW_APPS = {
   // Each Bot is a durable persona wrapped around a worker agent (with its own
   // browser tab) plus a task queue, so work dispatches the moment the
   // previous task finishes. First open lands on the build-your-first-Bot
-  // screen.
+  // screen; clicking a Bot opens /bots/:botId (connections, skills).
+  // Teach-a-task and Routines launch later.
   bots: {
     label: "Bots",
     icon: BotMark,
     src: "/bots",
     width: 960,
-    height: 680,
+    height: 760,
   },
-  // LYKN Activity — what every Bot is doing right now (with Stop), all
-  // routines across Bots (pause / run now / delete), and recent routine
-  // runs. Notification clicks land here or on the owning Bot.
+  // LYKN Activity — opened from the Bots window title-bar button, not the
+  // dock. What every Bot is doing right now (with Stop). Routine lists
+  // stay behind botStandingWorkUiEnabled until that feature launches.
   activity: {
     label: "Activity",
     icon: Activity,
@@ -106,7 +107,6 @@ export const SECTIONS = [
   { id: "files", label: "Files", icon: Folder },
   { id: "browser", label: "Browser", icon: BrowserMark },
   { id: "bots", label: "Bots", icon: BotMark },
-  { id: "activity", label: "Activity", icon: Activity },
   { id: "calendar", label: "Calendar", icon: CalendarDays },
   { id: "todos", label: "To-dos", icon: ListTodo },
   { id: "settings", label: "Settings", icon: Settings },
@@ -117,18 +117,19 @@ export const SECTIONS = [
 // names, which SettingsModal still maps to their current sections.
 export const SETTINGS_VIEWS = [
   "account",
-  "workspace",
+  "appearance",
+  "models",
   "assistant",
   "notifications",
+  "workspace",
+  "integrations",
   // Desktop-only panes: SettingsModal hides them in the browser, where they
   // land on Account like any other section it doesn't recognise.
-  "localVault",
   "installedApps",
-  "privacy",
-  "appearance",
-  "integrations",
-  "billing",
+  "localVault",
   "keyboard",
+  "privacy",
+  "billing",
   "advanced",
   "display",
   "aiPersonalization",
@@ -144,7 +145,6 @@ export const NAV_ITEMS = [
   { id: "dashboard", label: "Home", icon: Home, action: "tab" },
   { id: "browser", label: "Browser", icon: BrowserMark, action: "tab" },
   { id: "bots", label: "Bots", icon: BotMark, action: "tab" },
-  { id: "activity", label: "Activity", icon: Activity, action: "tab" },
   { id: "projects", label: "Projects", icon: FolderKanban, action: "tab" },
   { id: "vault", label: "Vault", icon: Folder, action: "tab" },
   { id: "files", label: "Files", icon: Folder, action: "tab" },

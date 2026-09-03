@@ -21,7 +21,7 @@ import {
   stripAttachmentJsonMarker,
   textNoteLabel,
 } from "@/lib/vault/vaultCardHelpers";
-import { looksLikeImageAttachment, resolveRenderType } from "@/lib/vault/attachmentType";
+import { looksLikeHtmlAttachment, looksLikeImageAttachment, resolveRenderType } from "@/lib/vault/attachmentType";
 import { isAiGeneratedVaultRow, AI_DRIVE_FOLDERS } from "@/lib/vault/aiDriveContents";
 import { applyWakePreviewCommentsToCard } from "@/lib/wake/wakeVaultPreviewComments";
 import { extractYouTubeVideoId } from "@/lib/media/youtube";
@@ -327,6 +327,9 @@ export function buildVaultCards({
       if (type === "file" && looksLikeImageAttachment(attachment)) {
         type = "image";
       }
+      if ((type === "file" || !type) && looksLikeHtmlAttachment(attachment)) {
+        type = "html";
+      }
       const noteTitle = String(note.title || "").trim();
       const attName = String(attachment.name || "").trim();
       cards.push({
@@ -484,9 +487,9 @@ export function deriveVisibleCards({
   );
 
   // AI Drive is not a view of the vault — it's the drive for what LYKN made.
-  // Two folders, the AI's output sorted between them, and nothing else: no
-  // uploads, no connector syncs, no notes. Those stay on the Vault page,
-  // which is why none of the passes below apply here.
+  // Docs, Artifacts, and Image Gen, the AI's output sorted between them, and
+  // nothing else: no uploads, no connector syncs, no notes. Those stay on the
+  // Vault page, which is why none of the passes below apply here.
   if (studioSurface) {
     const generated = baseline.filter((card) => driveFolderIdFor(card));
     if (openDriveFolder) {
@@ -500,9 +503,9 @@ export function deriveVisibleCards({
       conceptResultIds !== null;
     if (searching) return generated;
 
-    // Both folders show even while empty: they're where the AI's next image
-    // and next artifact will land, and a drive that changes shape as it fills
-    // is harder to learn than one that doesn't.
+    // Every folder shows even while empty: they're where the AI's next image,
+    // document, and artifact will land, and a drive that changes shape as it
+    // fills is harder to learn than one that doesn't.
     return AI_DRIVE_FOLDERS.map(({ id, name }) => {
       const items = generated.filter((card) => driveFolderIdFor(card) === id);
       const lastTouchedMs = items.reduce((max, card) => Math.max(max, card.lastTouchedMs || 0), 0);

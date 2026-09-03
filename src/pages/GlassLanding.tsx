@@ -1,55 +1,23 @@
 import {
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
-  type ReactNode,
 } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import {
-  FolderKanban,
-  ListTodo,
-  CalendarClock,
-  CalendarPlus,
-  CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
-  Crosshair,
-  Moon,
-  Flag,
-  ChevronDown,
-} from "lucide-react";
-import lyknLogo from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-BLUE-web.png";
-import lyknWordmark from "@/assets/FINAL/LYKN-WORDMARK/SVG/LYKN-Wordmark-BLUE.svg";
+import { ChevronDown, ChevronRight } from "lucide-react";
+import lyknLogoMark from "@/assets/FINAL/LYKN-LOGO-B-Open/SVG/LYKN-Logo-Primary-B-Open-BLACK.svg";
 import glassAdDemo from "@/assets/glass-ad-demo.png";
 import { NEWS_POSTS } from "@/lib/newsPosts";
 import LandingHeader from "@/components/landing/LandingHeader";
-import GlassBackdrop from "@/components/landing/GlassBackdrop";
-// Rotation locked to the clouds scene for now — restore these imports (and
-// the HERO_BACKGROUNDS entries) to bring the full rotation back.
-// import heroMountains from "@/assets/hero-mountains.png";
-// import heroOcean from "@/assets/hero-ocean.jpg";
-// import heroDunes from "@/assets/hero-dunes.jpg";
-// import heroLake from "@/assets/hero-lake.jpg";
-// import heroClouds from "@/assets/hero-clouds.jpg";
-// AI-generated image pool for the Imagine card's rotating collage.
-import imagineSneaker from "@/assets/imagine-sneaker.png";
-import imaginePorsche from "@/assets/imagine-porsche-gt3.png";
-import imagineMeadow from "@/assets/imagine-meadow.png";
-import imagineClouds from "@/assets/imagine-clouds.png";
-import imaginePastel from "@/assets/imagine-pastel.png";
-import imagineCube from "@/assets/imagine-cube.png";
-import imagineHeadphones from "@/assets/imagine-headphones.png";
-import imagineHovercraft from "@/assets/imagine-hovercraft.png";
-import imagineFigure from "@/assets/imagine-figure.png";
-import VoiceTechOrb from "@/components/lyknChat/VoiceTechOrb";
-import {
-  CapBrowserDemo,
-  CapDriveDemo,
-  CapGlassDemo,
-  CapResearchDemo,
-} from "@/components/landing/CapResearchBrowserDemos";
+import LandingHero from "@/components/landing/LandingHero";
+import HeroDesktopStage from "@/components/landing/HeroDesktopStage";
+import LandingExplain from "@/components/landing/LandingExplain";
+import LandingModelsTools from "@/components/landing/LandingModelsTools";
+import LandingSlideshow from "@/components/landing/LandingSlideshow";
+import LandingCapabilities from "@/components/landing/LandingCapabilities";
+import { LyknWordmark, markLykn } from "@/components/landing/LyknWordmark";
+import { useLandingLightTheme } from "@/components/landing/useLandingLightTheme";
 import { streamWakeChatPreview } from "@/lib/wake/wakeChatPreviewStream";
 import { AI_GUEST_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
 import {
@@ -57,16 +25,14 @@ import {
   desktopModifierKey,
 } from "@/lib/desktopHotkey";
 import "./GlassLanding.css";
-
-export { CapBrowserDemo, CapDriveDemo, CapGlassDemo, CapResearchDemo };
+import "@/components/landing/landingIcy.css";
 
 const HOTKEY = desktopHotkeyLabel();
 const HOTKEY_SPACED = desktopHotkeyLabel("spaced");
 
-// The production marketing landing page, focused on LYKN Glass (the desktop
-// overlay). Served at "/", "/landing", and "/glass". Uses the shared
-// LandingHeader locked to its transparent treatment (white logo + links,
-// never changes on scroll) routing to Pricing / Download / Login.
+// The production marketing landing page, focused on LYKN desktop (the Mac
+// app). Served at "/", "/landing", and "/glass". Uses the shared
+// LandingHeader routing to Features, Pricing, News, and Download.
 
 const ICON_VIEWBOX = "0 0 204.29 204.29";
 const ICON_PATH =
@@ -284,422 +250,103 @@ function GlassToolbar({
   );
 }
 
-// Conversation shown in the capabilities Chat card — LYKN acting as the
-// project-aware assistant, mirroring the real overlay chat. Played back one
-// bubble at a time on a loop (see CapChatDemo).
-const CAP_CHAT: { role: "user" | "lykn"; text: string }[] = [
-  { role: "user", text: "What's next on the launch?" },
+/** The UI views the chips under the screenshot switch between. */
+const ANY_VIEWS = [
   {
-    role: "lykn",
-    text: "Finalize the pricing page, it's due today. I drafted a version this morning; want me to open it?",
+    id: "browser",
+    label: "Browser",
+    src: null,
+    alt: "The LYKN browser pulled up on the desktop with AI search on a new tab",
+    title: "One browser.",
+    titleDim: "Zero busywork.",
+    desc: "The LYKN browser lives on your desktop. Search with AI from a new tab, or hand it research, forms, and errands and watch it work the web on its own.",
+    stage: { appWindow: "browser" },
   },
-  { role: "user", text: "Schedule a review for Friday" },
   {
-    role: "lykn",
-    text: "Done. Friday, 2:00 pm with the design team, added to the Q3 launch calendar.",
+    id: "context",
+    label: "Context",
+    src: null,
+    alt: "The LYKN desktop switching between Chat, Build, and Imagine while the same ask stays in the bar",
+    title: "One context.",
+    titleDim: "Every mode.",
+    desc: "LYKN already knows your files, projects, and what's on your screen. Switch between Chat, Build, Imagine, and Research - your context rides along, no re-explaining.",
+    stage: {
+      cycleModes: ["chat", "build", "imagine", "research"],
+      prompt: "Use my codebase for this",
+    },
   },
-  { role: "user", text: "Draft the launch email too" },
   {
-    role: "lykn",
-    text: "Drafted and saved to the project with the subject line \u201cMeet the new LYKN.\u201d Want me to queue it for Monday?",
+    id: "glass",
+    label: "Glass",
+    src: glassAdDemo,
+    alt: "LYKN Glass floating over a moodboard, rebranding a product ad on request",
+    title: "One shortcut.",
+    titleDim: "Every screen.",
+    desc: `Press ${HOTKEY} and LYKN Glass appears over whatever you're working on. It reads the page, snips the part you care about, and acts on it, with your projects and context already loaded.`,
+    stage: null,
   },
-  { role: "user", text: "Yes, and remind me before it sends" },
   {
-    role: "lykn",
-    text: "Queued for Monday 9:00 am, with a reminder 30 minutes before. I'll keep the launch board updated.",
+    id: "apps",
+    label: "Apps",
+    src: null,
+    alt: "The LYKN desktop in Build mode, asked to build a custom note taking app",
+    title: "One sentence.",
+    titleDim: "Real apps.",
+    desc: "Describe the tool you wish existed and LYKN builds it - a real app that runs on your desktop, iterated with you until it feels right.",
+    stage: {
+      mode: "build",
+      prompt: "Build me a custom note taking app",
+      typePrompt: true,
+    },
   },
-];
+] as const;
 
-/** The Chat card's looping conversation: once the card scrolls into view,
-    bubbles land one at a time and push the earlier ones up (clipped and faded
-    at the top), then the loop restarts after a beat. Under reduced motion the
-    conversation just renders whole. */
-export function CapChatDemo() {
-  const { ref, seen } = useSeen<HTMLDivElement>();
-  const [count, setCount] = useState(1);
-  // Bumped each loop so bubble keys change and entrance animations replay.
-  const [cycle, setCycle] = useState(0);
+const ANY_ROTATE_MS = 6000;
 
-  useEffect(() => {
-    if (!seen) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      setCount(CAP_CHAT.length);
-      return;
-    }
-    const atEnd = count >= CAP_CHAT.length;
-    // LYKN replies take a beat longer (they're "typed"); the full thread
-    // holds on screen before the loop restarts.
-    const delay = atEnd
-      ? 3600
-      : CAP_CHAT[count].role === "lykn"
-        ? 1700
-        : 1250;
-    const t = window.setTimeout(() => {
-      if (atEnd) {
-        setCycle((c) => c + 1);
-        setCount(1);
-      } else {
-        setCount((c) => c + 1);
-      }
-    }, delay);
-    return () => window.clearTimeout(t);
-  }, [seen, count]);
-
-  return (
-    <div className="gl-cap-chat" ref={ref} aria-hidden="true">
-      {CAP_CHAT.slice(0, count).map((m, i) => (
-        <div
-          key={`${cycle}-${i}`}
-          className={`gl-cap-bubble ${
-            m.role === "user" ? "gl-cap-bubble--user" : "gl-cap-bubble--lykn"
-          }`}
-        >
-          {m.role === "lykn" ? (
-            <LyknMark className="gl-cap-bubble-mark" />
-          ) : null}
-          <span>{m.text}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// Code shown in the Build card — LYKN writing out an app in build mode,
-// typed character by character on a loop (see CapBuildDemo).
-const CAP_CODE = [
-  'export const Dashboard = () => {',
-  '  const { metrics } = useReport("q3");',
-  '',
-  '  return (',
-  '    <Board theme="glass">',
-  '      <Stat label="Revenue" value={metrics.mrr} />',
-  '      <Stat label="Active users" value={metrics.dau} />',
-  '      <Chart series={metrics.trend} />',
-  '      <Gantt rows={metrics.projects} />',
-  '    </Board>',
-  '  );',
-  '};',
-];
-const CAP_CODE_STARTS = CAP_CODE.reduce<number[]>((acc, line, i) => {
-  acc.push(i === 0 ? 0 : acc[i - 1] + Math.max(1, CAP_CODE[i - 1].length));
-  return acc;
-}, []);
-const CAP_CODE_TOTAL =
-  CAP_CODE_STARTS[CAP_CODE.length - 1] + CAP_CODE[CAP_CODE.length - 1].length;
-
-// Minimal syntax tint for the Build card: strings green, keywords violet.
-const CAP_CODE_KEYWORDS = /^(export|const|return)$/;
-function CapCodeLine({ text }: { text: string }) {
-  return (
-    <>
-      {text.split(/("[^"]*"?)/).map((seg, i) =>
-        seg.startsWith('"') ? (
-          <span key={i} className="gl-cap-code-str">
-            {seg}
-          </span>
-        ) : (
-          <span key={i}>
-            {seg.split(/(\s+)/).map((word, j) =>
-              CAP_CODE_KEYWORDS.test(word) ? (
-                <span key={j} className="gl-cap-code-kw">
-                  {word}
-                </span>
-              ) : (
-                <span key={j}>{word}</span>
-              )
-            )}
-          </span>
-        )
-      )}
-    </>
-  );
-}
-
-/** The Build card: LYKN writing code on black. Once in view the snippet types
-    out character by character with a caret, holds, and loops. Under reduced
-    motion the snippet renders whole. */
-export function CapBuildDemo() {
-  const { ref, seen } = useSeen<HTMLDivElement>();
-  const [chars, setChars] = useState(0);
-
-  useEffect(() => {
-    if (!seen) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      setChars(CAP_CODE_TOTAL);
-      return;
-    }
-    if (chars >= CAP_CODE_TOTAL) {
-      const t = window.setTimeout(() => setChars(0), 3200);
-      return () => window.clearTimeout(t);
-    }
-    const t = window.setTimeout(
-      () => setChars((c) => Math.min(CAP_CODE_TOTAL, c + 2)),
-      36
-    );
-    return () => window.clearTimeout(t);
-  }, [seen, chars]);
-
-  return (
-    <div className="gl-cap-code" ref={ref} aria-hidden="true">
-      <div className="gl-cap-code-head">
-        <span className="gl-cap-code-dot" data-tint="r" />
-        <span className="gl-cap-code-dot" data-tint="y" />
-        <span className="gl-cap-code-dot" data-tint="g" />
-        <span className="gl-cap-code-file">Dashboard.tsx</span>
-        <span className="gl-cap-code-mode">LYKN · Build mode</span>
-      </div>
-      <pre className="gl-cap-code-body">
-        {CAP_CODE.map((line, i) => {
-          if (chars < CAP_CODE_STARTS[i]) return null;
-          const visible = Math.max(
-            0,
-            Math.min(line.length, chars - CAP_CODE_STARTS[i])
-          );
-          const isActive =
-            chars < CAP_CODE_TOTAL
-              ? chars >= CAP_CODE_STARTS[i] &&
-                chars < CAP_CODE_STARTS[i] + Math.max(1, line.length)
-              : i === CAP_CODE.length - 1;
-          return (
-            <div className="gl-cap-code-line" key={i}>
-              <span className="gl-cap-code-num">
-                {String(i + 1).padStart(2, "0")}
-              </span>
-              <span>
-                <CapCodeLine text={line.slice(0, visible)} />
-                {isActive ? <span className="gl-cap-code-caret" /> : null}
-              </span>
-            </div>
-          );
-        })}
-      </pre>
-    </div>
-  );
-}
-
-// Ordered so no two adjacent images share a palette — since the three slots
-// show consecutive pool entries, each swap keeps the collage varied.
-const CAP_IMAGES = [
-  imagineSneaker,
-  imaginePorsche,
-  imagineFigure,
-  imagineHovercraft,
-  imagineMeadow,
-  imagineHeadphones,
-  imagineClouds,
-  imaginePastel,
-  imagineCube,
-];
-
-/** One collage slot: every pool image stays mounted, stacked, and the active
-    one fades in over the rest — a clean crossfade with no unmount flash. */
-function CapImgSlot({
-  active,
-  delayMs = 0,
-  className = "",
-}: {
-  active: number;
-  delayMs?: number;
-  className?: string;
-}) {
-  return (
-    <div className={`gl-cap-img ${className}`.trim()}>
-      {CAP_IMAGES.map((src, i) => (
-        <img
-          key={src}
-          src={src}
-          alt=""
-          draggable={false}
-          className={i === active ? "is-on" : ""}
-          style={{ transitionDelay: `${delayMs}ms` }}
-        />
-      ))}
-    </div>
-  );
-}
-
-/** The Imagine card: a rotating collage of generated images — one big slot
-    and two small stacked ones. Each swap advances past ALL three visible
-    images, so the whole collage rotates out to fresh images every cycle
-    (nothing migrates from a small slot to the big one), crossfading with a
-    slight stagger. */
-export function CapImagineDemo() {
-  const { ref, seen } = useSeen<HTMLDivElement>();
-  const [tick, setTick] = useState(0);
-
-  useEffect(() => {
-    if (!seen) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const id = window.setInterval(() => setTick((t) => t + 3), 3400);
-    return () => window.clearInterval(id);
-  }, [seen]);
-
-  const n = CAP_IMAGES.length;
-  return (
-    <div className="gl-cap-imagine" ref={ref} aria-hidden="true">
-      <CapImgSlot className="gl-cap-img--big" active={tick % n} />
-      <div className="gl-cap-img-col">
-        <CapImgSlot active={(tick + 1) % n} delayMs={140} />
-        <CapImgSlot active={(tick + 2) % n} delayMs={280} />
-      </div>
-    </div>
-  );
-}
-
-/** The Voice card: just the Voice Mode orb bobbing on the dark card — no
-    status script (Connecting/Listening/Speaking), no copy. A breathing mic
-    level keeps the dot sphere gently pulsing while the card is in view. */
-export function CapVoiceDemo() {
-  const { ref, seen } = useSeen<HTMLDivElement>();
-  const [micLevel, setMicLevel] = useState(0);
-
-  useEffect(() => {
-    if (!seen) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    let raf = 0;
-    const start = performance.now();
-    const tick = (now: number) => {
-      const t = (now - start) / 1000;
-      setMicLevel(0.35 + Math.abs(Math.sin(t * 1.4)) * 0.4);
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [seen]);
-
-  return (
-    <div className="gl-cap-voice dark" ref={ref} aria-hidden="true">
-      <VoiceTechOrb
-        state="listening"
-        micLevel={micLevel}
-        size={210}
-        appearance="dark"
-      />
-    </div>
-  );
-}
-
-/** Bottom row shared by every capability card: the surface name on the left
-    and an "Explore" link on the right, sitting over a legibility gradient. */
-function CapFoot({ name, onExplore }: { name: string; onExplore: () => void }) {
-  return (
-    <div className="gl-cap-foot">
-      <span className="gl-cap-name">{name}</span>
-      <button type="button" className="gl-cap-explore" onClick={onExplore}>
-        Explore <span aria-hidden="true">→</span>
-      </button>
-    </div>
-  );
-}
-
-/** Capabilities grid directly under the hero: centered headline over a grid
-    of dark cards — Chat, Build, Imagine, Voice, Research, Browser, Drive,
-    and Glass. Each card's Explore link opens that capability's product page. */
-function CapabilitiesSection() {
-  const navigate = useNavigate();
-  return (
-    <section className="gl-cap" id="capabilities">
-      <div className="gl-cap-inner">
-        <h2 className="gl-cap-title gl-reveal">
-          AI anywhere you <span className="gl-cap-underline">need</span>.
-        </h2>
-
-        <div className="gl-cap-grid gl-reveal">
-          <article className="gl-cap-card">
-            <CapChatDemo />
-            <CapFoot name="Chat" onExplore={() => navigate("/product/chat")} />
-          </article>
-
-          <article className="gl-cap-card">
-            <CapBuildDemo />
-            <CapFoot name="Build" onExplore={() => navigate("/product/build")} />
-          </article>
-
-          <article className="gl-cap-card">
-            <CapImagineDemo />
-            <CapFoot
-              name="Imagine"
-              onExplore={() => navigate("/product/imagine")}
-            />
-          </article>
-
-          <article className="gl-cap-card">
-            <CapVoiceDemo />
-            <CapFoot name="Voice" onExplore={() => navigate("/product/voice")} />
-          </article>
-
-          <article className="gl-cap-card">
-            <CapResearchDemo />
-            <CapFoot
-              name="Research"
-              onExplore={() => navigate("/product/research")}
-            />
-          </article>
-
-          <article className="gl-cap-card">
-            <CapBrowserDemo />
-            <CapFoot
-              name="Browser"
-              onExplore={() => navigate("/product/browser")}
-            />
-          </article>
-
-          <article className="gl-cap-card">
-            <CapDriveDemo />
-            <CapFoot
-              name="Drive"
-              onExplore={() => navigate("/product/drive")}
-            />
-          </article>
-
-          <article className="gl-cap-card">
-            <CapGlassDemo />
-            <CapFoot name="Glass" onExplore={() => navigate("/product/glass")} />
-          </article>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-/** LYKN Glass explainer (reference: "One API. Every modality."): split
-    layout on a white stage — two-line headline, supporting copy,
-    CTA pills, and proof stats on the left; a mac-style window playing the
-    real snip demo with little step chips on the right. */
+/** LYKN Glass explainer: split layout — headline, shortcut copy,
+    CTA pills, and proof stats on the left; a UI screenshot on the right
+    that the chips underneath switch between. */
 function AnyScreenSection() {
   const navigate = useNavigate();
-  const scrollTo = (id: string) =>
-    document
-      .getElementById(id)
-      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const [view, setView] = useState<(typeof ANY_VIEWS)[number]["id"]>(
+    ANY_VIEWS[0].id,
+  );
+  const active = ANY_VIEWS.find((v) => v.id === view) ?? ANY_VIEWS[0];
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setView((cur) => {
+        const i = ANY_VIEWS.findIndex((v) => v.id === cur);
+        return ANY_VIEWS[(Math.max(0, i) + 1) % ANY_VIEWS.length].id;
+      });
+    }, ANY_ROTATE_MS);
+    return () => window.clearInterval(id);
+  }, []);
+
   return (
     <section className="gl-any" id="about">
       <div className="gl-any-inner">
         <div className="gl-any-copy">
           <h2 className="gl-any-title gl-reveal">
-            One shortcut.
-            <br />
-            <span className="gl-any-title-dim">Every screen.</span>
+            <span key={active.id} className="gl-any-sub-swap">
+              {active.title}
+              <br />
+              <span className="gl-any-title-dim">{active.titleDim}</span>
+            </span>
           </h2>
           <p className="gl-any-sub gl-reveal">
-            Press {HOTKEY} and LYKN Glass appears over whatever you're working on.
-            It reads the page, snips the part you care about, and acts on it,
-            with your projects and context already loaded.
+            <span key={active.id} className="gl-any-sub-swap">
+              {markLykn(active.desc)}
+            </span>
           </p>
           <div className="gl-any-actions gl-reveal">
             <button
               type="button"
               className="gl-any-btn gl-any-btn--primary"
               onClick={() => navigate("/download")}
+              aria-label="Download LYKN"
             >
-              Download LYKN
-            </button>
-            <button
-              type="button"
-              className="gl-any-btn gl-any-btn--ghost"
-              onClick={() => scrollTo("download")}
-            >
-              See how
+              Download&nbsp;<LyknWordmark decorative />
             </button>
           </div>
           <dl className="gl-any-stats gl-reveal">
@@ -719,34 +366,37 @@ function AnyScreenSection() {
         </div>
 
         <div className="gl-any-stage gl-reveal">
-          <img
-            className="gl-any-shot"
-            src={glassAdDemo}
-            alt="LYKN Glass floating over a moodboard, rebranding a product ad on request"
-            draggable={false}
-          />
-          {/* Product-page shortcuts under the window: each chip jumps to
-              that capability's page. */}
-          <div className="gl-any-chips">
-            {(
-              [
-                "chat",
-                "build",
-                "imagine",
-                "voice",
-                "research",
-                "browser",
-                "drive",
-                "glass",
-              ] as const
-            ).map((id) => (
+          {active.src ? (
+            <img
+              key={active.id}
+              className="gl-any-shot gl-any-shot--switch"
+              data-header-tone="dark"
+              src={active.src}
+              alt={active.alt}
+              draggable={false}
+            />
+          ) : (
+            <div
+              key={active.id}
+              className="gl-any-live"
+              data-header-tone="dark"
+              role="img"
+              aria-label={active.alt}
+            >
+              <HeroDesktopStage {...active.stage} />
+            </div>
+          )}
+          <div className="gl-any-chips" role="tablist" aria-label="LYKN views">
+            {ANY_VIEWS.map((v) => (
               <button
-                key={id}
+                key={v.id}
                 type="button"
-                className="gl-any-chip"
-                onClick={() => navigate(`/product/${id}`)}
+                role="tab"
+                aria-selected={view === v.id}
+                className={`gl-any-chip${view === v.id ? " is-active" : ""}`}
+                onClick={() => setView(v.id)}
               >
-                {id.charAt(0).toUpperCase() + id.slice(1)}
+                {v.label}
               </button>
             ))}
           </div>
@@ -756,12 +406,10 @@ function AnyScreenSection() {
   );
 }
 
-/** Big showcase card under the Glass explainer: the Remotion snip animation
-    (the glass bar over an article, the snip tool dragging a selection, and
-    the AI answering about it) framed in one wide card. */
+/** Big showcase card: the snip animation framed in one wide card. */
 function SnipShowcaseSection() {
   return (
-    <section className="gl-snip" aria-label="LYKN Glass snip demo">
+    <section className="gl-snip" aria-label="LYKN desktop snip demo">
       <div className="gl-snip-inner">
         <div className="gl-snip-card gl-reveal">
           <video
@@ -772,7 +420,7 @@ function SnipShowcaseSection() {
             loop
             playsInline
             preload="metadata"
-            aria-label="LYKN Glass snipping a section of an article and answering a question about it"
+            aria-label="LYKN desktop snipping a section of an article and answering a question about it"
           />
         </div>
       </div>
@@ -837,8 +485,8 @@ const DEMO_PROMPT_LIMIT = 10;
 
 // Starter prompts shown in the demo's empty state (⌘L load-in) — click to send.
 const DEMO_SUGGESTIONS = [
-  "What is LYKN Glass?",
-  "How does LYKN manage my projects?",
+  "What is LYKN desktop?",
+  "How does Mac sync work?",
   "What's on this page?",
 ];
 
@@ -847,7 +495,7 @@ const DEMO_SUGGESTIONS = [
 const DEMO_FOLLOWUPS = [
   "How do you manage my projects?",
   "How does the calendar work?",
-  "Can it see what's on my screen?",
+  "Does it sync with Finder?",
   "What models can I use?",
   "How do I get started?",
 ];
@@ -856,22 +504,28 @@ const DEMO_FOLLOWUPS = [
 // out its canned reply instantly instead of hitting the model, so the common
 // demo paths stay cheap and fast. (Free-typed prompts still stream live.)
 const DEMO_CANNED: Record<string, string> = {
-  "What is LYKN Glass?":
-    `LYKN Glass is me, on top of every screen you work on. Press ${HOTKEY} over any app, doc, or browser and I appear as a floating glass bar. Once you're set up, I show up already knowing who you are and what you're working on. I can read what's on your screen when you ask, answer it, and take action, then get out of your way. It's the same overlay you're using right now.`,
+  "What is LYKN desktop?":
+    "LYKN desktop is Home on your Mac. The chat bar sits on your wallpaper, your apps live in a dock, and your real Desktop folder is already there. Chat, Build, Imagine, Research, Browser, and Drive all open from that same Home. Glass is still one shortcut away when you need me over another app.",
+  "How does Mac sync work?":
+    "Sync with Mac mirrors your real Desktop, folders, and wallpaper inside LYKN. Files you drop on Home land on disk. Finder files open in place, so you ask about a deck or a note without leaving the desktop. It's your Mac, already loaded.",
+  "Does it sync with Finder?":
+    "Yes. LYKN desktop can see your Desktop folder and the folders you grant. Drop a file on Home and it writes to disk. Open Files from the dock and you're browsing the same tree Finder uses.",
   "How does LYKN manage my projects?":
-    "I can act as your project manager. Once you're signed in, I hold the full context of everything you're working on, track your projects and their tasks, know what's done and what's due, and push the next step forward, keeping every connected tool and model in sync. You could ask \"what's next on the launch?\" from any screen and I'd just know.",
+    "I can act as your project manager. Once you're signed in, I hold the full context of everything you're working on, track your projects and their tasks, know what's done and what's due, and push the next step forward, keeping every connected tool and model in sync. You could ask \"what's next on the launch?\" from Home and I'd just know.",
   "How do you manage my projects?":
-    "Think of me as a project manager who never loses context. Once you're set up, I keep your projects and their tasks, know what's done and what's still open, surface what's due, and nudge the next step forward, from whatever screen you're on. You stay in the work; I keep the plan moving.",
+    "Think of me as a project manager who never loses context. Once you're set up, I keep your projects and their tasks, know what's done and what's still open, surface what's due, and nudge the next step forward, from Home on your Mac. You stay in the work; I keep the plan moving.",
   "What's on this page?":
-    `You're on the LYKN landing page. Up top is the nav: Product, Pricing, Download. The hero reads "Welcome to LYKN studio" with the ${desktopModifierKey()} keycap you used to open me. Below that: how I show up on any screen, an "AI project manager" section with live project and calendar UI, a Latest news strip, an FAQ, and a download section for Mac.`,
+    `You're on the LYKN landing page. Up top is the floating nav: Features, Pricing, Security, News, and a Download pill. The hero reads "LYKN your AI desktop" and rotates three lines: The only AI workspace you need. Fully customizable. Ready to use by anyone for anything. Below that: a short explainer, a flip-through of Chat, Build, Imagine, and Research, five feature cards, Mac sync / customize / agents, and a download card for Mac.`,
   "How does the calendar work?":
-    "Once you're set up, I manage your calendar right alongside your work. I'll know what's coming up, can schedule and reschedule, flag conflicts, and tie events back to the project they belong to, so your time and your projects stay in sync instead of living in separate apps.",
+    "Once you're set up, I manage your calendar right alongside your work. The calendar widget sits on Home, and I can schedule, reschedule, and flag conflicts so your time and your projects stay in sync.",
   "Can it see what's on my screen?":
-    "In this demo, no, I'm not reading your real screen; I just know you're on the LYKN landing page. But download LYKN and yes: the installed overlay reads whatever's actually on your screen and works with it, right where you are.",
+    "In this demo, no, I'm not reading your real screen; I just know you're on the LYKN landing page. Download LYKN for Mac and Home shows your wallpaper, Desktop files, and widgets. Press " +
+    HOTKEY +
+    " and Glass can work with whatever app is in front of you.",
   "What models can I use?":
     "I run on one fast everyday model by default. On Pro you can switch to the frontier models, GPT, Claude, Gemini, and Grok, straight from the model menu. Whichever you pick, it's grounded in your context, so the answer is still personal to you.",
   "How do I get started?":
-    `Download LYKN for Mac from this page, sign in, and press ${HOTKEY} anywhere. From there I start learning who you are and how you work, and I'm one shortcut away on every screen you're on.`,
+    "Download LYKN for Mac from this page, sign in, and open Home. Your Desktop syncs, the chat bar is in the middle, and I'm ready from the first ask.",
 };
 
 // Common words ignored when comparing two suggestions for similarity, so
@@ -1123,7 +777,7 @@ function GlassDemoOverlay({
   // work there) until the user closes it or every suggestion has been used.
   const showSide = messages.length > 0 && sideOpen && sideSuggestions.length > 0;
   return (
-    <div className="gl-demo" role="dialog" aria-label="LYKN Glass demo">
+    <div className="gl-demo" role="dialog" aria-label="LYKN desktop demo">
       <div
         className="gl-demo-stage"
         style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}
@@ -1266,9 +920,17 @@ function GlassDemoOverlay({
 
           {limitReached ? (
             <div className="gl-demo-limit">
-              <span>Sign up to keep talking to LYKN, with your own context and every model.</span>
-              <button type="button" className="gl-demo-cta" onClick={onSignup}>
-                Get LYKN
+              <span>
+                Sign up to keep talking to <LyknWordmark />, with your own
+                context and every model.
+              </span>
+              <button
+                type="button"
+                className="gl-demo-cta"
+                onClick={onSignup}
+                aria-label="Get LYKN"
+              >
+                Get <LyknWordmark decorative />
               </button>
             </div>
           ) : null}
@@ -1316,517 +978,7 @@ function GlassDemoOverlay({
   );
 }
 
-/** Fires once when the element scrolls into view; drives lazy-mounting +
-    `active` quality gating for the heavy product previews. */
-function useSeen<T extends HTMLElement>() {
-  const ref = useRef<T>(null);
-  const [seen, setSeen] = useState(false);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || seen) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          setSeen(true);
-          io.disconnect();
-        }
-      },
-      { threshold: 0.2, rootMargin: "0px 0px -10% 0px" }
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, [seen]);
-  return { ref, seen };
-}
-
-/** Counts from 0 → `to` once the element scrolls into view, then stops. Used
-    for the project dashboard stat tiles so the numbers tick up on reveal. */
-function CountUp({ to, duration = 1100 }: { to: number; duration?: number }) {
-  const { ref, seen } = useSeen<HTMLSpanElement>();
-  const [n, setN] = useState(0);
-  useEffect(() => {
-    if (!seen) return;
-    let raf = 0;
-    const start = performance.now();
-    const tick = (now: number) => {
-      const t = Math.min((now - start) / duration, 1);
-      // easeOutCubic for a snappy settle
-      const eased = 1 - Math.pow(1 - t, 3);
-      setN(Math.round(eased * to));
-      if (t < 1) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [seen, to, duration]);
-  return (
-    <span ref={ref} className="tabular-nums">
-      {n}
-    </span>
-  );
-}
-
-/** A dashboard stat tile, faithful to ProjectDetailPage's StatTile but
-    light-theme only + an animated count-up value. */
-function PmStat({
-  icon: Icon,
-  label,
-  value,
-  tone = "default",
-}: {
-  icon: typeof ListTodo;
-  label: string;
-  value: number;
-  tone?: "default" | "danger" | "accent";
-}) {
-  const toneCls =
-    tone === "danger"
-      ? "text-red-600"
-      : tone === "accent"
-        ? "text-blue-600"
-        : "text-slate-900";
-  return (
-    <div className="rounded-2xl border border-black/[0.05] bg-white px-4 py-3 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
-      <div className="flex items-center gap-1.5 text-slate-400">
-        <Icon className="w-3.5 h-3.5" />
-        <span className="text-[0.625rem] font-semibold uppercase tracking-wider">
-          {label}
-        </span>
-      </div>
-      <div className={`mt-1 text-2xl font-semibold ${toneCls}`}>
-        <CountUp to={value} />
-      </div>
-    </div>
-  );
-}
-
-const PM_WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
-
-/** A live month calendar replicating ProjectDetailPage's MonthCalendar: real
-    current month, today highlighted, and event/deadline dots that gently
-    pulse. Marks are placed relative to today so the demo always looks full. */
-function PmCalendar() {
-  const { cells, monthLabel, todayDate, daysInMonth } = (() => {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth();
-    const firstWeekday = new Date(year, month, 1).getDay();
-    const dim = new Date(year, month + 1, 0).getDate();
-    const prevMonthDays = new Date(year, month, 0).getDate();
-    const out: { day: number; muted: boolean; inMonth: boolean }[] = [];
-    for (let i = firstWeekday - 1; i >= 0; i--)
-      out.push({ day: prevMonthDays - i, muted: true, inMonth: false });
-    for (let d = 1; d <= dim; d++)
-      out.push({ day: d, muted: false, inMonth: true });
-    let trail = 1;
-    while (out.length % 7 !== 0 || out.length < 42) {
-      out.push({ day: trail, muted: true, inMonth: false });
-      trail += 1;
-      if (out.length >= 42) break;
-    }
-    return {
-      cells: out,
-      monthLabel: now.toLocaleDateString("en-US", {
-        month: "long",
-        year: "numeric",
-      }),
-      todayDate: now.getDate(),
-      daysInMonth: dim,
-    };
-  })();
-
-  // Days carrying a marker, relative to today so the grid always reads as busy.
-  const events = new Set(
-    [todayDate, todayDate + 2, todayDate + 9].filter((d) => d <= daysInMonth),
-  );
-  const deadlines = new Set(
-    [todayDate, todayDate + 5].filter((d) => d <= daysInMonth),
-  );
-  const selected = todayDate + 2 <= daysInMonth ? todayDate + 2 : null;
-
-  return (
-    <div className="rounded-[1.5rem] border border-black/[0.05] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-semibold tracking-tight text-slate-900">
-          {monthLabel}
-        </h3>
-        <div className="flex items-center gap-1 text-slate-400">
-          <span className="w-7 h-7 inline-flex items-center justify-center rounded-full hover:bg-black/[0.05]">
-            <ChevronLeft className="w-4 h-4" />
-          </span>
-          <span className="text-[0.6875rem] px-2 py-1 rounded-full text-slate-500">
-            Today
-          </span>
-          <span className="w-7 h-7 inline-flex items-center justify-center rounded-full hover:bg-black/[0.05]">
-            <ChevronRight className="w-4 h-4" />
-          </span>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-7 gap-y-1 text-center">
-        {PM_WEEKDAYS.map((w, i) => (
-          <div
-            key={i}
-            className="text-[0.625rem] font-medium tracking-wide text-slate-300 pb-1"
-          >
-            {w}
-          </div>
-        ))}
-        {cells.map((cell, i) => {
-          const isToday = cell.inMonth && cell.day === todayDate;
-          const isSelected = cell.inMonth && cell.day === selected;
-          const hasEvent = cell.inMonth && events.has(cell.day);
-          const hasTask = cell.inMonth && deadlines.has(cell.day);
-          return (
-            <div key={i} className="flex items-center justify-center py-0.5">
-              <span
-                className={`relative w-8 h-8 inline-flex items-center justify-center rounded-full text-[0.8125rem] ${
-                  isToday
-                    ? "bg-slate-900 text-white font-semibold gl-pm-today"
-                    : isSelected
-                      ? "bg-blue-500/15 text-blue-600 font-medium"
-                      : cell.muted
-                        ? "text-slate-300"
-                        : "text-slate-600"
-                }`}
-              >
-                {cell.day}
-                {(hasEvent || hasTask) && (
-                  <span className="absolute bottom-1 left-1/2 -translate-x-1/2 flex items-center gap-0.5">
-                    {hasEvent && (
-                      <span
-                        className={`gl-pm-dot w-1 h-1 rounded-full ${
-                          isToday ? "bg-white/90" : "bg-blue-500"
-                        }`}
-                      />
-                    )}
-                    {hasTask && (
-                      <span
-                        className={`gl-pm-dot w-1 h-1 rounded-full ${
-                          isToday ? "bg-white/90" : "bg-teal-500"
-                        }`}
-                        style={{ animationDelay: "0.6s" }}
-                      />
-                    )}
-                  </span>
-                )}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="mt-3 flex items-center justify-center gap-4 text-[0.625rem] text-slate-400">
-        <span className="inline-flex items-center gap-1">
-          <span className="w-1.5 h-1.5 rounded-full bg-blue-500" /> Events
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <span className="w-1.5 h-1.5 rounded-full bg-teal-500" /> Deadlines
-        </span>
-      </div>
-    </div>
-  );
-}
-
-// Tasks for the demo todo list. The first auto-checks on a loop (LYKN working
-// through them); the rest carry priority dots + deadline pills.
-const PM_TASKS: {
-  title: string;
-  done?: boolean;
-  auto?: boolean;
-  priority?: "high" | "normal";
-  due?: string;
-  overdue?: boolean;
-}[] = [
-  { title: "Finalize pricing page", auto: true, due: "TODAY", overdue: true },
-  { title: "Brief the design team", done: true },
-  { title: "Draft the launch email", priority: "high", due: "JUN 30" },
-  { title: "Review competitor teardown", due: "JUL 02" },
-];
-
-function PmTasks() {
-  return (
-    <div className="rounded-[1.5rem] border border-black/[0.05] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
-      <div className="flex items-center gap-2 mb-3">
-        <h3 className="text-sm font-semibold tracking-tight text-slate-900">
-          Todo list
-        </h3>
-        <span className="text-[0.6875rem] text-slate-400">3 open</span>
-        <span className="ml-auto inline-flex items-center gap-1.5 text-[0.6875rem] font-medium px-2.5 py-1 rounded-full bg-slate-900 text-white">
-          Add new
-        </span>
-      </div>
-
-      <div className="flex flex-col">
-        {PM_TASKS.map((t) => (
-          <div
-            key={t.title}
-            className="group flex items-center gap-2.5 px-2 py-2 rounded-2xl hover:bg-black/[0.03]"
-          >
-            <span
-              className={`gl-pm-cb ${t.auto ? "gl-pm-cb--auto" : ""} ${
-                t.done ? "gl-pm-cb--done" : ""
-              }`}
-            />
-            {t.priority === "high" && !t.done ? (
-              <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-red-500" />
-            ) : null}
-            <div className="min-w-0 flex-1">
-              <span
-                className={`gl-pm-tasklabel text-sm leading-snug ${
-                  t.auto ? "gl-pm-tasklabel--auto" : ""
-                } ${t.done ? "gl-pm-tasklabel--done" : "text-slate-800"}`}
-              >
-                {t.title}
-              </span>
-            </div>
-            {t.due && (
-              <span
-                className={`shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.625rem] font-semibold tracking-wide ${
-                  t.overdue
-                    ? "bg-red-500/10 text-red-600"
-                    : "bg-amber-500/10 text-amber-600"
-                }`}
-              >
-                {t.due}
-              </span>
-            )}
-            <Flag className="w-3.5 h-3.5 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// Night Shift kanban — a compact 3-column board. One "Ready" card is freshly
-// expanded by LYKN overnight and animates in with a glow.
-const PM_KANBAN: {
-  col: string;
-  cards: { title: string; tag?: string; fresh?: boolean }[];
-}[] = [
-  {
-    col: "Backlog",
-    cards: [{ title: "Explore partner integrations" }, { title: "Q4 roadmap notes" }],
-  },
-  {
-    col: "Ready",
-    cards: [
-      { title: "Spec: launch landing page", tag: "Code", fresh: true },
-      { title: "Draft press outreach list", tag: "Research" },
-    ],
-  },
-  {
-    col: "Scheduled",
-    cards: [{ title: "Build pricing experiment", tag: "Agent" }],
-  },
-];
-
-function PmKanban() {
-  return (
-    <div className="rounded-[1.5rem] border border-black/[0.05] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
-      <div className="flex items-center gap-2 mb-1">
-        <Moon className="w-3.5 h-3.5 text-slate-400" />
-        <h3 className="text-sm font-semibold tracking-tight text-slate-900">
-          Night Shift queue
-        </h3>
-      </div>
-      <p className="text-xs text-slate-500 mb-3 leading-relaxed">
-        Drop ideas in Backlog. Overnight, LYKN expands them to Ready, then
-        approve to schedule the next run.
-      </p>
-      <div className="grid grid-cols-3 gap-2 items-start">
-        {PM_KANBAN.map((c) => (
-          <div
-            key={c.col}
-            className="min-w-0 rounded-xl border border-black/[0.06] bg-black/[0.02] p-2"
-          >
-            <p className="text-[0.58rem] uppercase tracking-[0.14em] font-semibold text-slate-400 mb-2">
-              {c.col} ({c.cards.length})
-            </p>
-            <div className="space-y-2">
-              {c.cards.map((card) => (
-                <div
-                  key={card.title}
-                  className={`rounded-xl border border-black/[0.06] bg-white p-2 ${
-                    card.fresh ? "gl-pm-card-fresh" : ""
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-1">
-                    <p className="text-xs font-medium text-slate-800 leading-snug">
-                      {card.title}
-                    </p>
-                    {card.tag && (
-                      <span className="shrink-0 text-[0.55rem] uppercase tracking-wide font-semibold rounded px-1 py-0.5 bg-black/[0.05] text-slate-500">
-                        {card.tag}
-                      </span>
-                    )}
-                  </div>
-                  {card.fresh && (
-                    <p className="mt-1 inline-flex items-center gap-1 text-[0.58rem] font-semibold text-blue-600">
-                      <span className="gl-pm-dot w-1 h-1 rounded-full bg-blue-500" />
-                      Expanded by LYKN
-                    </p>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/** Phone breakpoint matching the landing page's mobile section treatment. */
-const GL_PHONE_QUERY = "(max-width: 860px)";
-
-/** Scale the project-manager dashboard as a uniform miniature on phones:
-    lay out at a fixed desktop width, then transform-scale to the stage width
-    so columns stay roomy instead of squishing into the narrow viewport. */
-function PmPreviewFit({
-  designWidth,
-  children,
-}: {
-  designWidth: number;
-  children: ReactNode;
-}) {
-  const [isPhone, setIsPhone] = useState(() =>
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia(GL_PHONE_QUERY).matches,
-  );
-  const outerRef = useRef<HTMLDivElement>(null);
-  const innerRef = useRef<HTMLDivElement>(null);
-  const [scale, setScale] = useState(0);
-  const [height, setHeight] = useState(0);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-      return;
-    }
-    const mql = window.matchMedia(GL_PHONE_QUERY);
-    const update = () => setIsPhone(mql.matches);
-    update();
-    mql.addEventListener("change", update);
-    return () => mql.removeEventListener("change", update);
-  }, []);
-
-  useLayoutEffect(() => {
-    if (!isPhone) {
-      setScale(0);
-      setHeight(0);
-      return;
-    }
-    const outer = outerRef.current;
-    const inner = innerRef.current;
-    if (!outer || !inner) return;
-
-    const measure = () => {
-      const nextScale = outer.clientWidth / designWidth;
-      if (nextScale <= 0) return;
-      setScale(nextScale);
-      // Transform doesn't affect layout — reserve the post-scale height.
-      setHeight(inner.scrollHeight * nextScale);
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(outer);
-    ro.observe(inner);
-    return () => ro.disconnect();
-  }, [isPhone, designWidth]);
-
-  if (!isPhone) return <>{children}</>;
-
-  return (
-    <div
-      ref={outerRef}
-      className="gl-pm-fit"
-      style={height > 0 ? { height } : undefined}
-    >
-      <div
-        ref={innerRef}
-        className="gl-pm-fit-inner"
-        style={{
-          width: designWidth,
-          transform: scale > 0 ? `scale(${scale})` : undefined,
-        }}
-      >
-        {children}
-      </div>
-    </div>
-  );
-}
-
-/** "LYKN runs your projects" — frames the ACTUAL projects + calendar dashboard
-    UI (stat tiles, month calendar, tasks, Night Shift queue) inside the shared
-    browser window chrome, with looping micro-animations so it feels alive. */
-function ProjectManagerSection() {
-  return (
-    <section className="gl-pm" id="projects">
-      <div className="gl-pm-inner">
-        <h2 className="gl-pm-title gl-reveal">Your AI project manager</h2>
-
-        <div className="gl-pm-stage gl-reveal">
-          <PmPreviewFit designWidth={900}>
-            <div className="gl-window gl-window--pm">
-              <div className="gl-window-bar">
-                <div className="gl-dots">
-                  <span />
-                  <span />
-                  <span />
-                </div>
-                <div className="gl-window-search">lykn.ai/projects</div>
-                <div className="gl-window-actions">
-                  <span className="gl-window-avatar" />
-                </div>
-              </div>
-
-              <div className="gl-pm-body">
-                {/* Project header + live "managing" chip */}
-                <div className="flex flex-wrap items-center gap-2">
-                  <FolderKanban className="w-5 h-5 text-slate-500" />
-                  <h3 className="text-xl font-semibold tracking-tight text-slate-900">
-                    Q3 Product Launch
-                  </h3>
-                  <span className="text-[0.625rem] px-1.5 py-0.5 rounded-full bg-green-500/10 text-green-600">
-                    Active
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-[0.625rem] px-1.5 py-0.5 rounded-full bg-blue-500/10 text-blue-600">
-                    <Crosshair className="w-3 h-3" />
-                    AI focus
-                  </span>
-                </div>
-
-                {/* Stat tiles — always the desktop 4-up; phones scale the whole
-                    window down instead of squishing into a 2-col stack. */}
-                <div className="mt-4 grid grid-cols-4 gap-2.5">
-                  <PmStat icon={ListTodo} label="Open tasks" value={7} />
-                  <PmStat icon={CalendarClock} label="Overdue" value={1} tone="danger" />
-                  <PmStat icon={CheckCircle2} label="Done · 7d" value={12} />
-                  <PmStat icon={CalendarPlus} label="Events · 7d" value={4} tone="accent" />
-                </div>
-
-                {/* Calendar + tasks — side-by-side like the real dashboard. */}
-                <div className="mt-3 grid grid-cols-2 gap-3 items-start">
-                  <PmCalendar />
-                  <PmTasks />
-                </div>
-
-                {/* Night Shift queue */}
-                <div className="mt-3">
-                  <PmKanban />
-                </div>
-              </div>
-            </div>
-          </PmPreviewFit>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-/** "Latest news" — a row of article tiles under the project manager section,
-    each linking to its full post at /news/<slug>. */
+/** "Latest news" — a row of article tiles, each linking to its full post. */
 function NewsSection() {
   const navigate = useNavigate();
   return (
@@ -1875,15 +1027,15 @@ function NewsSection() {
 const FAQS: { q: string; a: string }[] = [
   {
     q: "What is LYKN?",
-    a: "LYKN is a personal intelligence layer for your AI. It remembers who you are, holds the context of your projects, and brings that personalized AI onto any screen you work on.",
+    a: "LYKN desktop is an AI workspace for your Mac. It remembers who you are, holds the context of your projects, and keeps your Desktop, files, and chat in one Home.",
   },
   {
     q: "Does it work with the apps and models I already use?",
-    a: "Yes. LYKN connects to the apps you already work in and reads from them, and you can switch between GPT, Claude, Gemini and Grok from the model menu. Whichever model you pick is grounded in the same understanding of you.",
+    a: "Yes. Sync with Mac brings Finder files and your wallpaper onto Home, and you can switch between GPT, Claude, Gemini and Grok from the model menu. Whichever model you pick is grounded in the same understanding of you.",
   },
   {
-    q: "How does LYKN remember me across different apps?",
-    a: "Everything LYKN learns lives in your intelligence layer: your beliefs, preferences, projects, and the context it draws on. That layer is portable, so it travels with you instead of being trapped in one app.",
+    q: "How does LYKN sync with my Mac?",
+    a: "LYKN can mirror your real Desktop folder, the folders you grant, and your wallpaper. Files you drop on Home land on disk. The dock can also launch Mac apps you already use.",
   },
   {
     q: "Can LYKN actually run my projects?",
@@ -1894,8 +1046,8 @@ const FAQS: { q: string; a: string }[] = [
     a: "Your context is yours. You can see exactly what LYKN knows about you, edit it, and steer it at any time from your intelligence layer.",
   },
   {
-    q: "Which platforms is Glass available on?",
-    a: `Glass is the desktop overlay that puts LYKN on any screen with a single shortcut. On Mac it's ${desktopHotkeyLabel("spaced")}. Hit it and LYKN is right there, wherever you are working.`,
+    q: "Which platforms is LYKN desktop available on?",
+    a: `LYKN desktop is the Mac app. Home is where you chat, open files, and keep widgets. Glass is still one shortcut away (${desktopHotkeyLabel("spaced")}) when you need LYKN over another app.`,
   },
 ];
 
@@ -1921,12 +1073,12 @@ function FaqSection() {
                   aria-expanded={isOpen}
                   onClick={() => setOpen(isOpen ? null : i)}
                 >
-                  <span>{f.q}</span>
+                  <span>{markLykn(f.q)}</span>
                   <ChevronDown className="gl-faq-chevron" aria-hidden="true" />
                 </button>
                 <div className="gl-faq-a-wrap">
                   <div className="gl-faq-a-inner">
-                    <p className="gl-faq-a">{f.a}</p>
+                    <p className="gl-faq-a">{markLykn(f.a)}</p>
                   </div>
                 </div>
               </div>
@@ -1949,18 +1101,18 @@ const START_OPTIONS: {
   solid?: boolean;
 }[] = [
   {
-    title: "Download LYKN",
-    sub: "Full Glass Studio on your desktop - AI on every screen, available for Mac.",
+    title: "Download LYKN desktop",
+    sub: "The Mac app - Home, the chat bar, and your files already in sync.",
     points: [
-      `Glass - summon LYKN over any screen with ${HOTKEY_SPACED}`,
+      "Home - wallpaper, widgets, and the chat bar in the middle",
+      "Sync with Mac - Desktop folder, Finder files, and wallpaper",
       "Chat - ask anything with your context already loaded",
       "Build - turn a sentence into working software",
       "Imagine - on-brand images, ads, and art from a prompt",
       "Voice - real-time conversation, hands-free",
       "Research - deep digs into sources, structured as a report",
       "Browser - an agent that browses and acts on the web for you",
-      "Drive - every file, note, and artifact in one place",
-      "Projects, calendar, and your private Markdown Memory",
+      `Glass - still one shortcut away with ${HOTKEY_SPACED}`,
     ],
     cta: "Download for Mac",
     to: "/download",
@@ -1974,11 +1126,14 @@ function GetStartedSection() {
   return (
     <section className="gl-start" id="download">
       <div className="gl-start-inner">
-        <h2 className="gl-start-title gl-reveal">Get LYKN on your desktop</h2>
+        <h2 className="gl-start-title gl-reveal">
+          Get{"\u00A0"}
+          <LyknWordmark /> desktop for Mac
+        </h2>
         <div className="gl-start-grid gl-start-grid--single gl-reveal">
           {START_OPTIONS.map((opt) => (
             <article className="gl-start-card" key={opt.title}>
-              <h3 className="gl-start-card-title">{opt.title}</h3>
+              <h3 className="gl-start-card-title">{markLykn(opt.title)}</h3>
               <p className="gl-start-card-sub">{opt.sub}</p>
               <ul className="gl-start-list">
                 {opt.points.map((point) => (
@@ -2022,8 +1177,8 @@ const FOOTER_COLS: { title: string; links: FooterLink[] }[] = [
   {
     title: "Product",
     links: [
-      { label: "Glass", scroll: "top" },
-      { label: "Projects", scroll: "projects" },
+      { label: "Desktop", scroll: "top" },
+      { label: "Capabilities", scroll: "capabilities" },
     ],
   },
   {
@@ -2031,6 +1186,7 @@ const FOOTER_COLS: { title: string; links: FooterLink[] }[] = [
     links: [
       { label: "Templates", to: "/templates" },
       { label: "Pricing", to: "/pricing" },
+      { label: "Security", to: "/security" },
       { label: "Download", scroll: "download" },
     ],
   },
@@ -2071,9 +1227,14 @@ export function SiteFooter() {
     <footer className="gl-footer">
       <div className="gl-footer-inner">
         <div className="gl-footer-brand">
-          <img src={lyknLogo} alt="LYKN" className="gl-footer-logo" />
+          <span
+            className="gl-footer-logo"
+            role="img"
+            aria-label="LYKN"
+            style={{ ["--gl-footer-mark" as string]: `url("${lyknLogoMark}")` }}
+          />
           <p className="gl-footer-tagline">
-            AI on any screen, personalized to you.
+            Your Mac, already in sync.
           </p>
         </div>
         <nav className="gl-footer-cols" aria-label="Footer">
@@ -2095,44 +1256,17 @@ export function SiteFooter() {
         </nav>
       </div>
       <div className="gl-footer-bottom">
-        <span>© {new Date().getFullYear()} LYKN. All rights reserved.</span>
+        <span>
+          © {new Date().getFullYear()} <LyknWordmark />. All rights reserved.
+        </span>
         <span className="gl-footer-shortcut">
-          AI on any screen · <kbd>{desktopModifierKey()}</kbd> <kbd>L</kbd>
+          <LyknWordmark decorative /> desktop for Mac ·{" "}
+          <kbd>{desktopModifierKey()}</kbd> <kbd>L</kbd>
         </span>
       </div>
     </footer>
   );
 }
-
-// Text sitting directly on the page backdrop (not on a card/window), which
-// the GlassBackdrop blends toward white as the blue glow passes behind it.
-// Big titles get the letter-by-letter gradient treatment; the rest blend as
-// a whole element.
-const GRAD_TEXT_SELECTORS = [
-  ".gl-cap-title",
-  ".gl-any-title",
-  ".gl-any-title-dim",
-  ".gl-pm-title",
-  ".gl-news-title",
-  ".gl-faq-title",
-  ".gl-start-title",
-  ".gl-hero-headline",
-];
-const MIX_TEXT_SELECTORS = [
-  ".gl-any-sub",
-  ".gl-any-stat dt",
-  ".gl-any-stat dd",
-  ".gl-news-all",
-  ".gl-news-date",
-  ".gl-news-headline",
-  ".gl-hero-lede",
-  // The footer is transparent over the backdrop, so its text blends to
-  // white wherever the glow sits behind it.
-  ".gl-footer-tagline",
-  ".gl-footer-col-title",
-  ".gl-footer-link",
-  ".gl-footer-bottom",
-];
 
 const GlassLanding = () => {
   const navigate = useNavigate();
@@ -2159,6 +1293,18 @@ const GlassLanding = () => {
   }, []);
 
   const goToSignup = () => navigate("/download");
+
+  useLandingLightTheme();
+
+  // Progressive top blur: once the page starts scrolling, a fixed frosted
+  // band under the header blurs whatever slides beneath the viewport top.
+  const [topBlur, setTopBlur] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setTopBlur(window.scrollY > 24);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   // ⌘L (or Ctrl+L) summons the live LYKN overlay demo over the landing page,
   // the same shortcut that pulls up the real Glass overlay on any screen.
@@ -2207,79 +1353,18 @@ const GlassLanding = () => {
         onBrandClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
       />
 
-      {/* Fixed page-wide backdrop: the drifting blue glow + frosted panels
-          (shared with the other marketing pages via GlassBackdrop). */}
-      <GlassBackdrop
-        gradTextSelectors={GRAD_TEXT_SELECTORS}
-        mixTextSelectors={MIX_TEXT_SELECTORS}
+      <div
+        className={`gl-top-blur${topBlur ? " is-on" : ""}`}
+        aria-hidden="true"
       />
 
       <main>
-        {/* Hero — reference layout: copy + CTA on the left, the page-wide
-            blue glow parked behind the frosted panels on the right, with the
-            chat bar and floating feature labels over it, all on plain white. */}
-        <section className="gl-hero">
-          {/* The overlay chat bar, centered over the panel art on the right,
-              ringed by little angled prompt hints. Interacting with the bar
-              opens the live ⌘L demo. */}
-          <div className="gl-hero-bar">
-            <div className="gl-hero-hints" aria-hidden="true">
-              <span className="gl-hero-hint">Build me a dashboard</span>
-              <span className="gl-hero-hint">Generate me an ad</span>
-              <span className="gl-hero-hint">Help me rephrase this</span>
-              <span className="gl-hero-hint">Summarize this page</span>
-              <span className="gl-hero-hint">Draft my report</span>
-              <span className="gl-hero-hint">Plan my week</span>
-            </div>
-            <GlassBar
-              className="gl-hero-glassbar"
-              onActivate={() => setDemoOpen(true)}
-            />
-          </div>
-
-          {/* Headline pinned to the top-left: "Welcome to LYKN studio", with
-              the brand name set in the official wordmark art. */}
-          <div className="gl-hero-inner">
-            <div className="gl-hero-copy">
-              <h1 className="gl-hero-headline">
-                Welcome to
-                <br />
-                <img
-                  src={lyknWordmark}
-                  alt="LYKN"
-                  className="gl-hero-word"
-                  draggable={false}
-                />{" "}
-                studio
-              </h1>
-              <p className="gl-hero-lede">
-                LYKN studio is the only AI workspace you need. Everything
-                you make, save, and come back to lives here.
-              </p>
-              <p className="gl-hero-lede">
-                Write, research, create, and browse the web without jumping
-                between apps. Your projects and files stay open beside the
-                work, so you never leave what you&apos;re doing.
-              </p>
-              <div className="gl-hero-ctas">
-                <button
-                  type="button"
-                  className="gl-hero-cta gl-hero-cta--blue"
-                  onClick={() => navigate("/download")}
-                >
-                  Download LYKN
-                </button>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <CapabilitiesSection />
+        <LandingHero />
+        <LandingExplain />
+        <LandingCapabilities />
+        <LandingSlideshow />
+        <LandingModelsTools />
         <AnyScreenSection />
-        <SnipShowcaseSection />
-        <ProjectManagerSection />
-        <NewsSection />
-        <FaqSection />
         <GetStartedSection />
       </main>
 

@@ -22,6 +22,7 @@ import type {
   FocusedChatAttachment,
   PromptMessage,
 } from "@/lib/lyknChat/chatTurnTypes";
+import { snapshotLyknBots } from "@/lib/voice/voiceDesktopTools";
 
 export function useChatVoiceMode({
   user,
@@ -148,6 +149,17 @@ export function useChatVoiceMode({
       if (kbText) push(`Relevant saved knowledge:\n${kbText.slice(0, 4000)}`);
     } catch { /* ignore */ }
 
+    try {
+      const bots = snapshotLyknBots();
+      if (bots.length) {
+        const lines = bots.map((bot) => (bot.role ? `- ${bot.name} - ${bot.role}` : `- ${bot.name}`)).join("\n");
+        push(
+          `[LYKN BOTS] Desktop teammates you can send with ask_bot. ` +
+            `If they want a website opened and did not name a bot, use browser_agent.\n${lines}`,
+        );
+      }
+    } catch { /* ignore */ }
+
     return parts.join("\n\n");
   }, [title, getCachedWorkspaceSummary, getCachedKbText]);
 
@@ -165,9 +177,14 @@ export function useChatVoiceMode({
   // A vault document the voice agent pulled up on screen (display_document).
   // Rendered in the embedded reader above the voice overlay; null when closed.
   const handleVoiceDisplayDocument = useCallback((payload: unknown) => {
-    const p = payload as { ok?: boolean; kind?: string } | null;
-    if (p && p.ok && p.kind === "vault") {
+    const p = payload as { ok?: boolean; kind?: string; url?: string; title?: string; media?: "image" | "video" | "audio" | "pdf" | "file" } | null;
+    if (!p) return;
+    if (p.ok && p.kind === "vault") {
       openLyknMediaPop({ type: "vault-payload", payload: p });
+      return;
+    }
+    if (p.kind === "url" && typeof p.url === "string" && p.url) {
+      openLyknMediaPop({ type: "url", url: p.url, title: p.title, kind: p.media });
     }
   }, []);
 

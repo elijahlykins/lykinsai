@@ -31,10 +31,11 @@ import {
   Wallpaper,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import { getVaultRepository, activeVaultBackend, resolveVaultMediaUrl } from "@/lib/vault/repository";
-import { isAiGeneratedVaultRow } from "@/lib/vault/aiDriveContents";
-import { parseAttachmentsFromNote } from "@/lib/vault/attachmentsMarker";
-import { resolveRenderType } from "@/lib/vault/attachmentType";
+import { activeVaultBackend } from "@/lib/vault/repository";
+import {
+  AI_DRIVE_WIDGET_QUERY_KEY,
+  listAiDriveImages,
+} from "@/lib/vault/localAiDriveImages";
 import { desktopHotkeyLabel } from "@/lib/desktopHotkey";
 import { getActiveProjectId, listUserProjects } from "@/lib/userProjects";
 import { relativeTime } from "@/components/projects/projectShared";
@@ -250,7 +251,7 @@ function eventDayLabel(iso) {
 }
 
 /** Next 7 days of the user's calendar (lykn_events — same table the in-app
- *  calendar reads, including synced Google/Apple events). */
+ *  calendar reads). */
 function useWeekEvents(userId) {
   return useQuery({
     queryKey: ["studio-events", userId || "guest"],
@@ -1598,92 +1599,13 @@ const VAULT_TYPE_ICONS = {
   file: File,
 };
 
-/** Pick a display path for an Image Gen tile — thumb if we have one, else the original. */
-function imageGenThumbTarget(row, att = {}) {
-  const bucket =
-    String(att.storageBucket || att.storage_bucket || row.storage_bucket || "user-files").trim() ||
-    "user-files";
-  const path = String(
-    att.variantThumbPath ||
-      att.variant_thumb_path ||
-      row.variant_thumb_path ||
-      att.variantMediumPath ||
-      att.variant_medium_path ||
-      row.variant_medium_path ||
-      att.storagePath ||
-      att.storage_path ||
-      row.storage_path ||
-      "",
-  ).trim();
-  return path ? { bucket, path } : null;
-}
-
-async function signCloudThumb(target) {
-  try {
-    const { data } = await supabase.storage
-      .from(target.bucket || "user-files")
-      .createSignedUrl(target.path, 60 * 60);
-    return data?.signedUrl || null;
-  } catch {
-    return null;
-  }
-}
-
-/** Recent Image Gen tiles from AI Drive (local store when that's on). */
+/** Recent Image Gen tiles from the same vault AI Drive uses. */
 function useVaultPreviewItems(userId, limit = 18) {
   return useQuery({
-    queryKey: ["studio-vault-widget", userId || "guest", activeVaultBackend()],
+    queryKey: [AI_DRIVE_WIDGET_QUERY_KEY, "ai-drive-images", userId || "guest", activeVaultBackend()],
     enabled: !!userId,
-    staleTime: 5 * 60_000,
-    queryFn: async () => {
-      const repository = getVaultRepository(userId);
-      const items = [];
-      let cursor = null;
-
-      // Image Gen sits among artifacts, so we scan a few newest pages rather
-      // than taking the first N vault rows (those used to be connector syncs).
-      for (let page = 0; page < 8 && items.length < limit; page += 1) {
-        const next = await repository.listPage({ cursor, limit: 50 });
-        for (const row of next.rows || []) {
-          if (!row || row.trashed) continue;
-          if (!isAiGeneratedVaultRow(row, row.source, row.tags)) continue;
-
-          const attachments = parseAttachmentsFromNote(row);
-          const imageAtts = attachments.filter((att) => resolveRenderType(att) === "image");
-          if (!imageAtts.length && String(row.att_type || "") === "image") {
-            imageAtts.push(null);
-          }
-
-          for (const att of imageAtts) {
-            if (items.length >= limit) break;
-            const target = imageGenThumbTarget(row, att || {});
-            let thumb = "";
-            if (target) {
-              thumb = (await resolveVaultMediaUrl(target, signCloudThumb)) || "";
-            }
-            if (!thumb) {
-              const preview = (att && (att.image || att.thumbnail_url)) || row.attachment_preview || {};
-              thumb = String(
-                (typeof preview === "string" ? preview : preview.image || preview.thumbnail_url) ||
-                  (att && att.url) ||
-                  "",
-              );
-            }
-            items.push({
-              id: row.id,
-              title: String((att && (att.name || att.title)) || row.title || "Untitled"),
-              att_type: "image",
-              thumb,
-            });
-          }
-          if (items.length >= limit) break;
-        }
-        cursor = next.nextCursor;
-        if (!cursor) break;
-      }
-
-      return items;
-    },
+    staleTime: 30_000,
+    queryFn: () => listAiDriveImages(userId, limit),
   });
 }
 
@@ -1705,7 +1627,7 @@ function useVaultDesktopDrop(onOpen) {
 /** Vault widget — Apple-Photos style: a strip that rotates through Image Gen
  *  in AI Drive, three tiles at a time. */
 export function VaultWidget({ userId, size = "medium", onOpen }) {
-  const { data: items = [] } = useVaultPreviewItems(userId);
+  const { data: items = [], isLoading } = useVaultPreviewItems(userId);
   const [page, setPage] = useState(0);
   const vaultDrop = useVaultDesktopDrop(onOpen);
   // Tiles per turn: one on a small tile, a row of three on a wide one, two
@@ -1741,7 +1663,9 @@ export function VaultWidget({ userId, size = "medium", onOpen }) {
           className="flex h-full w-full flex-col items-center justify-center gap-1.5 rounded-[1rem] text-black/40 dark:text-white/40"
         >
           <Lock className="h-5 w-5" />
-          <span className="text-[0.68rem]">No generated images yet</span>
+          <span className="text-[0.68rem]">
+            {isLoading ? "Loading images…" : "No generated images yet"}
+          </span>
         </button>
       ) : (
         <div

@@ -24,11 +24,19 @@ let dir;
 
 test.beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "lykn-doc-"));
+  fs.writeFileSync(
+    path.join(dir, "local-mode.json"),
+    JSON.stringify({
+      enabled: true,
+      syncAll: false,
+      syncedFolders: [dir],
+      excludedFolders: [],
+      updatedAt: Date.now(),
+    }),
+  );
 });
 
 function run(name, args) {
-  // No local-mode config in the temp userData → syncAll default, all paths
-  // allowed. approved covers the write-side approval gate.
   return localSystem.run(name, args, { approved: true, userDataPath: dir });
 }
 
@@ -230,14 +238,13 @@ test("text file edits stay in place, no sibling copies", async () => {
 
 // ── Approval copy ────────────────────────────────────────────────────────────
 
-test("the approval card says where a document edit will land", () => {
+test("document and text edits do not require approval", () => {
   const sibling = localSystem.classifyRisk("local_edit_file", {
     path: path.join(dir, "report.pdf"),
     oldText: "a",
     newText: "b",
   });
-  assert.equal(sibling.risky, true);
-  assert.match(sibling.summary, /\(edited\)' copy beside the original/);
+  assert.equal(sibling.risky, false);
 
   const overwrite = localSystem.classifyRisk("local_edit_file", {
     path: path.join(dir, "report.pdf"),
@@ -245,12 +252,12 @@ test("the approval card says where a document edit will land", () => {
     newText: "b",
     overwrite: true,
   });
-  assert.match(overwrite.summary, /overwrites the original/);
+  assert.equal(overwrite.risky, false);
 
   const text = localSystem.classifyRisk("local_edit_file", {
     path: path.join(dir, "notes.txt"),
     oldText: "a",
     newText: "b",
   });
-  assert.match(text.summary, /^Edit file:/);
+  assert.equal(text.risky, false);
 });

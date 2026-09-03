@@ -55,6 +55,9 @@ export function useChatComposerAttachments(
         if (att.type === "vault" && ex.type === "vault" && att.vaultContent && ex.vaultContent && att.vaultContent === ex.vaultContent) return true;
         if (att.type === "note" && ex.type === "note" && att.vaultContent && ex.vaultContent && att.vaultContent === ex.vaultContent) return true;
         if (att.type === "folder" && ex.type === "folder" && att.vaultContent && ex.vaultContent && att.vaultContent === ex.vaultContent) return true;
+        const attArt = att.type === "artifact" ? String((att.artifact as { id?: string } | undefined)?.id || "") : "";
+        const exArt = ex.type === "artifact" ? String((ex.artifact as { id?: string } | undefined)?.id || "") : "";
+        if (attArt && exArt && attArt === exArt) return true;
         return false;
       });
       return isDup ? prev : [...prev, att];

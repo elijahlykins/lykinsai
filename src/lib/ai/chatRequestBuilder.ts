@@ -14,7 +14,12 @@ import { CUSTOM_MODELS_ENABLED } from "@/lib/customModelsEnabled";
 import { listAiDrive } from "@/lib/vault/aiDriveContents";
 import { listInstalledApps } from "@/lib/apps/installApp";
 import { macAppNames } from "@/lib/macApps";
+import { getBots } from "@/lib/bots/botsClient";
 import type { ChatSendParams } from "@/lib/ai/chatSendOrchestrator";
+import type { FocusedChatAttachment } from "@/lib/lyknChat/chatTurnTypes";
+import { collectThreadFolderAttachments, folderPathFromAttachment } from "@/lib/ai/chatTurnPreparation";
+import { browserPageContextForRequest } from "@/lib/lyknChat/browserSurfaceContext";
+import { readLocalModelSetup } from "@/lib/models/modelSetupStore";
 
 // The browser's IANA timezone (e.g. "America/Denver"). Sent with each chat
 // request so the server can hand the model the user's LOCAL current time +
@@ -36,8 +41,10 @@ export async function buildChatRequestBody(args: {
   attachmentContext: string;
   youtubeGrounding: string;
   youtubeTranscriptSource: string;
+  promptAttachments?: FocusedChatAttachment[];
 }): Promise<{ requestBody: Record<string, unknown>; hasVideoTranscript: boolean }> {
   const { p, cappedText, history, conversationArray, attachmentContext, youtubeGrounding, youtubeTranscriptSource } = args;
+  const promptAttachments = args.promptAttachments || p.sentAttachments;
   const { text, sentAttachments, brickActionData, identity, context } = p;
 
   const videoTranscriptBlock = youtubeGrounding
@@ -148,6 +155,17 @@ export async function buildChatRequestBody(args: {
   // separately: only the newest are named, and a model that sees a short list
   // and no count will report the list as the count.
   const aiDrive = await listAiDrive(identity.userId);
+  // Desktop teammates live in the renderer store. Names and roles only -
+  // enough for local_ask_bot to match "ask Cody" to a real bot.
+  const lyknBots = getBots()
+    .slice(0, 40)
+    .map((bot) => ({
+      id: bot.id,
+      name: bot.name,
+      ...(bot.role ? { role: bot.role } : {}),
+    }))
+    .filter((bot) => bot.id && bot.name);
+  const browserAsk = p.surfaceContext?.surface === "browser";
   const requestBody: Record<string, unknown> = {
     model: identity.selectedModel,
     ...(customModelId ? { customModelId } : {}),
@@ -202,7 +220,7 @@ export async function buildChatRequestBody(args: {
     useTools: true,
     // Local Mode — when the user flipped the Vault switch AND we're in the
     // desktop shell, offer file/terminal tools that execute on their machine.
-    ...(localModeOn ? { localMode: true } : {}),
+    ...(localModeOn && !browserAsk ? { localMode: true } : {}),
     // The user's IANA timezone (browser-resolved) so the server can give the
     // model the user's LOCAL "now" + offset. Without this, scheduling tools
     // (createEvent/createReminder) land events at the wrong time because the
@@ -210,9 +228,20 @@ export async function buildChatRequestBody(args: {
     timezone: resolveLocalTimezone(),
     ...(attachedImageUrls.length ? { imageUrls: attachedImageUrls } : {}),
     ...(turnAttachments.length ? { attachments: turnAttachments } : {}),
-    ...(installedApps.length ? { installedApps } : {}),
-    ...(macApps.length ? { macApps } : {}),
-    ...(aiDrive.items.length
+    ...(() => {
+      const folders = collectThreadFolderAttachments(p.chatMessages, promptAttachments)
+        .map((f) => ({
+          name: f.name || f.vaultTitle || "folder",
+          path: folderPathFromAttachment(f),
+        }))
+        .filter((f) => f.path)
+        .slice(0, 8);
+      return folders.length ? { attachedFolders: folders } : {};
+    })(),
+    ...(!browserAsk && installedApps.length ? { installedApps } : {}),
+    ...(!browserAsk && lyknBots.length ? { lyknBots } : {}),
+    ...(!browserAsk && macApps.length ? { macApps } : {}),
+    ...(!browserAsk && aiDrive.items.length
       ? {
           aiDrive: aiDrive.items,
           aiDriveTotals: {
@@ -222,8 +251,13 @@ export async function buildChatRequestBody(args: {
           },
         }
       : {}),
-    ...getAiPrefs(),
+  ...getAiPrefs(),
+    userSettings: readLocalModelSetup(),
   };
+
+  if (browserAsk) requestBody.browserAsk = true;
+  const browserPageContext = browserPageContextForRequest(p.surfaceContext);
+  if (browserPageContext) requestBody.browserPageContext = browserPageContext;
 
   return { requestBody, hasVideoTranscript };
 }

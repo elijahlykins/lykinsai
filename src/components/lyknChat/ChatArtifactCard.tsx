@@ -3,8 +3,9 @@ import { ChevronDown, Download, ExternalLink, LayoutPanelTop, Loader2, Maximize2
 import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
 import { useBuildThoughtTrail, useThinkingStatus } from "@/hooks/useThinkingStatus";
-import { safeAttachmentUrl, safeHtmlPreviewUrl, preferInlineHtmlPreview } from "@/lib/safeExternalUrl";
-import { openArtifactInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
+import { safeAttachmentUrl } from "@/lib/safeExternalUrl";
+import ArtifactHtmlPreview from "@/components/lyknChat/ArtifactHtmlPreview";
+import { openArtifactInStudioBrowser, studioOpenChatOpts } from "@/lib/lyknChat/openInStudioBrowser";
 import {
   downloadArtifactToComputer,
   listArtifactDownloadOptions,
@@ -126,31 +127,19 @@ export type ChatArtifactCardProps = {
   className?: string;
   /** Open this artifact in the floating preview popup. */
   onOpen?: () => void;
+  /** Owning conversation when this card is rendered inside a LYKN chat. */
+  chatId?: string | null;
 };
-
-// Inline (srcDoc) HTML is same-origin with the app, so allow-same-origin +
-// allow-scripts would let AI-generated markup reach our DOM and the Supabase
-// session in localStorage. Drop allow-same-origin for srcDoc: scripts still
-// run, but in an opaque null origin with no access to LYKN. (Today the prod
-// CSP `script-src 'self'` also blocks these inline scripts — this makes the
-// iframe isolation itself do the work rather than relying solely on the CSP.)
-// Cross-origin previewUrl sandbox comes from safeHtmlPreviewUrl.
-const IFRAME_SANDBOX_SRCDOC =
-  "allow-scripts allow-popups allow-forms allow-presentation";
 
 function formatLabel(format?: string) {
   if (!format) return "Artifact";
   return format.toUpperCase();
 }
 
-export default function ChatArtifactCard({ artifact, className = "", onOpen }: ChatArtifactCardProps) {
+export default function ChatArtifactCard({ artifact, className = "", onOpen, chatId }: ChatArtifactCardProps) {
   const [expanded, setExpanded] = useState(false);
 
   const openUrl = safeAttachmentUrl(artifact.previewUrl || artifact.downloadUrl);
-  const htmlPreview = artifact.previewUrl ? safeHtmlPreviewUrl(artifact.previewUrl) : null;
-  const useSrcDoc =
-    Boolean(artifact.srcDoc) &&
-    (!htmlPreview || preferInlineHtmlPreview(artifact.previewUrl));
   const previewHeight = expanded ? "min(72vh, 640px)" : "min(360px, 52vh)";
 
   const badge = useMemo(() => {
@@ -224,7 +213,7 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => {
-                if (openArtifactInStudioBrowser(artifact)) e.preventDefault();
+                if (openArtifactInStudioBrowser(artifact, studioOpenChatOpts(chatId || artifact.sourceChatId))) e.preventDefault();
               }}
               className="inline-flex items-center gap-1 rounded-lg border border-black/10 dark:border-white/12 px-2 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
               title="Open in LYKN browser"
@@ -249,25 +238,11 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
           />
         ) : null}
         {artifact.kind === "html" ? (
-          // Prod: hosted preview URL (parent CSP blocks srcDoc scripts).
-          // Local: srcDoc — file-proxy iframes from 127.0.0.1 were blank.
-          useSrcDoc ? (
-            <iframe
-              title={artifact.title}
-              srcDoc={artifact.srcDoc}
-              className="w-full h-full border-0 bg-white"
-              sandbox={IFRAME_SANDBOX_SRCDOC}
-              referrerPolicy="no-referrer"
-            />
-          ) : htmlPreview ? (
-            <iframe
-              title={artifact.title}
-              src={htmlPreview.url}
-              className="w-full h-full border-0 bg-white"
-              sandbox={htmlPreview.sandbox}
-              referrerPolicy="no-referrer"
-            />
-          ) : null
+          <ArtifactHtmlPreview
+            title={artifact.title}
+            srcDoc={artifact.srcDoc}
+            previewUrl={artifact.previewUrl}
+          />
         ) : artifact.kind === "video" && openUrl ? (
           <div className="w-full h-full flex items-center justify-center bg-black">
             <video

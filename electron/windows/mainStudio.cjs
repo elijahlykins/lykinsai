@@ -181,6 +181,10 @@ function createMainWindow() {
   // Native fullscreen emits real enter/leave events — just relay them.
   d.mainWindow.on("enter-full-screen", broadcastStudioFullscreen);
   d.mainWindow.on("leave-full-screen", broadcastStudioFullscreen);
+  // Moving to another display (laptop ↔ external) changes the camera /
+  // menu-bar strip the top chrome has to clear.
+  d.mainWindow.on("resize", broadcastStudioFullscreen);
+  d.mainWindow.on("move", broadcastStudioFullscreen);
 
   if (IS_MAC) {
     const ensureTrafficLights = () => {
@@ -343,6 +347,16 @@ function studioFullscreenActive() {
   return win.isFullScreen();
 }
 
+function studioTopInset(win = studioWindowRef()) {
+  if (!win || win.isDestroyed()) return 0;
+  try {
+    const { displayTopInsetForWindow } = require("./displayTopInset.cjs");
+    return displayTopInsetForWindow(win.getBounds(), screen.getDisplayMatching(win.getBounds()));
+  } catch (_) {
+    return 0;
+  }
+}
+
 function broadcastStudioFullscreen() {
   const win = studioWindowRef();
   if (!win) return;
@@ -353,9 +367,19 @@ function broadcastStudioFullscreen() {
       /* ignore */
     }
   }
-  win.webContents.send("lykn:studio-fullscreen", {
+  const payload = {
     fullscreen: studioFullscreenActive(),
-  });
+    topInset: studioTopInset(win),
+  };
+  if (
+    d.__studioFsPayload &&
+    d.__studioFsPayload.fullscreen === payload.fullscreen &&
+    d.__studioFsPayload.topInset === payload.topInset
+  ) {
+    return;
+  }
+  d.__studioFsPayload = payload;
+  win.webContents.send("lykn:studio-fullscreen", payload);
 }
 
 function showStudioWindow() {
@@ -405,6 +429,12 @@ function updateDockVisibility() {
   }
 }
 
+  try {
+    screen.on("display-metrics-changed", broadcastStudioFullscreen);
+  } catch (_) {
+    /* older Electron */
+  }
+
   d.afterStudioFullscreenExit = afterStudioFullscreenExit;
   d.broadcastStudioFullscreen = broadcastStudioFullscreen;
   d.createMainWindow = createMainWindow;
@@ -412,6 +442,7 @@ function updateDockVisibility() {
   d.hideStudioWindow = hideStudioWindow;
   d.showStudioWindow = showStudioWindow;
   d.studioFullscreenActive = studioFullscreenActive;
+  d.studioTopInset = studioTopInset;
   d.studioWindowRef = studioWindowRef;
   d.updateDockVisibility = updateDockVisibility;
 }

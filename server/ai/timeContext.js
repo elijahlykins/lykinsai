@@ -13,10 +13,22 @@ export function currentTimeContextLine() {
 // offset to stamp onto scheduling args. This is what stops calendar/reminder
 // tools from landing events at the wrong hour — without it the model resolves
 // "3pm" against UTC. Falls back to the UTC-only line when tz is unknown.
-export function localTimeContextLine(timezone) {
+export function localTimeContextLine(timezone, opts = {}) {
   const now = new Date();
   const tz = typeof timezone === 'string' && timezone.trim() ? timezone.trim() : null;
   if (!tz) return currentTimeContextLine();
+  if (opts.compact) {
+    try {
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+      }).formatToParts(now);
+      const get = (t) => parts.find((p) => p.type === t)?.value || '';
+      return `[CURRENT_TIME] The user's timezone is ${tz}. Local date is ${get('year')}-${get('month')}-${get('day')}.`;
+    } catch {
+      return currentTimeContextLine();
+    }
+  }
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: tz,

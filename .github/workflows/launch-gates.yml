@@ -1,0 +1,96 @@
+name: Launch gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: launch-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  architecture-and-web:
+    name: Architecture, lint, and web build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Setup Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Check production repository
+        run: npm run production:check
+      - name: Check architecture
+        run: npm run test:architecture
+      - name: Lint
+        run: npm run lint
+      - name: Build web app
+        run: npm run build
+
+  server-and-security:
+    name: Server, security, and MCP
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Setup Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Test server
+        run: npm run test:server
+      - name: Test security
+        run: npm run test:security
+      - name: Test MCP
+        run: npm run test:mcp
+
+  renderer:
+    name: Chat, vault, and memory
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Setup Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Test vault
+        run: npm run test:vault
+      - name: Test chat
+        run: npm run test:chat
+      - name: Test memory
+        run: npm run test:memory
+
+  desktop:
+    name: Electron and agent
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Setup Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Test Electron
+        run: npm run test:electron
+      - name: Test agent
+        run: npm run test:agent

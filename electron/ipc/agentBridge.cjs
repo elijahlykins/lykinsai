@@ -1,6 +1,14 @@
 "use strict";
 
+const agentTabIds = require("../agentTabIds.cjs");
 const { bindOverlayIpcContext } = require("./overlayIpcContext.cjs");
+const { untrustedSenderResult, trustedLyknIpcOpts } = require("../trustedIpcSender.cjs");
+const { extractOwnedTabPageContext } = require("../agent-browser/tabPageContext.cjs");
+
+// Keep in sync with electron/agent-browser/host.cjs. Required here (not
+// borrowed from the host bag) so tab open/close never throws if the host
+// has not published the constant yet.
+const MAX_AGENT_BROWSER_TABS = 20;
 
 function registerAgentBridgeIpc(d) {
   const {
@@ -73,6 +81,7 @@ function registerAgentBridgeIpc(d) {
     closeAgentFinishedPopup,
     closeStudioBrowserSession,
     commitAgentBrowserHistory,
+    concealBotBrowserTab,
     createMainWindow,
     describeBrowserTabProblem,
     destroyAgentBrowserWindow,
@@ -173,6 +182,9 @@ function registerAgentBridgeIpc(d) {
     agentBrowserViews,
     agentBrowserMeta,
     agentBrowserLabels,
+    tabChatProjection,
+    applyTabSourceChatId,
+    clearTabSourceChatIds,
     collectBrowserInteractables,
     collectBrowserPageContext,
     executeBrowserActions,
@@ -460,14 +472,25 @@ function registerAgentBridgeIpc(d) {
     ipcMain.handle("lykn:agent-stage-close-tab", async (_e, { agentId } = {}) => {
       const id = String(agentId || "").trim();
       if (!id) return { ok: false, error: "missing_id" };
-      // Capture the tab for the rail's History section before teardown.
-      const historySnap = snapshotAgentBrowserHistory(id);
       // The PRIMARY tab is the agent: closing it retires the agent entirely
       // (aborts the run, removes it from the agent list, tears down its browser
       // view). Tabs with no agent behind them — artifact previews, agent-owned
       // browse sub-tabs, manual new-tab pages, and the pinned Main agent
       // (closeAgent refuses to delete it) — just close the browser surface.
-      const surfaceOnly = isAgentArtifactTabId(id) || agentTabIds.isSubTabId(id);
+      // A Bot's primary tab is a work surface, not the Bot. Closing it must
+      // not retire the teammate or cancel the task they are still running.
+      const ownerId = agentTabIds.partitionOwner(id) || id;
+      const botSurface = !!runtime().isHeadless?.(ownerId);
+      // Closing a revealed Bot tab parks the work surface again. Destroying
+      // it would reload a blank home the next time the peek is opened.
+      if (botSurface) {
+        concealBotBrowserTab(id);
+        return { ok: true };
+      }
+      // Capture the tab for the rail's History section before teardown.
+      const historySnap = snapshotAgentBrowserHistory(id);
+      const surfaceOnly =
+        isAgentArtifactTabId(id) || agentTabIds.isSubTabId(id);
       let retired = null;
       if (!surfaceOnly) {
         try {
@@ -476,7 +499,7 @@ function registerAgentBridgeIpc(d) {
       }
       if (!retired?.ok) {
         destroyAgentBrowserWindow(id);
-        if (!surfaceOnly) {
+        if (!isAgentArtifactTabId(id) && !agentTabIds.isSubTabId(id)) {
           try {
             runtime().clearBrowserSurface?.(id);
           } catch (_) {}
@@ -571,7 +594,12 @@ function registerAgentBridgeIpc(d) {
     // ── Chrome / Chromium sync (Polar-style) ──────────────────────────────────
     // Detect installed browsers + their profiles. No Keychain/Automation prompt
     // here — this only reads plaintext profile metadata so the UI can offer it.
-    ipcMain.handle("lykn:chrome-sync-status", async () => {
+    ipcMain.handle("lykn:chrome-sync-status", async (e) => {
+      const denied = untrustedSenderResult(
+        e,
+        trustedLyknIpcOpts({ app, path, appOrigin: APP_ORIGIN, appUrl: APP_URL }),
+      );
+      if (denied) return denied;
       if (!chromeSync.IS_MAC) return { ok: true, supported: false, browsers: [] };
       try {
         const browsers = chromeSync.detectBrowsers().map((b) => ({
@@ -587,7 +615,12 @@ function registerAgentBridgeIpc(d) {
     // Import logins (cookies) and/or open tabs from a chosen browser profile.
     // First run triggers the Keychain prompt (cookies) and Automation prompt
     // (tabs) — both are the user's explicit consent.
-    ipcMain.handle("lykn:chrome-sync-run", async (_e, opts = {}) => {
+    ipcMain.handle("lykn:chrome-sync-run", async (e, opts = {}) => {
+      const denied = untrustedSenderResult(
+        e,
+        trustedLyknIpcOpts({ app, path, appOrigin: APP_ORIGIN, appUrl: APP_URL }),
+      );
+      if (denied) return denied;
       if (!chromeSync.IS_MAC) return { ok: false, error: "unsupported_platform" };
       const browserId = String(opts.browserId || "chrome");
       const wantCookies = opts.importCookies !== false;
@@ -749,33 +782,86 @@ function registerAgentBridgeIpc(d) {
         hideAllAgentBrowserWindows();
       }
     });
-    // Use LYKN pill / Studio close — show or hide the agent chat side panel.
+    // Ask LYKN pill / Studio close — show or hide the agent chat side panel.
     const setAgentChatOpen = (open, agentId = "") => {
       const next = !!open;
+      const visibility = tabChatProjection({
+        open: next,
+        ...(agentId ? { agentId, activeAgentId: agentId } : {}),
+      });
       if (next === d.agentChatOpen) {
         if (agentId) {
-          emitAgentToUi("lykn:agent-chat-visibility", { open: next, agentId });
+          emitAgentToUi("lykn:agent-chat-visibility", visibility);
         }
         pushAgentStageState();
         return next;
       }
       d.agentChatOpen = next;
-      emitAgentToUi("lykn:agent-chat-visibility", {
-        open: next,
-        ...(agentId ? { agentId } : {}),
-      });
+      emitAgentToUi("lykn:agent-chat-visibility", visibility);
       pushAgentStageState();
       return next;
     };
-    d.openBrowserTaskChat = (agentId) => setAgentChatOpen(true, agentId);
+    // The browser rail is opt-in: Ask LYKN / AI Mode only. Bot work and
+    // opened tabs must not pop it open.
+    d.openBrowserTaskChat = () => d.agentChatOpen;
     ipcMain.handle("lykn:agent-chat-set", (_e, { open, toggle, agentId } = {}) => {
       if (toggle) return setAgentChatOpen(!d.agentChatOpen, agentId);
       return setAgentChatOpen(!!open, agentId);
     });
-    ipcMain.handle("lykn:agent-chat-get", () => ({
-      open: !!d.agentChatOpen,
-      agentId: d.agentStageActiveId || runtime().getActiveId?.() || "",
-    }));
+    ipcMain.handle("lykn:agent-chat-get", () => {
+      const projected = tabChatProjection();
+      const agentId =
+        String(projected.agentId || projected.activeAgentId || "").trim() ||
+        d.agentStageActiveId ||
+        runtime().getActiveId?.() ||
+        "";
+      return {
+        ...projected,
+        open: typeof projected.open === "boolean" ? projected.open : !!d.agentChatOpen,
+        agentId,
+        activeAgentId: projected.activeAgentId || agentId,
+      };
+    });
+    ipcMain.handle("lykn:studio-clear-tab-chats", (e) => {
+      const denied = untrustedSenderResult(
+        e,
+        trustedLyknIpcOpts({ app, path, appOrigin: APP_ORIGIN, appUrl: APP_URL }),
+      );
+      if (denied) return denied;
+      clearTabSourceChatIds();
+      return { ok: true };
+    });
+    ipcMain.handle("lykn:studio-bind-tab-chat", (e, payload = {}) => {
+      const denied = untrustedSenderResult(
+        e,
+        trustedLyknIpcOpts({ app, path, appOrigin: APP_ORIGIN, appUrl: APP_URL }),
+      );
+      if (denied) return denied;
+      const tabId = String(payload?.tabId || "").trim();
+      const chatId = String(payload?.chatId || "").trim();
+      if (!tabId || !chatId) return { ok: false, error: "missing_ids" };
+      if (!agentBrowserViews.has(tabId) && !agentBrowserMeta.has(tabId)) {
+        return { ok: false, error: "unknown_tab" };
+      }
+      const ok = applyTabSourceChatId(tabId, chatId);
+      return { ok };
+    });
+    ipcMain.handle("lykn:browser-tab-page-context", async (e, payload = {}) => {
+      const denied = untrustedSenderResult(
+        e,
+        trustedLyknIpcOpts({ app, path, appOrigin: APP_ORIGIN, appUrl: APP_URL }),
+      );
+      if (denied) return denied;
+      try {
+        return await extractOwnedTabPageContext({
+          tabId: payload?.tabId,
+          views: agentBrowserViews,
+          getPageContext: (wc) => d.ownedBrowserAct.getPageContext(wc),
+        });
+      } catch (err) {
+        return { ok: false, error: err?.message || "page_context_failed" };
+      }
+    });
     // Studio "Browser" tab — dock/undock the agent browser inside the Studio
     // window at the panel bounds the Studio renderer measured.
     ipcMain.on("lykn:studio-browser-set", (_e, payload = {}) => {
@@ -808,7 +894,12 @@ function registerAgentBridgeIpc(d) {
     // Studio to its Browser tab right after this call, which docks the
     // views — so when the browser isn't docked yet the tab is selected
     // quietly instead of flashing the standalone stage window.
-    ipcMain.handle("lykn:studio-open-url", async (_e, { url, title, chatId, attachChat } = {}) => {
+    ipcMain.handle("lykn:studio-open-url", async (e, { url, title, chatId, attachChat } = {}) => {
+      const denied = untrustedSenderResult(
+        e,
+        trustedLyknIpcOpts({ app, path, appOrigin: APP_ORIGIN, appUrl: APP_URL }),
+      );
+      if (denied) return denied;
       const target = String(url || "").trim();
       if (!/^https?:\/\//i.test(target)) return { ok: false, error: "bad_url" };
       if (agentBrowserMainTabCount() >= MAX_AGENT_BROWSER_TABS) {
@@ -827,7 +918,8 @@ function registerAgentBridgeIpc(d) {
           title: label,
           focus: true,
           show: !quiet,
-        }) || openStudioBrowserTabWithUrl(target, { focus: docked });
+          sourceChatId,
+        }) || openStudioBrowserTabWithUrl(target, { focus: docked, sourceChatId });
       if (!id) return { ok: false, error: "open_failed" };
       if (label) agentBrowserLabels.set(id, label);
       if (sourceChatId) {
@@ -836,12 +928,10 @@ function registerAgentBridgeIpc(d) {
           sourceChatId,
         });
       }
-      setAgentChatOpen(true, id);
       notifyStudioShowBrowser({
         agentId: id,
         url: target,
         title: label || undefined,
-        openRail: true,
       });
       if (docked) {
         showAgentBrowserWindow(id, { focus: true, label: label || undefined });
@@ -857,7 +947,12 @@ function registerAgentBridgeIpc(d) {
     // provided (srcDoc) so React/deck artifacts paint even if the signed preview
     // URL is slow/expired, and marks the tab as an artifact so docking can't
     // wipe it back to the welcome page.
-    ipcMain.handle("lykn:studio-open-artifact", async (_e, payload = {}) => {
+    ipcMain.handle("lykn:studio-open-artifact", async (e, payload = {}) => {
+      const denied = untrustedSenderResult(
+        e,
+        trustedLyknIpcOpts({ app, path, appOrigin: APP_ORIGIN, appUrl: APP_URL }),
+      );
+      if (denied) return denied;
       const url = String(payload.url || "").trim();
       const html = typeof payload.html === "string" ? payload.html : "";
       const label = String(payload.title || "Artifact").trim().slice(0, 48) || "Artifact";
@@ -875,7 +970,12 @@ function registerAgentBridgeIpc(d) {
       try {
         const rt = initAgentRuntime();
         if (!rt.isAgentModeOn?.()) rt.setAgentMode?.(true);
-        const res = rt.createAgent({ title: label, activate: true, silent: quiet || !docked });
+        const res = rt.createAgent({
+          title: label,
+          activate: true,
+          silent: quiet || !docked,
+          ...(sourceChatId ? { sourceChatId } : {}),
+        });
         if (res?.ok && res.agentId) ownerId = res.agentId;
       } catch (_) {}
   
@@ -893,6 +993,7 @@ function registerAgentBridgeIpc(d) {
           show: docked,
           focus: true,
           label,
+          ...(sourceChatId ? { sourceChatId } : {}),
         });
         const painted = await paintArtifactIntoAgentTab(ownerId, {
           url,
@@ -900,12 +1001,10 @@ function registerAgentBridgeIpc(d) {
           title: label,
           kind,
         });
-        setAgentChatOpen(true, ownerId);
         notifyStudioShowBrowser({
           agentId: ownerId,
           url: url || undefined,
           title: label,
-          openRail: true,
         });
         if (docked) {
           showAgentBrowserWindow(ownerId, { focus: true, label });
@@ -931,7 +1030,6 @@ function registerAgentBridgeIpc(d) {
       notifyStudioShowBrowser({
         url: url || undefined,
         title: label,
-        openRail: true,
       });
       return opened;
     });
@@ -942,7 +1040,7 @@ function registerAgentBridgeIpc(d) {
   
     // Studio agent rail chat bar → Main orchestrator. Enables Agent Mode
     // quietly (no floating sidebar window — the rail is already showing).
-    ipcMain.handle("lykn:studio-bar-send", async (_e, { text, attachments, agentId, fromSuggestion, bot, task } = {}) => {
+    ipcMain.handle("lykn:studio-bar-send", async (_e, { text, attachments, agentId, fromSuggestion, bot, task, questionsOnly } = {}) => {
       const rt = runtime();
       try {
         if (!rt.isAgentModeOn?.()) rt.setAgentMode?.(true);
@@ -951,12 +1049,15 @@ function registerAgentBridgeIpc(d) {
       // runtime's active agent. With no target at all, the runtime creates a
       // fresh agent (and its paired tab) for the prompt.
       const target = String(agentId || "").trim() || rt.getActiveId?.() || "";
+      const lineageChatId = String(task?.chatId || "").trim();
+      if (lineageChatId && target) applyTabSourceChatId(target, lineageChatId);
       return rt.send(target, {
         text,
         attachments,
         fromSuggestion: !!fromSuggestion,
         bot: bot || null,
         task: task || null,
+        questionsOnly: !!questionsOnly,
       });
     });
   
@@ -986,6 +1087,7 @@ function registerAgentBridgeIpc(d) {
           text: goal,
           attachments: atts,
           fromSuggestion: false,
+          questionsOnly: true,
         }).catch(() => {});
       }
       return { ok: true };
@@ -1117,6 +1219,7 @@ function registerAgentBridgeIpc(d) {
         text: goal,
         attachments: [],
         fromSuggestion: false,
+        questionsOnly: true,
       });
       if (task) {
         // The existing sidebar receives live agent progress for task work.

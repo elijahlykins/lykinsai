@@ -2,9 +2,9 @@ import { canonicalizeModelId, LYKN_ID } from './modelTiers';
 
 const DEFAULT_AI_MODEL = LYKN_ID;
 
-// Migrate any value (including stale ids like `claude-sonnet-4-6` from
-// older releases) to a current LYKN id, falling back to the provided
-// default if the saved value is unrecognised.
+// Migrate retired ids (lykn-lite / lykn-fast / lykn-deep) to a current
+// LYKN id, falling back to the provided default if the saved value is
+// unrecognised. Still-served provider ids pass through unchanged.
 export const normalizeModelValue = (model, fallback = DEFAULT_AI_MODEL) => {
   const fallbackModel = canonicalizeModelId(fallback) || DEFAULT_AI_MODEL;
   const canonical = canonicalizeModelId(model);

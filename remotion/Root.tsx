@@ -57,6 +57,20 @@ import { LyknStudioChat, STUDIO_CHAT_DURATION } from "./LyknStudioChat";
 import { LyknStudioChatDemo, STUDIO_CHAT_DEMO_DURATION } from "./LyknStudioChatDemo";
 import { LyknStudioBrowser, STUDIO_BROWSER_DURATION } from "./LyknStudioBrowser";
 import { LyknStudioBrowserDemo, STUDIO_BROWSER_DEMO_DURATION } from "./LyknStudioBrowserDemo";
+import {
+  LyknHeroDesktop,
+  HERO_DESKTOP_DURATION,
+  HERO_DESKTOP_WIDTH,
+  HERO_DESKTOP_HEIGHT,
+  HERO_DESKTOP_RESEARCH_DURATION,
+  HERO_DESKTOP_RESEARCH_PROPS,
+  lyknHeroDesktopDefaults,
+} from "./LyknHeroDesktop";
+import {
+  LyknHeroDesktopBuild,
+  HERO_DESKTOP_BUILD_DURATION,
+} from "./LyknHeroDesktopBuild";
+import { LyknLaptopDockZoom, LAPTOP_DOCK_ZOOM_DURATION } from "./LyknLaptopDockZoom";
 
 // Every composition you want to render or preview is registered here.
 // Add more <Composition> entries as we build new things.
@@ -509,6 +523,40 @@ export const RemotionRoot: React.FC = () => {
         id="LyknStudioBrowserDemo"
         component={LyknStudioBrowserDemo}
         durationInFrames={STUDIO_BROWSER_DEMO_DURATION}
+        fps={30}
+        width={1920}
+        height={1080}
+      />
+      <Composition
+        id="LyknHeroDesktop"
+        component={LyknHeroDesktop}
+        durationInFrames={HERO_DESKTOP_DURATION}
+        fps={30}
+        width={HERO_DESKTOP_WIDTH}
+        height={HERO_DESKTOP_HEIGHT}
+        defaultProps={lyknHeroDesktopDefaults}
+      />
+      <Composition
+        id="LyknHeroDesktopResearch"
+        component={LyknHeroDesktop}
+        durationInFrames={HERO_DESKTOP_RESEARCH_DURATION}
+        fps={30}
+        width={HERO_DESKTOP_WIDTH}
+        height={HERO_DESKTOP_HEIGHT}
+        defaultProps={HERO_DESKTOP_RESEARCH_PROPS}
+      />
+      <Composition
+        id="LyknHeroDesktopBuild"
+        component={LyknHeroDesktopBuild}
+        durationInFrames={HERO_DESKTOP_BUILD_DURATION}
+        fps={30}
+        width={HERO_DESKTOP_WIDTH}
+        height={HERO_DESKTOP_HEIGHT}
+      />
+      <Composition
+        id="LyknLaptopDockZoom"
+        component={LyknLaptopDockZoom}
+        durationInFrames={LAPTOP_DOCK_ZOOM_DURATION}
         fps={30}
         width={1920}
         height={1080}

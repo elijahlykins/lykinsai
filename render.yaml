@@ -4,12 +4,10 @@
 # Drives the always-on web service and retained operational jobs.
 # `render.yaml` is read on dashboard sync.
 #
-# Required environment variables (set in the Render dashboard, NOT
-# here, since they're secrets):
-#   • VITE_SUPABASE_URL
-#   • SUPABASE_SERVICE_ROLE_KEY
-#   • ANTHROPIC_API_KEY
-#   • OPENAI_API_KEY
+# Production environment variables are set in the Render dashboard, never
+# committed here. The complete checklist lives in .env.example and
+# docs/PRODUCTION_LAUNCH.md. validateSecrets.js is the startup authority for
+# minimum secret lengths.
 
 services:
   # -------------------------------------------------------------------
@@ -20,7 +18,7 @@ services:
     runtime: node
     plan: starter
     buildCommand: npm install && npm run build
-    startCommand: npm run server
+    startCommand: npm start
     autoDeploy: true
     healthCheckPath: /api/health
 

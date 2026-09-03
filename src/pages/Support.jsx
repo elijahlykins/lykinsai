@@ -12,6 +12,7 @@
 
 import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
+import { studioSettingsPath } from "@/lib/settingsDeepLink";
 
 export default function Support() {
   return (
@@ -83,8 +84,17 @@ export default function Support() {
               </p>
               <p>
                 In the iOS app, go to Settings → Account → Delete Account. On
-                the web, open Settings and choose Delete Account. Deleting your
-                account removes your data as described in our Privacy Policy.
+                the web and in the Mac app, open{" "}
+                <Link
+                  to={studioSettingsPath("account")}
+                  className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
+                >
+                  Settings → Account
+                </Link>{" "}
+                and choose Delete Account. You will have to type DELETE to confirm.
+                Deleting your account removes LYKN-held data as described in
+                our Privacy Policy. There is no in-app export of your LYKN
+                data today. For a copy of what we hold, email privacy@lykn.io.
               </p>
             </div>
             <div>

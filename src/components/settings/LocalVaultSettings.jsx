@@ -325,7 +325,7 @@ export default function LocalVaultSettings() {
             enabled
               ? "The vault is reading from this Mac."
               : stats?.items > 0
-                ? "Ready to switch — you have a local copy."
+                ? "Ready to switch, you have a local copy."
                 : "Copy your vault down first."
           }
           trailing={
@@ -381,7 +381,7 @@ export default function LocalVaultSettings() {
         <Group
           caption={
             "This only reads. Nothing in your cloud vault is changed or deleted, and you can run it " +
-            "again at any time — items already copied are skipped rather than duplicated."
+            "again at any time. Items already copied are skipped rather than duplicated."
           }
         >
           {preflight ? (

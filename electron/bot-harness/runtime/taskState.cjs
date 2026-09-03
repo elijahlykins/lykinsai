@@ -27,6 +27,10 @@ function createTaskState({
     guidance: "",
     /** Set once the loop pushed back on an empty-handed delivery. */
     deliverPushbackUsed: false,
+    /** Verified tool deliverables (report documents, artifacts, images) —
+     * carried on every finish so the chat can render persistent cards even
+     * when the deliver answer is a short close or the round budget ran out. */
+    deliverables: [],
     /** Canonical Task constraints outrank any planning suggestion the model
      * returns. Legacy direct callers can still let the first decision fill
      * these fields until they migrate behind TaskRuntime. */
@@ -79,6 +83,19 @@ function recordVerification(state, { tool, success, evidence, reason }) {
   });
 }
 
+/**
+ * Keep a verified tool deliverable for the finish payload. One card per tool
+ * per task: a verify-retry that rewrote the same report replaces the earlier
+ * copy instead of stacking two cards.
+ */
+function recordDeliverable(state, { tool, deliverable }) {
+  if (!deliverable || typeof deliverable !== "object") return;
+  const entry = { ...deliverable, tool: String(tool || "") };
+  const existing = state.deliverables.findIndex((d) => d.tool === entry.tool);
+  if (existing >= 0) state.deliverables[existing] = entry;
+  else state.deliverables.push(entry);
+}
+
 function recordNote(state, note) {
   state.events.push({ kind: "note", note: String(note || "").slice(0, 300) });
 }
@@ -115,6 +132,7 @@ module.exports = {
   recordDocRead,
   recordToolRun,
   recordVerification,
+  recordDeliverable,
   recordNote,
   recordApproval,
   formatEventsForModel,

@@ -3,9 +3,15 @@
 // actual feature logic and state.
 
 const { contextBridge, ipcRenderer } = require("electron");
+const {
+  GLASS_LIVE_WATCH_ENABLED,
+  GLASS_AGENT_MODE_ENABLED,
+} = require("./overlay/glassFeatures.cjs");
 
 contextBridge.exposeInMainWorld("lyknMenu", {
   platform: process.platform,
+  glassLiveWatchEnabled: GLASS_LIVE_WATCH_ENABLED,
+  glassAgentModeEnabled: GLASS_AGENT_MODE_ENABLED,
   // Forward a menu action (e.g. "menu-new", "voice") to the overlay renderer.
   cmd: (name, arg) => ipcRenderer.send("lykn:menu-cmd", { name, arg }),
   close: () => ipcRenderer.send("lykn:menu-close"),
@@ -18,4 +24,6 @@ contextBridge.exposeInMainWorld("lyknMenu", {
   listProjects: () => ipcRenderer.invoke("lykn:list-projects"),
   openAppChat: (chatId) => ipcRenderer.send("lykn:open-app-chat", chatId),
   onShown: (cb) => ipcRenderer.on("lykn:menu-shown", () => cb()),
+  updateStatus: () => ipcRenderer.invoke("lykn:update-status"),
+  installUpdate: () => ipcRenderer.invoke("lykn:update-install"),
 });

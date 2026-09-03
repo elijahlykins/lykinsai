@@ -9,7 +9,7 @@
 // window are two views of the same team.
 import { ChevronDown, UserRoundPlus } from "lucide-react";
 import BotAvatar, { BotMark, botMood, botPresence } from "@/components/bots/BotAvatar";
-import { botHasBoardActivity, botSeed, latestSettledTask } from "@/lib/bots/botStore";
+import { botSeed } from "@/lib/bots/botStore";
 import lyknIconNeutral from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-NEUTRAL-master.png";
 import lyknIconBlue from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-BLUE-master.png";
 
@@ -19,7 +19,7 @@ const SURFACE = "lg-desktop-surface";
 /** The in-bar button: LYKN by default, the targeted Bot's face otherwise.
  *  Just the face — presence dots live in the dropdown only. */
 export function BotTargetTrigger({ bot, agent, live, open, onClick, title, label }) {
-  const fallbackTitle = bot ? `Talking to ${bot.name} — switch` : "Talk to a Bot";
+  const fallbackTitle = bot ? `Talking to ${bot.name}, switch` : "Talk to a Bot";
   const fallbackLabel = bot ? `Talking to ${bot.name}` : "Talk to a Bot";
   return (
     <button
@@ -50,7 +50,6 @@ export function BotTargetTrigger({ bot, agent, live, open, onClick, title, label
     </button>
   );
 }
-
 /** The glass dropdown: LYKN, then every Bot with presence, then New Bot. */
 export function BotTargetMenu({
   bots,
@@ -150,34 +149,31 @@ export function BotTargetMenu({
     </div>
   );
 }
-
-/**
- * Every bot with conversation on its current chat — little faces sitting
- * inline in the chat bar just right of the plus button, so each conversation
- * stays one click away. A bot whose chat is empty (brand new, or just
- * cleared with "New chat") lives only in the dropdown until it's spoken to.
- * The face doesn't leave when the work finishes (or when it was just a quick
- * question); its dot simply reports where things stand: yellow = working,
- * green = done, red = failed. Every bot runs in parallel; clicking a face
- * jumps back into that bot's own chat with the stream live.
- *
- * The bot you're currently talking to is excluded — its chat is the one on
- * screen, so it needs no shortcut back to itself.
- */
 /**
  * The tiny live viewport that floats just above the chat bar while a Bot
  * works the browser (a user-approved browser task). The Bot's tab stays
  * hidden; this little window mirrors it with a screenshot every beat or so.
  * Clicking it reveals the real tab the Bot is working in.
  */
-export function BotBrowserPeek({ bots, agentStates, shots, onOpen, excludeAgentId }) {
+export function BotBrowserPeek({
+  bots,
+  agentStates,
+  shots,
+  onOpen,
+  excludeAgentId,
+  onlyBotId,
+}) {
   const skip = String(excludeAgentId || "").trim();
-  const items = (bots || []).filter(
-    (bot) =>
-      bot.agentId &&
-      bot.agentId !== skip &&
-      agentStates?.[bot.agentId]?.botBrowser,
-  );
+  const scoped = onlyBotId !== undefined && onlyBotId !== null;
+  const want = scoped ? String(onlyBotId || "") : "";
+  const items = (bots || []).filter((bot) => {
+    if (!bot.agentId || bot.agentId === skip) return false;
+    if (!agentStates?.[bot.agentId]?.botBrowser) return false;
+    // Home chat: the peek belongs to the Bot whose board is on screen.
+    // An empty onlyBotId is LYKN — no Bot preview follows that switch.
+    if (scoped && bot.id !== want) return false;
+    return true;
+  });
   if (!items.length) return null;
   return (
     <div className="pointer-events-auto absolute bottom-full left-1/2 z-30 mb-2.5 flex -translate-x-1/2 items-end gap-2">
@@ -194,8 +190,8 @@ export function BotBrowserPeek({ bots, agentStates, shots, onOpen, excludeAgentI
           <button
             key={bot.id}
             type="button"
-            title={`${bot.name} is working in the browser — click to open the tab`}
-            aria-label={`${bot.name} is working in the browser — click to open the tab`}
+            title={`${bot.name} is working in the browser, click to open the tab`}
+            aria-label={`${bot.name} is working in the browser, click to open the tab`}
             onClick={() => onOpen(bot)}
             className={`group relative h-[104px] w-44 overflow-hidden rounded-xl text-left shadow-lg ring-1 ring-black/10 transition-transform hover:scale-[1.03] dark:ring-white/15 ${SURFACE}`}
           >
@@ -222,63 +218,13 @@ export function BotBrowserPeek({ bots, agentStates, shots, onOpen, excludeAgentI
               />
               <span className="min-w-0 flex-1 truncate text-[0.62rem] font-medium text-white/90">
                 {bot.name}
-                {host ? <span className="font-normal text-white/60"> — {host}</span> : null}
+                {host ? <span className="font-normal text-white/60"> - {host}</span> : null}
               </span>
               <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-amber-400" />
             </span>
           </button>
         );
       })}
-    </div>
-  );
-}
-
-export function BotWorkStrip({ bots, agentStates, live, excludeBotId, onOpen }) {
-  const items = (bots || [])
-    .map((bot) => {
-      if (bot.id === excludeBotId) return null;
-      // The bot's CURRENT chat must have conversation on it — a bot on a
-      // fresh, still-empty board ("New chat") lives only in the dropdown.
-      if (!botHasBoardActivity(bot)) return null;
-      const working = bot.tasks.some((t) => t.status === "running" || t.status === "queued");
-      const latest = latestSettledTask(bot);
-      const failed = !working && latest?.status === "failed";
-      return {
-        bot,
-        dot: working ? "bg-amber-400 animate-pulse" : failed ? "bg-red-500" : "bg-emerald-500",
-        label: working
-          ? `${bot.name} is working — open its chat`
-          : failed
-            ? `${bot.name} hit a problem — open its chat`
-            : `${bot.name} finished — open its chat`,
-      };
-    })
-    .filter(Boolean);
-  if (!items.length) return null;
-  return (
-    <div className="flex shrink-0 items-center gap-0.5">
-      {items.map(({ bot, dot, label }) => (
-        <button
-          key={bot.id}
-          type="button"
-          title={label}
-          aria-label={label}
-          onClick={() => onOpen(bot)}
-          className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-black/10 dark:hover:bg-white/15"
-        >
-          <BotAvatar
-            face={bot.face}
-            eyes={bot.eyes}
-            color={bot.color}
-            size={20}
-            mood={botMood(bot, agentStates?.[bot.agentId], live?.[bot.agentId])}
-            seed={botSeed(bot.id)}
-          />
-          <span
-            className={`absolute bottom-[5px] right-[5px] h-[5px] w-[5px] rounded-full ring-1 ring-white/90 dark:ring-black/70 ${dot}`}
-          />
-        </button>
-      ))}
     </div>
   );
 }

@@ -10,7 +10,7 @@
 //      — otherwise signature verification breaks (body already consumed).
 //   2. Exactly 5 routes registered BEFORE the /api/ global rate limiter
 //      (webhook, client-error, health, /f/:token, artifacts rebuild) —
-//      their limiter exemption is current production behavior.
+//      each carries its own dedicated perimeter limiter instead.
 //   3. Global error handler (4-arg) is the LAST layer in the stack.
 //   4. trust proxy = 1 and x-powered-by disabled (perimeter settings).
 //   5. Auth/admin gates present on the critical route chains.
@@ -29,7 +29,10 @@ const routeAt = (method, path) => entries[indexOfRoute(method, path)];
 test('stripe webhook uses the raw-body parser (signature verification contract)', () => {
   const webhook = routeAt('POST', '/api/stripe/webhook');
   assert.ok(webhook, 'POST /api/stripe/webhook is registered');
-  assert.equal(webhook.chain[0], 'rawParser', 'webhook must parse the RAW body, not JSON');
+  // chain[0] is the anonymous perimeter rate limiter (rejects a flood before
+  // buffering the body); the RAW parser must still run before the handler.
+  assert.equal(webhook.chain[1], 'rawParser', 'webhook must parse the RAW body, not JSON');
+  assert.ok(!webhook.chain.includes('jsonParser'), 'webhook must never see a JSON-parsed body');
 });
 
 test('stripe webhook is registered before the global JSON body parser', () => {
@@ -43,7 +46,10 @@ test('stripe webhook is registered before the global JSON body parser', () => {
   assert.deepEqual(routesBeforeParser, ['/api/stripe/webhook']);
 });
 
-test('exactly the 5 known limiter-exempt routes precede the /api/ global rate limiter', () => {
+test('exactly the 5 known pre-limiter routes precede the /api/ global rate limiter', () => {
+  // These 5 register before the global limiter mounts, so it never covers
+  // them — each carries a dedicated perimeter limiter instead (see
+  // serverCriticalRoutes.test.mjs for the runtime RateLimit-header proof).
   const limiterIdx = entries.findIndex((e) => e.kind === 'use' && e.mount === '/api/');
   assert.ok(limiterIdx > 0, 'found exactly one app.use middleware mounted at /api/ (globalLimiter)');
   const preLimiterRoutes = entries
@@ -57,6 +63,22 @@ test('exactly the 5 known limiter-exempt routes precede the /api/ global rate li
     '/f/:token',
     '/api/artifacts/react/rebuild',
   ]);
+});
+
+test('an /oauth/ perimeter limiter is mounted before the OAuth callback routes', () => {
+  // The OAuth callback/verify pages live OUTSIDE /api/, so the global
+  // limiter never matches them; the dedicated /oauth/ mount must exist and
+  // precede every /oauth/* route registration.
+  const oauthLimiterIdx = entries.findIndex((e) => e.kind === 'use' && e.mount === '/oauth/');
+  assert.ok(oauthLimiterIdx > 0, 'found the app.use middleware mounted at /oauth/');
+  const oauthRoutes = entries.filter((e) => e.kind === 'route' && e.path.startsWith('/oauth/'));
+  assert.ok(oauthRoutes.length >= 5, 'OAuth callback surface present');
+  for (const r of oauthRoutes) {
+    assert.ok(
+      entries.indexOf(r) > oauthLimiterIdx,
+      `${r.path} registers after the /oauth/ perimeter limiter mount`,
+    );
+  }
 });
 
 test('the global error handler is the LAST layer registered', () => {

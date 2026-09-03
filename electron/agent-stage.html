@@ -337,8 +337,7 @@
         color: var(--text);
       }
       #chrome svg { width: 15px; height: 15px; display: block; }
-      #incognito svg { width: 16px; height: 16px; }
-      /* Ask Gemini–style entry point — opens Studio agent chat. */
+      /* Ask LYKN — opens the Studio side chat (same conversation as Home). */
       #chrome button#use-lykn {
         width: auto;
         height: 28px;
@@ -444,6 +443,7 @@
           0 8px 24px rgba(0, 0, 0, 0.12);
         z-index: 60;
         padding: 6px 0;
+        -webkit-app-region: no-drag;
       }
       #url-suggest[hidden] { display: none; }
       #url-suggest .suggest-item {
@@ -606,6 +606,7 @@
         box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
         z-index: 40;
         padding: 14px;
+        -webkit-app-region: no-drag;
       }
       #sync-menu[hidden] { display: none; }
       #sync-menu .sync-head {
@@ -730,7 +731,8 @@
          page view — go transparent outside the bars/menu so the page shows. */
       html.menu-overlay,
       html.menu-overlay body { background: transparent; }
-      html.menu-overlay #page { background: transparent; }
+      html.menu-overlay #chrome { z-index: 50; overflow: visible; }
+      html.menu-overlay #page { background: transparent; pointer-events: none; }
       html.menu-overlay #empty { visibility: hidden; }
     </style>
     <link rel="stylesheet" href="hover-tips.css" />
@@ -779,8 +781,8 @@
           </div>
           <div id="url-suggest" hidden role="listbox" aria-label="Suggestions"></div>
         </div>
-        <button type="button" id="use-lykn" title="Use LYKN" aria-label="Use LYKN" aria-pressed="false">
-          <span class="label">Use</span>
+        <button type="button" id="use-lykn" title="Ask LYKN" aria-label="Ask LYKN" aria-pressed="false">
+          <span class="label">Ask</span>
           <svg viewBox="0 0 204.29 204.29" aria-hidden="true">
             <path
               fill="currentColor"
@@ -794,17 +796,6 @@
             <path d="M3 12a9 9 0 0 1 9-9c2.5 0 4.8 1 6.4 2.7" />
             <path d="M21 3v5h-5" />
             <path d="M3 21v-5h5" />
-          </svg>
-        </button>
-        <button type="button" id="incognito" title="Incognito (dark, private session)" aria-label="Incognito" aria-pressed="false">
-          <!-- Classic hat + glasses — simple, recognizable, neutral -->
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M4 11.5h16" />
-            <path d="M6.5 11.5c0-3.2 2.3-5.5 5.5-5.5s5.5 2.3 5.5 5.5" />
-            <path d="M8 7.2c.7-.7 1.8-1.2 3-1.2h2c1.2 0 2.3.5 3 1.2" />
-            <circle cx="8.2" cy="15.2" r="2.4" />
-            <circle cx="15.8" cy="15.2" r="2.4" />
-            <path d="M10.6 15.2h2.8" />
           </svg>
         </button>
         <div id="sync-menu" hidden role="dialog" aria-label="Sync from Chrome">
@@ -847,6 +838,7 @@
       </div>
     </div>
     <script src="hover-tips.js"></script>
+    <script src="chromeSyncContract.cjs"></script>
     <script src="agent-stage.js"></script>
   </body>
 </html>

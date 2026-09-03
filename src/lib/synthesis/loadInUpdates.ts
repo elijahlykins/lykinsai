@@ -1,5 +1,6 @@
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
+import { EXTERNAL_CALENDAR_SYNC_ENABLED } from "@/lib/calendar/calendarConfig";
 import { CONNECTORS } from "@/lib/connectors/catalog";
 // Same LYKN squircle the app dock renders — used as the brand mark
 
@@ -1176,6 +1177,7 @@ function buildTodaySection(
     "https://www.gstatic.com/images/branding/product/2x/calendar_2020q4_48dp.png";
 
   if (!calendarConfigured) {
+    if (!EXTERNAL_CALENDAR_SYNC_ENABLED) return null;
     const sug = CATEGORY_SUGGESTION.calendar;
     return {
       id: "calendar",
@@ -1496,7 +1498,9 @@ const CONNECT_LANE_CHIPS: Record<
     { connectorId: "trello", label: "Trello" },
     { connectorId: "gmail", label: "Gmail" },
     { connectorId: "google-drive", label: "Google Drive" },
-    { connectorId: "google-calendar", label: "Google Calendar" },
+    ...(EXTERNAL_CALENDAR_SYNC_ENABLED
+      ? [{ connectorId: "google-calendar", label: "Google Calendar" }]
+      : []),
   ],
   social: [
     { connectorId: "youtube", label: "YouTube" },
@@ -1715,7 +1719,9 @@ function formatMessage(
     bullets.push(line);
   }
   if (!calendarConfiguredForBullets) {
-    bullets.push("Calendar isn't connected yet");
+    if (EXTERNAL_CALENDAR_SYNC_ENABLED) {
+      bullets.push("Calendar isn't connected yet");
+    }
   } else if (todayCount > 0) {
     bullets.push(`${pluralize(todayCount, "event")} on your calendar today`);
   } else if (weekCount > 0) {
@@ -1776,10 +1782,10 @@ function formatMessage(
   // list for the day, ahead of everything connector-driven.
   pushIfSome(docketSection);
   const calendarConfigured = status.configured.has("calendar");
-  // The calendar slot is always rendered: events when connected, a
-  // "Connect Google Calendar" prompt when not. We pass an empty list
-  // when the connector fetch failed entirely so the prompt still
-  // shows up for users who don't have GCal wired up.
+  // External Google/Apple calendar import is unplugged. The docket
+  // already covers native LYKN events, so this connector lane only
+  // renders leftover imported notes or (when sync is restored) the
+  // connect prompt.
   pushIfSome(
     buildTodaySection(connector?.upcomingCalendar ?? [], calendarConfigured),
   );
@@ -1889,7 +1895,9 @@ export async function fetchLoadInUpdatesMessage(
   // up). The 6s timeout caps the worst-case latency added to the
   // welcome bubble — anything that hasn't responded by then will
   // still land in time for the *next* refresh.
-  await kickConnectorSync(["google-calendar", "apple-calendar"], 6000);
+  if (EXTERNAL_CALENDAR_SYNC_ENABLED) {
+    await kickConnectorSync(["google-calendar", "apple-calendar"], 6000);
+  }
   const [connectorResp, statusResp, userSections, docket] =
     await Promise.all([
       fetchConnectorActivity(),

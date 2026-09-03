@@ -93,7 +93,6 @@ export const mergeProjectsTool = {
     'For non-destructive alternatives:',
     '  • To rename a project          → lykn_updateProject',
     '  • To archive without merging   → lykn_updateProject({ status: "archived" })',
-    '  • To drop a few neurons        → lykn_removeProjectNeurons',
   ].join('\n'),
   inputSchema: {
     type: 'object',

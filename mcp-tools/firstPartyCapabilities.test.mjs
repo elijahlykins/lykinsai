@@ -90,6 +90,14 @@ test('metadata families are in the grammar and exclusions are explicit', () => {
   assert.equal(FIRST_PARTY_TOOL_EXCLUSIONS.length, 8);
 });
 
+test('write me a letter discloses the document writer', () => {
+  const d = disclose('write me a letter to my landlord');
+  assert.ok(names(d).includes('lykn_write_document'));
+  assert.ok(d.capabilities.includes('documents.write'));
+  assert.equal(names(d).includes('lykn_build_react_artifact'), false);
+  assert.ok(d.inspect.count < 8);
+});
+
 test('hello discloses zero tools', () => {
   const d = disclose('hello');
   assert.deepEqual(names(d), []);
@@ -105,6 +113,26 @@ test('web search discloses the web family only', () => {
   assert.ok(d.capabilities.includes('web.read'));
   assert.ok(d.inspect.count < 5);
   assert.ok(d.inspect.approxTokens < 2000);
+});
+
+test('brand-name site asks disclose web.read without a TLD in the message', () => {
+  // Regression: "open up the perplexity landing page" used to disclose no web
+  // tools at all, so the model told the user it cannot open webpages.
+  for (const msg of [
+    'open up the perplexity landing page',
+    'can you scrape the perplexity computer website for me',
+    'go to the acme homepage and tell me what it says',
+  ]) {
+    const d = disclose(msg);
+    assert.ok(d.capabilities.includes('web.read'), `web.read missing for: ${msg}`);
+    assert.ok(names(d).includes('lykn_web_fetch'), `lykn_web_fetch missing for: ${msg}`);
+  }
+});
+
+test('bare "page" asks do not arm web fetch', () => {
+  const d = disclose('open the settings page');
+  assert.equal(d.capabilities.includes('web.read'), false);
+  assert.equal(names(d).includes('lykn_web_fetch'), false);
 });
 
 test('vault save discloses vault write, not the leftover dump', () => {
@@ -157,6 +185,102 @@ test('browse example.com discloses web read, not 42 Chat tools', () => {
   assert.ok(d.inspect.count < 6);
 });
 
+test('named Mac folder asks disclose local file reads', () => {
+  const first = disclose('hey can you read my LYKN folder', { localMode: true });
+  assert.ok(names(first).includes('local_search_files'));
+  assert.ok(names(first).includes('local_list_dir'));
+  assert.equal(first.keepToolsOn, true);
+
+  const follow = disclose('just list whats inside', {
+    localMode: true,
+    conversation: [{ role: 'user', content: 'hey can you read my LYKN folder' }],
+  });
+  assert.ok(names(follow).includes('local_list_dir'));
+  assert.equal(follow.keepToolsOn, true);
+});
+
+test('ok check them after a folder-capability turn keeps local file reads', () => {
+  const follow = disclose('ok check them', {
+    localMode: true,
+    overlayAsk: true,
+    conversation: [{ role: 'user', content: "you can't search the folders or files in this chat" }],
+  });
+  assert.ok(names(follow).includes('local_search_files'));
+  assert.ok(names(follow).includes('local_list_dir'));
+  assert.equal(follow.keepToolsOn, true);
+});
+
+test('Glass overlay with Local Mode discloses local file reads for a Desktop compare', () => {
+  const d = disclose('compare ~/Desktop/LYKN Landing with ~/Desktop/LYKN', {
+    localMode: true,
+    overlayAsk: true,
+  });
+  assert.ok(names(d).includes('local_search_files'));
+  assert.ok(names(d).includes('local_list_dir'));
+  assert.ok(names(d).includes('local_read_file'));
+  assert.equal(d.keepToolsOn, true);
+});
+
+test('ask Cody discloses local_ask_bot without Local Mode', () => {
+  const d = disclose('ask Cody what he thinks about the current agent structure', {
+    lyknBots: [{ id: 'bot_cody', name: 'Cody', role: 'Architect' }],
+  });
+  assert.ok(names(d).includes('local_ask_bot'));
+  assert.ok(d.capabilities.includes('bots.ask'));
+  assert.equal(d.keepToolsOn, true);
+  assert.equal(names(d).includes('local_list_dir'), false);
+});
+
+test('send a bot discloses local_ask_bot', () => {
+  const d = disclose('send Scout to start work in the browser', {
+    lyknBots: [{ id: 'bot_scout', name: 'Scout', role: 'Research' }],
+  });
+  assert.ok(names(d).includes('local_ask_bot'));
+  assert.ok(d.capabilities.includes('bots.ask'));
+});
+
+test('run a browser agent discloses local_browser_agent in Local Mode', () => {
+  const d = disclose('run a browser agent and go to the Perplexity Computer website', {
+    localMode: true,
+  });
+  assert.ok(names(d).includes('local_browser_agent'));
+  assert.ok(d.capabilities.includes('browser.agent'));
+});
+
+test('browser side chat stays ask-only even with Local Mode and bots', () => {
+  const d = disclose('run a browser agent and email this to my team', {
+    localMode: true,
+    browserAsk: true,
+    lyknBots: [{ id: 'bot_scout', name: 'Scout', role: 'Research' }],
+    hasConnectedApps: true,
+    discoveredExternalTools: fakeMcpCatalog().slice(0, 20),
+    allowNewArtifactBuild: true,
+  });
+  assert.equal(names(d).includes('local_browser_agent'), false);
+  assert.equal(names(d).includes('local_ask_bot'), false);
+  assert.equal(names(d).includes('local_run_command'), false);
+  assert.equal(names(d).includes('lykn_search_connected_tools'), false);
+  assert.equal(names(d).includes('lykn_call_connected_tool'), false);
+  assert.equal(d.externalTools.length, 0);
+  assert.equal(d.capabilities.includes('browser.agent'), false);
+  assert.equal(d.capabilities.includes('bots.ask'), false);
+  assert.equal(d.capabilities.includes('connections.external'), false);
+});
+
+test('hello with a bot roster still discloses zero tools', () => {
+  const d = disclose('hello', {
+    lyknBots: [{ id: 'bot_cody', name: 'Cody', role: 'Architect' }],
+  });
+  assert.deepEqual(names(d), []);
+  assert.equal(d.keepToolsOn, false);
+});
+
+test('run a terminal command discloses local_run_command in Local Mode', () => {
+  const d = disclose('run npm test in the terminal', { localMode: true });
+  assert.ok(names(d).includes('local_run_command'));
+  assert.ok(d.capabilities.includes('local.shell'));
+});
+
 test('read this local file uses Local families only', () => {
   const d = disclose('read this local file', { localMode: true });
   const local = names(d).filter((n) => n.startsWith('local_'));
@@ -177,6 +301,24 @@ test('web search with Local Mode on does not append leftover Chat or all Local t
   );
   assert.equal(names(d).includes('local_run_command'), false);
   assert.ok(names(d).length < 10);
+});
+
+test("what's in agents.md after a dropped folder keeps local_read_file", () => {
+  const d = disclose("what's in agents.md", {
+    localMode: true,
+    conversation: [{
+      role: 'user',
+      content: 'Desktop folder "Docs" — call local_list_dir or local_read_file\nPath: /Users/me/Docs',
+    }],
+  });
+  assert.ok(names(d).includes('local_read_file'));
+  assert.equal(d.keepToolsOn, true);
+});
+
+test("what's in agents.md is a local file ask when Local Mode is on", () => {
+  const d = disclose("what's in agents.md", { localMode: true });
+  assert.ok(names(d).includes('local_read_file'));
+  assert.equal(d.keepToolsOn, true);
 });
 
 test('SSH into a dev server is not the Chat leftover dump', () => {
@@ -214,6 +356,15 @@ test('Gmail/MCP composes a small first-party set with ≤10 relevant MCP tools',
   assert.equal(d.externalTools.some((t) => t.connectionKind === 'hubspot'), false);
   const composed = composeWithExternalTools(d.firstPartyToolNames, d.externalTools);
   assert.ok(composed.toolNames.length < 20);
+});
+
+test('naming a connected app discloses the tool registry, not a hardcoded domain list', () => {
+  const d = disclose('can you see my supabase project', {
+    connectedApps: [{ id: 'sb', name: 'Supabase' }],
+  });
+  assert.ok(d.capabilities.includes('connections.external'));
+  assert.ok(names(d).includes('lykn_search_connected_tools'));
+  assert.ok(names(d).includes('lykn_call_connected_tool'));
 });
 
 test('normal chat discloses 0 MCP tools even with a 500-tool catalog', () => {

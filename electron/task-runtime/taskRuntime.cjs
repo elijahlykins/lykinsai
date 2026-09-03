@@ -287,6 +287,12 @@ class TaskRuntime {
     });
     this.emit(record.task, TASK_EVENT_TYPES.COMPLETED, {
       output: String(result?.output || result?.answer || ""),
+      // Structured deliverables (report documents, artifacts, images) the
+      // executor produced — the chat surface renders one card per entry
+      // beside the closing message. Producers bound each entry's size.
+      ...(Array.isArray(result?.deliverables) && result.deliverables.length
+        ? { deliverables: result.deliverables.slice(0, 8) }
+        : {}),
     });
     return { task: record.task, result };
   }
@@ -306,6 +312,11 @@ class TaskRuntime {
     this.emit(record.task, TASK_EVENT_TYPES.FAILED, {
       reason: String(reason),
       output: String(extra.result?.output || extra.result?.answer || ""),
+      // Work verified before the failure (a report before the round budget
+      // died) still reaches the user as a card.
+      ...(Array.isArray(extra.result?.deliverables) && extra.result.deliverables.length
+        ? { deliverables: extra.result.deliverables.slice(0, 8) }
+        : {}),
     });
     return { task: record.task, result: record.result, error: extra.error };
   }

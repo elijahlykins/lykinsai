@@ -25,7 +25,12 @@
 // This module does not execute tools and does not own MCP connections.
 
 import { CHAT_TOOL_NAMES, buildOpenAiTools } from './chatTools.js';
+import { connectionNamedIn } from '../lib/mcp/toolRegistrySearch.js';
 import { LOCAL_TOOL_NAMES, looksLikeLocalSystemAsk, mightBeBrowserTaskAsk } from './localTools.js';
+import {
+  applyBrowserAskCapabilities,
+  stripBrowserAskToolNames,
+} from './browserAskSurface.js';
 import {
   CALENDAR_SURFACE_INTENT,
   PLATE_SURFACE_INTENT,
@@ -43,6 +48,10 @@ import {
   messageWantsLocalDesktop,
   messageWantsLocalFilesWrite,
   messageWantsLocalFolderPeek,
+  messageLooksLikeAttachedFileFollowUp,
+  conversationHasAttachedDesktopFolder,
+  conversationMentionedLocalFolder,
+  messageLooksLikeFolderInspectFollowUp,
   messageWantsLocalShell,
   messageWantsMemoryWrite,
   messageWantsOpenApp,
@@ -57,7 +66,9 @@ import {
   messageWantsUrlFetch,
   messageWantsUserRecallCore,
   messageWantsVaultWrite,
+  messageWantsWrittenDocument,
   messageWantsWebTools,
+  messageWantsBotAsk,
   resolveIntentChatToolNames,
 } from './chatIntentSignals.js';
 
@@ -94,6 +105,7 @@ export const FIRST_PARTY_CAPABILITY_FAMILIES = Object.freeze([
   'media.translate',
   'artifacts.build',
   'artifacts.edit',
+  'documents.write',
   'coding.cursor',
   'shell.open',
   'self.write',
@@ -103,6 +115,7 @@ export const FIRST_PARTY_CAPABILITY_FAMILIES = Object.freeze([
   'local.shell',
   'local.desktop',
   'browser.agent',
+  'bots.ask',
   'connections.external',
 ]);
 
@@ -135,24 +148,9 @@ export const FIRST_PARTY_TOOL_METADATA = Object.freeze(
     meta({ name: 'lykn_listProjects', capabilities: ['projects.read'], family: 'projects.read', consequence: 'read' }),
     meta({ name: 'lykn_resolveProject', capabilities: ['projects.read'], family: 'projects.read', consequence: 'read' }),
     meta({ name: 'lykn_getProjectState', capabilities: ['projects.read'], family: 'projects.read', consequence: 'read' }),
-    meta({ name: 'lykn_getProjectNeurons', capabilities: ['projects.read'], family: 'projects.read', consequence: 'read' }),
     meta({ name: 'lykn_getRecentActivity', capabilities: ['projects.read'], family: 'projects.read', consequence: 'read' }),
-    meta({ name: 'lykn_loadNeuron', capabilities: ['vault.read'], family: 'vault.read', consequence: 'read' }),
-    meta({ name: 'lykn_loadNeurons', capabilities: ['vault.read'], family: 'vault.read', consequence: 'read' }),
     meta({
       name: 'lykn_pushProjectState',
-      capabilities: ['projects.write'],
-      family: 'projects.write',
-      consequence: 'write',
-    }),
-    meta({
-      name: 'lykn_addProjectNeurons',
-      capabilities: ['projects.write'],
-      family: 'projects.write',
-      consequence: 'write',
-    }),
-    meta({
-      name: 'lykn_removeProjectNeurons',
       capabilities: ['projects.write'],
       family: 'projects.write',
       consequence: 'write',
@@ -195,6 +193,7 @@ export const FIRST_PARTY_TOOL_METADATA = Object.freeze(
     }),
     meta({ name: 'lykn_createVaultNote', capabilities: ['vault.write'], family: 'vault.write', consequence: 'write' }),
     meta({ name: 'lykn_saveFileToVault', capabilities: ['vault.write'], family: 'vault.write', consequence: 'write' }),
+    meta({ name: 'lykn_write_document', capabilities: ['documents.write'], family: 'documents.write', consequence: 'write' }),
     meta({ name: 'lykn_saveLinkToVault', capabilities: ['vault.write'], family: 'vault.write', consequence: 'write' }),
     meta({
       name: 'lykn_createReminder',
@@ -269,7 +268,19 @@ export const FIRST_PARTY_TOOL_METADATA = Object.freeze(
     }),
     meta({ name: 'lykn_update_assistant_instructions', capabilities: ['self.write'], family: 'self.write', consequence: 'write' }),
     meta({ name: 'lykn_open_settings', capabilities: ['shell.open'], family: 'shell.open', consequence: 'read' }),
-    meta({ name: 'lykn_open_app', capabilities: ['shell.open'], family: 'shell.open', consequence: 'read' }),
+    meta({ name: 'lykn_open_app', capabilities: ['shell.open', 'vault.read'], family: 'shell.open', consequence: 'read' }),
+    meta({
+      name: 'lykn_search_connected_tools',
+      capabilities: ['connections.external'],
+      family: 'connections.external',
+      consequence: 'read',
+    }),
+    meta({
+      name: 'lykn_call_connected_tool',
+      capabilities: ['connections.external'],
+      family: 'connections.external',
+      consequence: 'write',
+    }),
     meta({ name: 'lykn_web_search', capabilities: ['web.search'], family: 'web.search', consequence: 'read', composerModes: ['web', 'research'] }),
     meta({ name: 'lykn_web_fetch', capabilities: ['web.read'], family: 'web.read', consequence: 'read', composerModes: ['web', 'research'] }),
     meta({ name: 'lykn_calculate', capabilities: ['compute.math'], family: 'compute.math', consequence: 'read' }),
@@ -408,6 +419,13 @@ export const FIRST_PARTY_TOOL_METADATA = Object.freeze(
       consequence: 'write',
       localMode: true,
     }),
+    meta({
+      name: 'local_ask_bot',
+      capabilities: ['bots.ask'],
+      family: 'bots.ask',
+      consequence: 'read',
+      localMode: false,
+    }),
   ].map((row) => Object.freeze(row)),
 );
 
@@ -481,15 +499,13 @@ export const PROJECT_AGENT_TOOLS = Object.freeze(
     'lykn_listProjects',
     'lykn_resolveProject',
     'lykn_getProjectState',
-    'lykn_getProjectNeurons',
     'lykn_pushProjectState',
     'lykn_setActiveProject',
     'lykn_createProject',
     'lykn_updateProject',
     'lykn_deleteProject',
     'lykn_mergeProjects',
-    'lykn_addProjectNeurons',
-    'lykn_removeProjectNeurons',
+    'lykn_uploadToProject',
   ]),
 );
 
@@ -497,7 +513,7 @@ export const GLASS_SCREEN_MAKER_TOOLS = Object.freeze(
   new Set(['lykn_generate_chart', 'lykn_generate_diagram', 'lykn_build_react_artifact']),
 );
 
-export const GLASS_VAULT_TOOLS = Object.freeze(new Set(['lykn_loadNeuron', 'lykn_loadNeurons']));
+export const GLASS_VAULT_TOOLS = Object.freeze(new Set());
 
 const LOCAL_DISCOVERY_TOOLS = Object.freeze([
   'local_synced_folders',
@@ -635,6 +651,23 @@ function localCapabilities(ctx, caps) {
     addCap(caps, 'local.files.read');
     matched = true;
   }
+  if (
+    !matched &&
+    (conversationHasAttachedDesktopFolder(ctx.conversation) ||
+      (Array.isArray(ctx.attachedFolders) && ctx.attachedFolders.length > 0)) &&
+    messageLooksLikeAttachedFileFollowUp(t)
+  ) {
+    addCap(caps, 'local.files.read');
+    matched = true;
+  }
+  if (
+    !matched &&
+    conversationMentionedLocalFolder(ctx.conversation) &&
+    messageLooksLikeFolderInspectFollowUp(t)
+  ) {
+    addCap(caps, 'local.files.read');
+    matched = true;
+  }
   if (matched) return 'matched';
   if (localAsk) {
     addCap(caps, 'local.files.read');
@@ -703,6 +736,10 @@ export function resolveFirstPartyCapabilities(ctx = {}) {
   if (messageWantsVaultWrite(message)) {
     addCap(caps, 'vault.write');
     reasons.push('vault.write');
+  }
+  if (messageWantsWrittenDocument(message)) {
+    addCap(caps, 'documents.write');
+    reasons.push('documents.write');
   }
   if (messageWantsProjectContext(message) || (ctx.inProject && WRITE_VERB_RE.test(message))) {
     addCap(caps, 'projects.read');
@@ -800,11 +837,19 @@ export function resolveFirstPartyCapabilities(ctx = {}) {
     reasons.push('artifactEdit');
   }
 
+  if (messageWantsBotAsk(message, ctx.lyknBots)) {
+    addCap(caps, 'bots.ask');
+    reasons.push('bots.ask');
+  }
+
   const localFallback = localCapabilities(ctx, caps);
   if (localFallback !== 'none') reasons.push(`local:${localFallback}`);
 
   const externalNeeds = inferExternalCapabilityNeeds(message);
-  if (externalNeeds.length) {
+  const namedConnectedApp = (ctx.connectedApps || []).some((conn) =>
+    connectionNamedIn(conn, `${message}\n${Array.isArray(ctx.conversation) ? ctx.conversation.map((m) => m?.content || '').join('\n') : ''}`),
+  );
+  if (externalNeeds.length || namedConnectedApp || ctx.hasConnectedApps && /\b(connected|oauth|integration)\b/i.test(message)) {
     addCap(caps, 'connections.external');
     reasons.push('connections.external');
   }
@@ -847,6 +892,11 @@ export function resolveFirstPartyCapabilities(ctx = {}) {
 
   if (ctx.overlayAsk && !messageWantsSavedRecall(message)) {
     caps.delete('vault.read');
+  }
+
+  if (ctx.browserAsk) {
+    applyBrowserAskCapabilities(caps);
+    externalNeeds.length = 0;
   }
 
   const wantsAgent = messageWantsAgentTools(message, ctx);
@@ -950,12 +1000,19 @@ export function resolveFirstPartyTools(capabilityResult, ctx = {}) {
   }
 
   if (!ctx.localMode) {
-    for (const n of LOCAL_TOOL_NAMES) names.delete(n);
+    for (const n of LOCAL_TOOL_NAMES) {
+      if (n !== 'local_ask_bot') names.delete(n);
+    }
   } else if (capabilityResult?.fallback === 'local-discovery') {
     for (const n of LOCAL_TOOL_NAMES) {
-      if (!LOCAL_DISCOVERY_TOOLS.includes(n)) names.delete(n);
+      if (!LOCAL_DISCOVERY_TOOLS.includes(n) && n !== 'local_ask_bot') names.delete(n);
     }
     for (const n of LOCAL_DISCOVERY_TOOLS) names.add(n);
+  }
+
+  if (ctx.browserAsk) {
+    stripBrowserAskToolNames(names, LOCAL_TOOL_NAMES);
+    for (const n of CHAT_MAKER_TOOL_NAMES) names.delete(n);
   }
 
   if (Array.isArray(ctx.ceilingToolNames)) {
@@ -1010,7 +1067,9 @@ export function selectExternalToolsForNeeds(discoveredTools, needs, opts = {}) {
 export function resolveChatTurnDisclosure(ctx = {}) {
   const capabilityResult = resolveFirstPartyCapabilities(ctx);
   const { toolNames } = resolveFirstPartyTools(capabilityResult, ctx);
-  const externalTools = typeof ctx.resolveExternal === 'function'
+  const externalTools = ctx.browserAsk
+    ? []
+    : typeof ctx.resolveExternal === 'function'
     ? ctx.resolveExternal(capabilityResult.externalNeeds) || []
     : selectExternalToolsForNeeds(ctx.discoveredExternalTools || [], capabilityResult.externalNeeds);
   const composed = composeWithExternalTools(toolNames, externalTools);

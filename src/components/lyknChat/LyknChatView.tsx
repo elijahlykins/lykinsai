@@ -1,9 +1,11 @@
 import React, { useRef, useEffect, useCallback } from "react";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
 import LocalToolApprovalCard from "@/components/lyknChat/LocalToolApprovalCard";
+import { useBotLocalApprovals } from "@/lib/bots/botLocalApproval";
 import LyknChatArtifactPanel from "@/components/lyknChat/LyknChatArtifactPanel";
 import ChatMessageItem from "@/components/lyknChat/ChatMessageItem";
 import { isLiveBuildStatus, useBuildThoughtTrail } from "@/hooks/useThinkingStatus";
+import { useWrittenDocumentPersist } from "@/hooks/useWrittenDocumentPersist";
 
 // Studio Research rail width — floats over the right edge; chat stays put.
 const RESEARCH_SIDEBAR_WIDTH = "min(340px, 30vw)";
@@ -19,6 +21,7 @@ import type {
 import { chatBarMinHeight } from "@/lib/appearance";
 import { useAppearance } from "@/lib/useAppearance";
 import { isPullUpAsk, openLyknMediaPop } from "@/lib/lyknMediaPop";
+import { openArtifactFileWindow } from "@/lib/files/openArtifactWindow";
 
 export interface LyknChatViewProps {
   chatMessages: PromptMessage[];
@@ -86,6 +89,9 @@ export interface LyknChatViewProps {
   onDrop: (e: React.DragEvent) => void;
 
   chatBarToolbar: React.ReactNode;
+
+  /** Owning lykn_chats.id for this chat surface. Link clicks inherit it. */
+  chatId?: string | null;
 
   /** Composer field min-height in px (the JS auto-grow floor). */
   composerMinH?: number;
@@ -215,6 +221,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   onDragOver,
   onDrop,
   chatBarToolbar,
+  chatId = null,
   composerMinH = 52,
   chatReactions,
   onReaction,
@@ -243,10 +250,14 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   // bar's geometry is CSS tokens.
   const appearance = useAppearance();
   const barMinH = chatBarMinHeight(appearance, composerMinH);
+  const owningChatId = String(chatId || chatKey || "").trim();
+  useWrittenDocumentPersist(chatMessages, onSaveArtifact, owningChatId);
   const buildThoughtTrail = useBuildThoughtTrail(
     thinkingStatus,
     isChatLoading || keepThinkingWhileLoading,
   );
+
+  useBotLocalApprovals();
 
   const lastSeenArtifactRef = useRef<string | null>(null);
   const artifactChatKeyRef = useRef<string | undefined>(undefined);
@@ -254,16 +265,14 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   const pendingArtifactOpenRef = useRef<ChatArtifact | null>(null);
   const dismissedArtifactKeyRef = useRef<string | null>(null);
 
-  // Clicking a card opens the floating preview popup only. The LYKN browser
-  // is a separate action — the panel's top-bar Open button.
-  const onOpenArtifact = useCallback(
-    (art: ChatArtifact) => {
-      pendingArtifactOpenRef.current = null;
-      dismissedArtifactKeyRef.current = null;
-      onActiveArtifactChange?.(art);
-    },
-    [onActiveArtifactChange],
-  );
+  // Clicking a card opens the already-made build in a movable file window.
+  // Take-to-chat on that window stages it on the composer. The LYKN browser
+  // is a separate action — the live preview panel's top-bar Open button.
+  const onOpenArtifact = useCallback((art: ChatArtifact) => {
+    pendingArtifactOpenRef.current = null;
+    dismissedArtifactKeyRef.current = null;
+    openArtifactFileWindow(art);
+  }, []);
 
   const pullUpHandledRef = useRef<string | null>(null);
   useEffect(() => {
@@ -535,7 +544,9 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                     key={msg.id || idx}
                     msg={msg}
                     idx={idx}
+                    isLatest={idx === chatMessages.length - 1}
                     hideMessageSources={hideMessageSources}
+                    chatId={owningChatId || undefined}
                     isAiExpanded={expandedAiMsgIds.has(msg.id)}
                     isUserPromptExpanded={expandedUserPromptIds.has(msg.id)}
                     reaction={chatReactions[msg.id]}
@@ -572,11 +583,16 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                 chatMessages.length > 0 &&
                 chatMessages[chatMessages.length - 1]?.role === "user" &&
                 chatMessages[chatMessages.length - 1]?.kind !== "load-in-greeting" &&
-                Boolean(String(chatMessages[chatMessages.length - 1]?.aiResponse || "").trim())
+                (Boolean(String(chatMessages[chatMessages.length - 1]?.aiResponse || "").trim()) ||
+                  chatMessages[chatMessages.length - 1]?.botWorking)
               ) && (
               <div className="flex justify-start">
                 <div className="max-w-[80%] py-3 text-sm leading-relaxed text-black/70 dark:text-white/60 flex items-center gap-3">
-                  <ThinkingIndicator status={thinkingStatus} trail={buildThoughtTrail} />
+                  <ThinkingIndicator
+                    status={thinkingStatus}
+                    trail={buildThoughtTrail}
+                    bot={[...chatMessages].reverse().find((m) => m.bot)?.bot}
+                  />
                 </div>
               </div>
             )}
@@ -643,6 +659,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
           onSaveToVault={onSaveArtifact}
           installTargetId={editingAppId}
           onArtifactUpdate={onActiveArtifactChange}
+          chatId={owningChatId || undefined}
         />
       ) : null}
     </>

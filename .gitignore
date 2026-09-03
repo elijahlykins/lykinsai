@@ -29,8 +29,9 @@ release
 
 # On-device embedding model — 33MB of binary fetched at build time by
 # scripts/fetch-embedding-model.mjs and packaged as an app resource.
-models/
-models-cache/
+# Anchored to the repo root: lib/models (model registry source) is tracked.
+/models/
+/models-cache/
 
 # Scratch store for migration rehearsals (scripts/import-from-supabase.mjs).
 .local-migration/
@@ -49,9 +50,14 @@ serper_news_sample.json
 # Pattern matches the 13-digit YouTube video timestamp + "-player-script.js".
 *-player-script.js
 
+# Nested git worktrees. These are extra full checkouts and must stay
+# out of the main tree so editors do not index them as a second repo.
+.worktrees/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
+!.vscode/settings.json
 .idea
 .DS_Store
 *.suo

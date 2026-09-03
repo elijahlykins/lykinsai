@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { Dialog, DialogContent, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
@@ -15,22 +15,21 @@ import {
   HardDrive,
   CreditCard,
   ChevronRight,
-  Sparkles,
+  Cpu,
   Plug,
   Loader2,
   Search,
   X,
 } from 'lucide-react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 
-import BillingDialog from '@/components/billing/BillingDialog';
+import BillingSettings from '@/components/billing/BillingSettings';
 import ConnectionsAppGrid from '@/components/connections/ConnectionsAppGrid';
-import RemoteTargetsSection from '@/components/connections/RemoteTargetsSection';
 import { PrivacyBody } from '@/pages/Privacy';
 import { CookiePolicyBody } from '@/pages/CookiePolicy';
 import { DPABody } from '@/pages/DPA';
 import { TermsBody } from '@/pages/Terms';
-import ModelSelectOptions from '@/components/ModelSelectOptions';
+import ModelRoutingSettings from '@/components/settings/ModelRoutingSettings';
 import VoicePicker from '@/components/notes/VoicePicker';
 import AppearanceSettings from '@/components/settings/AppearanceSettings';
 import LocalVaultSettings from '@/components/settings/LocalVaultSettings';
@@ -48,12 +47,14 @@ import {
 } from '@/components/settings/glassTokens';
 import { useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
-import { toast } from '@/components/ui/use-toast';
 import { useUserPlan } from '@/lib/useUserPlan';
-import { isModelAllowedForPlan, canonicalizeModelId, defaultModelForTier } from '@/lib/modelTiers';
-import { planLabel } from '@/lib/pricing-config';
+import { canonicalizeModelId, defaultModelForTier } from '@/lib/modelTiers';
 import { API_BASE_URL } from '@/lib/api-config';
-import { parseNightShiftTier } from '@/lib/stewardQueue';
+import {
+  ACCOUNT_DELETE_CONFIRM_PHRASE,
+  canSubmitAccountDeletion,
+  requestAccountDeletion,
+} from '@/lib/account/deleteAccount';
 import { applyTheme, normalizeTheme, readSavedTheme } from '@/lib/theme';
 import { folderLabel, shortenHome, useDesktopMirrorSettings } from '@/lib/macDesktopSync';
 import { useMacSync } from '@/lib/macSync';
@@ -67,23 +68,25 @@ import {
   removeWidgetsOfType,
   subscribeWidgetLayout,
 } from '@/lib/desktopWidgets';
+import AccountUpdateSection from '@/components/settings/AccountUpdateSection';
 import { DEFAULT_APPEARANCE, saveAppearance } from '@/lib/appearance';
 import { cn } from '@/lib/utils';
 
 const NAV_ITEMS = [
-  { id: 'workspace', title: 'Workspace', icon: LayoutGrid, keywords: 'home desktop widgets todos projects sync mac folders layout local mode files access' },
-  { id: 'assistant', title: 'Assistant', icon: Sparkles, keywords: 'ai model voice name instructions personality chat response length' },
-  { id: 'notifications', title: 'Notifications', icon: Bell, keywords: 'night shift brief alerts overnight' },
-  // Desktop only — filtered out below when there is no local store to talk to.
-  { id: 'localVault', title: 'Local Vault', icon: HardDrive, keywords: 'local vault offline on device storage migrate migration import supabase cloud download copy privacy disk index search embeddings' },
+  // Personalization first, then the working environment, then account / billing / power-user.
+  { id: 'appearance', title: 'Appearance', icon: Palette, group: 'you', keywords: 'theme dark light system swatch accent color hue custom wallpaper background photo desktop widgets glass blur dim density typeface font corner radius motion contrast dividers icons chat bar size shape bubble message text bigger smaller pill rectangle rounded send button arrow icon glyph circle square' },
+  { id: 'models', title: 'Models', icon: Cpu, group: 'you', keywords: 'ai model voice name instructions personality chat response length routing my setup openrouter catalog gpt claude grok' },
+  { id: 'notifications', title: 'Notifications', icon: Bell, group: 'you', keywords: 'alerts notifications' },
+  { id: 'workspace', title: 'Workspace', icon: LayoutGrid, group: 'space', keywords: 'home desktop widgets todos projects sync mac folders layout local mode files access' },
+  { id: 'integrations', title: 'Connections', icon: Plug, group: 'space', keywords: 'apps api mcp google slack notion connect connections marketplace' },
   // Desktop only, same as Local Vault — installed apps need a local store.
-  { id: 'installedApps', title: 'Apps', icon: LayoutGrid, keywords: 'apps installed built build mode generated permissions storage data uninstall remove notes app' },
-  { id: 'privacy', title: 'Privacy', icon: Lock, keywords: 'policy cookies terms dpa legal sessions devices sign out' },
-  { id: 'appearance', title: 'Appearance', icon: Palette, keywords: 'theme dark light system swatch accent color hue custom wallpaper background photo desktop widgets glass blur dim density typeface font corner radius motion contrast dividers icons chat bar size shape bubble message text bigger smaller pill rectangle rounded send button arrow icon glyph circle square' },
-  { id: 'integrations', title: 'Connections', icon: Plug, keywords: 'apps api mcp google slack notion connect connections marketplace' },
-  { id: 'billing', title: 'Billing', icon: CreditCard, keywords: 'payment plan subscription stripe upgrade invoice cancel' },
-  { id: 'keyboard', title: 'Keyboard', icon: Keyboard, keywords: 'shortcuts hotkey command overlay keys' },
-  { id: 'advanced', title: 'Advanced', icon: SlidersHorizontal, keywords: 'import export reset defaults support help chatgpt claude zip' },
+  { id: 'installedApps', title: 'Apps', icon: LayoutGrid, group: 'space', keywords: 'apps installed built build mode generated permissions storage data uninstall remove notes app' },
+  // Desktop only — filtered out below when there is no local store to talk to.
+  { id: 'localVault', title: 'Local Vault', icon: HardDrive, group: 'space', keywords: 'local vault offline on device storage migrate migration import supabase cloud download copy privacy disk index search embeddings' },
+  { id: 'keyboard', title: 'Keyboard', icon: Keyboard, group: 'space', keywords: 'shortcuts hotkey command overlay keys' },
+  { id: 'privacy', title: 'Privacy', icon: Lock, group: 'account', keywords: 'policy cookies terms dpa legal sessions devices sign out delete account' },
+  { id: 'billing', title: 'Billing', icon: CreditCard, group: 'account', keywords: 'payment plan subscription stripe upgrade invoice cancel' },
+  { id: 'advanced', title: 'Advanced', icon: SlidersHorizontal, group: 'account', keywords: 'import export reset defaults support help chatgpt claude zip' },
 ];
 
 // Privacy pane. Each doc opens in a popup over Settings; `path` is both the
@@ -97,16 +100,16 @@ const POLICY_DOCS = [
 
 const VIEW_TITLES = {
   account: 'Account',
-  workspace: 'Workspace',
-  assistant: 'Assistant',
-  notifications: 'Notifications',
-  localVault: 'Local Vault',
-  installedApps: 'Apps',
-  privacy: 'Privacy',
   appearance: 'Appearance',
+  models: 'Models',
+  notifications: 'Notifications',
+  workspace: 'Workspace',
   integrations: 'Connections',
-  billing: 'Billing',
+  installedApps: 'Apps',
+  localVault: 'Local Vault',
   keyboard: 'Keyboard',
+  privacy: 'Privacy',
+  billing: 'Billing',
   advanced: 'Advanced',
 };
 
@@ -116,7 +119,8 @@ const VIEW_ALIASES = {
   display: 'appearance',
   connections: 'integrations',
   payment: 'billing',
-  aiPersonalization: 'assistant',
+  assistant: 'models',
+  aiPersonalization: 'models',
   import: 'advanced',
   help: 'advanced',
 };
@@ -310,20 +314,8 @@ export default function SettingsModal({
   windowControls = null,
 }) {
   const { user, loading, signInWithOAuth, signOut } = useAuth();
-  const {
-    planId,
-    modelTier,
-    hasStripeCustomer,
-    hasActiveSubscription,
-    cancelAtPeriodEnd,
-    currentPeriodEnd,
-  } = useUserPlan();
-  const nav = useNavigate();
+  const { modelTier } = useUserPlan();
   const location = useLocation();
-  const [portalBusy, setPortalBusy] = useState(false);
-  // Which tab of the billing popup is open ('usage' | 'topup' | 'plans'), or
-  // null when it's closed. Nested inside this dialog like the policy viewer.
-  const [billingTab, setBillingTab] = useState(null);
 
   // One of the keys in VIEW_TITLES; legacy ids arrive via VIEW_ALIASES.
   const [view, setView] = useState('account');
@@ -336,19 +328,12 @@ export default function SettingsModal({
   const [importError, setImportError] = useState('');
   const [isDraggingImport, setIsDraggingImport] = useState(false);
 
-  // ---- Night Shift (server preferences) ----
-  const [nightShiftEnabled, setNightShiftEnabled] = useState(false);
-  const [nightShiftTier, setNightShiftTier] = useState('brief');
-  const [nightShiftLoading, setNightShiftLoading] = useState(false);
-  const [nightShiftSaving, setNightShiftSaving] = useState(false);
-
   // Each visit starts on the requested view (Account unless a caller deep-links
   // one, e.g. the desktop menu opening Display), and resets on close.
   useEffect(() => {
     setView(isOpen ? resolveView(initialView) : 'account');
     if (!isOpen) {
       setNavQuery('');
-      setBillingTab(null);
     }
   }, [isOpen, initialView]);
 
@@ -397,116 +382,17 @@ export default function SettingsModal({
     return () => observer.disconnect();
   }, [isOpen, embedded]);
 
-  const loadNightShiftPref = useCallback(async () => {
-    if (!user?.id) return;
-    setNightShiftLoading(true);
-    try {
-      const sess = await supabase.auth.getSession();
-      const token = sess?.data?.session?.access_token;
-      if (!token) return;
-      const res = await fetch(`${API_BASE_URL}/api/account/preferences`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data?.preferences) {
-        setNightShiftEnabled(!!data.preferences.night_shift_enabled);
-        setNightShiftTier(parseNightShiftTier(data.preferences.night_shift_tier));
-      }
-    } catch {
-      /* ignore */
-    } finally {
-      setNightShiftLoading(false);
-    }
-  }, [user?.id]);
-
-  useEffect(() => {
-    if (isOpen && view === 'notifications' && user?.id) void loadNightShiftPref();
-  }, [isOpen, view, user?.id, loadNightShiftPref]);
-
-  const toggleNightShift = async () => {
-    if (!user?.id || nightShiftSaving) return;
-    const next = !nightShiftEnabled;
-    setNightShiftSaving(true);
-    try {
-      const sess = await supabase.auth.getSession();
-      const token = sess?.data?.session?.access_token;
-      if (!token) return;
-      const res = await fetch(`${API_BASE_URL}/api/account/preferences`, {
-        method: 'PATCH',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ night_shift_enabled: next }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data?.preferences) {
-        setNightShiftEnabled(!!data.preferences.night_shift_enabled);
-        setNightShiftTier(parseNightShiftTier(data.preferences.night_shift_tier));
-      } else {
-        toast({
-          title: "Couldn't update Night Shift",
-          description: "The setting didn't save. Please try again.",
-          variant: 'destructive',
-        });
-      }
-    } catch {
-      toast({
-        title: "Couldn't update Night Shift",
-        description: "The setting didn't save. Please try again.",
-        variant: 'destructive',
-      });
-    } finally {
-      setNightShiftSaving(false);
-    }
-  };
-
-  const setNightShiftTierPref = async (tier) => {
-    if (!user?.id || nightShiftSaving || tier === nightShiftTier) return;
-    setNightShiftSaving(true);
-    try {
-      const sess = await supabase.auth.getSession();
-      const token = sess?.data?.session?.access_token;
-      if (!token) return;
-      const res = await fetch(`${API_BASE_URL}/api/account/preferences`, {
-        method: 'PATCH',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ night_shift_tier: tier }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data?.preferences) {
-        setNightShiftTier(parseNightShiftTier(data.preferences.night_shift_tier));
-      } else {
-        toast({
-          title: "Couldn't update Night Shift",
-          description: "The tier didn't save. Please try again.",
-          variant: 'destructive',
-        });
-      }
-    } catch {
-      toast({
-        title: "Couldn't update Night Shift",
-        description: "The tier didn't save. Please try again.",
-        variant: 'destructive',
-      });
-    } finally {
-      setNightShiftSaving(false);
-    }
-  };
-
   // Deep-link straight to the connect surface. The app dock's "+" and any
   // "connect an app" entry point route to /settings#connections (or
   // ?section=connections) so the user lands on the cards, not the main menu.
   useEffect(() => {
     if (!isOpen) return;
     const params = new URLSearchParams(location.search || '');
-    const wantsConnections =
-      (location.hash || '').replace(/^#/, '') === 'connections' ||
-      params.get('section') === 'connections';
-    if (wantsConnections) setView('integrations');
+    const fromHash = (location.hash || '').replace(/^#/, '');
+    const raw = params.get('settings') || params.get('section') || fromHash;
+    if (!raw) return;
+    if (!VIEW_TITLES[raw] && !VIEW_ALIASES[raw]) return;
+    setView(resolveView(raw));
   }, [isOpen, location.hash, location.search]);
 
   useEffect(() => {
@@ -514,41 +400,6 @@ export default function SettingsModal({
     window.addEventListener('lykn-open-connections', onOpen);
     return () => window.removeEventListener('lykn-open-connections', onOpen);
   }, []);
-
-  const openBillingPortal = useCallback(async (flow) => {
-    if (portalBusy) return;
-    setPortalBusy(true);
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/billing/portal`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(flow ? { flow } : {}),
-      });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok || !json?.url) {
-        throw new Error(json?.message || json?.error || `Portal failed: ${res.status}`);
-      }
-      window.location.href = json.url;
-    } catch (err) {
-      if (import.meta.env.DEV) console.error('[Settings] portal failed:', err);
-      toast({
-        variant: 'destructive',
-        title: flow === 'cancel' ? "Couldn't open cancel flow" : 'Billing portal unavailable',
-        description: err?.message || 'Could not open the billing portal.',
-      });
-      setPortalBusy(false);
-    }
-  }, [portalBusy]);
-
-  const handleManageSubscription = useCallback(
-    () => openBillingPortal(),
-    [openBillingPortal],
-  );
-
-  const handleCancelSubscription = useCallback(
-    () => openBillingPortal('cancel'),
-    [openBillingPortal],
-  );
 
   // ---- Local visual settings (theme/model) — still localStorage ----
   const [settings, setSettings] = useState({
@@ -590,6 +441,10 @@ export default function SettingsModal({
   // Separate from `handleLogout` so a double-click can't dispatch two
   // global revocations in flight. Busy stays true until onClose runs.
   const [signOutEverywhereBusy, setSignOutEverywhereBusy] = useState(false);
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [deleteAccountTyped, setDeleteAccountTyped] = useState('');
+  const [deleteAccountBusy, setDeleteAccountBusy] = useState(false);
+  const [deleteAccountError, setDeleteAccountError] = useState('');
 
   useEffect(() => {
     setDisplayName(initialDisplayName);
@@ -661,19 +516,6 @@ export default function SettingsModal({
   settingsRef.current = settings;
   const persistCurrentSettings = () => persistSettings(settingsRef.current);
 
-  // Assistant pane. Fields already save when you click out of them, so the
-  // button is really the confirmation: it flushes whatever is still focused
-  // and says "Saved" for a beat.
-  const [assistantSaved, setAssistantSaved] = useState(false);
-  const assistantSavedTimer = useRef(null);
-  useEffect(() => () => clearTimeout(assistantSavedTimer.current), []);
-  const saveAssistantSettings = () => {
-    persistCurrentSettings();
-    setAssistantSaved(true);
-    clearTimeout(assistantSavedTimer.current);
-    assistantSavedTimer.current = setTimeout(() => setAssistantSaved(false), 2000);
-  };
-
   // "Sync my Desktop" — mirrors the real Mac desktop onto Home. Desktop-app
   // only; the hook reports available: false in a browser.
   const macMirror = useDesktopMirrorSettings(settings.desktopSync, (desktopSync) => {
@@ -726,7 +568,7 @@ export default function SettingsModal({
       if (msg.includes('invalid login') || msg.includes('invalid credentials')) {
         setAuthError('Incorrect email or password. Please try again.');
       } else if (msg.includes('email not confirmed')) {
-        setAuthError('Please confirm your email before signing in — check your inbox.');
+        setAuthError('Please confirm your email before signing in. Check your inbox.');
       } else if (msg.includes('already registered') || msg.includes('already been registered')) {
         setAuthError('An account with this email already exists. Try signing in instead.');
       } else {
@@ -815,6 +657,42 @@ export default function SettingsModal({
     }
   };
 
+  const handleDeleteAccount = async () => {
+    if (deleteAccountBusy) return;
+    if (!canSubmitAccountDeletion(deleteAccountTyped)) {
+      setDeleteAccountError(`Type ${ACCOUNT_DELETE_CONFIRM_PHRASE} to confirm.`);
+      return;
+    }
+    setDeleteAccountBusy(true);
+    setDeleteAccountError('');
+    try {
+      const sess = await supabase.auth.getSession();
+      const token = sess?.data?.session?.access_token;
+      const result = await requestAccountDeletion({
+        apiBase: API_BASE_URL,
+        token,
+        confirm: deleteAccountTyped,
+      });
+      if (!result.ok) {
+        setDeleteAccountError(
+          result.error === 'not_signed_in'
+            ? 'You need to be signed in to delete this account.'
+            : result.error === 'confirm_phrase_required'
+              ? `Type ${ACCOUNT_DELETE_CONFIRM_PHRASE} to confirm.`
+              : 'Account deletion failed. Please try again or email privacy@lykn.io.',
+        );
+        return;
+      }
+      setDeleteAccountOpen(false);
+      await signOut();
+      onClose();
+    } catch {
+      setDeleteAccountError('Account deletion failed. Please try again or email privacy@lykn.io.');
+    } finally {
+      setDeleteAccountBusy(false);
+    }
+  };
+
   const handleSignOutEverywhere = async () => {
     if (signOutEverywhereBusy) return;
     // Native confirm is intentional here — this revokes every refresh
@@ -853,7 +731,7 @@ export default function SettingsModal({
   const profileInitial = (profileName || '?').charAt(0).toUpperCase();
   const accountNeedle = navQuery.trim().toLowerCase();
   const showAccountCard = !accountNeedle || (
-    'account profile sign in email name logout'.includes(accountNeedle)
+    'account profile sign in email name logout delete update version desktop'.includes(accountNeedle)
     || profileName.toLowerCase().includes(accountNeedle)
     || String(user?.email || '').toLowerCase().includes(accountNeedle)
   );
@@ -869,6 +747,7 @@ export default function SettingsModal({
   const renderAccount = () => (
     user ? (
       <div className="space-y-5">
+        <AccountUpdateSection />
         <SettingsGroup>
           <SettingsRow label="Email" trailing={
             <span className="max-w-[220px] truncate text-[13px] text-black/45 dark:text-white/45">{user.email}</span>
@@ -909,6 +788,75 @@ export default function SettingsModal({
             trailing={signOutEverywhereBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin text-red-400" /> : null}
           />
         </SettingsGroup>
+
+        <SettingsGroup caption="Permanently deletes this LYKN account and the cloud data tied to it. This cannot be undone.">
+          <SettingsRow
+            label="Delete account"
+            danger
+            disabled={deleteAccountBusy}
+            onClick={() => {
+              setDeleteAccountTyped('');
+              setDeleteAccountError('');
+              setDeleteAccountOpen(true);
+            }}
+          />
+        </SettingsGroup>
+
+        <Dialog
+          open={deleteAccountOpen}
+          onOpenChange={(open) => {
+            if (deleteAccountBusy) return;
+            setDeleteAccountOpen(open);
+            if (!open) {
+              setDeleteAccountTyped('');
+              setDeleteAccountError('');
+            }
+          }}
+        >
+          <DialogContent className="max-w-md">
+            <DialogTitle>Delete your account?</DialogTitle>
+            <p className="text-[13px] leading-relaxed text-black/65 dark:text-white/70">
+              This permanently deletes your LYKN account, Memory, Vault, chats,
+              projects, and files stored with LYKN. It cannot be undone. Provider
+              copies, Stripe records, and device files are not removed by this
+              action.
+            </p>
+            <p className="text-[13px] leading-relaxed text-black/65 dark:text-white/70">
+              Type <span className="font-medium text-black dark:text-white">{ACCOUNT_DELETE_CONFIRM_PHRASE}</span> to confirm.
+            </p>
+            <input
+              type="text"
+              value={deleteAccountTyped}
+              onChange={(e) => setDeleteAccountTyped(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={ACCOUNT_DELETE_CONFIRM_PHRASE}
+              className="h-9 w-full rounded-md border border-black/[0.08] bg-black/[0.04] px-3 text-[13px] text-black outline-none placeholder:text-black/35 dark:border-white/[0.1] dark:bg-white/[0.06] dark:text-white dark:placeholder:text-white/30"
+              aria-label="Type DELETE to confirm account deletion"
+            />
+            {deleteAccountError ? (
+              <p className="text-[12px] text-red-500">{deleteAccountError}</p>
+            ) : null}
+            <DialogFooter>
+              <button
+                type="button"
+                disabled={deleteAccountBusy}
+                onClick={() => setDeleteAccountOpen(false)}
+                className="rounded-lg px-3 py-1.5 text-sm font-medium text-black/70 dark:text-white/70 hover:bg-black/[0.05] dark:hover:bg-white/[0.08] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deleteAccountBusy || !canSubmitAccountDeletion(deleteAccountTyped)}
+                onClick={() => void handleDeleteAccount()}
+                className="rounded-lg px-3 py-1.5 text-sm font-medium bg-red-600 text-white hover:opacity-90 transition-opacity disabled:opacity-40"
+              >
+                {deleteAccountBusy ? 'Deleting…' : 'Delete account'}
+              </button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     ) : (
       <div className="space-y-5">
@@ -978,12 +926,8 @@ export default function SettingsModal({
     )
   );
 
-  const renderConnections = () => (
-    <>
-      <ConnectionsAppGrid user={user} embedded />
-      <RemoteTargetsSection />
-    </>
-  );
+  // Remote targets moved into a dialog owned by the grid's card.
+  const renderConnections = () => <ConnectionsAppGrid user={user} embedded />;
 
   // A doc's cross-links (Privacy → Cookie Policy, …) swap the popup instead of
   // routing the app out from under the open Settings window.
@@ -1068,57 +1012,15 @@ export default function SettingsModal({
 
   const renderNotifications = () => (
     <div className="space-y-5">
-      {user ? (
-        <SettingsGroup caption="Work on your projects overnight and leave a morning brief.">
-          <SettingsRow
-            label="Night Shift"
-            trailing={
-              <Switch
-                checked={nightShiftEnabled}
-                disabled={nightShiftLoading || nightShiftSaving}
-                onCheckedChange={() => void toggleNightShift()}
-                aria-label="Night Shift"
-                className={LG_SWITCH}
-              />
-            }
-          />
-          {nightShiftEnabled ? (
-            <SettingsRow
-              label="Depth"
-              trailing={
-                <Select
-                  value={nightShiftTier}
-                  onValueChange={(value) => void setNightShiftTierPref(value)}
-                  disabled={nightShiftSaving}
-                >
-                  <SelectTrigger className={LG_SELECT_INLINE}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className={LG_SELECT_CONTENT}>
-                    <SelectItem value="brief">Brief</SelectItem>
-                    <SelectItem value="research">Research</SelectItem>
-                    <SelectItem value="delegate">Delegate</SelectItem>
-                  </SelectContent>
-                </Select>
-              }
-            />
-          ) : null}
-        </SettingsGroup>
-      ) : (
-        <SettingsGroup caption="Sign in from Account to set up Night Shift.">
-          <SettingsRow
-            label="Go to Account"
-            onClick={() => setView('account')}
-            trailing={chevron}
-          />
-        </SettingsGroup>
-      )}
+      <SettingsGroup>
+        <SettingsRow label="Notifications coming soon" disabled />
+      </SettingsGroup>
     </div>
   );
 
   const renderWorkspace = () => (
     <div className="space-y-5">
-      <SettingsGroup caption="What's out on the Home desktop. Where each widget sits and how big it is belongs to the desktop — hold one there to move, resize, or add another. Wallpaper lives in Appearance.">
+      <SettingsGroup caption="What's out on the Home desktop. Where each widget sits and how big it is belongs to the desktop, hold one there to move, resize, or add another. Wallpaper lives in Appearance.">
         {WIDGET_TYPES.filter(
           (spec) =>
             !spec.desktopOnly ||
@@ -1168,13 +1070,13 @@ export default function SettingsModal({
       </SettingsGroup>
 
       {macSync.available ? (
-        <SettingsGroup caption="The folders LYKN can see on this Mac — the same access as Local mode in the Vault. Files never leave your computer: they open in place, and LYKN AI can read them when you ask.">
+        <SettingsGroup caption="The folders LYKN can see on this Mac, the same access as Local mode in the Vault. Files never leave your computer: they open in place, and LYKN AI can read them when you ask.">
           <SettingsRow
             label="Sync with Mac"
             description={
               macSync.enabled
-                ? 'On — LYKN can read the files you share below.'
-                : 'Off — LYKN can’t read anything on this Mac.'
+                ? 'On. LYKN can read the files you share below.'
+                : 'Off. LYKN can’t read anything on this Mac.'
             }
             trailing={
               <Switch
@@ -1190,9 +1092,10 @@ export default function SettingsModal({
           {macSync.confirming ? (
             <div className="px-3 py-2.5">
               <p className="text-[11px] leading-snug text-black/55 dark:text-white/50">
-                Syncing lets LYKN read the files in the folders you pick. That
-                turns on Local mode. Files stay on this Mac, and LYKN asks before
-                anything is written, deleted, or changed.
+                Syncing lets LYKN read and write files in the folders you pick.
+                That turns on Local mode. Enabling it does not share your whole
+                home folder. Files stay on this Mac. Consequential commands
+                (delete-like, download, clone) still ask first.
               </p>
               <div className="mt-2 flex items-center gap-2">
                 <button
@@ -1260,7 +1163,7 @@ export default function SettingsModal({
           {macSync.enabled && !macSync.syncAll ? (
             <SettingsRow
               label="Sync a folder…"
-              description={macSync.empty ? "Nothing is synced yet — LYKN can't see any files." : undefined}
+              description={macSync.empty ? "Nothing is synced yet. LYKN can't see any files." : undefined}
               disabled={macSync.busy}
               onClick={() => void macSync.addFolders()}
               trailing={chevron}
@@ -1270,12 +1173,12 @@ export default function SettingsModal({
       ) : null}
 
       {macMirror.available ? (
-        <SettingsGroup caption="Your Mac desktop, shown on the LYKN Home desktop. Items open in the apps that own them — LYKN never moves, renames, or deletes them.">
+        <SettingsGroup caption="Your Mac desktop, shown on the LYKN Home desktop. Items open in the apps that own them. LYKN never moves, renames, or deletes them.">
           <SettingsRow
             label="Sync my Desktop"
             description={
               macMirror.blocked
-                ? 'Local mode is off — turn it back on to see your files.'
+                ? 'Local mode is off. Turn it back on to see your files.'
                 : 'Show the files and folders from your Mac desktop on Home.'
             }
             trailing={
@@ -1292,9 +1195,9 @@ export default function SettingsModal({
           {macMirror.confirming ? (
             <div className="px-3 py-2.5">
               <p className="text-[11px] leading-snug text-black/55 dark:text-white/50">
-                To show your desktop, LYKN needs to read the files on this Mac.
-                That turns on Local mode. Files stay on your Mac, and LYKN asks
-                before anything is written or changed.
+                To show your desktop, LYKN needs to read files in folders you
+                approve. That turns on Local mode. Enabling it does not share
+                your whole home folder.
               </p>
               <div className="mt-2 flex items-center gap-2">
                 <button
@@ -1349,35 +1252,11 @@ export default function SettingsModal({
     </div>
   );
 
-  // Every control in this pane is either an inline pill on the right edge or a
-  // full-width field under its label, so the rows line up down the pane.
-  const renderAiPersonalization = () => (
-    <div className="space-y-5">
-      <GroupLabel>General</GroupLabel>
+  const renderModels = () => (
+    <ModelRoutingSettings>
       <SettingsGroup>
         <SettingsRow
-          label="Default model"
-          trailing={
-            <Select
-              value={settings.aiModel}
-              onValueChange={(value) => {
-                if (!isModelAllowedForPlan(value, modelTier)) return;
-                const updated = { ...settings, aiModel: value };
-                setSettings(updated);
-                persistSettings(updated);
-              }}
-            >
-              <SelectTrigger className={cn(LG_SELECT_INLINE, LG_INLINE_W, 'justify-between')}>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className={LG_SELECT_CONTENT}>
-                <ModelSelectOptions modelTier={modelTier} />
-              </SelectContent>
-            </Select>
-          }
-        />
-        <SettingsRow
-          label="Assistant name"
+          label="Name"
           trailing={
             <input
               type="text"
@@ -1391,10 +1270,6 @@ export default function SettingsModal({
             />
           }
         />
-      </SettingsGroup>
-
-      <GroupLabel>Chat</GroupLabel>
-      <SettingsGroup caption="Applied to every new chat.">
         <SettingsRow
           label="Response length"
           trailing={
@@ -1417,32 +1292,33 @@ export default function SettingsModal({
             </Select>
           }
         />
-        <SettingsRow label="Custom instructions">
-          <Textarea
-            value={settings.userPrompt || ''}
-            onChange={(e) => setSettings((prev) => ({ ...prev, userPrompt: e.target.value }))}
-            onBlur={persistCurrentSettings}
-            maxLength={1500}
-            rows={4}
-            placeholder="Be concise and direct. Use bullet points. Skip the preamble."
-            className={cn(LG_TEXTAREA, 'mt-2')}
-          />
-        </SettingsRow>
-      </SettingsGroup>
-
-      <GroupLabel>Voice</GroupLabel>
-      <SettingsGroup caption="Tap a voice to hear it. Voice instructions shape how the assistant sounds in live voice, not how it writes.">
-        <SettingsRow label="Assistant voice">
-          <div className="mt-2">
+        <SettingsRow
+          label="Voice"
+          trailing={
             <VoicePicker
               selectedVoiceId={settings.voiceId || ''}
+              selectedVoiceName={settings.voiceName || ''}
               onSelect={(voiceId, voiceName) => {
                 const updated = { ...settings, voiceId, voiceName: voiceName || '' };
                 setSettings(updated);
                 persistSettings(updated);
               }}
             />
-          </div>
+          }
+        />
+      </SettingsGroup>
+
+      <SettingsGroup caption="Applied to every new chat. Voice instructions only change how the assistant sounds in live voice.">
+        <SettingsRow label="Instructions">
+          <Textarea
+            value={settings.userPrompt || ''}
+            onChange={(e) => setSettings((prev) => ({ ...prev, userPrompt: e.target.value }))}
+            onBlur={persistCurrentSettings}
+            maxLength={1500}
+            rows={3}
+            placeholder="Tone, things to avoid, how it should address you."
+            className={cn(LG_TEXTAREA, 'mt-2')}
+          />
         </SettingsRow>
         <SettingsRow label="Voice instructions">
           <Textarea
@@ -1450,23 +1326,13 @@ export default function SettingsModal({
             onChange={(e) => setSettings((prev) => ({ ...prev, voicePrompt: e.target.value }))}
             onBlur={persistCurrentSettings}
             maxLength={1500}
-            rows={4}
-            placeholder="Speak warmly and casually, like a close friend. Keep replies short."
+            rows={3}
+            placeholder="Speak warmly and casually. Keep replies short."
             className={cn(LG_TEXTAREA, 'mt-2')}
           />
         </SettingsRow>
       </SettingsGroup>
-
-      <div className="flex justify-end px-1">
-        <button
-          type="button"
-          onClick={saveAssistantSettings}
-          className="rounded-[10px] bg-black px-3.5 py-1.5 text-[13px] font-medium text-white transition-opacity hover:opacity-90 dark:bg-white dark:text-black"
-        >
-          {assistantSaved ? 'Saved' : 'Save'}
-        </button>
-      </div>
-    </div>
+    </ModelRoutingSettings>
   );
 
   const renderImport = () => (
@@ -1535,83 +1401,9 @@ export default function SettingsModal({
     </div>
   );
 
-  const periodEndLabel = currentPeriodEnd
-    ? new Date(currentPeriodEnd).toLocaleDateString(undefined, {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      })
-    : null;
-
   const renderPayment = () => (
     user ? (
-      <div className="space-y-5">
-        <SettingsGroup caption={cancelAtPeriodEnd && periodEndLabel
-          ? `Cancels on ${periodEndLabel}. You'll keep access until then.`
-          : null}
-        >
-          <SettingsRow
-            label="Current plan"
-            onClick={() => setBillingTab('usage')}
-            trailing={
-              <span className="flex items-center text-[13px] text-black/45 dark:text-white/45">
-                {planLabel(planId)}
-                {chevron}
-              </span>
-            }
-          />
-          <SettingsRow
-            label="Usage this month"
-            description="Requests, credits, and what spent them."
-            onClick={() => setBillingTab('usage')}
-            trailing={chevron}
-          />
-        </SettingsGroup>
-
-        <SettingsGroup caption="Credits cover anything past your plan's included usage, and they never expire.">
-          <SettingsRow
-            label="Top up credits"
-            onClick={() => setBillingTab('topup')}
-            trailing={chevron}
-          />
-        </SettingsGroup>
-
-        <SettingsGroup>
-          <SettingsRow
-            label={hasActiveSubscription ? 'Change plan' : 'Upgrade plan'}
-            onClick={() => setBillingTab('plans')}
-            trailing={chevron}
-          />
-          {hasStripeCustomer && (
-            <SettingsRow
-              label={portalBusy ? 'Opening…' : 'Payment method & invoices'}
-              onClick={handleManageSubscription}
-              disabled={portalBusy}
-              trailing={chevron}
-            />
-          )}
-          {hasActiveSubscription && !cancelAtPeriodEnd && (
-            <SettingsRow
-              label={portalBusy ? 'Opening…' : 'Cancel subscription'}
-              danger
-              onClick={handleCancelSubscription}
-              disabled={portalBusy}
-            />
-          )}
-          <SettingsRow
-            label="Billing FAQ"
-            onClick={() => { onClose(); nav('/billing#faq'); }}
-            trailing={chevron}
-          />
-        </SettingsGroup>
-
-        <BillingDialog
-          open={!!billingTab}
-          onOpenChange={(open) => { if (!open) setBillingTab(null); }}
-          initialTab={billingTab || 'usage'}
-          onNavigateAway={onClose}
-        />
-      </div>
+      <BillingSettings onNavigateAway={onClose} />
     ) : (
       <SettingsGroup caption="Sign in from Account to manage your subscription.">
         <SettingsRow
@@ -1624,7 +1416,7 @@ export default function SettingsModal({
   );
 
   const renderKeyboard = () => (
-    <SettingsGroup caption="Shortcuts are fixed for now — remapping is not available yet.">
+    <SettingsGroup caption="Shortcuts are fixed for now. Remapping is not available yet.">
       {KEY_BINDINGS.map((binding) => (
         <SettingsRow
           key={binding.label}
@@ -1685,16 +1477,16 @@ export default function SettingsModal({
   const renderView = () => {
     switch (view) {
       case 'account': return renderAccount();
-      case 'workspace': return renderWorkspace();
-      case 'assistant': return renderAiPersonalization();
-      case 'notifications': return renderNotifications();
-      case 'localVault': return <LocalVaultSettings />;
-      case 'installedApps': return <InstalledAppsSettings />;
-      case 'privacy': return renderPrivacy();
       case 'appearance': return renderAppearance();
+      case 'models': return renderModels();
+      case 'notifications': return renderNotifications();
+      case 'workspace': return renderWorkspace();
       case 'integrations': return renderConnections();
-      case 'billing': return renderPayment();
+      case 'installedApps': return <InstalledAppsSettings />;
+      case 'localVault': return <LocalVaultSettings />;
       case 'keyboard': return renderKeyboard();
+      case 'privacy': return renderPrivacy();
+      case 'billing': return renderPayment();
       case 'advanced': return renderAdvanced();
       default: return renderAccount();
     }
@@ -1757,14 +1549,19 @@ export default function SettingsModal({
               </button>
             )}
             <div className="flex flex-col gap-0.5">
-              {filteredNav.map((item) => (
-                <SidebarItem
-                  key={item.id}
-                  item={item}
-                  active={view === item.id}
-                  onSelect={setView}
-                />
-              ))}
+              {filteredNav.map((item, i) => {
+                const prev = filteredNav[i - 1];
+                const newGroup = prev && prev.group !== item.group;
+                return (
+                  <div key={item.id} className={newGroup ? 'mt-2.5' : undefined}>
+                    <SidebarItem
+                      item={item}
+                      active={view === item.id}
+                      onSelect={setView}
+                    />
+                  </div>
+                );
+              })}
               {!showAccountCard && filteredNav.length === 0 && (
                 <p className="px-2 py-3 text-[12px] text-black/40 dark:text-white/35">No Results</p>
               )}
@@ -1837,7 +1634,6 @@ export default function SettingsModal({
       </div>
       <div className={cn(
         'lykn-settings-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-7 pb-7 pt-3',
-        view === 'assistant' && 'scrollbar-hide',
         view === 'integrations' && 'px-5',
       )}>
         <div className="lykn-settings-measure" data-view={view}>

@@ -312,7 +312,12 @@ export default function FilesBrowser({
   // frames that behave identically.
   const showFile = useCallback((entry) => {
     if (!entry) return;
-    openFileWindow({ path: entry.path, name: entry.name, size: entry.size });
+    openFileWindow({
+      path: entry.path,
+      name: entry.name,
+      size: entry.size,
+      media: previewKind(entry) === "html" ? "html" : null,
+    });
   }, []);
 
   const open = useCallback(
@@ -632,7 +637,7 @@ export default function FilesBrowser({
           <FolderSync className="mx-auto mb-4 h-10 w-10 text-black/60 dark:text-white/70" />
           <h2 className="mb-2 text-lg font-semibold">Sync is off for {target.label}</h2>
           <p className="mb-6 text-sm text-black/55 dark:text-white/60">
-            Nothing has moved — LYKN just can&apos;t see inside {shortenHome(target.path)} while
+             Nothing has moved. LYKN just can&apos;t see inside {shortenHome(target.path)} while
             sync is off. Turn it back on to browse it here.
           </p>
           <button

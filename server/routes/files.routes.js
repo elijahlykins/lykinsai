@@ -15,6 +15,7 @@ import { insertWithSchemaFallback } from '../../lib/vault/insertWithSchemaFallba
 import { inferAttachmentKind } from '../../lib/vaultAttachment.js';
 import { mimeTypeForFilename } from '../../lib/exterior/capabilityStorage.js';
 import { Readable } from 'node:stream';
+import { userOwnedTable } from '../../lib/security/userOwnedAccess.js';
 
 const _mammoth = mammoth.default || mammoth;
 
@@ -286,7 +287,7 @@ export function registerFilesRoutes(app, {
       // Pre-migration DBs may lack the normalized attachment columns — drop only
       // what they name (same fallback the web upload pipeline uses).
       const { data: note, error: insErr } = await insertWithSchemaFallback(
-        (row) => supabaseAdmin.from('vault_items').insert(row).select('id, title').single(),
+        (row) => userOwnedTable(supabaseAdmin, 'vault_items', userId).insert(row).select('id, title').single(),
         richInsert,
         ['user_id', 'title', 'content'],
       );
@@ -391,7 +392,7 @@ export function registerFilesRoutes(app, {
       };
 
       const { data: note, error: insErr } = await insertWithSchemaFallback(
-        (row) => supabaseAdmin.from('vault_items').insert(row).select('id, title').single(),
+        (row) => userOwnedTable(supabaseAdmin, 'vault_items', userId).insert(row).select('id, title').single(),
         richInsert,
         ['user_id', 'title', 'content'],
       );

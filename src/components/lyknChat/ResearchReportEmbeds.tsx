@@ -457,7 +457,7 @@ function parseDelimitedSheet(raw: string): SheetSpec | null {
       .map((c) => c.replace(/^["']|["']$/g, "").trim())
       .slice(0, 12);
 
-  const columns = split(lines[0]).map((c) => c || "—");
+  const columns = split(lines[0]).map((c) => c || "-");
   if (!columns.length) return null;
   const rows = lines.slice(1, 25).map((l) => {
     const cells = split(l);
@@ -551,7 +551,7 @@ export function ResearchSheetEmbed({ code }: { code: string }) {
                         : "text-left text-black/75 dark:text-white/75")
                     }
                   >
-                    {cell || "—"}
+                    {cell || "-"}
                   </td>
                 ))}
               </tr>

@@ -495,7 +495,7 @@ export default function Login() {
                   Verifying…
                 </span>
               ) : expired ? (
-                "Code expired — resend"
+                "Code expired, resend"
               ) : (
                 "Verify and continue"
               )}
@@ -593,7 +593,7 @@ export default function Login() {
             <ErrorBanner message={displayError} />
             <SubmitButton
               submitting={submitting || resendState === "sending"}
-              label={expired ? "Code expired — resend" : "Update password"}
+              label={expired ? "Code expired, resend" : "Update password"}
               busyLabel={expired ? "Sending…" : "Updating…"}
             />
           </form>

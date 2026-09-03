@@ -59,10 +59,23 @@ export default function LyknMediaPop({
         onClose();
         return;
       }
-      const tag = (document.activeElement as HTMLElement | null)?.tagName;
-      if (tag === "TEXTAREA" || tag === "INPUT") return;
-      if (e.key === "ArrowRight") onNext?.();
-      if (e.key === "ArrowLeft") onPrev?.();
+      if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+      const el = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
+      const tag = el?.tagName;
+      // Empty remarks stay focused after open — still flip images. Once the
+      // user is typing an edit, left/right move the cursor instead.
+      if ((tag === "TEXTAREA" || tag === "INPUT") && String(el?.value || "").length > 0) {
+        return;
+      }
+      if (e.key === "ArrowRight") {
+        if (!onNext) return;
+        e.preventDefault();
+        onNext();
+        return;
+      }
+      if (!onPrev) return;
+      e.preventDefault();
+      onPrev();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -95,7 +108,7 @@ export default function LyknMediaPop({
         />
 
         <div
-          className="relative z-20 flex shrink-0 items-center justify-between gap-3 px-4 pb-2 pt-4 pointer-events-auto sm:px-6"
+          className="relative z-40 flex shrink-0 items-center justify-between gap-3 overflow-visible px-4 pb-2 pt-4 pointer-events-auto sm:px-6"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="flex min-w-0 items-center gap-2">

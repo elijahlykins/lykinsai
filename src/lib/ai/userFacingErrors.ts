@@ -8,11 +8,11 @@
  */
 
 /** Soft generic fallback when we have no better context-specific copy. */
-export const CONNECTION_TROUBLE_TEXT = "That didn't work — try again in a moment.";
+export const CONNECTION_TROUBLE_TEXT = "That didn't work. Try again in a moment.";
 
 /** Image generation / image-mode failures (stall, provider, quota). */
 export const IMAGE_GEN_FAILURE_TEXT =
-  "Couldn't create that image — try again in a moment.";
+  "Couldn't create that image. Try again in a moment.";
 
 /**
  * Map any caught error (Error, string, API `{ error }` slug, HTTP text) to

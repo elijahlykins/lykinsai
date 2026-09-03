@@ -1,9 +1,8 @@
 import { useState, useCallback, useEffect } from "react";
-import { Check, Minus, ChevronDown } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { Check, Minus } from "lucide-react";
+import { motion } from "framer-motion";
 import {
   PLANS,
-  FAQ_ITEMS,
   BILLING_PERIODS,
   getDisplayPrice,
   getAnnualSavings,
@@ -14,22 +13,40 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 import { toast } from "@/components/ui/use-toast";
+import { queryClientInstance } from "@/lib/query-client";
+import { cn } from "@/lib/utils";
 
 function BillingToggle({ period, onChange }) {
+  const options = [
+    { key: BILLING_PERIODS.MONTHLY, label: "Monthly" },
+    { key: BILLING_PERIODS.ANNUAL, label: "Annual" },
+  ];
+  const index = Math.max(0, options.findIndex((opt) => opt.key === period));
   return (
-    <div className="inline-flex rounded-md border border-black/10 dark:border-white/15 bg-black/[0.03] dark:bg-white/[0.06] p-[3px]">
-      {[
-        { key: BILLING_PERIODS.MONTHLY, label: "Monthly" },
-        { key: BILLING_PERIODS.ANNUAL, label: "Annual" },
-      ].map((opt) => (
+    <div
+      role="radiogroup"
+      aria-label="Billing period"
+      className="lg-segment inline-grid w-[220px]"
+      style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
+    >
+      <span
+        aria-hidden
+        className="lg-segment-thumb"
+        style={{
+          left: 3,
+          width: `calc((100% - 6px) / ${options.length})`,
+          transform: `translateX(calc(${index} * 100%))`,
+        }}
+      />
+      {options.map((opt) => (
         <button
           key={opt.key}
+          type="button"
+          role="radio"
+          aria-checked={period === opt.key}
+          data-active={period === opt.key}
           onClick={() => onChange(opt.key)}
-          className={`relative px-3 py-1 text-xs font-medium rounded transition-all duration-200 ${
-            period === opt.key
-              ? "bg-white dark:bg-neutral-100 text-black/85 dark:text-neutral-900 shadow-sm"
-              : "text-black/40 dark:text-white/45 hover:text-black/60 dark:hover:text-white/70"
-          }`}
+          className="lg-segment-btn"
         >
           {opt.label}
         </button>
@@ -122,28 +139,25 @@ function PlanCard({
   const hasJoinedWaitlist = isWaitlistCard && Boolean(waitlistState?.joined);
   const waitlistBusy = isWaitlistCard && Boolean(waitlistState?.busy);
   const ctaStyles = {
-    outline:
-      "border border-black/10 dark:border-white/20 text-black/70 dark:text-white/80 hover:bg-black/[0.03] dark:hover:bg-white/[0.08] hover:border-black/15 dark:hover:border-white/30",
-    default:
-      "bg-black/90 dark:bg-white text-white dark:text-black hover:bg-black/80 dark:hover:bg-white/90",
-    primary:
-      "bg-black dark:bg-white text-white dark:text-black hover:bg-black/85 dark:hover:bg-white/90 shadow-sm",
+    outline: "lg-pill",
+    default: "lg-pill",
+    primary: "lg-pill-accent",
   };
 
   return (
-    // No initial/animate here — the grid wrapper in the page runs the (staggered)
+    // No initial/animate here - the grid wrapper in the page runs the (staggered)
     // entry animation; doubling it made each card fade/slide twice. h-full so
     // all three cards stretch to the tallest and CTAs align at the bottom.
     <motion.div
-      className={`relative flex h-full flex-col rounded-2xl border p-5 transition-shadow duration-300 ${
-        plan.highlighted
-          ? "border-black/15 dark:border-white/25 bg-white dark:bg-neutral-900 shadow-xl shadow-black/[0.06] dark:shadow-black/40 ring-1 ring-black/[0.06] dark:ring-white/10"
-          : "border-black/[0.06] dark:border-white/[0.12] bg-white dark:bg-neutral-900 shadow-sm dark:shadow-black/30 hover:shadow-md"
-      } ${plan.comingSoon ? "opacity-[0.88]" : ""}`}
+      className={cn(
+        "lg-card relative flex h-full flex-col rounded-[18px] p-5",
+        plan.highlighted && "shadow-[inset_0_0_0_1px_hsl(var(--lykn-accent)/0.38)]",
+        plan.comingSoon && "opacity-[0.88]",
+      )}
     >
       {plan.comingSoon && (
         <div className="absolute top-4 right-4">
-          <span className="text-[10px] font-bold uppercase tracking-widest text-black/55 dark:text-white/60 bg-black/[0.04] dark:bg-white/[0.08] px-2.5 py-1 rounded-full">
+          <span className="rounded-full border border-[var(--lg-hairline)] bg-[var(--lg-fill)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-black/55 shadow-[inset_0_1px_0_var(--lg-sheen)] dark:text-white/60">
             Coming Soon
           </span>
         </div>
@@ -152,7 +166,7 @@ function PlanCard({
       <div className="flex items-center justify-between">
         <h3 className="text-base font-semibold text-black/85 dark:text-white/90">{plan.name}</h3>
         {plan.badge && (
-          <span className="text-[11px] font-semibold text-black/75 dark:text-white/85 bg-black/[0.06] dark:bg-white/[0.10] px-2 py-0.5 rounded-md">
+          <span className="rounded-full border border-[var(--lg-hairline)] bg-[var(--lg-fill)] px-2 py-0.5 text-[11px] font-medium text-black/70 shadow-[inset_0_1px_0_var(--lg-sheen)] dark:text-white/75">
             {plan.badge}
           </span>
         )}
@@ -166,7 +180,7 @@ function PlanCard({
         <div className="mt-3 mb-4">
           <div className="flex items-baseline gap-1">
             <span className="text-2xl font-bold tracking-tight text-black/40 dark:text-white/45">
-              —
+              -
             </span>
           </div>
           <p className="text-xs text-black/35 dark:text-white/45 font-medium mt-1">
@@ -195,15 +209,14 @@ function PlanCard({
           isLocked ||
           (isWaitlistCard ? hasJoinedWaitlist || waitlistBusy : false)
         }
-        className={`mt-4 w-full py-2 px-3 rounded-lg text-xs font-semibold transition-all duration-200 cursor-pointer disabled:cursor-default ${
-          isCurrent
-            ? "border border-black/10 dark:border-white/20 text-black/40 dark:text-white/45 bg-black/[0.02] dark:bg-white/[0.04]"
+        className={cn(
+          "mt-4 w-full cursor-pointer rounded-full px-3 py-2 text-xs font-semibold transition-[background,opacity] disabled:cursor-default",
+          isCurrent || !isCheckoutPlan
+            ? "lg-pill opacity-70"
             : hasJoinedWaitlist
-              ? "border border-black/10 dark:border-white/20 bg-black/[0.04] dark:bg-white/[0.08] text-black/70 dark:text-white/80"
-              : !isCheckoutPlan
-                ? "border border-black/10 dark:border-white/20 text-black/40 dark:text-white/45 bg-black/[0.02] dark:bg-white/[0.04]"
-              : `${ctaStyles[plan.ctaVariant]} disabled:opacity-60`
-        }`}
+              ? "lg-pill"
+              : `${ctaStyles[plan.ctaVariant]} disabled:opacity-60`,
+        )}
       >
         {isCurrent
           ? "Current Plan"
@@ -235,54 +248,6 @@ function PlanCard({
   );
 }
 
-function FAQItem({ item, isOpen, onToggle }) {
-  const itemId = item.id || item.question.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-  const buttonId = `billing-faq-button-${itemId}`;
-  const panelId = `billing-faq-panel-${itemId}`;
-
-  return (
-    <div className="border-b border-black/[0.05] dark:border-white/[0.10] last:border-0">
-      <button
-        type="button"
-        onClick={onToggle}
-        id={buttonId}
-        aria-expanded={isOpen}
-        aria-controls={panelId}
-        className="w-full flex items-center justify-between py-4 text-left group"
-      >
-        <span className="text-sm font-medium text-black/75 dark:text-white/80 group-hover:text-black/90 dark:group-hover:text-white transition-colors pr-4">
-          {item.question}
-        </span>
-        <motion.div
-          animate={{ rotate: isOpen ? 180 : 0 }}
-          transition={{ duration: 0.2 }}
-          className="flex-shrink-0"
-        >
-          <ChevronDown className="w-4 h-4 text-black/30 dark:text-white/45" />
-        </motion.div>
-      </button>
-      <AnimatePresence initial={false}>
-        {isOpen && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: "easeInOut" }}
-            id={panelId}
-            role="region"
-            aria-labelledby={buttonId}
-            className="overflow-hidden"
-          >
-            <p className="text-sm text-black/50 dark:text-white/60 leading-relaxed pb-4">
-              {item.answer}
-            </p>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
-
 async function authHeaders() {
   const { data } = await supabase.auth.getSession();
   const token = data?.session?.access_token;
@@ -310,7 +275,6 @@ async function postBilling(path, body) {
 export default function Billing() {
   const { user } = useAuth();
   const [period, setPeriod] = useState(BILLING_PERIODS.ANNUAL);
-  const [openFaq, setOpenFaq] = useState(null);
   const [currentPlan, setCurrentPlan] = useState("free");
   const [billingMeta, setBillingMeta] = useState({
     hasActiveSubscription: false,
@@ -406,9 +370,10 @@ export default function Billing() {
     window.history.replaceState({}, "", url.toString());
   }, []);
 
-  // Returning from a credit top-up (?topup=success). The grant lands via the
-  // Stripe webhook a moment later, so confirm the purchase and drop the params
-  // rather than leaving the user on a page that says nothing happened.
+  // Returning from a historical credit-pack checkout (?topup=success). The
+  // grant lands via the Stripe webhook a moment later, so confirm the purchase
+  // and drop the params rather than leaving the user on a page that says
+  // nothing happened. New top-ups use ?usage_fund below.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
@@ -417,8 +382,8 @@ export default function Billing() {
 
     if (topup === "success") {
       toast({
-        title: "Credits on the way",
-        description: "Your top-up lands in a few seconds — check Settings → Billing.",
+        title: "Top-up on the way",
+        description: "Your usage balance updates in a few seconds. Check Settings → Billing.",
       });
     }
     const url = new URL(window.location.href);
@@ -429,21 +394,21 @@ export default function Billing() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const funding = params.get("usage_fund");
+    if (!funding) return;
 
-    const scrollToFaq = () => {
-      if (window.location.hash !== "#faq") return;
-      window.requestAnimationFrame(() => {
-        const faq = document.getElementById("faq");
-        if (!faq) return;
-        setOpenFaq((prev) => (prev == null ? 0 : prev));
-        faq.scrollIntoView({ behavior: "smooth", block: "start" });
-        faq.focus({ preventScroll: true });
+    if (funding === "success") {
+      toast({
+        title: "Funds added",
+        description: "Your Usage Balance updates in a few seconds.",
       });
-    };
-
-    scrollToFaq();
-    window.addEventListener("hashchange", scrollToFaq);
-    return () => window.removeEventListener("hashchange", scrollToFaq);
+      queryClientInstance.invalidateQueries({ queryKey: ["billing-credits"] });
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("usage_fund");
+    url.searchParams.delete("session_id");
+    window.history.replaceState({}, "", url.toString());
   }, []);
 
   const handleCheckout = useCallback(
@@ -525,11 +490,6 @@ export default function Billing() {
     }
   }, [portalBusy]);
 
-  const toggleFaq = useCallback(
-    (idx) => setOpenFaq((prev) => (prev === idx ? null : idx)),
-    []
-  );
-
   const periodEndLabel = billingMeta.currentPeriodEnd
     ? new Date(billingMeta.currentPeriodEnd).toLocaleDateString(undefined, {
         month: "short",
@@ -547,26 +507,25 @@ export default function Billing() {
             Pick the plan that fits how you work
           </h2>
           <p className="text-base text-black/45 dark:text-white/60 mt-3 max-w-lg mx-auto leading-relaxed">
-            You're already on Free with the full app. Go Pro for every model and
-            an unlimited workspace, get the same on the Student plan for $20/mo
-            ($12/mo billed annually), or go Max to remove the monthly usage caps
-            entirely. Cancel anytime, no hidden fees.
+            You're already on Free with $10 of usage to spend. Go Pro to get
+            chat included plus monthly usage for everything else, get the same
+            on the Student plan for $15/mo ($12/mo billed annually), or go Max
+            for five times the usage. Cancel anytime, no hidden fees.
           </p>
         </div>
 
         {/* Current-plan banner — make the free tier visible */}
         {currentPlan === "free" && (
           <div className="max-w-3xl mx-auto mb-6">
-            <div className="flex flex-col gap-1 rounded-xl border border-black/[0.08] dark:border-white/[0.12] bg-black/[0.02] dark:bg-white/[0.04] px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+            <div className="lykn-settings-group flex flex-col gap-1 rounded-[14px] px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
               <p className="text-sm text-black/70 dark:text-white/75">
                 You're on the{" "}
                 <span className="font-semibold text-black/90 dark:text-white">Free</span>{" "}
-                plan: the full app with capped limits, 100 synthesis neurons, 50
-                Vault cards, LYKN's core models, and monthly usage caps on Glass,
-                image generation, and artifact builds.
+                plan: the full app running on your prepaid usage balance, with
+                LYKN's core models, 100 synthesis neurons, and 50 Vault cards.
               </p>
               <span className="flex-shrink-0 text-xs font-medium text-black/45 dark:text-white/55">
-                Upgrade for unlimited everything →
+                Upgrade to get chat included →
               </span>
             </div>
           </div>
@@ -574,7 +533,7 @@ export default function Billing() {
 
         {billingMeta.hasActiveSubscription && (
           <div className="max-w-3xl mx-auto mb-6">
-            <div className="flex flex-col gap-3 rounded-xl border border-black/[0.08] dark:border-white/[0.12] bg-black/[0.02] dark:bg-white/[0.04] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="lykn-settings-group flex flex-col gap-3 rounded-[14px] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <p className="text-sm text-black/70 dark:text-white/75">
                   {billingMeta.cancelAtPeriodEnd ? (
@@ -585,7 +544,7 @@ export default function Billing() {
                     </>
                   ) : (
                     <>
-                      Need to leave? Cancel anytime — you'll keep access through the
+                      Need to leave? Cancel anytime. You'll keep access through the
                       end of your current billing period.
                     </>
                   )}
@@ -611,7 +570,7 @@ export default function Billing() {
           <BillingToggle period={period} onChange={setPeriod} />
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-16">
-          {PLANS.map((plan, i) => (
+          {PLANS.filter((p) => p.id !== "free").map((plan, i) => (
             <motion.div
               key={plan.id}
               className="h-full"
@@ -640,31 +599,6 @@ export default function Billing() {
             </motion.div>
           ))}
         </div>
-        </div>
-
-        {/* FAQ */}
-        <div
-          id="faq"
-          tabIndex={-1}
-          aria-labelledby="billing-faq-heading"
-          className="max-w-2xl mx-auto mb-16 scroll-mt-8 focus:outline-none"
-        >
-          <h3
-            id="billing-faq-heading"
-            className="text-xl font-semibold text-black/85 dark:text-white/90 text-center mb-8"
-          >
-            Frequently asked questions
-          </h3>
-          <div className="rounded-2xl bg-white dark:bg-neutral-900 border border-black/[0.06] dark:border-white/[0.12] shadow-sm dark:shadow-black/30 p-6">
-            {FAQ_ITEMS.map((item, i) => (
-              <FAQItem
-                key={item.id || item.question}
-                item={item}
-                isOpen={openFaq === i}
-                onToggle={() => toggleFaq(i)}
-              />
-            ))}
-          </div>
         </div>
       </div>
     </div>

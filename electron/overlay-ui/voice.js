@@ -3,13 +3,26 @@
 export function attachVoice(host) {
   const voiceEl = document.getElementById("voice");
   const VOICE_TOOL_NAMES = [
-    "search_vault", "read_document", "display_document", "web_search", "web_fetch",
+    "web_search", "web_fetch",
     "memory_list", "memory_read", "memory_patch", "memory_create", "memory_forget",
     "list_projects", "get_project_state", "set_active_project", "create_project",
-    "update_project_state", "get_recent_activity", "create_reminder", "list_reminders",
+    "update_project", "resolve_project", "update_project_state", "delete_project",
+    "merge_projects", "get_recent_activity", "create_reminder", "list_reminders",
     "update_reminder", "create_event", "list_events", "update_event", "delete_event",
     "create_todo", "list_todos", "update_todo", "delete_todo", "build_with_cursor",
     "check_cursor_build", "save_to_vault", "save_link_to_vault", "add_to_project",
+    "get_current_time", "calculate", "symbolic_math", "run_python", "run_code",
+    "http_request", "get_preferences", "update_preference",
+    "list_steward_items", "create_steward_item", "update_steward_item",
+    "write_document", "save_file_to_vault", "open_app", "open_settings",
+    "generate_image", "process_image", "generate_speech", "transcribe_audio",
+    "parse_document", "translate", "generate_chart", "generate_diagram",
+    "build_spreadsheet", "build_template", "build_react_artifact", "render_video",
+    "manage_file", "list_apps", "call_app",
+    "local_list_dir", "local_read_file", "local_search_files", "local_pull_file",
+    "local_write_file", "local_edit_file", "local_run_command", "local_synced_folders",
+    "local_running_apps", "local_read_app", "local_open_app", "local_open_path",
+    "local_organize_desktop",
   ];
   let voiceConvo = null;
   let voiceConnected = false;
@@ -75,11 +88,47 @@ export function attachVoice(host) {
     }
   }
 
+  async function startOverlayBrowserAgent(params) {
+    const task = String(params?.task || params?.message || "").trim();
+    const url = String(params?.url || "").trim();
+    if (!task) return { ok: false, error: "No task was provided for the browser agent." };
+    const goal = url ? `${task}\n\nStart at: ${url}` : task;
+    try {
+      const created = await window.lyknOverlay.agentCreate({ goal });
+      const agentId = created?.ok && created.agentId ? String(created.agentId) : "";
+      void window.lyknOverlay.agentSend(agentId, goal, []).catch(() => {});
+      try { await window.lyknOverlay.agentShowBrowser(agentId, true); } catch (_) { /* reveal is best-effort */ }
+      if (window.lyknOverlay?.glassAgentModeEnabled === true) {
+        try { await window.lyknOverlay.agentModeSet(true); } catch (_) { /* same */ }
+      }
+      return {
+        ok: true,
+        note:
+          "The browser agent is now running the task in its own tab. Tell the user it's underway " +
+          "and they can watch or take over. Do not describe steps as if you performed them.",
+      };
+    } catch (_) {
+      return { ok: false, error: "Couldn't start the browser agent." };
+    }
+  }
+
   function buildVoiceTools() {
     const tools = {};
     for (const name of VOICE_TOOL_NAMES) {
       tools[name] = async (params) => {
         try {
+          if (name.startsWith("local_")) {
+            const run = window.lyknOverlay?.localToolRun;
+            if (typeof run === "function") {
+              let data = await run(name, params ?? {});
+              if (data && data.needsApproval === true) {
+                const ok = window.confirm(String(data.summary || "Run this on your Mac?"));
+                if (!ok) return JSON.stringify({ ok: false, error: "You declined this action." });
+                data = await run(name, params ?? {}, { approvalToken: data.approvalToken || "" });
+              }
+              return JSON.stringify(data);
+            }
+          }
           const data = await window.lyknOverlay.voiceTool(name, params ?? {});
           return JSON.stringify(data);
         } catch (_) {
@@ -89,6 +138,10 @@ export function attachVoice(host) {
     }
     // Local-only voice-instruction tuning isn't managed by the overlay; ack it.
     tools["update_voice_instructions"] = async () => JSON.stringify({ ok: true });
+    tools.browser_agent = async (params) => JSON.stringify(await startOverlayBrowserAgent(params));
+    // Overlay has no bot roster. Send the same work to the browser agent so
+    // "send a bot to this site" still starts the job.
+    tools.ask_bot = async (params) => JSON.stringify(await startOverlayBrowserAgent(params));
     return tools;
   }
 
@@ -266,13 +319,23 @@ export function attachVoice(host) {
         return null;
       }
     })();
+    let localModeOn = false;
+    try {
+      const lm = await window.lyknOverlay.localModeGet();
+      localModeOn = lm && lm.enabled === true;
+    } catch (_) { /* Local Mode stays off */ }
     const screenInstructions =
       "You are LYKN running inside an on-screen overlay on the user's Mac, and you CAN see " +
       "the user's screen. The current screen contents are continuously provided to you as " +
       "contextual updates that start with \"SCREEN CONTENTS\". Treat those as your live view " +
       "of what is on the user's screen right now and use them to answer questions about what " +
       "they are looking at. Never tell the user you are unable to see or read their screen.";
-    const data = await window.lyknOverlay.voiceSignedUrl({ instructions: screenInstructions, timezone });
+    const data = await window.lyknOverlay.voiceSignedUrl({
+      instructions: screenInstructions,
+      timezone,
+      desktop: localModeOn,
+      localMode: localModeOn,
+    });
     if (cancelled()) return;
     if (!data || data.error || (!data.conversationToken && !data.signedUrl)) {
       clearVoiceTimer();

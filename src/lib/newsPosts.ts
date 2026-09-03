@@ -27,35 +27,35 @@ export interface NewsPost {
 export const NEWS_POSTS: NewsPost[] = [
   {
     slug: "introducing-lykn-studio",
-    tag: "LYKN Studio",
+    tag: "LYKN desktop",
     date: "Jul 16, 2026",
-    title: "Introducing LYKN Studio",
+    title: "Introducing LYKN desktop",
     lede: "One workspace where your projects, notes, and conversations live together, with an AI that actually knows you working across all of it.",
     art: newsTileStudio,
     body: [
       {
         paragraphs: [
-          "Most AI tools start every conversation from zero. You re-explain who you are, what you're working on, and what you meant last time, and the moment you close the tab all of that is gone. LYKN Studio is our answer to that: a personal AI workspace built around a single idea, that your AI should accumulate an understanding of you instead of renting you its attention one prompt at a time.",
-          "Studio is where everything you do with LYKN lives. Your projects, Vault notes and documents, chats across models, and private Markdown Memory all sit in one place.",
+          "Most AI tools start every conversation from zero. You re-explain who you are, what you're working on, and what you meant last time, and the moment you close the tab all of that is gone. LYKN desktop is our answer to that: a personal AI workspace built around a single idea, that your AI should accumulate an understanding of you instead of renting you its attention one prompt at a time.",
+          "LYKN desktop is where everything you do with LYKN lives. Your projects, Vault notes and documents, chats across models, and private Markdown Memory all sit in one place.",
         ],
       },
       {
         heading: "Private Markdown Memory",
         paragraphs: [
-          "At the center of Studio is private Markdown Memory: small documents for your explicit preferences, goals, decisions, relationships, projects, and topics. Every model you talk to through LYKN can be grounded in the same durable context.",
-          "That context is portable. Whether you're in a Studio chat, the Glass overlay on top of another app, or voice mode, the AI you're talking to is the same one, with the same memory.",
+          "At the center of LYKN desktop is private Markdown Memory: small documents for your explicit preferences, goals, decisions, relationships, projects, and topics. Every model you talk to through LYKN can be grounded in the same durable context.",
+          "That context is portable. Whether you're in a desktop chat, the Glass overlay on top of another app, or voice mode, the AI you're talking to is the same one, with the same memory.",
         ],
       },
       {
         heading: "Every model, one memory",
         paragraphs: [
-          "Studio isn't tied to a single model. Chat with the frontier models you already use and let LYKN carry your context between them. The model changes; your AI doesn't.",
+          "LYKN desktop isn't tied to a single model. Chat with the frontier models you already use and let LYKN carry your context between them. The model changes; your AI doesn't.",
         ],
       },
       {
         heading: "Where it goes from here",
         paragraphs: [
-          "Studio ships today alongside LYKN Glass on macOS, voice mode, and the AI project manager. This is the foundation we'll be building on for the rest of the year, and the posts that follow this one go deeper on each piece.",
+          "LYKN desktop ships today alongside LYKN Glass on macOS, voice mode, and the AI project manager. This is the foundation we'll be building on for the rest of the year, and the posts that follow this one go deeper on each piece.",
         ],
       },
     ],
@@ -151,8 +151,8 @@ export const NEWS_POSTS: NewsPost[] = [
       {
         heading: "Where you'll use it",
         paragraphs: [
-          "It shines when your hands are busy or your thoughts are messy: walking through tomorrow's plan, talking out a draft, triaging your task list on a commute. Ask it to capture decisions as you go and they're waiting in Studio when you sit back down.",
-          "Voice mode is available now in LYKN Studio and through the Glass overlay.",
+          "It shines when your hands are busy or your thoughts are messy: walking through tomorrow's plan, talking out a draft, triaging your task list on a commute. Ask it to capture decisions as you go and they're waiting on the desktop when you sit back down.",
+          "Voice mode is available now in LYKN desktop and through the Glass overlay.",
         ],
       },
     ],

@@ -9,6 +9,6 @@ export const SceneBackground: React.FC = () => (
     <Img
       src={staticFile(SCENE_BG_FILE)}
       style={{ width: "100%", height: "100%", objectFit: "cover" }}
-      from={-47} />
+      from={-52} />
   </AbsoluteFill>
 );

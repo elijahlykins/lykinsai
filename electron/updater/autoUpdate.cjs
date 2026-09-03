@@ -1,5 +1,16 @@
 "use strict";
 
+const {
+  CHECK_INTERVAL_MS,
+  ERROR_RETRY_MS,
+  updateSnapshot,
+  shouldReprompt,
+} = require("./updateLifecycle.cjs");
+const {
+  isTrustedLyknIpcSender,
+  trustedLyknIpcOpts,
+} = require("../trustedIpcSender.cjs");
+
 function attachAutoUpdate(d) {
   if (d.__attached_attachAutoUpdate) return;
   d.__attached_attachAutoUpdate = true;
@@ -38,6 +49,12 @@ function attachAutoUpdate(d) {
   const createMainWindow = (...a) => d.createMainWindow(...a);
   const destroyAuthKeeper = (...a) => d.destroyAuthKeeper(...a);
   const refreshTrayUpdateAffordance = (...a) => d.refreshTrayUpdateAffordance(...a);
+  const trustOpts = () => trustedLyknIpcOpts({
+    app,
+    path,
+    appOrigin: APP_ORIGIN,
+    appUrl: APP_URL,
+  });
 
 function quitForReal() {
   d.allowQuit = true;
@@ -69,6 +86,33 @@ function ensureAppSurfacedForUpdate() {
   return null;
 }
 
+function currentAppVersion() {
+  try {
+    return String(app.getVersion() || "");
+  } catch {
+    return "";
+  }
+}
+
+function getUpdateStatus() {
+  return updateSnapshot({
+    currentVersion: currentAppVersion(),
+    pendingVersion: d.pendingUpdate?.version || "",
+    downloading: Boolean(d.updateDownloading),
+    packaged: app.isPackaged,
+  });
+}
+
+function broadcastUpdateStatus() {
+  const status = getUpdateStatus();
+  try {
+    broadcastToAllWindows("lykn:update-status", status);
+  } catch (_) {
+    /* renderer may not be ready */
+  }
+  return status;
+}
+
 function notifyUpdateReady(version) {
   const key = version || "pending";
   if (d.updateNotifiedForVersion === key) return;
@@ -78,7 +122,7 @@ function notifyUpdateReady(version) {
     if (Notification.isSupported()) {
       const n = new Notification({
         title: "LYKN update ready",
-        body: `Version${ver} downloaded. Restart LYKN to install — or use Restart to Update in the menu bar.`,
+        body: `Version${ver} downloaded. Restart LYKN to install, or use Restart to Update in the menu bar.`,
         silent: false,
       });
       n.on("click", () => {
@@ -95,7 +139,11 @@ async function maybePromptPendingUpdate(opts = {}) {
   const force = Boolean(opts.force);
   if (!d.pendingUpdate || !d.installPendingUpdate) return;
   if (d.updatePromptOpen) return;
-  if (!force && d.lastUpdatePromptAt && Date.now() - d.lastUpdatePromptAt < UPDATE_REPROMPT_MS) {
+  if (!shouldReprompt({
+    lastAt: d.lastUpdatePromptAt,
+    intervalMs: UPDATE_REPROMPT_MS,
+    force,
+  })) {
     return;
   }
 
@@ -103,6 +151,7 @@ async function maybePromptPendingUpdate(opts = {}) {
   d.lastUpdatePromptAt = Date.now();
   refreshTrayUpdateAffordance();
   notifyUpdateReady(d.pendingUpdate.version);
+  broadcastUpdateStatus();
 
   const parent = ensureAppSurfacedForUpdate();
   // Give macOS a beat to show Dock + window before an app-modal dialog;
@@ -122,7 +171,7 @@ async function maybePromptPendingUpdate(opts = {}) {
     message: "Restart to update LYKN.",
     detail:
       `A new version${ver} is ready. Restart the app to install it.\n\n` +
-      `Tip: ${closeHint} — choose Restart here, or ` +
+      `Tip: ${closeHint}. Choose Restart here, or ` +
       `"Restart to Update" / "Quit LYKN Completely" from the menu bar icon.`,
   };
 
@@ -143,8 +192,21 @@ async function maybePromptPendingUpdate(opts = {}) {
   }
 }
 
+function markUpdateReady(info) {
+  const version = (info && info.version) || "";
+  console.log("[update] downloaded:", version);
+  d.updateDownloading = false;
+  d.pendingUpdate = { version };
+  refreshTrayUpdateAffordance();
+  broadcastUpdateStatus();
+  notifyUpdateReady(version);
+}
+
 function initAutoUpdate() {
-  if (!app.isPackaged) return;
+  if (!app.isPackaged) {
+    broadcastUpdateStatus();
+    return;
+  }
   let autoUpdater;
   try {
     ({ autoUpdater } = require("electron-updater"));
@@ -156,6 +218,11 @@ function initAutoUpdate() {
   // nonexistent `autoDownloadAll`, silently relying on the default).
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
+  try {
+    autoUpdater.logger = console;
+  } catch (_) {
+    /* optional */
+  }
 
   d.installPendingUpdate = () => {
     // Installing an update is a legitimate exit — don't reroute it to
@@ -171,46 +238,82 @@ function initAutoUpdate() {
 
   autoUpdater.on("error", (err) => {
     console.log("[update] error:", err && err.message ? err.message : err);
+    d.updateDownloading = false;
+    broadcastUpdateStatus();
+    scheduleCheck(ERROR_RETRY_MS);
   });
   autoUpdater.on("update-available", (info) => {
     console.log("[update] available:", info && info.version);
+    d.updateDownloading = true;
+    broadcastUpdateStatus();
   });
   autoUpdater.on("update-not-available", () => {
     console.log("[update] up to date");
+    d.updateDownloading = false;
+    broadcastUpdateStatus();
   });
   autoUpdater.on("update-downloaded", (info) => {
-    console.log("[update] downloaded:", info && info.version);
-    d.pendingUpdate = { version: (info && info.version) || "" };
-    refreshTrayUpdateAffordance();
-    // Force the first prompt so always-on / background launches still see it.
-    void maybePromptPendingUpdate({ force: true });
+    markUpdateReady(info);
   });
 
   const check = () => {
     autoUpdater.checkForUpdates().catch((err) => {
       console.log("[update] check failed:", err && err.message ? err.message : err);
+      scheduleCheck(ERROR_RETRY_MS);
     });
   };
 
-  // Check on launch, every 6 hours while alive, and again after sleep/wake
+  let checkTimer = null;
+  function scheduleCheck(delayMs) {
+    if (checkTimer) clearTimeout(checkTimer);
+    checkTimer = setTimeout(() => {
+      checkTimer = null;
+      check();
+    }, delayMs);
+    checkTimer.unref?.();
+  }
+
+  d.checkForAppUpdates = check;
+
+  // Check on launch, every 30 minutes while alive, and again after sleep/wake
   // (Mac mini / laptop lids often skip the interval until the process wakes).
   check();
-  setInterval(check, 6 * 60 * 60 * 1000);
+  setInterval(check, CHECK_INTERVAL_MS).unref?.();
   try {
     powerMonitor.on("resume", () => {
       setTimeout(check, 15_000);
-      void maybePromptPendingUpdate({ force: false });
+      broadcastUpdateStatus();
     });
   } catch (_) {
     /* older Electron */
   }
 }
 
+function registerUpdateIpc() {
+  if (d.__attached_updateIpc) return;
+  d.__attached_updateIpc = true;
+  ipcMain.handle("lykn:update-status", () => getUpdateStatus());
+  ipcMain.handle("lykn:update-install", (event) => {
+    if (!isTrustedLyknIpcSender(event, trustOpts())) {
+      return { ok: false, error: "untrusted_sender" };
+    }
+    if (!d.pendingUpdate || !d.installPendingUpdate) {
+      return { ok: false, error: "no_update" };
+    }
+    d.installPendingUpdate();
+    return { ok: true };
+  });
+}
+
+  registerUpdateIpc();
   d.ensureAppSurfacedForUpdate = ensureAppSurfacedForUpdate;
   d.initAutoUpdate = initAutoUpdate;
   d.maybePromptPendingUpdate = maybePromptPendingUpdate;
   d.notifyUpdateReady = notifyUpdateReady;
   d.quitForReal = quitForReal;
+  d.getUpdateStatus = getUpdateStatus;
+  d.broadcastUpdateStatus = broadcastUpdateStatus;
+  d.checkForAppUpdates = d.checkForAppUpdates || (() => {});
 }
 
 module.exports = { attachAutoUpdate };

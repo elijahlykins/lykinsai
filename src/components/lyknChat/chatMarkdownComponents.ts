@@ -2,7 +2,7 @@ import React, { useCallback, useRef } from "react";
 import { flattenNodeText } from "@/lib/chatChunks";
 import { ChatCodeBlock } from "@/components/lyknChat/ChatCodeBlock";
 import { ChatPopImage } from "@/components/lyknChat/LyknMediaPop";
-import { handleLyknBrowserClick } from "@/lib/lyknChat/openInStudioBrowser";
+import { handleLyknBrowserClick, studioOpenChatOpts } from "@/lib/lyknChat/openInStudioBrowser";
 
 // ============================================================================
 // chatMarkdownComponents — ReactMarkdown component config for chat bubbles
@@ -41,25 +41,8 @@ export const STATIC_MD_COMPONENTS = {
       className:
         "my-3 max-h-[24rem] max-w-full rounded-xl border border-black/[0.08] dark:border-white/[0.08] shadow-none object-contain",
     }),
-  a: ({ href, children, ...rest }: any) => {
-    const url = String(href || "").trim();
-    const isHttp = /^https?:\/\//i.test(url);
-    return React.createElement(
-      "a",
-      {
-        ...rest,
-        href: url || undefined,
-        target: isHttp ? "_blank" : undefined,
-        rel: isHttp ? "noopener noreferrer" : undefined,
-        className: "underline underline-offset-2 decoration-black/25 dark:decoration-white/25 hover:decoration-black/60 dark:hover:decoration-white/60",
-        onClick: (e: React.MouseEvent) => {
-          if (!isHttp) return;
-          handleLyknBrowserClick(e, url);
-        },
-      },
-      children,
-    );
-  },    table: ({ children }: any) =>
+  a: chatOwnedMarkdownAnchor(),
+  table: ({ children }: any) =>
     React.createElement(
       "div",
       {
@@ -107,26 +90,78 @@ export const STATIC_MD_COMPONENTS = {
     ),
 };
 
+/** Compact markdown map for the browser side chat. Same primitives as Home. */
+export const BROWSER_MD_COMPONENTS = {
+  ...STATIC_MD_COMPONENTS,
+  h1: ({ children }: any) =>
+    React.createElement("h1", { className: "text-base font-semibold mt-3 mb-1.5 tracking-tight" }, children),
+  h2: ({ children }: any) =>
+    React.createElement("h2", { className: "text-[15px] font-semibold mt-2.5 mb-1 tracking-tight" }, children),
+  h3: ({ children }: any) =>
+    React.createElement("h3", { className: "text-sm font-semibold mt-2 mb-1 tracking-tight" }, children),
+  p: ({ children }: any) =>
+    React.createElement("p", { className: "mb-2 last:mb-0 leading-[1.55] whitespace-pre-wrap" }, children),
+  ul: ({ children }: any) =>
+    React.createElement("ul", { className: "my-2 list-disc pl-4 space-y-1" }, children),
+  ol: ({ children }: any) =>
+    React.createElement("ol", { className: "my-2 list-decimal pl-4 space-y-1" }, children),
+  img: ({ src, alt }: any) =>
+    React.createElement(ChatPopImage, {
+      src,
+      alt: alt || "",
+      className:
+        "my-1.5 max-h-40 max-w-full rounded-lg border border-black/[0.08] dark:border-white/[0.08] object-contain",
+    }),
+};
+
+/**
+ * Markdown `<a>` for a known owning conversation. Omit chatId for unbound opens.
+ * Never looks up the active Home chat.
+ */
+export function chatOwnedMarkdownAnchor(chatId?: string | null) {
+  const owned = studioOpenChatOpts(chatId);
+  return ({ href, children, ...rest }: any) => {
+    const url = String(href || "").trim();
+    const isHttp = /^https?:\/\//i.test(url);
+    return React.createElement(
+      "a",
+      {
+        ...rest,
+        href: url || undefined,
+        target: isHttp ? "_blank" : undefined,
+        rel: isHttp ? "noopener noreferrer" : undefined,
+        className: "underline underline-offset-2 decoration-black/25 dark:decoration-white/25 hover:decoration-black/60 dark:hover:decoration-white/60",
+        onClick: (e: React.MouseEvent) => {
+          if (!isHttp) return;
+          handleLyknBrowserClick(e, url, owned);
+        },
+      },
+      children,
+    );
+  };
+}
+
 /**
  * Per-message markdown component builder.
  *
- * The only msg-dependent component is `li` (because it reads
- * `assistantTaskChecks[msgId]` for checkbox state). We cache the assembled
- * object per msgId and only invalidate the entry whose
- * `assistantTaskChecks[msgId]` reference changed — every other message keeps
- * a referentially-stable components object across renders.
+ * The msg-dependent pieces are `li` (checklist state) and `a` (owning
+ * chatId for in-app browser opens). We cache the assembled object per
+ * msgId and only invalidate when those inputs change.
  */
 export function useChatMarkdownComponents(
   assistantTaskChecks: Record<string, Record<string, boolean>>,
   updateTaskCheck: (msgId: string, taskKey: string, checked: boolean) => void,
+  chatId?: string | null,
 ): (msgId: string) => Record<string, React.ComponentType<any>> {
-  const componentsCacheRef = useRef<Map<string, { checks: any; comps: Record<string, React.ComponentType<any>> }>>(new Map());
+  const componentsCacheRef = useRef<Map<string, { checks: any; chatId: string; comps: Record<string, React.ComponentType<any>> }>>(new Map());
+  const ownedChatId = String(chatId || "").trim();
   return useCallback((msgId: string): Record<string, React.ComponentType<any>> => {
     const checks = assistantTaskChecks[msgId];
     const cached = componentsCacheRef.current.get(msgId);
-    if (cached && cached.checks === checks) return cached.comps;
+    if (cached && cached.checks === checks && cached.chatId === ownedChatId) return cached.comps;
     const comps: Record<string, React.ComponentType<any>> = {
       ...STATIC_MD_COMPONENTS,
+      a: chatOwnedMarkdownAnchor(ownedChatId),
       li: ({ children }: any) => {
         const raw = flattenNodeText(children).trim();
         const match = raw.match(/^\[( |x|X)\]\s+(.+)$/);
@@ -141,7 +176,7 @@ export function useChatMarkdownComponents(
         );
       },
     };
-    componentsCacheRef.current.set(msgId, { checks, comps });
+    componentsCacheRef.current.set(msgId, { checks, chatId: ownedChatId, comps });
     return comps;
-  }, [assistantTaskChecks, updateTaskCheck]);
+  }, [assistantTaskChecks, updateTaskCheck, ownedChatId]);
 }

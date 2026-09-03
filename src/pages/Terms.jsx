@@ -20,6 +20,7 @@
 // ============================================================================
 
 import { Link } from "react-router-dom";
+import { studioSettingsPath } from "@/lib/settingsDeepLink";
 import { ArrowLeft } from "lucide-react";
 
 const LAST_UPDATED = "August 26, 2026";
@@ -289,8 +290,8 @@ export function TermsBody() {
         <p>
           Access to LYKN, including Glass, generally requires completing
           checkout for a plan. The current plans are{" "}
-          <strong>Student</strong> at $20 per month or $144 per year,{" "}
-          <strong>Pro</strong> at $25 per month or $204 per year, and{" "}
+          <strong>Student</strong> at $15 per month or $144 per year,{" "}
+          <strong>Pro</strong> at $20 per month or $204 per year, and{" "}
           <strong>Max</strong> at $100 per month or $900 per year, as shown at{" "}
           <Link
             to="/pricing"
@@ -299,13 +300,17 @@ export function TermsBody() {
             Pricing
           </Link>
           . A plan for teams is not available yet. New accounts start with a
-          two-week free trial of the plan you pick: you add a card at signup,
-          pay nothing that day, and can cancel any time before the trial ends
-          without being charged.
+          one-time $10 Usage Balance grant — no card required. When it runs
+          out, metered AI features stop until you top up or start a plan.
         </p>
         <p className="mt-3">
-          Accounts that are not on a plan run on a small pool of starter
-          credits. When those run out, AI features stop until you start a plan.
+          Some compute, such as images, video, and agent runs, is billed against
+          a prepaid Usage Balance. You can add funds to that balance. Purchased
+          Usage is applied to eligible charges in the product. Promotional or
+          included Usage may be granted with a plan and may expire as shown
+          in the product. Accounts may still have leftover credits from earlier
+          purchases. Those leftover credits remain until they are spent. New
+          credit packs are not offered.
         </p>
         <p className="mt-3">
           Paid plans renew at the cadence shown at checkout, monthly or annual.
@@ -316,9 +321,9 @@ export function TermsBody() {
         </p>
         <p className="mt-3">
           Student pricing requires a school-associated account email, plus any
-          other eligibility checks we publish. Plan limits, for example Glass
-          requests, image generations, and artifact builds, are described on
-          Pricing and are enforced in the product.
+          other eligibility checks we publish. What each plan includes — chat
+          coverage and monthly Usage — is described on Pricing and enforced in
+          the product.
         </p>
         <p className="mt-3">
           Stripe processes all payments. We never see your card number. Prices,
@@ -352,7 +357,7 @@ export function TermsBody() {
         <p className="mt-3">
           You can terminate your account at any time from{" "}
           <Link
-            to="/settings"
+            to={studioSettingsPath("account")}
             className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
           >
             Settings

@@ -34,7 +34,7 @@ contextBridge.exposeInMainWorld("lyknAgentStage", {
   // Chrome / Chromium sync (import logins + open tabs).
   chromeSyncStatus: () => ipcRenderer.invoke("lykn:chrome-sync-status"),
   chromeSyncRun: (opts) => ipcRenderer.invoke("lykn:chrome-sync-run", opts || {}),
-  // Toggle / set the Studio agent chat panel (Use LYKN pill).
+  // Toggle / set the Studio agent chat panel (Ask LYKN pill).
   toggleAgentChat: () => ipcRenderer.invoke("lykn:agent-chat-set", { toggle: true }),
   setAgentChat: (open) => ipcRenderer.invoke("lykn:agent-chat-set", { open: !!open }),
   close: () => ipcRenderer.send("lykn:agent-stage-set", { open: false }),

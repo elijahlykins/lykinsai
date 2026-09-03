@@ -100,7 +100,7 @@ function registerWelcomeIpc(d) {
       return { ok: true };
     } catch (error) {
       console.warn("[welcome] signup:", error?.message || error);
-      return { ok: false, error: "Couldn't reach LYKN — check your connection and try again." };
+      return { ok: false, error: "Couldn't reach LYKN. Check your connection and try again." };
     }
   });
 
@@ -120,7 +120,7 @@ function registerWelcomeIpc(d) {
       deliverAuthTokensToRenderer(session.access_token, session.refresh_token);
       return { ok: true };
     } catch {
-      return { ok: false, error: "Couldn't reach LYKN — check your connection and try again." };
+      return { ok: false, error: "Couldn't reach LYKN. Check your connection and try again." };
     }
   });
 
@@ -146,7 +146,7 @@ function registerWelcomeIpc(d) {
         ? { ok: true }
         : { ok: false, error: result?.error || "Could not resend code." };
     } catch {
-      return { ok: false, error: "Couldn't reach LYKN — check your connection and try again." };
+      return { ok: false, error: "Couldn't reach LYKN. Check your connection and try again." };
     }
   });
 
@@ -165,7 +165,7 @@ function registerWelcomeIpc(d) {
       return { ok: true };
     } catch (error) {
       console.warn("[welcome] verify:", error?.message || error);
-      return { ok: false, error: "Couldn't reach LYKN — check your connection and try again." };
+      return { ok: false, error: "Couldn't reach LYKN. Check your connection and try again." };
     }
   });
 

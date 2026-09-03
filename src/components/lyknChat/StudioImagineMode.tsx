@@ -67,10 +67,12 @@ import {
   IMAGINE_DOWNLOAD_FORMATS,
   imagineDownloadFilename,
   imagineDownloadFilters,
+  imagineDownloadOption,
   loadImagineDownloadFormat,
   saveImagineDownloadFormat,
   type ImagineDownloadFormat,
 } from "@/lib/chat/imagineDownload";
+import { imagineDoneGallery, stepImagineGallery } from "@/lib/chat/imagineGallery";
 // Same AI-generated pool as the landing page Imagine collage.
 import imagineSneaker from "@/assets/imagine-sneaker.png";
 import imaginePorsche from "@/assets/imagine-porsche-gt3.png";
@@ -278,15 +280,13 @@ function friendlyError(err: string, httpStatus?: number): string {
     return "Sign in again to generate";
   }
   if (httpStatus === 413 || /payload|too large|entity too large/i.test(e)) {
-    return "Reference image too large — try a smaller one";
+    return "Reference image too large, try a smaller one";
   }
-  if (/quota|limit|subscription_required|402/i.test(e) || httpStatus === 402 || httpStatus === 429) {
-    if (/rate/i.test(e) || httpStatus === 429) return "Too fast — wait a moment";
-    if (/subscription|402/i.test(e) || httpStatus === 402) return "Subscription required";
-    return "Monthly image limit reached";
+  if (httpStatus === 402 || /insufficient_usage|out of usage/i.test(e)) {
+    return "Out of usage — top up to continue";
   }
-  if (/moderation|safety/i.test(e)) return "Prompt was blocked — try rephrasing";
-  if (/rate/i.test(e)) return "Too fast — wait a moment";
+  if (httpStatus === 429 || /rate/i.test(e)) return "Too fast, wait a moment";
+  if (/moderation|safety/i.test(e)) return "Prompt was blocked, try rephrasing";
   return "Generation failed";
 }
 
@@ -296,7 +296,7 @@ function isTransientImagineFailure(err: string, httpStatus?: number): boolean {
   if (httpStatus === 401 || httpStatus === 402 || httpStatus === 403 || httpStatus === 413) return false;
   const e = String(err || "");
   if (
-    /moderation|safety|prompt_too_long|unauthoriz|subscription|monthly.?limit|image_gen_monthly|payload|too large|model_returned_no_image|prompt was blocked/i.test(
+    /moderation|safety|prompt_too_long|unauthoriz|insufficient_usage|out of usage|payload|too large|model_returned_no_image|prompt was blocked/i.test(
       e,
     )
   ) {
@@ -454,7 +454,7 @@ export type ImagineEditInput = {
   prompt?: string;
   aspect?: string;
   storagePath?: string;
-  /** Live canvas batch this image belongs to — keeps prev/next on the 4-up. */
+  /** Live canvas batch this image belongs to — keeps prev/next across the thread. */
   batchId?: string;
   index?: number;
 };
@@ -605,7 +605,6 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
   /** Prompt wrapped past one line — the pill squares off like the Home bar. */
   const [promptTall, setPromptTall] = useState(false);
   const [remarksTall, setRemarksTall] = useState(false);
-  const [quotaNote, setQuotaNote] = useState<string>("");
   const [attachments, setAttachments] = useState<ImagineAttachment[]>([]);
   /** "+" menu open state, and whether files are still being read. */
   const [addOpen, setAddOpen] = useState(false);
@@ -625,6 +624,7 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
   const [downloadFormat, setDownloadFormat] = useState<ImagineDownloadFormat>(
     () => loadImagineDownloadFormat(),
   );
+  const [downloadedFlash, setDownloadedFlash] = useState<Set<string>>(new Set());
   const downloadMenuRef = useRef<HTMLDivElement | null>(null);
   /** Long Imagine prompts clamp like chat until the user opens them. */
   const [expandedPrompts, setExpandedPrompts] = useState<Set<string>>(() => new Set());
@@ -802,9 +802,6 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
             url: data.imageUrl,
             storagePath: typeof data.storagePath === "string" ? data.storagePath : undefined,
           });
-        }
-        if (data.monthlyRemaining !== undefined && data.monthlyRemaining !== "unlimited") {
-          setQuotaNote(`${data.monthlyRemaining} image${data.monthlyRemaining === 1 ? "" : "s"} left this month`);
         }
       } catch {
         if (attempt + 1 < SLOT_MAX_ATTEMPTS) {
@@ -1269,30 +1266,33 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
 
   useImperativeHandle(ref, () => ({ generate, openEdit, retrySlot: retrySlotAt }), [generate, openEdit, retrySlotAt]);
 
+  const lightboxGallery = useMemo(() => {
+    if (guestEdit && !batches.some((b) => b.id === guestEdit.batch.id)) {
+      return imagineDoneGallery([...batches, guestEdit.batch]);
+    }
+    return imagineDoneGallery(batches);
+  }, [batches, guestEdit]);
+
   const stepLightbox = useCallback(
     (dir: 1 | -1) => {
-      if (!lightboxBatch) return;
-      const done = lightboxBatch.slots
-        .map((s, i) => ({ s, i }))
-        .filter(({ s }) => s.status === "done" && s.url);
-      if (done.length < 2) return;
-      const current = guestEdit ? guestEdit.index : lightbox?.index ?? 0;
-      const pos = done.findIndex(({ i }) => i === current);
-      const next = done[(pos + dir + done.length) % done.length];
+      const current = guestEdit
+        ? { batchId: guestEdit.batch.id, index: guestEdit.index }
+        : lightbox;
+      const next = stepImagineGallery(lightboxGallery, current, dir);
+      if (!next) return;
       resetEditNotes();
-      if (lightbox) {
-        setLightbox({ batchId: lightbox.batchId, index: next.i });
+      setDownloadOpen(false);
+      if (guestEdit && next.batchId === guestEdit.batch.id) {
+        setGuestEdit({ batch: guestEdit.batch, index: next.index });
         return;
       }
-      if (guestEdit) {
-        setGuestEdit({ batch: guestEdit.batch, index: next.i });
-      }
+      setGuestEdit(null);
+      setLightbox({ batchId: next.batchId, index: next.index });
     },
-    [guestEdit, lightbox, lightboxBatch, resetEditNotes],
+    [guestEdit, lightbox, lightboxGallery, resetEditNotes],
   );
 
-  const canStepLightbox =
-    (lightboxBatch?.slots.filter((s) => s.status === "done" && s.url).length || 0) > 1;
+  const canStepLightbox = lightboxGallery.length > 1;
 
   // Outline + prompt → new batch grounded in this image and the mask.
   const handleRefine = useCallback(() => {
@@ -1411,11 +1411,13 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
           if (canSaveFileAs()) {
             const saved = await saveFileToChosenFolder(encoded, name, encoded.type, { filters });
             if (saved) {
+              setDownloadedFlash((p) => new Set(p).add(url));
               toast({ title: "Saved", description: saved });
             }
             return;
           }
           await downloadToComputer(encoded, name, encoded.type);
+          setDownloadedFlash((p) => new Set(p).add(url));
           toast({ title: "Downloaded", description: name });
         } catch {
           toast({
@@ -1431,8 +1433,14 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
     [downloading, lightboxBatch, lightboxUrl],
   );
 
+  const handleDownload = useCallback(() => {
+    handleDownloadAs(downloadFormat);
+  }, [downloadFormat, handleDownloadAs]);
+
   const isSaved = !!lightboxUrl && (savedUrls?.has(lightboxUrl) || savedFlash.has(lightboxUrl));
   const isSaving = !!lightboxUrl && savingUrl === lightboxUrl;
+  const isDownloaded = !!lightboxUrl && downloadedFlash.has(lightboxUrl);
+  const downloadFormatOpt = imagineDownloadOption(downloadFormat);
 
   const canRefine = remarks.trim().length > 0;
 
@@ -1599,9 +1607,6 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
   // empty page, then docks to the bottom once batches exist.
   const promptBar = (
     <div className="lykn-imagine-prompt-bar pointer-events-none w-full">
-      {quotaNote ? (
-        <p className="mb-1.5 text-center text-[11px] text-black/40 dark:text-white/40">{quotaNote}</p>
-      ) : null}
       {/* The pill blurs its own backdrop, so it is a backdrop root: a popover
           nested inside it would have nothing to blur and would render flat.
           The layout menu is therefore a sibling of the bar, not a child. */}
@@ -1974,22 +1979,44 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
           lightboxUrl ? (
             <>
               <div ref={downloadMenuRef} className="relative">
-                <button
-                  type="button"
-                  onClick={() => setDownloadOpen((v) => !v)}
-                  disabled={downloading}
-                  className={`flex h-9 w-9 items-center justify-center rounded-full ${MEDIA_POP_PANEL} disabled:opacity-40`}
-                  title="Download"
-                  aria-label="Download"
-                  aria-haspopup="menu"
-                  aria-expanded={downloadOpen}
-                >
-                  {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                </button>
+                <div className={`flex h-9 items-center rounded-full ${MEDIA_POP_PANEL}`}>
+                  <button
+                    type="button"
+                    onClick={handleDownload}
+                    disabled={downloading}
+                    className={`flex h-9 w-9 items-center justify-center rounded-full disabled:opacity-40 ${
+                      isDownloaded ? "text-emerald-700 dark:text-emerald-300" : ""
+                    }`}
+                    title={isDownloaded ? "Downloaded" : downloading ? "Downloading…" : "Download"}
+                    aria-label={isDownloaded ? "Downloaded" : "Download"}
+                  >
+                    {downloading ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : isDownloaded ? (
+                      <Check className="h-4 w-4" />
+                    ) : (
+                      <Download className="h-4 w-4" />
+                    )}
+                  </button>
+                  <span className="h-4 w-px bg-black/10 dark:bg-white/12" aria-hidden />
+                  <button
+                    type="button"
+                    onClick={() => setDownloadOpen((v) => !v)}
+                    disabled={downloading}
+                    className="flex h-9 items-center gap-0.5 rounded-full pr-2.5 pl-0.5 text-[11px] font-medium text-black/70 disabled:opacity-40 dark:text-white/75"
+                    title="Choose file type"
+                    aria-label="Choose file type"
+                    aria-haspopup="menu"
+                    aria-expanded={downloadOpen}
+                  >
+                    {downloadFormatOpt.label}
+                    <ChevronDown className="h-3 w-3 opacity-70" />
+                  </button>
+                </div>
                 {downloadOpen ? (
                   <div
                     role="menu"
-                    className={`absolute right-0 top-full z-30 mt-2 w-44 rounded-[14px] p-1.5 ${MEDIA_POP_PANEL}`}
+                    className={`absolute right-0 top-full z-50 mt-2 w-44 rounded-[14px] p-1.5 ${MEDIA_POP_PANEL}`}
                   >
                     <p className="px-2.5 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-black/40 dark:text-white/40">
                       Save as
@@ -2001,12 +2028,16 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
                           key={opt.id}
                           type="button"
                           role="menuitem"
+                          data-active={on || undefined}
                           onClick={() => handleDownloadAs(opt.id)}
-                          className={`flex w-full items-center justify-between gap-2 rounded-[0.5rem] px-2.5 py-1.5 text-left text-[0.75rem] ${
+                          className={`lg-menu-row flex w-full items-center justify-between gap-2 rounded-[0.5rem] px-2.5 py-1.5 text-left text-[0.75rem] ${
                             on ? "font-medium text-black dark:text-white" : "text-black/70 dark:text-white/75"
                           }`}
                         >
-                          <span>{opt.label}</span>
+                          <span className="flex items-center gap-2">
+                            {on ? <Check className="h-3 w-3" /> : <span className="h-3 w-3" />}
+                            {opt.label}
+                          </span>
                           <span className="text-[10px] font-normal text-black/40 dark:text-white/40">
                             {opt.hint}
                           </span>

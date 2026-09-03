@@ -1,6 +1,7 @@
 "use strict";
 
 const { bindOverlayIpcContext } = require("./overlayIpcContext.cjs");
+const { untrustedSenderResult, trustedLyknIpcOpts } = require("../trustedIpcSender.cjs");
 
 function registerLocalModeIpc(d) {
   const {
@@ -181,20 +182,26 @@ function registerLocalModeIpc(d) {
     userWantsSearchOrType
   } = bindOverlayIpcContext(d);
 
+    const senderOpts = trustedLyknIpcOpts({ app, path, appOrigin: APP_ORIGIN, appUrl: APP_URL });
+
     ipcMain.handle("lykn:local-mode-get", () => {
       const { enabled, syncAll, syncedFolders } = localSystem.readLocalMode(app.getPath("userData"));
       return { ok: true, enabled, syncAll, syncedFolders };
     });
-    ipcMain.handle("lykn:local-mode-set", (_e, { enabled } = {}) => {
+    ipcMain.handle("lykn:local-mode-set", (e, { enabled } = {}) => {
+      const denied = untrustedSenderResult(e, senderOpts);
+      if (denied) return denied;
       const next = localSystem.writeLocalMode(app.getPath("userData"), !!enabled);
       // Every window (main app, Studio, overlay) should see the flip immediately.
       broadcastToAllWindows("lykn:local-mode-changed", { enabled: next.enabled });
       return { ok: true, enabled: next.enabled };
     });
-    ipcMain.handle("lykn:local-tool-run", async (_e, { name, args, approvalToken } = {}) => {
+    ipcMain.handle("lykn:local-tool-run", async (e, { name, args, approvalToken } = {}) => {
+      const denied = untrustedSenderResult(e, senderOpts);
+      if (denied) return denied;
       const { enabled } = localSystem.readLocalMode(app.getPath("userData"));
       if (!enabled) {
-        return { ok: false, error: "Local mode is off — enable it in the Vault first." };
+        return { ok: false, error: "Local mode is off. Enable it in the Vault first." };
       }
       const toolName = String(name || "");
       const toolArgs = args || {};
@@ -217,9 +224,11 @@ function registerLocalModeIpc(d) {
       return result;
     });
   
-    ipcMain.handle("lykn:store-run", async (_e, { op, args } = {}) =>
-      localStore.run(String(op || ""), args || {}),
-    );
+    ipcMain.handle("lykn:store-run", async (e, { op, args } = {}) => {
+      const denied = untrustedSenderResult(e, senderOpts);
+      if (denied) return denied;
+      return localStore.run(String(op || ""), args || {});
+    });
 }
 
 module.exports = { registerLocalModeIpc };

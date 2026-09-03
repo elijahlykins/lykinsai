@@ -12,12 +12,14 @@ import {
   GraduationCap,
   ImagePlus,
   Layers,
+  LayoutPanelTop,
   Library,
   Loader2,
   MessageCircle,
   Mic,
   Music,
   Newspaper,
+  Plug,
   Plus,
   Telescope,
   TrendingUp,
@@ -40,15 +42,21 @@ import {
 } from "@/lib/vault/saveVoiceNote";
 import { micErrorMessage, requestMicStream } from "@/lib/voice/micAccess";
 import {
+  clearStagedHomeChatArtifacts,
   fileNameFromPath,
   filesFromMacPaths,
+  homeChatArtifactKey,
+  listStagedHomeChatArtifacts,
+  onHomeChatArtifactsQueued,
   onHomeChatFilesQueued,
   onHomeChatPathsQueued,
+  setPendingHomeChatArtifacts,
   setPendingHomeChatFiles,
   setPendingHomeChatFolders,
   snapshotMacFolders,
   takeQueuedHomeChatFiles,
   takeQueuedHomeChatPaths,
+  unstageHomeChatArtifact,
 } from "@/lib/homeChatFiles";
 import ChatSendIcon from "@/lib/chatSendIcon";
 import { useDropZone } from "@/lib/drag/dragEngine";
@@ -63,15 +71,22 @@ import AppSourceStrip, {
 import {
   BotTargetTrigger,
   BotTargetMenu,
-  BotWorkStrip,
   BotBrowserPeek,
 } from "@/components/bots/BotChatDock";
 import {
   botAttachmentsFromChips,
   setPendingBotChatAttachments,
 } from "@/lib/bots/botAttachments";
-import { botsAvailable, revealBotBrowser, useBots } from "@/lib/bots/botsClient";
+import { botsAvailable, getBots, revealBotBrowser, useBots } from "@/lib/bots/botsClient";
 import { botForAgent } from "@/lib/bots/botStore";
+import { openLyknChatBoard } from "@/lib/bots/botChatBridge";
+import { resolveBarTarget } from "@/lib/bots/botTargetSync";
+import { openConnectionsSettings } from "@/lib/mcp/mcpApi";
+import { openStudioTab } from "@/lib/studioTabs";
+import {
+  getActiveThreadChatId,
+  subscribeThreadRuntime,
+} from "@/lib/chat/chatThreadRuntime";
 
 /**
  * Home-desktop chat entry — the same chat bar + Chat / Build / Imagine /
@@ -155,6 +170,33 @@ function makeAttachment(partial) {
     previewUrl: "",
     ...partial,
   };
+}
+
+function syncArtifactAttachments(prev, arts) {
+  const others = prev.filter((a) => a.kind !== "artifact");
+  const existing = new Map();
+  for (const a of prev) {
+    if (a.kind !== "artifact") continue;
+    const key = homeChatArtifactKey(a.artifact);
+    if (key) existing.set(key, a);
+  }
+  const nextArts = [];
+  for (const artifact of arts || []) {
+    if (!artifact || typeof artifact !== "object") continue;
+    const key = homeChatArtifactKey(artifact);
+    if (key && existing.has(key)) {
+      nextArts.push(existing.get(key));
+      continue;
+    }
+    nextArts.push(
+      makeAttachment({
+        kind: "artifact",
+        name: artifact.title || "Artifact",
+        artifact,
+      }),
+    );
+  }
+  return [...others, ...nextArts];
 }
 
 function revokePreview(att) {
@@ -273,6 +315,27 @@ export default function HomeChatBar({
       ? screenBot
       : bots.find((b) => b.id === targetBotId) || null
     : null;
+  // An explicit dropdown pick pins the face while its board loads — the hop
+  // to the bot's thread is async, and without the pin any thread-runtime
+  // event in that window snapped the face back to the OLD board's owner
+  // (visible as "switched, switched back, then switched"). resolveBarTarget
+  // releases the pin when the picked board arrives or the pick expires.
+  const barTargetPickRef = useRef(null);
+  // The face follows the board on screen: a Bot's own chat, or LYKN.
+  useEffect(() => {
+    const sync = () => {
+      const chatId = getActiveThreadChatId();
+      const owner = getBots().find((b) => b.chatId === chatId);
+      const next = resolveBarTarget({
+        ownerId: owner?.id || "",
+        pick: barTargetPickRef.current,
+      });
+      barTargetPickRef.current = next.pick;
+      setTargetBotId((prev) => (prev === next.targetId ? prev : next.targetId));
+    };
+    sync();
+    return subscribeThreadRuntime(sync);
+  }, []);
   // A file on its own is a valid turn — for LYKN and for a Bot alike. In
   // Imagine it lands on that bar as a reference and waits there for the
   // prompt it belongs to.
@@ -323,7 +386,9 @@ export default function HomeChatBar({
       setAttachments((prev) => (
         prev.some((att) => att.id === next.id) ? prev : [...prev, next]
       ));
-      setView("chat");
+      // Keep the current mode pill: a vault attach during an Imagine / Build /
+      // Research session rides that session — forcing "chat" here used to
+      // kick the user's armed mode back to plain Chat.
     };
     window.addEventListener("lykn-chat-vault-add", onVaultAdd);
     return () => window.removeEventListener("lykn-chat-vault-add", onVaultAdd);
@@ -499,6 +564,14 @@ export default function HomeChatBar({
     onOpen?.("vault", "/vault?pane=drive&pick=chat");
   };
 
+  // Settings → Connections. Studio handles the tab event on this desktop;
+  // the settings URL fallback covers non-Studio contexts.
+  const openConnectTool = () => {
+    setAddOpen(false);
+    openStudioTab("settings", "connections");
+    openConnectionsSettings();
+  };
+
   const openAddFinder = () => {
     const pick = typeof window !== "undefined" ? window.lykn?.pickOpenFiles : null;
     if (typeof pick !== "function") return;
@@ -600,6 +673,17 @@ export default function HomeChatBar({
     return onHomeChatFilesQueued(claim);
   }, []);
 
+  useEffect(() => {
+    const sync = (event) => {
+      const fromEvent = event?.detail?.artifacts;
+      const arts = Array.isArray(fromEvent) ? fromEvent : listStagedHomeChatArtifacts();
+      setAttachments((prev) => syncArtifactAttachments(prev, arts));
+      if (arts.length) inputRef.current?.focus();
+    };
+    sync();
+    return onHomeChatArtifactsQueued(sync);
+  }, []);
+
   const barDrop = useDropZone({
     // Attaching leaves the original where it is, so the drag wears the green
     // "+" over the bar — the same badge macOS shows for a copy.
@@ -681,11 +765,12 @@ export default function HomeChatBar({
   }, []);
 
   const removeAttachment = (id) => {
-    setAttachments((prev) => {
-      const hit = prev.find((a) => a.id === id);
-      revokePreview(hit);
-      return prev.filter((a) => a.id !== id);
-    });
+    const hit = attachmentsRef.current.find((a) => a.id === id);
+    revokePreview(hit);
+    if (hit?.kind === "artifact") {
+      unstageHomeChatArtifact(homeChatArtifactKey(hit.artifact));
+    }
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
   };
 
   const send = async () => {
@@ -721,6 +806,7 @@ export default function HomeChatBar({
       }
       window.dispatchEvent(new CustomEvent("lykn-home-chat-send", { detail: payload }));
       setText("");
+      if (attachments.some((a) => a.kind === "artifact")) clearStagedHomeChatArtifacts();
       attachments.forEach(revokePreview);
       setAttachments([]);
       if (!embedded) onOpen?.("chat");
@@ -728,6 +814,11 @@ export default function HomeChatBar({
     }
     const fileList = attachments.map((a) => a.file).filter(Boolean);
     if (fileList.length) setPendingHomeChatFiles(fileList);
+    const stagedArtifacts = attachments.map((a) => a.artifact).filter(Boolean);
+    if (stagedArtifacts.length) {
+      setPendingHomeChatArtifacts(stagedArtifacts);
+      clearStagedHomeChatArtifacts();
+    }
     const folders = attachments.filter((a) => a.kind === "folder" && a.path);
     let t = text.trim();
     if (folders.length) {
@@ -900,7 +991,7 @@ export default function HomeChatBar({
         open={botsOpen}
         title={
           screenAgentId && targetBot
-            ? `${targetBot.name} is working on this screen — switch`
+            ? `${targetBot.name} is working on this screen, switch`
             : undefined
         }
         label={
@@ -916,27 +1007,6 @@ export default function HomeChatBar({
         }}
       />
     </div>
-  ) : null;
-
-  // Busy teammates' faces, inline just right of the plus button — yellow dot
-  // while working, green when done, red when failed. Click one to jump back
-  // into its chat; the work never stopped.
-  const botWorkStrip = showBots ? (
-    <BotWorkStrip
-      bots={bots}
-      agentStates={agentStates}
-      live={botsLive}
-      excludeBotId={targetBot?.id || ""}
-      onOpen={(bot) => {
-        setBotsOpen(false);
-        if (screenAgentId && bot.agentId) {
-          revealBotBrowser(bot);
-          return;
-        }
-        setTargetBotId(bot.id);
-        openBotChat(bot, { openWindow: true });
-      }}
-    />
   ) : null;
 
   const addButton = (
@@ -1118,7 +1188,7 @@ export default function HomeChatBar({
       {(embedded || !active) && (
         <div className={embedded
           ? "mb-1 flex justify-center"
-          : `pointer-events-none absolute inset-x-0 top-3 flex justify-center ${LAYER_Z}`}>
+          : `lykn-studio-mode-pill pointer-events-none absolute inset-x-0 flex justify-center ${LAYER_Z}`}>
           <div
             style={NO_DRAG}
             className="pointer-events-auto flex items-center gap-0.5 rounded-full border border-black/10 bg-white/55 p-1 shadow-lg backdrop-blur-2xl dark:border-white/15 dark:bg-black/35"
@@ -1228,7 +1298,6 @@ export default function HomeChatBar({
                 <div className="flex w-full items-center gap-1.5 px-0.5">
                   {botsButton}
                   {addButton}
-                  {botWorkStrip}
                   {sourcesButton}
                   {layoutButton}
                   <span className="flex-1" />
@@ -1241,7 +1310,6 @@ export default function HomeChatBar({
               <div className="flex w-full items-center gap-1.5">
                 {botsButton}
                 {addButton}
-                {botWorkStrip}
                 {finderInput}
                 {field}
                 {sourcesButton}
@@ -1262,6 +1330,7 @@ export default function HomeChatBar({
               agentStates={agentStates}
               shots={botShots}
               excludeAgentId={screenAgentId}
+              onlyBotId={screenAgentId ? undefined : targetBot?.id || ""}
               onOpen={(bot) => revealBotBrowser(bot)}
             />
           ) : null}
@@ -1277,19 +1346,36 @@ export default function HomeChatBar({
                 setBotsOpen(false);
                 if (screenAgentId) {
                   // Browser rail: the face is whoever owns this tab. Picking
-                  // another Bot jumps to their screen (and their chat).
-                  if (!id || id === (screenBot?.id || "")) return;
+                  // another Bot jumps to their screen. LYKN leaves this
+                  // preview and opens LYKN's own chat.
+                  if (!id) {
+                    openLyknChatBoard({ park: !active });
+                    return;
+                  }
+                  if (id === (screenBot?.id || "")) return;
                   const bot = bots.find((b) => b.id === id);
                   if (bot?.agentId) revealBotBrowser(bot);
+                  if (bot) openBotChat(bot);
                   return;
                 }
+                // Pin the picked face until its board becomes the active
+                // thread — the route hop below is async and the runtime
+                // sync must not flip the face back to the old board's owner
+                // in the meantime.
+                barTargetPickRef.current = { botId: id, at: Date.now() };
                 setTargetBotId(id);
                 if (id) {
-                  // Every Bot keeps its own thread — an open chat surface
-                  // hops there right away so you land mid-conversation.
-                  openBotChat(bots.find((b) => b.id === id));
+                  // Every Bot keeps its own thread. Open the chat surface
+                  // so a cold Home already has a registered board before
+                  // the first send — otherwise last session's thread pops up.
+                  openBotChat(bots.find((b) => b.id === id), { openWindow: !active });
                   inputRef.current?.focus();
+                  return;
                 }
+                // LYKN is its own board. Do not stay on the Bot's chat
+                // (or carry that Bot's browser preview along).
+                openLyknChatBoard({ park: !active });
+                inputRef.current?.focus();
               }}
               onNewBot={() => {
                 setBotsOpen(false);
@@ -1327,6 +1413,14 @@ export default function HomeChatBar({
                 <FolderOpen className="h-3.5 w-3.5 shrink-0 opacity-70" />
                 Finder
               </label>
+              <button
+                type="button"
+                onClick={openConnectTool}
+                className="lg-menu-row flex w-full items-center gap-2 rounded-[0.5rem] px-2.5 py-1.5 text-left text-[0.75rem] text-black/70 dark:text-white/75"
+              >
+                <Plug className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                Connect tool
+              </button>
             </div>
           )}
 
@@ -1412,6 +1506,7 @@ function ChipIcon({ kind, path }) {
     );
   }
   if (kind === "pdf") return <FileText className="h-3.5 w-3.5 shrink-0 opacity-60" />;
+  if (kind === "artifact") return <LayoutPanelTop className="h-3.5 w-3.5 shrink-0 opacity-60" />;
   if (kind === "audio") return <Music className="h-3.5 w-3.5 shrink-0 opacity-60" />;
   if (kind === "video") return <Film className="h-3.5 w-3.5 shrink-0 opacity-60" />;
   return <FileIcon className="h-3.5 w-3.5 shrink-0 opacity-60" />;

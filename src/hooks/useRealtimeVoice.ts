@@ -13,6 +13,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE_URL } from "@/lib/api-config";
 import { TUNE_VOICE_TOOL, applyVoiceInstructionTune } from "@/lib/voice/tuneInstructions";
+import { applyVoiceToolClientEffects } from "@/lib/voice/applyVoiceToolResult";
+import { refreshLocalMode } from "@/lib/localMode";
+import {
+  VOICE_ASK_BOT_TOOL,
+  VOICE_BROWSER_AGENT_TOOL,
+  isDesktopVoiceClient,
+  isVoiceLocalTool,
+  runVoiceDesktopTool,
+  snapshotLyknBots,
+} from "@/lib/voice/voiceDesktopTools";
 import { micErrorMessage, requestMicStream } from "@/lib/voice/micAccess";
 import { claimVoiceReplyPersist } from "@/lib/lyknChat/voiceReplyPersist";
 
@@ -112,6 +122,15 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
       try { params = JSON.parse(argsJson || "{}"); } catch { params = {}; }
       try { output = JSON.parse(await applyVoiceInstructionTune(params)); }
       catch { output = { ok: false, error: "tune_failed" }; }
+    } else if (name === VOICE_ASK_BOT_TOOL || name === VOICE_BROWSER_AGENT_TOOL || isVoiceLocalTool(name)) {
+      let params: unknown = {};
+      try { params = JSON.parse(argsJson || "{}"); } catch { params = {}; }
+      try {
+        const raw = await runVoiceDesktopTool(name, params, { chatId: chatIdRef.current });
+        output = raw ? JSON.parse(raw) : { ok: false, error: "desktop_tool_failed" };
+      } catch {
+        output = { ok: false, error: "desktop_tool_failed" };
+      }
     } else {
       try {
         const headers = await authHeaders();
@@ -128,24 +147,9 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
     // The agent pulled a vault item up on screen (display_document). Hand the
     // payload to the UI so it opens the embedded reader, then strip it from
     // the model-facing result so the model doesn't try to read the raw payload.
-    const display = (output as { display?: unknown })?.display;
-    if (display) {
-      try { onDisplayDocumentRef.current?.(display); } catch { /* ignore */ }
-      try { delete (output as { display?: unknown }).display; } catch { /* ignore */ }
-    }
-    // Voice project writes bypass the chat SSE path — refresh project lists.
-    if (
-      (name === "create_project" || name === "set_active_project" || name === "add_to_project")
-      && (output as { ok?: boolean })?.ok !== false
-    ) {
-      const project = (output as { project?: { id?: string } })?.project;
-      try {
-        const { emitProjectsChanged } = await import("@/lib/synthesis/projectLiveSync");
-        emitProjectsChanged({
-          projectId: typeof project?.id === "string" ? project.id : null,
-        });
-      } catch { /* ignore */ }
-    }
+    const record = output && typeof output === "object" ? output as Record<string, unknown> : {};
+    await applyVoiceToolClientEffects(name, record);
+    output = record;
     const dc = dcRef.current;
     if (!dc || dc.readyState !== "open") return;
     try {
@@ -170,7 +174,13 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
       const res = await fetch(`${API_BASE_URL}/api/ai/realtime/tools`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ message: transcript, chatId: chatIdRef.current }),
+        body: JSON.stringify({
+          message: transcript,
+          chatId: chatIdRef.current,
+          desktop: isDesktopVoiceClient(),
+          localMode: await refreshLocalMode(),
+          lyknBots: snapshotLyknBots(),
+        }),
       });
       const data = await res.json().catch(() => ({}));
       const incoming = Array.isArray(data?.tools) ? data.tools : [];

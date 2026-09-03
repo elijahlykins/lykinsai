@@ -26,8 +26,8 @@ export default function BillingSuccess() {
           You&rsquo;re all set
         </h1>
         <p className="text-[14px] leading-relaxed text-black/65 dark:text-white/70">
-          Your subscription is active. Head back to the LYKN app to keep going
-          &mdash; your new plan is ready there.
+          Your subscription is active. Head back to the LYKN app to keep going,
+          your new plan is ready there.
         </p>
         <a
           href={APP_RETURN_URL}

@@ -7,6 +7,9 @@ import {
 import { openFileWindow } from "@/lib/files/fileWindows";
 import type { FileMedia } from "@/lib/files/fileSource";
 import type { ChatNeuronVaultPayload } from "@/components/lyknChat/ChatNeuronCard";
+import { openAiDriveItem } from "@/lib/vault/openAiDriveItem";
+import { openStudioTab } from "@/lib/studioTabs";
+import { useAuth } from "@/lib/SupabaseAuth";
 
 /** "file" means the caller didn't know either — let the resolver sniff it. */
 function mediaOverride(kind: string | undefined): FileMedia | null {
@@ -23,7 +26,38 @@ function mediaOverride(kind: string | undefined): FileMedia | null {
  * body and attachments — so it keeps its own reader.
  */
 export default function LyknMediaPopHost() {
+  const { user } = useAuth();
   const [req, setReq] = useState<LyknMediaPopRequest | null>(null);
+
+  useEffect(() => {
+    const onOpen = (window as any)?.lykn?.onOpenAiDriveItem;
+    if (typeof onOpen !== "function") return undefined;
+    return onOpen((payload: {
+      noteId?: string;
+      title?: string;
+      folder?: string;
+      html?: string;
+    } = {}) => {
+      const noteId = String(payload?.noteId || "").trim();
+      const html = typeof payload?.html === "string" ? payload.html : "";
+      if (!noteId && !html.trim()) return;
+      void openAiDriveItem({
+        noteId,
+        title: payload?.title,
+        folder: payload?.folder,
+        html,
+        userId: user?.id || null,
+      });
+    });
+  }, [user?.id]);
+
+  useEffect(() => {
+    const onOpen = (window as any)?.lykn?.onOpenAiDrive;
+    if (typeof onOpen !== "function") return undefined;
+    return onOpen((payload: { src?: string } = {}) => {
+      openStudioTab("vault", String(payload?.src || "/vault?pane=drive"));
+    });
+  }, []);
 
   useEffect(() => {
     const onPop = (event: Event) => {

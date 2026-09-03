@@ -62,20 +62,25 @@ import {
   getCustomModelChatPersonaStatic,
   getCustomModelStreamPersonaFull,
 } from '../../lib/modelBuilder/lyknCustomModelRuntimePersona.js';
-import { CHAT_TOOLS, buildChatToolCtx, providerForModel, resolveChatModelLabel, supportsTools } from '../../mcp-tools/chatTools.js';
+import { CHAT_TOOLS, buildChatToolCtx, providerForModel, resolveChatModelLabel, sanitizeLyknBots, supportsTools } from '../../mcp-tools/chatTools.js';
 import { LOCAL_TOOL_NAMES, looksLikeLocalSystemAsk, mightBeBrowserTaskAsk } from '../../mcp-tools/localTools.js';
 import {
   AGENTS_APPS_CODE_INTENT_RE,
   messageWantsAgentTools,
+  messageWantsBotAsk,
+  messageLooksLikeAttachedFileFollowUp,
+  conversationHasAttachedDesktopFolder,
+  conversationMentionedLocalFolder,
+  messageLooksLikeFolderInspectFollowUp,
   messageWantsPageFetch,
   messageWantsProjectContext,
   messageWantsSavedRecall,
   messageWantsWebTools,
 } from '../../mcp-tools/chatIntentSignals.js';
-import { resolveChatTurnDisclosure, composeWithExternalTools } from '../../mcp-tools/firstPartyCapabilities.js';
+import { resolveChatTurnDisclosure } from '../../mcp-tools/firstPartyCapabilities.js';
 import { buildSlimChatToolGuidance } from '../../mcp-tools/chatToolGuidance.js';
 import { getMcpManager } from '../routes/mcp.routes.js';
-import { resolveMcpToolsForTurn, bindMcpChatHandlers } from '../../lib/mcp/chatTurn.js';
+import { resolveMcpToolsForTurn } from '../../lib/mcp/chatTurn.js';
 import {
   formatBoundProjectGuidance,
   loadWritableProject,
@@ -103,6 +108,7 @@ import {
   USER_RECALL_TURN_PROMPT,
   USER_RECALL_DEEPEN_PROMPT,
   GREETING_TURN_PROMPT,
+  messageIsHelloGreeting,
   messageIsPureGreeting,
   isCasualOverlayAck,
   LYKN_CHAT_PERSONA_STATIC,
@@ -126,11 +132,13 @@ import {
   buildInstalledAppsSection,
   buildMacAppsSection,
   buildAiDriveSection,
+  buildLyknBotsSection,
 } from './chatGuidance.js';
 import {
   hasExplicitUrlScrapeIntent,
   scrapeUrlsFromText,
   formatUntrustedWebObservation,
+  formatBrowserPageObservation,
   attachUntrustedWebObservation,
   classifyEnrichment,
   shouldEmbedWorkspaceContext,
@@ -141,13 +149,42 @@ import {
   needsYouTubeSearch,
   BOARD_CONTEXT_FOCUSED_CHARS,
 } from './webEnrichment.js';
+import { BROWSER_ASK_ONLY_PROMPT, isBrowserAskRequest } from '../../mcp-tools/browserAskSurface.js';
 import {
   LOCAL_TOOL_WAIT_MS,
+  localToolStreams,
   registerLocalToolStream,
   releaseLocalToolStream,
   resolveLocalToolResult,
 } from './localToolBridge.js';
 import { localTimeContextLine } from './timeContext.js';
+import { resolveUserPlan } from '../services/billingService.js';
+import {
+  assertChatTurnBillable,
+  chatRouteUsageMetadata,
+  isAutoRoutedModelId,
+  isBillableComputeTool,
+  openaiReasoningPayload,
+  resolveChatRoute,
+} from './chatRouting/index.js';
+import { loadTurnModelContext } from '../../lib/models/userModelSettings.js';
+import {
+  extractOpenRouterUsage,
+  isOpenRouterTarget,
+  mergeOpenRouterUsage,
+  openRouterConfigured,
+  resolveInferenceTarget,
+} from '../../lib/inference/index.js';
+import {
+  buildPromptCacheKey,
+  cacheUsageMetrics,
+  classifyPromptSections,
+  contextUsageMetadata,
+  conversationMemoryBudget,
+  personalizationFingerprint,
+  shouldAttachRequestContext,
+} from './contextPipeline/index.js';
+import { claimUnannouncedBuilds, isCursorBuildsConfigured } from '../../lib/cursor/cursorBuilds.js';
 import {
   MODEL_CATALOG,
   LYKN_ROUTED_MODELS,
@@ -160,6 +197,7 @@ import {
   isTogetherModel,
   isRetryableProviderError,
   getFallbackModels,
+  RETRYABLE_STATUSES,
   AI_TEMPORARY_FAILURE_TEXT,
   IMAGE_GEN_FAILURE_TEXT,
   VIDEO_RENDER_INTENT_RE,
@@ -176,6 +214,7 @@ import {
   fetchCustomModelKnowledgeSection,
   readCustomModelLinkedProjectId,
   fetchProjectSection,
+  fetchConnectedToolsSection,
 } from './chatContext.js';
 import { PROJECT_WRITE_TOOLS } from './chatToolCtx.js';
 
@@ -249,6 +288,7 @@ export function registerAiStreamRoutes(app, {
       // the build can stay on grok (which can't take images on forced tools).
       let imageUrls = incomingImageUrls.slice(0, 8);
       let { prompt, text, intent, context, knowledgeBase, projectId, conversation, conversationMemory, userPrompt, responseLength, hasFocusedBricks, skipWebSearch, workspaceContext, overlayAsk, liveWatch } = req.body;
+      const browserAsk = isBrowserAskRequest(req.body);
       // Electron Agent Mode / owned-browser tool drafts — never redirect to Glass Build/Create.
       const agentMode = req.body?.agentMode === true;
       const toolDraft = req.body?.toolDraft === true;
@@ -479,10 +519,22 @@ export function registerAiStreamRoutes(app, {
         allowNewArtifactBuild &&
         !lockOutArtifactBuilds &&
         artifactBuildIntent.isInsistFreshBuildAsk(askText);
+      // "make the app darker" in an installed-app edit chat names THE
+      // attached app — an edit, never a fresh commission (unless the user
+      // explicitly asks for another/different app). Keep in sync with
+      // src/lib/ai/artifactSendPlan.ts (typedDeliverableCommission).
+      const appEditReferenceAsk =
+        appEditTurn &&
+        artifactBuildIntent.isOpenArtifactReferenceAsk(askText) &&
+        !artifactBuildIntent.isExplicitNewAppAsk(askText);
+      const typedDeliverableCommission =
+        artifactBuildIntent.isTypedNewDeliverableAsk(askText, {
+          excludeDefiniteReferences: activeArtifactHasSource,
+        }) && !appEditReferenceAsk;
       const typedNewDeliverableAsk =
         allowNewArtifactBuild &&
         !lockOutArtifactBuilds &&
-        artifactBuildIntent.isTypedNewDeliverableAsk(askText);
+        typedDeliverableCommission;
       // In regular chat, still detect "build me a …" so we can ask the user to
       // switch into Create/Build — without arming a builder.
       // Agent Mode already opens real tools (Docs/Sheets/…) and drafts plain text
@@ -492,8 +544,9 @@ export function registerAiStreamRoutes(app, {
         !toolDraft &&
         !allowNewArtifactBuild &&
         !lockOutArtifactBuilds &&
-        (artifactBuildIntent.isTypedNewDeliverableAsk(askText) ||
-          !!detectArtifactIntent(askText, { glassScreenFirst: !!overlayAsk }) ||
+        (typedDeliverableCommission ||
+          (!appEditReferenceAsk &&
+            !!detectArtifactIntent(askText, { glassScreenFirst: !!overlayAsk })) ||
           artifactBuildIntent.isInsistFreshBuildAsk(askText));
       // Narrow style asks ("make it blue", "change the font") may touch colors/
       // fonts without being a full redesign — builders allow that signature
@@ -564,8 +617,10 @@ export function registerAiStreamRoutes(app, {
       // With the same builder open, broad "make/build + game/app" must NOT force
       // a fresh rebuild ("make the game harder" is a refine). Only clear NEW
       // commissions / reference rebuilds / image webapp asks wipe the panel.
+      // An installed-app edit ask that names the attached app never does.
       const freshWebappForcesNew =
         freshWebappAsk &&
+        !appEditReferenceAsk &&
         (!sameBuilderOpen ||
           differentDeliverableAsk ||
           referenceRebuildAsk ||
@@ -814,12 +869,23 @@ export function registerAiStreamRoutes(app, {
       // Vault switch. Local tools (file / terminal) execute client-side in the
       // Electron main process; the server only ships the schemas and relays the
       // result. Ignored unless tools are on for the turn.
-      const streamLocalMode = req.body?.localMode === true;
+      const streamLocalMode = req.body?.localMode === true && !browserAsk;
       if (streamLocalMode) console.log('🖥️ Stream: Local Mode armed (desktop client)');
+      const streamAttachedFolders = Array.isArray(req.body?.attachedFolders)
+        ? req.body.attachedFolders
+            .map((f) => ({
+              name: String(f?.name || '').trim().slice(0, 200),
+              path: String(f?.path || '').trim().slice(0, 500),
+            }))
+            .filter((f) => f.path)
+            .slice(0, 8)
+        : [];
+      if (streamAttachedFolders.length) {
+        console.log(`🖥️ Stream: ${streamAttachedFolders.length} attached desktop folder(s)`);
+      }
       /** True when first-party disclosure attached a small tool set (slim guidance). */
       let streamLeanToolSet = false;
       let streamDisclosure = null;
-      let mcpChatTools = [];
       let mcpTurn = null;
       let model = normalizedModel;
       console.log('[LYKN-STREAM] workspaceContext received:', workspaceContext ? `${String(workspaceContext).length} chars` : 'EMPTY/MISSING');
@@ -986,7 +1052,7 @@ export function registerAiStreamRoutes(app, {
           );
         }
       }
-      if (streamOrchestrationCtx?.isMainAgent) {
+      if (streamOrchestrationCtx?.isMainAgent && !browserAsk) {
         const names = Array.isArray(streamChatToolNames) ? [...streamChatToolNames] : [];
         // Main agents always get the orchestration trio (delegate/list/get) AND
         // live web reach (search + fetch). The default LYKN chat already has web
@@ -1019,9 +1085,28 @@ export function registerAiStreamRoutes(app, {
       );
       if (!customToolsOff) {
         const ceiling = Array.isArray(streamChatToolNames) ? [...streamChatToolNames] : null;
+        let connectedApps = [];
+        if (req.user?.id && !browserAsk) {
+          try {
+            const rows = await getMcpManager(supabaseAdmin).store.list(req.user.id);
+            connectedApps = (rows || [])
+              .filter((row) => row.status === 'connected')
+              .map((row) => ({
+                id: row.id,
+                name: row.name,
+                accountLabel: row.accountLabel,
+                accountIdentity: row.accountIdentity,
+                catalogId: row.catalogId,
+              }));
+          } catch {
+            connectedApps = [];
+          }
+        }
         streamDisclosure = resolveChatTurnDisclosure({
           message: String(text || ''),
           conversation,
+          connectedApps,
+          hasConnectedApps: !browserAsk && connectedApps.length > 0,
           exclusiveComposerMode,
           deepResearch,
           translateMode,
@@ -1031,6 +1116,7 @@ export function registerAiStreamRoutes(app, {
           forcePageFetch,
           pageUrl: overlayPageUrl,
           overlayAsk: !!overlayAsk,
+          browserAsk,
           artifactToolName,
           activeArtifactEditable,
           activeArtifactTool: activeArtifact?.toolName,
@@ -1039,8 +1125,10 @@ export function registerAiStreamRoutes(app, {
             String(projectId || '').trim() ||
             readCustomModelLinkedProjectId(streamCustomModelCtx.customModel),
           ),
-          localMode: streamLocalMode,
-          allowNewArtifactBuild,
+          localMode: streamLocalMode && !browserAsk,
+          lyknBots: browserAsk ? [] : sanitizeLyknBots(req.body?.lyknBots),
+          attachedFolders: streamAttachedFolders,
+          allowNewArtifactBuild: browserAsk ? false : allowNewArtifactBuild,
           lockOutArtifactBuilds,
           brainstormBuildMention,
           vagueBuildAsk,
@@ -1048,7 +1136,7 @@ export function registerAiStreamRoutes(app, {
           ceilingToolNames: ceiling,
         });
         streamChatToolNames = streamDisclosure.firstPartyToolNames;
-        if (streamOrchestrationCtx?.isMainAgent) {
+        if (streamOrchestrationCtx?.isMainAgent && !browserAsk) {
           for (const toolName of [
             'lykn_delegate_to_sub_model',
             'lykn_list_sub_model_tasks',
@@ -1059,13 +1147,14 @@ export function registerAiStreamRoutes(app, {
         }
         streamLeanToolSet = streamDisclosure.useSlimGuidance;
         if (streamDisclosure.keepToolsOn) useTools = true;
+        if (browserAsk && !streamDisclosure.keepToolsOn) useTools = false;
         if (streamDisclosure.exclusive && streamChatToolNames.length === 0) {
           useTools = false;
           console.log('🔒 Stream: exclusive mode — empty tool allowlist');
         }
         const inspect = streamDisclosure.inspect || {};
         console.log(
-          `🧭 Stream: first-party disclosure capabilities=${(streamDisclosure.capabilities || []).join(',') || '(none)'} ` +
+          `🧭 Stream: first-party disclosure forceArtifact=${forceArtifact} artifactTool=${artifactToolName || "none"} capabilities=${(streamDisclosure.capabilities || []).join(',') || '(none)'} ` +
             `tools=${inspect.count ?? streamChatToolNames.length} bytes=${inspect.bytes ?? 0} ~${inspect.approxTokens ?? 0} tokens` +
             (streamDisclosure.fallback && streamDisclosure.fallback !== 'none'
               ? ` fallback=${streamDisclosure.fallback}`
@@ -1076,39 +1165,79 @@ export function registerAiStreamRoutes(app, {
       if (
         req.user?.id &&
         streamDisclosure &&
+        !browserAsk &&
         !forceImage &&
         !translateMode &&
         exclusiveComposerMode !== 'image' &&
         exclusiveComposerMode !== 'translate'
       ) {
+        // Standing awareness of connected apps ([CONNECTED_TOOLS] +
+        // [CONNECTED_APPS — OAuth]). Without it the model only "sees" a
+        // connection on turns whose text happens to trigger tool disclosure
+        // — asked "can you see the tool I just connected?" it would deny
+        // the connection exists. 90s-cached per user, invalidated on
+        // connect/disconnect, so a fresh connect shows up immediately.
         try {
+          const connectedSection = await fetchConnectedToolsSection(
+            req.headers?.authorization,
+            req.user.id,
+          );
+          if (connectedSection) {
+            // Prepended: context is budget-sliced from the front, so a large
+            // canvas context must not push this block off the end.
+            context = context ? `${connectedSection}\n\n${context}` : connectedSection;
+          }
+        } catch (e) {
+          console.warn('⚠️ connected tools section skipped:', e?.message || e);
+        }
+        try {
+          // Recent turns inform capability inference so follow-ups like
+          // "ok now send it" (after drafting an email) still disclose the
+          // app's tools even though the message itself never says "email".
+          const mcpContextText = (Array.isArray(conversation) ? conversation : [])
+            .slice(-6)
+            .map((m) => String(m?.content || '').slice(0, 400))
+            .filter(Boolean)
+            .join('\n');
           mcpTurn = await resolveMcpToolsForTurn({
             manager: getMcpManager(supabaseAdmin),
             userId: req.user.id,
             text: String(text || ''),
+            contextText: mcpContextText,
             botConnectionIds: undefined,
             connectionIds: undefined,
           });
-          if (mcpTurn.tools.length) {
-            const bound = bindMcpChatHandlers(mcpTurn.tools, mcpTurn.bindings, {
-              manager: getMcpManager(supabaseAdmin),
-              userId: req.user.id,
-              text: String(text || ''),
-            });
-            const composed = composeWithExternalTools(
-              Array.isArray(streamChatToolNames) ? streamChatToolNames : [],
-              bound,
-            );
-            mcpChatTools = composed.externalTools;
-            streamChatToolNames = composed.toolNames;
+          // Write tools withheld because several accounts could make the
+          // change: tell the model to ask which one instead of guessing (or
+          // worse, inventing a permissions story).
+          if (mcpTurn.resolution?.ambiguous && Array.isArray(mcpTurn.resolution.candidates) && mcpTurn.resolution.candidates.length) {
+            const names = mcpTurn.resolution.candidates
+              .map((c) => c.accountIdentity || c.accountLabel || c.connectionName)
+              .filter(Boolean)
+              .join(', ');
+            const note =
+              `[CONNECTED_APPS_NOTE]\nMore than one connected app could make the requested change (${names}). ` +
+              'Their write tools are withheld for this turn only because the target is ambiguous - NOT a permissions problem. ' +
+              'Ask the user which app to use; once they name it, the tools will be available.';
+            context = context ? `${context}\n\n${note}` : note;
+          }
+          // Do not dump a ranked 10-tool guess into the model. GitHub has
+          // 500 actions; the cap filled with GET_A_* variants and the model
+          // treated that as "all I can do". Every connected app uses the
+          // registry: search for the action, then call it.
+          if (mcpTurn.resolution?.reason !== 'no_connections') {
+            for (const name of ['lykn_search_connected_tools', 'lykn_call_connected_tool']) {
+              if (!streamChatToolNames.includes(name)) streamChatToolNames.push(name);
+            }
             streamDisclosure = {
               ...streamDisclosure,
-              externalTools: composed.externalTools,
-              toolNames: composed.toolNames,
-              keepToolsOn: composed.firstPartyToolNames.length > 0 || composed.externalTools.length > 0,
+              keepToolsOn: true,
+              toolNames: streamChatToolNames,
             };
-            if (streamDisclosure.keepToolsOn) useTools = true;
-            console.log(`🔌 Stream: MCP tools (${mcpChatTools.length}): ${mcpChatTools.map((t) => t.name).join(', ')}`);
+            useTools = true;
+            console.log(
+              '🔌 Stream: connected-app registry (search/call; ranked dump skipped)',
+            );
           }
         } catch (e) {
           console.warn('⚠️ mcp turn resolve skipped:', e?.message || e);
@@ -1177,9 +1306,7 @@ export function registerAiStreamRoutes(app, {
           `data: ${JSON.stringify({
             status: deepResearch
               ? 'Planning research\u2026'
-              : forceArtifact
-                ? 'Designing the build\u2026'
-                : 'Thinking\u2026',
+              : 'Thinking\u2026',
           })}\n\n`,
         );
         if (typeof res.flush === 'function') res.flush();
@@ -1224,12 +1351,16 @@ export function registerAiStreamRoutes(app, {
         const ctx = String(input?.context || "").trim().slice(0, ctxBudget);
         const kbBudget = input?.projectId ? AI_BUDGETS.projectSummaryInProject : AI_BUDGETS.projectSummary;
         const kb = String(input?.knowledgeBase || "").trim().slice(0, kbBudget);
-        const convo = compressConversation(input?.conversation);
+        const convo = compressConversation(input?.conversation, {
+          tier: input?.modelTier || 'standard',
+          currentUserText: userMsg,
+        });
+        const memoryCap = conversationMemoryBudget(input?.modelTier || 'standard');
         const conversationMemoryText =
           input?.forceImage
             ? ''
             : input?.conversationMemory
-              ? String(input.conversationMemory).slice(0, 6000)
+              ? String(input.conversationMemory).slice(0, memoryCap)
               : '';
 
         const focusedBricksNote = "";
@@ -1266,16 +1397,21 @@ export function registerAiStreamRoutes(app, {
         // The apps the user built in LYKN. They live in the local store on the
         // user's machine, so this list is the only way the model knows they
         // exist — without it, "open my workout tracker" has nothing to match.
-        const installedAppsSection = buildInstalledAppsSection(input?.installedApps);
+        const installedAppsSection = input?.browserAsk
+          ? ""
+          : buildInstalledAppsSection(input?.installedApps);
+        const lyknBotsSection = input?.browserAsk ? "" : buildLyknBotsSection(input?.lyknBots);
 
         // What they have on their Mac — the difference between opening Spotify
         // and opening spotify.com.
-        const macAppsSection = buildMacAppsSection(input?.macApps);
+        const macAppsSection = input?.browserAsk ? "" : buildMacAppsSection(input?.macApps);
 
         // What LYKN has already built for them, in AI Drive. Same problem the
         // app list solves: they say "open the one you made me" and the model
         // needs a name to match.
-        const aiDriveSection = buildAiDriveSection(input?.aiDrive, input?.aiDriveTotals);
+        const aiDriveSection = input?.browserAsk
+          ? ""
+          : buildAiDriveSection(input?.aiDrive, input?.aiDriveTotals);
 
         // Slim system blocks for ChatGPT-fast turns (no full persona / learned-tag
         // tax). Glass always slims; in-app slims on ordinary Q&A (input.fastLean).
@@ -1292,23 +1428,25 @@ export function registerAiStreamRoutes(app, {
           // Static persona — LYKN default or custom-model runtime + learn-a-fact.
           streamStaticPersona,
 
-          // Dynamic per-call sections (treated as 'user' content by
-          // splitPromptForProvider — uncached, varies per call).
+          // Semi-stable prefix (cacheable): identity, prefs, inventory.
           assistantIdentitySection,
           userPromptSection,
           responseLengthSection,
           activeModeSection,
           installedAppsSection,
+          lyknBotsSection,
           macAppsSection,
           aiDriveSection,
           focusedBricksNote,
           imageNote,
-          convo ? `[CONVERSATION — each line shows role, timestamp, and (for assistant) which model wrote it. Prior assistant lines are from other models, not you.]\n${convo}` : "",
+          convo ? `[CONVERSATION — each line shows role and (for assistant) which model wrote it. Prior assistant lines are from other models, not you.]\n${convo}` : "",
           conversationMemoryText
             ? `[CONVERSATION_MEMORY — past exchanges from other projects/vault]\n${sanitizeStaleSurfaceLanguage(conversationMemoryText)}`
             : '',
           wsCtx ? `[WORKSPACE_CONTEXT]\n${wsCtx}` : "",
-          fullPrompt && fullPrompt !== userMsg ? `[FULL_CONTEXT]\n${fullPrompt.slice(0, 16000)}` : "",
+          shouldAttachRequestContext(fullPrompt, userMsg, convo)
+            ? `[FULL_CONTEXT]\n${fullPrompt.slice(0, 16000)}`
+            : "",
           kb ? `[WHAT_IM_ON]\n[PROJECT_KNOWLEDGE]\nProject knowledge for the active focus — connect the screen / topic here when it fits.\n${kb}` : "",
           ctx ? `[CONTEXT]\n${ctx}` : "",
           `[USER]\n${userMsg}`,
@@ -1349,18 +1487,39 @@ export function registerAiStreamRoutes(app, {
       // don't look like agent-tool intent to the casual/lean heuristics below,
       // but they need the tool loop so the local file/terminal tools get
       // offered. Only computed when the desktop sent localMode: true.
+      const streamLocalAskText = streamPureUserMessage || text;
+      const streamLyknBots = browserAsk ? [] : sanitizeLyknBots(req.body?.lyknBots);
+      const streamBotIntent = !browserAsk && messageWantsBotAsk(streamLocalAskText, streamLyknBots);
       const streamLocalIntent =
         streamLocalMode &&
-        (looksLikeLocalSystemAsk(streamPureUserMessage || text) ||
+        !browserAsk &&
+        (looksLikeLocalSystemAsk(streamLocalAskText) ||
           // Browser-shaped asks must keep their tools too, so the MODEL gets to
           // decide whether to call local_browser_agent. Loose on purpose — a
           // false positive only means schemas ride along on one turn.
-          mightBeBrowserTaskAsk(streamPureUserMessage || text));
+          mightBeBrowserTaskAsk(streamLocalAskText) ||
+          // Dropped a Mac folder earlier in this chat, then asked about a file
+          // inside it ("what's in agents.md"). The listing turn already answered
+          // from the attachment; this follow-up needs local_read_file.
+          ((streamAttachedFolders.length > 0 ||
+            conversationHasAttachedDesktopFolder(conversation) ||
+            /Desktop folder "|Attached folder "|call local_list_dir or local_read_file/.test(
+              String(prompt || ''),
+            )) &&
+            messageLooksLikeAttachedFileFollowUp(streamLocalAskText)) ||
+          (conversationMentionedLocalFolder(conversation) &&
+            messageLooksLikeFolderInspectFollowUp(streamLocalAskText)));
       if (streamLocalIntent) {
         console.log('🖥️ Stream: local-mode ask detected — keeping tools on');
       }
+      if (streamBotIntent) {
+        console.log('🤝 Stream: bot-ask detected — keeping tools on');
+      }
       if (useTools && streamEnrichTier === 'none') {
-        if (streamLocalIntent) {
+        if (streamBotIntent) {
+          streamEnrichTierEffective = 'light';
+          console.log('🤝 Stream: bot-ask — keeping tools on despite casual tier');
+        } else if (streamLocalIntent) {
           streamEnrichTierEffective = 'light';
           console.log('🖥️ Stream: local-mode ask — keeping tools on despite casual tier');
         } else if (forceImage) {
@@ -1412,6 +1571,7 @@ export function registerAiStreamRoutes(app, {
         forceWebSearch,
         deepResearch,
         forcePageFetch,
+        lyknBots: streamLyknBots,
         conversation,
         artifactToolName,
         activeArtifactEditable,
@@ -1425,6 +1585,7 @@ export function registerAiStreamRoutes(app, {
         useTools &&
         !streamActionIntent &&
         !streamLocalIntent &&
+        !streamBotIntent &&
         !streamDisclosure?.keepToolsOn &&
         !forceImage &&
         !artifactToolName &&
@@ -1492,6 +1653,64 @@ export function registerAiStreamRoutes(app, {
         streamWantsPureGreeting ||
         (!streamNeedsPersonalMemory && !streamWantsUserRecall);
 
+      let chatRoute = null;
+      if (!streamCustomModelCtx.customModel) {
+        const turnPolicy = await loadTurnModelContext({ userId: req.user?.id, body: req.body });
+        chatRoute = await resolveChatRoute({
+          requestedModel: model,
+          text: streamPureUserMessage || text || '',
+          planId: streamPlan.planId,
+          hasImages: imageUrls.length > 0,
+          hasLargeContext: Boolean(
+            (context && String(context).length > 4000)
+            || (String(prompt || '').length > 12000),
+          ),
+          forceImage: Boolean(forceImage),
+          deepResearch: Boolean(deepResearch),
+          artifactToolName: artifactToolName || '',
+          conversationLength: Array.isArray(conversation) ? conversation.length : 0,
+          userSettings: turnPolicy.settings,
+          modelPolicy: turnPolicy.policy,
+          resolvedRoute: turnPolicy.resolvedRoute,
+          forAgent: Boolean(req.body?.modelPolicy),
+        });
+        if (
+          chatRoute?.modelId
+          && chatRoute.selectionMode
+          && chatRoute.selectionMode !== 'lykn'
+          && !isAutoRoutedModelId(chatRoute.modelId)
+          && !isModelAllowedForPlan(chatRoute.modelId, streamPlan.modelTier)
+        ) {
+          console.log(`🔒 Routed model ${chatRoute.modelId} locked for plan ${streamPlan.planId} — keeping LYKN default`);
+          chatRoute = await resolveChatRoute({
+            requestedModel: 'lykn',
+            text: streamPureUserMessage || text || '',
+            planId: streamPlan.planId,
+            hasImages: imageUrls.length > 0,
+            deepResearch: Boolean(deepResearch),
+            artifactToolName: artifactToolName || '',
+          });
+        }
+        // Billing preflight: a premium manual model (priced above the Auto
+        // advanced tier) meters the Usage Balance even on a paid plan, so an
+        // empty balance blocks before any provider spend. SSE headers are
+        // already flushed at this point, so the block rides an error event.
+        const chatBilling = await assertChatTurnBillable({
+          userId: req.user?.id,
+          planId: streamPlan.planId,
+          chatRoute,
+        });
+        if (!chatBilling.allowed) {
+          res.write(`data: ${JSON.stringify({
+            error: chatBilling.body.message,
+            code: chatBilling.body.code,
+            add_funds: true,
+          })}\n\n`);
+          res.end();
+          return;
+        }
+      }
+
       if (isChatIntent) {
         _ck('before buildLyknStreamPrompt');
         prompt = buildLyknStreamPrompt({
@@ -1506,16 +1725,19 @@ export function registerAiStreamRoutes(app, {
           aiName,
           projectId,
           intent: normalizedIntent || 'ask',
+          modelTier: chatRoute?.modelTier || 'standard',
           hasFocusedBricks: Boolean(hasFocusedBricks),
           overlayAsk: Boolean(overlayAsk),
+          browserAsk,
           fastLean: streamFastLean,
           forceImage: Boolean(forceImage) && !forceArtifact,
           modeInstructions: String(req.body?.modeInstructions || '').trim().slice(0, 2000),
           // Desktop-only, and the model's only way to know these apps exist.
-          installedApps: req.body?.installedApps,
-          macApps: req.body?.macApps,
-          aiDrive: req.body?.aiDrive,
-          aiDriveTotals: req.body?.aiDriveTotals,
+          installedApps: browserAsk ? undefined : req.body?.installedApps,
+          lyknBots: browserAsk ? undefined : req.body?.lyknBots,
+          macApps: browserAsk ? undefined : req.body?.macApps,
+          aiDrive: browserAsk ? undefined : req.body?.aiDrive,
+          aiDriveTotals: browserAsk ? undefined : req.body?.aiDriveTotals,
         });
         _ck('after buildLyknStreamPrompt');
       }
@@ -1584,7 +1806,7 @@ export function registerAiStreamRoutes(app, {
               console.warn(`⚠️ Deep research failed (${failReason}) — falling back to forced web search`);
               writeStreamStatus(
                 failReason === 'serper_no_credits'
-                  ? 'Search provider is out of credits \u2014 trying a simpler web search\u2026'
+                  ? 'Search provider is out of credits. Trying a simpler web search\u2026'
                   : 'Searching the web\u2026',
               );
               const fallbackText = await runWebSearchIfNeeded(topic, {
@@ -1597,7 +1819,7 @@ export function registerAiStreamRoutes(app, {
               if (fallbackText) {
                 deepResearchSources = extractSourcesFromSearchPrompt(fallbackText);
               } else {
-                writeStreamStatus('Couldn\u2019t reach live sources \u2014 writing from general knowledge.');
+                writeStreamStatus('Couldn\u2019t reach live sources. Writing from general knowledge.');
               }
               return fallbackText;
             })()
@@ -1652,53 +1874,33 @@ export function registerAiStreamRoutes(app, {
       if (scopedProjectId && !streamWantsUserRecall && !streamWantsPureGreeting) {
         const scopedName = String(req.body?.scopedProjectName || '').trim();
         prompt +=
-          "\n\n[ACTIVE_PROJECT_SCOPE — The user opened this chat scoped to the project" +
+          "\n\n[ACTIVE_PROJECT_SCOPE - This chat is scoped to the project" +
           (scopedName ? ` "${scopedName}"` : " shown in [WHAT_IM_ON] above") +
-          ". This project is the active working context for the ENTIRE conversation, not just one turn. " +
-          "In your FIRST reply you MUST name this project and make clear you're working inside it, then orient around it — what's already in it and what they want to do with it — using [WHAT_IM_ON] above for specifics. " +
-          "This overrides the default greeting style: do NOT send a generic greeting that ignores the project. " +
-          "If [WHAT_IM_ON] shows no saved state or clustered context yet, say the project looks empty so far and offer to help start filling it in.]";
+          ". [WHAT_IM_ON] has the current project state.]";
       }
       if (deepResearch) {
         const evidence = String(searchResults || '');
         if (evidence.includes('[DEEP_RESEARCH_EVIDENCE]')) {
           // Report structure + Sources rules are inside the evidence pack.
           prompt +=
-            '\n\n[RESEARCH_MODE — Deep research is armed. Treat [DEEP_RESEARCH_EVIDENCE] as your primary evidence and follow [RESEARCH_REPORT_INSTRUCTIONS]. ' +
-            'Deliver the report as markdown in your reply ONLY. Do NOT call lykn_build_*, open a side-panel artifact, ' +
-            'or "build a polished interactive report". Mentions of investor pitch / deck / slides are the TOPIC of this ' +
-            'written research — not a Create/Build request. The user armed Deep research, not Create.]';
+            '\n\n[RESEARCH_MODE - Deep research is armed. [DEEP_RESEARCH_EVIDENCE] is the evidence pack. Follow [RESEARCH_REPORT_INSTRUCTIONS].]';
         } else if (evidence.includes('[WEB_SEARCH_RESULTS]')) {
           prompt +=
-            '\n\n[RESEARCH_MODE — Deep research is armed. Multi-query research was unavailable, so use [WEB_SEARCH_RESULTS] as your evidence. ' +
-            'Write a thorough markdown report in your reply ONLY and end with a **Sources** section listing markdown links ONLY from those results — never invent URLs. ' +
-            'Do NOT call lykn_build_* or create a side-panel artifact.]';
+            '\n\n[RESEARCH_MODE - Deep research is armed. Multi-query research was unavailable. [WEB_SEARCH_RESULTS] is the evidence for this turn.]';
         } else {
           prompt +=
-            '\n\n[RESEARCH_MODE — Deep research was requested but live multi-source evidence was unavailable. ' +
-            'Say so briefly, answer carefully from general knowledge with clear uncertainty, and do not invent URLs or a fake Sources list. ' +
-            'Do NOT fall back to building an interactive artifact or pitch deck.]';
+            '\n\n[RESEARCH_MODE - Deep research was requested but live multi-source evidence was unavailable.]';
         }
       }
       if (translateMode) {
         const targetLang = String(req.body?.translateTargetLang || '').trim().slice(0, 64);
         prompt += targetLang
-          ? `\n\n[TRANSLATE_MODE — Translate mode is armed. Target language: ${targetLang}. ` +
-            `Do not ask which language — it is already chosen. ` +
-            `If the user typed/dictated text to translate, translate that into ${targetLang}. ` +
-            `If they ask to translate the screen/page (or sent little/no text), translate all readable ` +
-            `on-screen or page text from the screenshot/page context into ${targetLang}. ` +
-            `Lead with the translation; keep commentary minimal unless they ask.]`
-          : '\n\n[TRANSLATE_MODE — Translate mode is armed. Translate typed/dictated text, or on-screen/page ' +
-            'content when they ask to translate the screen (or send little/no text), into the target language they name. ' +
-            'If no target language is given, ask once briefly. Lead with the translation; keep commentary minimal unless they ask.]';
+          ? `\n\n[TRANSLATE_MODE - Translate mode is armed. Target language: ${targetLang}.]`
+          : '\n\n[TRANSLATE_MODE - Translate mode is armed. No target language was set on this turn.]';
       }
       if (regularChatBuildAsk) {
         prompt +=
-          '\n\n[REGULAR_CHAT — Create/Build mode is NOT armed. Do NOT build a deck, app, document, chart, ' +
-          'or any side-panel artifact. If the user is asking you to build something, briefly say you can do that ' +
-          'once they switch into Build (Glass) or Create ("+" menu) and resend. If they were brainstorming or ' +
-          'asking a product question, answer that in conversation without building.]';
+          '\n\n[REGULAR_CHAT - Create/Build mode is not armed this turn.]';
       }
       // Glass: when they ask about more of the open site than the screenshot, fetch
       // the known tab URL server-side — but skip if Electron already scroll-scraped
@@ -1718,8 +1920,7 @@ export function registerAiStreamRoutes(app, {
           });
           if (fullPage?.ok && fullPage.content && !fullPage.spa_shell) {
             prompt +=
-              `\n\n[FULL_PAGE_FETCH — fetched from their open tab URL; use this for site-wide asks beyond the screenshot. ` +
-              `Do NOT ask them to paste the link or scroll.]\n` +
+              `\n\n[FULL_PAGE_FETCH - fetched from their open tab URL.]\n` +
               `URL: ${fullPage.url}\n` +
               (fullPage.title ? `Title: ${fullPage.title}\n` : '') +
               `--- FULL PAGE TEXT ---\n${fullPage.content}\n--- END FULL PAGE ---`;
@@ -1744,19 +1945,11 @@ export function registerAiStreamRoutes(app, {
       }
       if (vagueBuildAsk) {
         prompt +=
-          `\n\n[BUILD_CLARIFY — Build/Create mode is already on, but the user did not name what to build. ` +
-          `Do NOT call lykn_build_react_artifact, lykn_build_template, lykn_build_spreadsheet, lykn_render_video, or any other builder this turn. ` +
-          `Do NOT invent a mini-game, landing page, dashboard, or any other deliverable. ` +
-          `Do NOT tell them to arm or click Build. ` +
-          `Ask ONE short question: what should I build? Offer 2–4 concrete options (a playable mini-game, a landing page, a dashboard, a small utility). Wait for their pick.]`;
+          `\n\n[BUILD_CLARIFY - Build/Create mode is on, but the user did not name what to build. Builder tools are not for this turn.]`;
       } else if (artifactBuildSpec) {
         prompt +=
-          `\n\n[BUILD_ARTIFACT — Build/Create mode is ALREADY ARMED for this message; you are building a ${artifactBuildSpec.label} (a claude.ai-style Artifact). ` +
-          `Never tell the user to arm/enable/turn on Build mode or Create — it is already on. ` +
-          `Never tell the user to close, clear, or dismiss an open artifact panel — just call the tool and build. ` +
-          `Do NOT narrate a plan or describe what you would build instead of calling the tool. ` +
-          `The user sees live status of each part as you write — pass \`todos\` with short human labels (Hero, Pricing, Footer) and mark the current one in_progress. ` +
-          `You MUST call the ${artifactBuildSpec.tool} tool on this turn to produce it` +
+          `\n\n[BUILD_ARTIFACT - Build/Create mode is armed this turn. Deliverable: ${artifactBuildSpec.label}. ` +
+          `Call ${artifactBuildSpec.tool}` +
           (artifactBuildSpec.templateType ? ` with template_type "${artifactBuildSpec.templateType}"` : '') +
           (artifactBuildSpec.tool === 'lykn_build_spreadsheet' ? ` with output_format "xlsx" (a real downloadable spreadsheet), passing headers + rows` : '') +
           (artifactBuildSpec.tool === 'lykn_build_react_artifact'
@@ -1765,8 +1958,7 @@ export function registerAiStreamRoutes(app, {
           (artifactBuildSpec.tool === 'lykn_render_video'
             ? `. WRITE the deliverable as one complete Remotion composition (export default one component; imports ONLY from "remotion" and "react"; every visual property a pure function of useCurrentFrame() via interpolate/spring; inline style objects, system fonts; <Img> from "remotion" for hosted image URLs listed in [USER_IMAGES]/[GENERATED_IMAGES] — never invented URLs; no registerRoot/<Composition>). Keep it SHORT and purposeful (default ~5s, max 30s), end with the motion resolved, and pass duration_in_frames/fps/width/height that fit the request`
             : '') +
-          `. Infer the topic and full contents from the user's message and any context above; make it complete, well-structured, and visually clean — don't ask a clarifying question first unless the request is truly unusable. ` +
-          `After the tool returns, reply with just a 1-2 sentence summary of what you built; do NOT paste the raw HTML, code, or chart config into the chat (the artifact renders on its own).]`;
+          `. Infer the topic and full contents from the user's message and any context above.]`;
       }
       if (activeArtifactDiscussOnly && activeArtifact) {
         const kindHint =
@@ -1780,9 +1972,7 @@ export function registerAiStreamRoutes(app, {
         prompt +=
           `\n\n[ARTIFACT_VISIBLE — The user has "${String(activeArtifact.title || 'Untitled').slice(0, 200)}" ` +
           `(${kindHint}) open in the preview popup, but builder tools are not armed for this turn. ` +
-          `You may discuss, explain, critique, brainstorm about, or answer questions about this artifact using conversation context. ` +
-          `Do NOT call lykn_build_react_artifact, lykn_build_template, lykn_build_spreadsheet, lykn_manage_file, or any other build/edit tool, ` +
-          `and do NOT modify the open artifact. Answer the user's question directly without claiming you changed anything.]`;
+          `Builder tools are not armed. The open artifact is context only.]`;
       } else if (activeArtifactEditable && activeArtifact.toolName === 'lykn_build_react_artifact') {
         const a = activeArtifact;
         const multiFiles = Array.isArray(a.files) ? a.files.filter((f) => f && typeof f.path === 'string') : [];
@@ -1839,7 +2029,7 @@ export function registerAiStreamRoutes(app, {
               `REQUIRED: patch in place with \`edits\` ({find, replace}${isMulti ? ', with path' : ''}) and/or \`file_ops\`; preserve every untouched line, component, behavior, and style. ` +
               `Changing a color, font, selected state, spacing value, label, or adding a localized feature is still a patch — never a reason to rewrite the app. ` +
               `Pass full \`files\` or \`code\` with full_rewrite: true ONLY when the user explicitly asks to redesign, rebuild, start over, or replace the app. Style and theme changes are allowed only to the exact extent requested. ` +
-              `ONE CALL PER TURN. After it returns, reply with a 1-2 sentence summary of what changed; do NOT paste the code. ` +
+              `ONE CALL PER TURN. ` +
               `If the message is NOT about this app, ignore this and answer normally.]`
             : `If the user's message asks to change, fix, add to, shorten, expand, or otherwise refine THIS artifact, you MUST call lykn_build_react_artifact again with the same title (unless they ask to rename it). ` +
               `Build mode does NOT mean rebuild — with this popup open, add/edit/fix requests are ALWAYS in-place patches, never a new artifact from scratch. ` +
@@ -1851,7 +2041,6 @@ export function registerAiStreamRoutes(app, {
               `Do NOT call this tool multiple times in one turn — batch all patches into that single call, then summarize. ` +
               `If the tool returns compile_error / edits_required / edit_target_not_found, fix and retry silently before telling the user you're done — never leave them with a broken preview. ` +
               `Never change THEME, colors, fonts, or layout on a refine. Update \`todos\` statuses on longer builds. ` +
-              `After it returns, reply with a 1-2 sentence summary of what changed; do NOT paste the code. ` +
               `If the message is NOT about the artifact, ignore this and answer normally.]`);
       } else if (activeArtifactEditable && activeArtifact.toolName === 'lykn_build_template') {
         const a = activeArtifact;
@@ -1879,7 +2068,6 @@ export function registerAiStreamRoutes(app, {
               `CONTENT EDITS: call lykn_build_template with \`section_edits\` ONLY — {find, replace}, {index|id, heading?/body?/notes?}, {insert_at, section}, or {remove_index|remove_id}. Do NOT resubmit the full \`sections\` array; the server REJECTS undeclared full-section rebuilds. Always pass the current theme/font back unless they asked to change them. ` +
               `Full \`sections\` + full_rewrite: true ONLY when they explicitly asked to rebuild/restyle the whole artifact. `) +
           `Font names: inter, georgia, playfair, space-grotesk, merriweather, mono, system. Theme: a color name (blue, green, purple…) or hex. ` +
-          `After it returns, reply with a 1-2 sentence summary of what changed; do NOT paste raw HTML or markup. ` +
           `If the message is NOT about the artifact, ignore this and answer normally.]`;
       } else if (activeArtifactEditable && activeArtifact.toolName === 'lykn_manage_file') {
         const a = activeArtifact;
@@ -1889,7 +2077,6 @@ export function registerAiStreamRoutes(app, {
           `• title: ${String(a.title || 'Untitled').slice(0, 200)}\n` +
           `• current file source:\n\`\`\`\n${src}\n\`\`\`\n` +
           `If refining THIS file, call lykn_manage_file (action=edit) with \`edits\` ONLY — {find, replace} patches copied verbatim from the source above. Do NOT resubmit full \`content\` unless they explicitly asked to rebuild (then set full_rewrite: true). ` +
-          `After it returns, reply with a 1-2 sentence summary; do NOT paste the file. ` +
           `If the message is NOT about the artifact, ignore this and answer normally.]`;
       } else if (activeArtifactEditable && activeArtifact.toolName === 'lykn_build_spreadsheet') {
         const a = activeArtifact;
@@ -1905,7 +2092,6 @@ export function registerAiStreamRoutes(app, {
           `• title: ${String(a.title || 'Sheet').slice(0, 200)}\n` +
           `• current data (JSON): ${sheetJson}\n` +
           `If refining THIS sheet, call lykn_build_spreadsheet with \`cell_edits\` ONLY — {row, col|column, value}, {row, values}, {insert_row, values}, or {remove_row}. Do NOT resubmit full headers/rows unless they explicitly asked to rebuild (then set full_rewrite: true). ` +
-          `After it returns, reply with a 1-2 sentence summary. ` +
           `If the message is NOT about the artifact, ignore this and answer normally.]`;
       }
       if (streamBoundProjectId && req.user?.id && supabaseAdmin) {
@@ -1926,31 +2112,39 @@ export function registerAiStreamRoutes(app, {
               const pr = b.pr_url ? ` PR: ${b.pr_url}` : '';
               return `- ${String(b.instruction).slice(0, 200)} (${outcome})${pr}`;
             });
-            prompt += '\n\n[CURSOR_BUILDS_FINISHED — mention this near the start of your reply: a Cursor build you started has finished. It is ready for the user to test; deployment is manual. Share the PR link if present; never invent one.]\n' + buildLines.join('\n');
+            prompt += '\n\n[CURSOR_BUILDS_FINISHED - a Cursor build finished. Deployment is manual.]\n' + buildLines.join('\n');
           }
         } catch (e) {
           console.warn('⚠️ stream cursor builds surface:', e?.message || e);
         }
       }
       if (memorySection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(memorySection);
-      if (streamWantsPureGreeting) prompt += "\n\n" + GREETING_TURN_PROMPT;
+      if (messageIsHelloGreeting(streamMsgEarly) && !scopedProjectId) prompt += "\n\n" + GREETING_TURN_PROMPT;
       else if (streamWantsUserRecallDeepen) prompt += "\n\n" + USER_RECALL_DEEPEN_PROMPT;
       else if (streamWantsUserRecall) prompt += "\n\n" + USER_RECALL_TURN_PROMPT;
       if (streamCustomModelKnowledge) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(streamCustomModelKnowledge);
       if (vaultUrlMatches) prompt += "\n\n" + vaultUrlMatches;
-      const webObservation = formatUntrustedWebObservation(scrapedContent, searchResults, youtubeResults);
+      if (browserAsk) prompt += "\n\n" + BROWSER_ASK_ONLY_PROMPT;
+      const browserPageObservation = formatBrowserPageObservation(req.body?.browserPageContext);
+      const webObservation = formatUntrustedWebObservation(
+        scrapedContent,
+        searchResults,
+        youtubeResults,
+        browserPageObservation,
+      );
       const splitPromptForProviderWithWeb = (nextPrompt) =>
         attachUntrustedWebObservation(splitPromptForProvider(nextPrompt), webObservation);
       if (streamCustomModelCtx.overlay) {
         prompt = applyCustomModelOverlayToPrompt(prompt, streamCustomModelCtx.overlay);
       }
-      if (streamChatAgentCtx?.instructionsBlock) {
+      if (streamChatAgentCtx?.instructionsBlock && !browserAsk) {
         prompt += `\n\n${streamChatAgentCtx.instructionsBlock}`;
       }
       // Default main agent over published custom models — soft-unplugged.
       if (
         CUSTOM_MODELS_ENABLED &&
         useTools &&
+        !browserAsk &&
         (!Array.isArray(streamChatToolNames) ||
           streamChatToolNames.includes('lykn_communicate_with_model')) &&
         !streamOrchestrationCtx?.isMainAgent &&
@@ -1970,18 +2164,28 @@ export function registerAiStreamRoutes(app, {
           console.warn('[default-main-agent] roster load failed:', e?.message || e);
         }
       }
-      if (streamOrchestrationCtx?.orchestrationBlock) {
+      if (streamOrchestrationCtx?.orchestrationBlock && !browserAsk) {
         prompt += `\n\n${streamOrchestrationCtx.orchestrationBlock}`;
       }
 
       let actualModel = model;
-      if (model === 'unified-auto') {
-        if (process.env.GOOGLE_API_KEY) actualModel = 'gemini-flash-latest';
-        else if (process.env.OPENAI_API_KEY) actualModel = 'gpt-4.1-nano';
-        else actualModel = 'gpt-4.1-nano';
-      } else if (LYKN_ROUTED_MODELS[model]) {
-        actualModel = resolveLyknAlias(model);
-        console.log(`🟣 LYKN alias (${model}) → ${actualModel}`);
+      if (streamCustomModelCtx.customModel) {
+        if (LYKN_ROUTED_MODELS[model]) {
+          actualModel = resolveLyknAlias(model);
+          console.log(`🟣 LYKN alias (${model}) → ${actualModel}`);
+        } else if (model === 'unified-auto') {
+          actualModel = process.env.GOOGLE_API_KEY ? 'gemini-flash-latest' : 'gpt-4.1-nano';
+        }
+      } else if (chatRoute) {
+        actualModel = chatRoute.modelId;
+        if (chatRoute.routingSource !== 'override') {
+          console.log(
+            `🟣 Auto route (${chatRoute.routingSource}): ${chatRoute.modelTier} → ${actualModel} `
+            + `[${chatRoute.reasoningEffort}] ${chatRoute.reason}`,
+          );
+        } else {
+          console.log(`🟣 Explicit model ${model} → ${actualModel}`);
+        }
       }
 
       // Image turns on a weak-vision model get bumped to a stronger reader so
@@ -2078,7 +2282,7 @@ export function registerAiStreamRoutes(app, {
         ) {
           prompt +=
             '\n\n[MCP CONNECTIONS — AMBIGUOUS ACCOUNT]\n' +
-            'Multiple equivalent external accounts could perform this write. Ask the user which connection to use. Do not pick one arbitrarily. Candidates: ' +
+            'Multiple equivalent external accounts could perform this write. Candidates: ' +
             (mcpTurn.resolution.candidates || [])
               .map((c) => `${c.connectionName} (${c.connectionId})`)
               .join(', ') +
@@ -2097,7 +2301,7 @@ export function registerAiStreamRoutes(app, {
           }
           prompt +=
             '\n\n[MCP CONNECTIONS — NEEDS CONNECTION]\n' +
-            'This task needs an external connection the user does not have yet. Tell them which service to connect. Do not invent OAuth URLs. Do not browse or install MCP servers. ' +
+            'This task needs an external connection the user does not have yet. Connections live in Settings → Connections. ' +
             (names.length ? `Suggested services: ${names.join(', ')}.` : '');
         }
         const turnCapabilities = streamDisclosure?.capabilities || [];
@@ -2136,15 +2340,8 @@ export function registerAiStreamRoutes(app, {
       // the accompanying text match reality.
       if (forceImage) {
         prompt +=
-          '\n\n[IMAGE_MODE — image generation is ALREADY ARMED for this message; lykn_generate_image WILL run. ' +
-          'Never tell the user to arm/enable/turn on image mode, never ask permission, and never describe what an ' +
-          'image WOULD look like instead of generating it. Any image(s) the user attached this turn are ' +
-          'automatically given to the image model as pixel references — for "recreate this" asks, call the tool ' +
-          'with a prompt describing only the desired CHANGES (or "faithful recreation, cleaned up" if none) and ' +
-          'trust the reference to carry the likeness. ' +
-          'After the image tool runs, reply with a short confirmation only — do NOT search the Vault, ' +
-          'do NOT load or dump notes/files from [WHAT_IVE_SAVED] / [WORKSPACE_CONTEXT] / conversation memory, ' +
-          'and do NOT pull unrelated saved content.]';
+          '\n\n[IMAGE_MODE - image generation is armed this turn. lykn_generate_image is available. ' +
+          'Attached images this turn are passed as pixel references.]';
       }
       // Iterative image refinement (see imageFollowUpRefUrl above): hand the
       // previous render's URL to the model so it grounds the new generation in
@@ -2180,7 +2377,7 @@ export function registerAiStreamRoutes(app, {
         if (codedArtifactTurn && (attachedImageMeta.length > 0 || referencesScreen || buildModeVision)) {
           prompt +=
             `\n\n[ATTACHED_VISION — ${imageUrls.length} image(s) are attached as REAL pixel input on this turn. ` +
-            'You CAN see them in this message. Do not claim you cannot view images. Use what they show.]\n' +
+            'You can see them in this message.]\n' +
             '\n[REFERENCE_BUILD — the user supplied image(s)/screen context as the REFERENCE for this build. ' +
             'FIDELITY OVERRIDES THE DESIGN SYSTEM: recreate what the reference shows. ' +
             'WORK IN TWO PASSES. PASS 1 — TRANSCRIBE (do this mentally before writing any code): inventory the ' +
@@ -2282,7 +2479,9 @@ export function registerAiStreamRoutes(app, {
       // Always anchor the model to the user's LOCAL current time + timezone so
       // scheduling tools (createEvent/createReminder) resolve clock times to the
       // right instant. req.body.timezone is the browser IANA tz from the client.
-      prompt += '\n\n' + localTimeContextLine(req.body?.timezone);
+      prompt += '\n\n' + localTimeContextLine(req.body?.timezone, {
+        compact: Boolean(streamFastLean && !useTools),
+      });
 
       const hasTranscript = prompt.includes('[VIDEO TRANSCRIPT') || prompt.includes('Full transcript:');
       console.log(`📡 Stream request — model: ${actualModel}, prompt: ${prompt.length} chars (~${Math.round(prompt.length / 4)} tokens)${hasTranscript ? ' [HAS VIDEO TRANSCRIPT]' : ''}${imageUrls.length ? `, images: ${imageUrls.length}` : ''}${skipWebSearch ? ' [skipWebSearch]' : ''}`);
@@ -2321,12 +2520,22 @@ export function registerAiStreamRoutes(app, {
       // watchdog, flushes the response) but ships a structured payload so
       // the client can render an inline pill for each tool the agent loop
       // fires. Status moves running → done | error.
+      let streamBillableCompute = false;
+      let streamProviderUsage = {
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_input_tokens: 0,
+        reasoning_tokens: 0,
+      };
       const sendToolCall = (evt) => {
         if (!res.writableEnded) {
           streamActivity = Date.now();
           lastClientWriteAt = Date.now();
           res.write(`data: ${JSON.stringify({ tool_call: evt })}\n\n`);
           if (typeof res.flush === 'function') res.flush();
+        }
+        if (evt?.status === 'done' && isBillableComputeTool(evt.name)) {
+          streamBillableCompute = true;
         }
         if (
           evt?.status === 'done'
@@ -2340,7 +2549,7 @@ export function registerAiStreamRoutes(app, {
       };
       const sendStatus = (status) => {
         if (!res.writableEnded) {
-          // A status update ("Running tools…") is a genuine sign of life —
+          // A status update ("Searching your files…") is a genuine sign of life —
           // refresh the stall watchdog so the gap between a tool's args
           // finishing and its result landing doesn't trip the 90s timeout.
           streamActivity = Date.now();
@@ -2380,8 +2589,38 @@ export function registerAiStreamRoutes(app, {
               actionType: streamActionType,
               model: actualModel,
               provider: detectProvider(actualModel),
-              inputTokens: estimateTokens(prompt),
-              outputTokens: Math.ceil(streamedTextLength / 4),
+              inputTokens: streamProviderUsage.input_tokens || estimateTokens(prompt),
+              outputTokens: streamProviderUsage.output_tokens || Math.ceil(streamedTextLength / 4),
+              cachedInputTokens: streamProviderUsage.cached_input_tokens || 0,
+              reasoningTokens: streamProviderUsage.reasoning_tokens || 0,
+              planId: streamPlan.planId,
+              hasBillableToolAction: streamBillableCompute,
+              metadata: {
+                ...chatRouteUsageMetadata(chatRoute, {
+                  planId: streamPlan.planId,
+                  botId: req.body?.modelPolicy?.botId || req.body?.botId || null,
+                  routeId: chatRoute?.routeId || null,
+                }),
+                chat_id: streamChatId,
+                bot_id: req.body?.modelPolicy?.botId || req.body?.botId || null,
+                route_id: chatRoute?.routeId || null,
+                gateway: isOpenRouterTarget(actualModel) ? 'openrouter' : 'direct',
+                upstream_cost_usd: Number.isFinite(Number(streamProviderUsage.cost_usd))
+                  ? streamProviderUsage.cost_usd
+                  : undefined,
+                ...contextUsageMetadata(
+                  classifyPromptSections({
+                    ...splitPromptForProvider(prompt),
+                    toolsText: useTools && Array.isArray(streamChatToolNames)
+                      ? streamChatToolNames.join(',')
+                      : '',
+                  }),
+                  cacheUsageMetrics({
+                    inputTokens: streamProviderUsage.input_tokens || estimateTokens(prompt),
+                    cachedInputTokens: streamProviderUsage.cached_input_tokens || 0,
+                  }),
+                ),
+              },
             });
           }).catch(() => {});
           const reportIds = streamOrchestrationCtx?.completedReports?.map((t) => t.id) || [];
@@ -2475,7 +2714,10 @@ export function registerAiStreamRoutes(app, {
       const _streamModels = buildProviderModelChain(
         actualModel,
         streamCustomModelCtx.overlay,
-        getFallbackModels,
+        (failed) => {
+          const lyknFallbacks = Array.isArray(chatRoute?.fallbackModelIds) ? chatRoute.fallbackModelIds : [];
+          return [...lyknFallbacks, ...getFallbackModels(failed)];
+        },
       );
       let streamTogetherLoraMessages = null;
       if (streamCustomModelCtx.overlay?.useTogetherMultiTurn) {
@@ -2505,7 +2747,7 @@ export function registerAiStreamRoutes(app, {
         }
         if (_si > 0) { actualModel = _streamModels[_si]; console.log(`🔄 Stream fallback → ${actualModel} (attempt ${_si + 1}/${_streamModels.length})`); }
 
-      if (isTogetherModel(actualModel)) {
+      if (isTogetherModel(actualModel) && streamCustomModelCtx.overlay?.loraActive) {
         if (!process.env.TOGETHER_API_KEY) {
           if (_si + 1 < _streamModels.length) return tryStreamAt(_si + 1);
           return sendError(AI_TEMPORARY_FAILURE_TEXT);
@@ -2634,8 +2876,11 @@ export function registerAiStreamRoutes(app, {
         });
         return;
 
-      } else if (isOpenAIModel(actualModel)) {
-        if (!process.env.OPENAI_API_KEY) { if (_si + 1 < _streamModels.length) return tryStreamAt(_si + 1); return sendError(AI_TEMPORARY_FAILURE_TEXT); }
+      } else if (isOpenRouterTarget(actualModel) || isOpenAIModel(actualModel)) {
+        const inferTarget = resolveInferenceTarget(actualModel);
+        const viaOpenRouter = inferTarget.gateway === 'openrouter';
+        const inferKey = process.env[inferTarget.keyVar];
+        if (!inferKey) { if (_si + 1 < _streamModels.length) return tryStreamAt(_si + 1); return sendError(AI_TEMPORARY_FAILURE_TEXT); }
         const ab = makeProviderAbort();
         let openaiRes;
         try {
@@ -2654,19 +2899,33 @@ export function registerAiStreamRoutes(app, {
             // hitting on long replies. Falling through to OUTPUT_CAPS.chat
             // gives the model real room to finish its thought.
           }), actualModel);
-          const _strmOaiCacheKey = `lykn-${(req.user?.id || 'anon').slice(0, 32)}`;
-          openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+          const _strmOaiCacheKey = buildPromptCacheKey({
+            userId: req.user?.id,
+            modelId: actualModel,
+            personalizationVersion: personalizationFingerprint({
+              userPrompt,
+              aiName,
+              responseLength,
+            }),
+          });
+          openaiRes = await fetch(`${inferTarget.baseUrl}/chat/completions`, {
             method: 'POST',
-            headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+            headers: {
+              'Authorization': `Bearer ${inferKey}`,
+              'Content-Type': 'application/json',
+              ...inferTarget.extraHeaders,
+            },
             body: JSON.stringify({
-              model: actualModel,
+              model: inferTarget.upstreamId,
               messages: oaiMessages,
               max_completion_tokens: _strmOaiCap,
-              prompt_cache_key: _strmOaiCacheKey,
-              // gpt-5.6 defaults to reasoning that delays TTFT; agent-loop
-              // already sets none — match that on the plain stream path.
-              ...( /^gpt-5\.6/.test(String(actualModel)) ? { reasoning_effort: 'none' } : {}),
+              ...(viaOpenRouter ? {} : { prompt_cache_key: _strmOaiCacheKey }),
+              ...openaiReasoningPayload(
+                actualModel,
+                chatRoute?.reasoningEffort || 'none',
+              ),
               stream: true,
+              stream_options: { include_usage: true },
             }),
             signal: ab.signal,
           });
@@ -2684,7 +2943,7 @@ export function registerAiStreamRoutes(app, {
           return sendError(AI_TEMPORARY_FAILURE_TEXT);
         }
         streamActivity = Date.now();
-        console.log('✅ OpenAI stream connected, reading tokens...');
+        console.log(viaOpenRouter ? '✅ OpenRouter stream connected, reading tokens...' : '✅ OpenAI stream connected, reading tokens...');
         const reader = openaiRes.body;
         let buffer = '';
         let receivedAnyText = false;
@@ -2694,6 +2953,10 @@ export function registerAiStreamRoutes(app, {
             const parsed = JSON.parse(payload);
             const delta = parsed.choices?.[0]?.delta?.content;
             if (delta) { receivedAnyText = true; sendChunk(delta); }
+            if (parsed.usage) {
+              const usage = viaOpenRouter ? extractOpenRouterUsage(parsed) : extractOpenAIUsage(parsed);
+              streamProviderUsage = { ...streamProviderUsage, ...usage };
+            }
           } catch {}
         };
         reader.on('data', (chunk) => {
@@ -2994,7 +3257,7 @@ export function registerAiStreamRoutes(app, {
                 console.warn(`⚠️ Stream hit MAX_TOKENS (model=${actualModel}, cap=${_strmGemCap}). Reply was an essay (~${Math.round(_strmGemCap * 0.75)} words). Consider raising cap if this recurs frequently.`);
               } else {
                 console.warn(`⚠️ Gemini MAX_TOKENS with 0 visible tokens (model=${actualModel}, cap=${_strmGemCap}) — likely a thought-only burn. Falling through to retry chain.`);
-                return retryNextOrFinalize(_si, 'Gemini', false, 'The model spent its whole budget thinking and never replied \u2014 try rephrasing or switching models.');
+                return retryNextOrFinalize(_si, 'Gemini', false, 'The model spent its whole budget thinking and never replied. Try rephrasing or switching models.');
               }
             } else if (lastFinishReason === 'SAFETY' || lastFinishReason === 'PROHIBITED_CONTENT' || blockReason) {
               if (!receivedAnyText) {
@@ -3148,13 +3411,25 @@ export function registerAiStreamRoutes(app, {
         .filter((n) => LOCAL_TOOL_NAMES.includes(n));
       const streamLocalToolsEnabled =
         useTools && !!toolProvider && streamLocalMode && disclosedLocalToolNames.length > 0;
-      if (streamLocalToolsEnabled) {
+      const streamClientToolsEnabled =
+        useTools &&
+        !!toolProvider &&
+        disclosedLocalToolNames.length > 0 &&
+        (streamLocalMode || disclosedLocalToolNames.includes('local_ask_bot'));
+      const connectedRegistryOn = (Array.isArray(streamChatToolNames) ? streamChatToolNames : []).some(
+        (n) => n === 'lykn_search_connected_tools' || n === 'lykn_call_connected_tool',
+      );
+      // Connected-app calls (and local tools) share the result channel so
+      // consequential actions can pause for a live approval card.
+      if (streamClientToolsEnabled || connectedRegistryOn) {
         localToolStreamId = `lt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
       }
       let effectiveChatToolNames = streamChatToolNames;
-      if (streamLocalToolsEnabled) {
+      if (streamClientToolsEnabled) {
         effectiveChatToolNames = Array.isArray(streamChatToolNames) ? [...streamChatToolNames] : [];
-        if (req.user?.id) registerLocalToolStream(localToolStreamId, req.user.id);
+      }
+      if (localToolStreamId && req.user?.id) {
+        registerLocalToolStream(localToolStreamId, req.user.id);
       }
       if (useTools && toolProvider) {
         _ck(`entering agent loop (${toolProvider})`);
@@ -3164,7 +3439,13 @@ export function registerAiStreamRoutes(app, {
         // earlier turn errored (e.g. a declined permission prompt), the
         // conversation history is full of its own "local access isn't enabled"
         // claims, which it will keep parroting instead of retrying the tools.
-        const agentSys = streamLocalToolsEnabled
+        const askBotGuidance = disclosedLocalToolNames.includes('local_ask_bot')
+          ? '\n\n[LYKN BOTS - ASK]\n' +
+            'You can talk to the user\'s bots with local_ask_bot. Send the question, wait for ' +
+            'their reply, and report it back. If they named a bot, call it immediately. Never ' +
+            'tell the user to open a bot\'s chat or paste the question themselves.'
+          : '';
+        const agentSys = (streamLocalToolsEnabled
           ? rawAgentSys +
             '\n\n[LOCAL MODE — ACTIVE]\n' +
             'Local Mode is ON for this turn. You HAVE live access to the user\'s Mac through the ' +
@@ -3180,17 +3461,14 @@ export function registerAiStreamRoutes(app, {
             (disclosedLocalToolNames.includes('local_synced_folders')
               ? ' — call local_synced_folders first when you are unsure what you can reach.'
               : '.') +
-            ' Reads may show the user a one-time permission prompt; writes and risky commands ' +
-            'always ask them per action. When the user asks about their files, folders, apps, or ' +
-            'system, CALL THE TOOLS — never claim local access is unavailable or ask them to ' +
-            'enable it (the switch is already on). Ignore any earlier statements in this ' +
-            'conversation that said local access was off; those were transient errors. If a tool ' +
-            'returns an error, relay that exact error honestly instead of inventing a reason. ' +
+            ' Reads, lists, searches, and ordinary writes run immediately. Only deletes and ' +
+            'downloads ask for approval. Earlier turns that said local access was off were transient errors. ' +
             'When the ask targets a place on their MACHINE (Downloads, Desktop, Documents, a ' +
-            'folder, a drive), use ONLY the local_* tools — NEVER call lykn_searchVault. ' +
+            'named folder, a drive), use the local_* tools. If they name a folder without a path ' +
+            '("my LYKN folder"), call local_search_files with that name, then local_list_dir on the ' +
+            'match. Never ask them to open Finder or give you a path first. ' +
             (disclosedLocalToolNames.includes('local_pull_file')
-              ? 'When local_pull_file succeeds, the file is automatically shown to the user as a ' +
-                'card in the chat — NEVER write its URL into your reply.'
+              ? 'When local_pull_file succeeds, the file is shown automatically as a chat card.'
               : '') +
             (disclosedLocalToolNames.includes('local_browser_agent')
               ? '\n\n[BROWSER AGENT — AVAILABLE]\n' +
@@ -3199,7 +3477,7 @@ export function registerAiStreamRoutes(app, {
                 'Use it when the user asks you to go DO something on a website or in a web product. ' +
                 'Use lykn_web_search / lykn_web_fetch when you just need to read the web.'
               : '')
-          : rawAgentSys;
+          : rawAgentSys) + askBotGuidance;
         if (streamLocalToolsEnabled) {
           console.log(
             `🖥️ local tools offered: ${disclosedLocalToolNames.length}/${LOCAL_TOOL_NAMES.length}`,
@@ -3213,7 +3491,7 @@ export function registerAiStreamRoutes(app, {
         // which needs its own content shape.
         const buildAgentUserContent = async (providerId) => {
           if (imageUrls.length === 0) return agentUser;
-          if (providerId === 'openai' || providerId === 'grok') {
+          if (providerId === 'openai' || providerId === 'grok' || providerId === 'openrouter') {
             return [
               { type: 'text', text: agentUser },
               ...imageUrls.map((u) => ({ type: 'image_url', image_url: { url: u } })),
@@ -3269,7 +3547,15 @@ export function registerAiStreamRoutes(app, {
           agentModel = resolveAnthropicModel(actualModel);
         }
 
-        const agentCacheKey = `lykn-${(req.user?.id || 'anon').slice(0, 32)}`;
+        const agentCacheKey = buildPromptCacheKey({
+          userId: req.user?.id,
+          modelId: agentModel,
+          personalizationVersion: personalizationFingerprint({
+            userPrompt,
+            aiName,
+            responseLength,
+          }),
+        });
         // An editable artifact is only sent for an actual mutation turn (plain
         // discussion uses a discussOnly stub), so require its builder just like
         // a fresh Build/Create commission. Merely offering the one-tool
@@ -3289,18 +3575,32 @@ export function registerAiStreamRoutes(app, {
         // nothing. When the forced tool never completes on the primary
         // provider, the whole turn re-runs on the next available one.
         const agentAttempts = [{ provider: toolProvider, model: agentModel }];
+        if (Array.isArray(chatRoute?.fallbackModelIds)) {
+          for (const id of chatRoute.fallbackModelIds) {
+            const p = providerForModel(id);
+            if (p && !agentAttempts.some((a) => a.model === id)) {
+              agentAttempts.push({ provider: p, model: id });
+            }
+          }
+        }
         if (forcedToolNameForTurn) {
           // Order matches the coded-artifact reroute preference: Opus 4.8 →
-          // GPT-5.6 → Gemini 3.1 Pro. Coded builds use the stronger coders;
-          // non-artifact forced tools (image gen) just need any tool-capable
-          // provider, so the same chain is fine there too.
-          const fallbacks = [
-            { provider: 'anthropic', model: 'claude-opus-4-8', available: !!process.env.ANTHROPIC_API_KEY },
-            { provider: 'openai', model: 'gpt-5.6-sol', available: !!process.env.OPENAI_API_KEY },
-            { provider: 'gemini', model: 'gemini-3.1-pro-preview', available: !!process.env.GOOGLE_API_KEY },
-          ];
+          // GPT-5.6 → Gemini 3.1 Pro. When OpenRouter is the chat gateway,
+          // every fallback is the same OpenAI-compat transport.
+          const orReady = openRouterConfigured();
+          const fallbacks = orReady
+            ? [
+                { provider: 'openrouter', model: 'claude-opus-4-8', available: true },
+                { provider: 'openrouter', model: 'gpt-5.6-sol', available: true },
+                { provider: 'openrouter', model: 'gemini-3.1-pro-preview', available: true },
+              ]
+            : [
+                { provider: 'anthropic', model: 'claude-opus-4-8', available: !!process.env.ANTHROPIC_API_KEY },
+                { provider: 'openai', model: 'gpt-5.6-sol', available: !!process.env.OPENAI_API_KEY },
+                { provider: 'gemini', model: 'gemini-3.1-pro-preview', available: !!process.env.GOOGLE_API_KEY },
+              ];
           for (const f of fallbacks) {
-            if (f.available && f.provider !== toolProvider) {
+            if (f.available && !agentAttempts.some((a) => a.model === f.model)) {
               agentAttempts.push({ provider: f.provider, model: f.model });
             }
           }
@@ -3309,7 +3609,9 @@ export function registerAiStreamRoutes(app, {
         try {
           const runAttempt = async ({ provider: attemptProvider, model: attemptModel }, attemptSignal) => runAgentLoop({
             provider: attemptProvider,
-            model: attemptModel,
+            model: attemptProvider === 'openrouter'
+              ? (resolveInferenceTarget(attemptModel).upstreamId || attemptModel)
+              : attemptModel,
             systemPrompt: agentSys,
             userContent: await buildAgentUserContent(attemptProvider),
             // We deliberately do NOT thread `conversation` through here:
@@ -3324,7 +3626,12 @@ export function registerAiStreamRoutes(app, {
             // after tool results land. Coded-artifact turns get the big cap —
             // the whole React component must fit in one tool-call argument.
             maxOutputTokens: codedArtifactTurn || videoRenderLikelyTurn
-              ? clampForProvider(OUTPUT_CAPS.coded_artifact, attemptModel)
+              ? clampForProvider(
+                  activeArtifactEditable && !redesignArtifactAsk && !buildModeFresh
+                    ? OUTPUT_CAPS.coded_artifact_edit
+                    : OUTPUT_CAPS.coded_artifact,
+                  attemptModel,
+                )
               : clampForProvider(pickOutputCap({
                   hasImages: imageUrls.length > 0,
                   deepResearch,
@@ -3345,6 +3652,8 @@ export function registerAiStreamRoutes(app, {
                 modelId: attemptModel,
               });
               const base = buildChatToolCtx(req, {
+                mcpManager: getMcpManager(supabaseAdmin),
+                userMessage: String(text || ''),
                 chatModelLabel,
                 boundProjectId: streamBoundProjectId,
                 boardProjectId: streamBoardProjectId,
@@ -3408,10 +3717,8 @@ export function registerAiStreamRoutes(app, {
                 allowStyleChange:
                   redesignArtifactAsk || buildModeFresh || styleChangeArtifactAsk,
               });
-              if (mcpChatTools.length) {
-                base.extraChatTools = mcpChatTools;
-                base.extraChatToolsByName = Object.fromEntries(mcpChatTools.map((t) => [t.name, t]));
-              }
+              // Ranked mcp_* schemas are not injected. Connected apps go
+              // through lykn_search_connected_tools / lykn_call_connected_tool.
               // Remotion renders (lykn_render_video) run 1-4 real minutes with
               // no provider stream — ping the stall watchdog on every frame and
               // surface throttled percent updates so the client sees progress.
@@ -3427,7 +3734,7 @@ export function registerAiStreamRoutes(app, {
               // Local Mode: mark the local tools so the loop hands them to the
               // desktop client instead of executing them here, and provide the
               // awaiter that ships the call out and waits for the posted result.
-              if (streamLocalToolsEnabled && localToolStreamId) {
+              if (streamClientToolsEnabled && localToolStreamId) {
                 base.localToolNames = disclosedLocalToolNames;
                 base.awaitLocalTool = (call, record) =>
                   new Promise((resolve) => {
@@ -3472,6 +3779,41 @@ export function registerAiStreamRoutes(app, {
                     entry.pending.set(call.id, (posted) => {
                       clearTimeout(timer);
                       finish(posted);
+                    });
+                  });
+              }
+              // Consequential MCP tools (send email, delete, share) pause
+              // for live approval. Ship the approval request to the chat
+              // client over the same result channel local tools use; the
+              // MCP handler retries with the minted token once approved.
+              if (localToolStreamId && connectedRegistryOn) {
+                base.requestMcpApproval = ({ toolName, request } = {}) =>
+                  new Promise((resolve) => {
+                    const entry = localToolStreams.get(localToolStreamId);
+                    if (!entry) return resolve(false);
+                    const approvalCallId = `mcpapproval_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+                    console.log(`🔐 MCP approval → awaiting user (${toolName || 'tool'})`);
+                    sendToolCall({
+                      id: approvalCallId,
+                      name: 'mcp_approval',
+                      args: {},
+                      status: 'awaiting_approval',
+                      localStreamId: localToolStreamId,
+                      approval: request || { title: 'Allow this action in your connected app?' },
+                    });
+                    noteStreamActivity();
+                    const timer = setTimeout(() => {
+                      entry.pending.delete(approvalCallId);
+                      sendToolCall({ id: approvalCallId, name: 'mcp_approval', status: 'done', result: { approved: false, timedOut: true } });
+                      resolve(false);
+                    }, LOCAL_TOOL_WAIT_MS);
+                    entry.pending.set(approvalCallId, (posted) => {
+                      clearTimeout(timer);
+                      const approved = posted?.approved === true;
+                      console.log(`🔐 MCP approval ← ${approved ? 'approved' : 'declined'} (${toolName || 'tool'})`);
+                      sendToolCall({ id: approvalCallId, name: 'mcp_approval', status: 'done', result: { approved } });
+                      noteStreamActivity();
+                      resolve(approved);
                     });
                   });
               }
@@ -3536,12 +3878,16 @@ export function registerAiStreamRoutes(app, {
           // Not applied to other forced-tool turns (e.g. image gen): their
           // tool execution can legitimately go quiet mid-run, and aborting
           // there risks retrying a tool that already fired.
-          const ATTEMPT_STALL_MS = 150000;
+          const ATTEMPT_STALL_MS =
+            activeArtifactEditable && !buildModeFresh ? 60000 : 150000;
           const attemptWatchdogEligible =
             forcedToolNameForTurn && agentAttempts.length > 1 &&
             (codedArtifactTurn || videoRenderLikelyTurn);
 
           let agentResult;
+          if (activeArtifactEditable && !buildModeFresh) {
+            try { sendStatus('Patching the source…'); } catch { /* swallow */ }
+          }
           for (let ai = 0; ai < agentAttempts.length; ai++) {
             const attempt = agentAttempts[ai];
             const attemptAbort = new AbortController();
@@ -3562,6 +3908,9 @@ export function registerAiStreamRoutes(app, {
             } finally {
               if (attemptWatchdog) clearInterval(attemptWatchdog);
               abortCurrentAgentAttempt = null;
+            }
+            if (agentResult?.usage) {
+              streamProviderUsage = mergeOpenRouterUsage(streamProviderUsage, agentResult.usage);
             }
             _ck(`agent loop ${agentResult.reason} (provider=${attempt.provider}, model=${attempt.model}, tools=${agentResult.toolCalls.length}, hadText=${agentResult.hadText})`);
 

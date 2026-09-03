@@ -46,7 +46,7 @@ export function getAiPrefs() {
     if (s.userPrompt && typeof s.userPrompt === 'string' && s.userPrompt.trim()) {
       prefs.userPrompt = s.userPrompt.trim();
     }
-    if (s.responseLength && s.responseLength !== 'medium') {
+    if (s.responseLength === 'concise' || s.responseLength === 'detailed' || s.responseLength === 'medium') {
       prefs.responseLength = s.responseLength;
     }
     // Custom assistant name. Anything other than the LYKN default is treated

@@ -1,3 +1,4 @@
+import { EXTERNAL_CALENDAR_SYNC_ENABLED } from '../../lib/calendar/calendarConfig.js';
 import {
   connectAppleCalendar,
   disconnectCalendarConnection,
@@ -7,6 +8,12 @@ import {
   syncCalendarConnection,
   updateCalendarConnection,
 } from '../../lib/calendar/calendarService.js';
+
+function rejectExternalSync(res) {
+  return res.status(410).json({
+    error: 'Google and Apple calendar sync is temporarily unavailable.',
+  });
+}
 
 function apiBase(port) {
   return (
@@ -52,6 +59,7 @@ export function registerCalendarConnectionRoutes(app, { requireAuth, supabaseAdm
   });
 
   app.post('/api/calendar/connections/google/start', requireAuth, async (req, res) => {
+    if (!EXTERNAL_CALENDAR_SYNC_ENABLED) return rejectExternalSync(res);
     try {
       if (!req.user?.id) return res.status(401).json({ error: 'Not authenticated' });
       const result = await startGoogleCalendarAuthorization(supabaseAdmin, req.user.id, {
@@ -66,6 +74,9 @@ export function registerCalendarConnectionRoutes(app, { requireAuth, supabaseAdm
   });
 
   app.get('/oauth/calendar/google/callback', async (req, res) => {
+    if (!EXTERNAL_CALENDAR_SYNC_ENABLED) {
+      return res.status(410).type('html').send(callbackHtml({ ok: false, trustedOrigin }));
+    }
     try {
       if (req.query?.error) throw new Error(String(req.query.error));
       const finished = await finishGoogleCalendarAuthorization(supabaseAdmin, {
@@ -86,6 +97,7 @@ export function registerCalendarConnectionRoutes(app, { requireAuth, supabaseAdm
   });
 
   app.post('/api/calendar/connections/apple', requireAuth, async (req, res) => {
+    if (!EXTERNAL_CALENDAR_SYNC_ENABLED) return rejectExternalSync(res);
     try {
       if (!req.user?.id) return res.status(401).json({ error: 'Not authenticated' });
       const connection = await connectAppleCalendar(
@@ -105,6 +117,7 @@ export function registerCalendarConnectionRoutes(app, { requireAuth, supabaseAdm
   });
 
   app.post('/api/calendar/connections/:id/sync', requireAuth, async (req, res) => {
+    if (!EXTERNAL_CALENDAR_SYNC_ENABLED) return rejectExternalSync(res);
     try {
       if (!req.user?.id) return res.status(401).json({ error: 'Not authenticated' });
       return res.json(

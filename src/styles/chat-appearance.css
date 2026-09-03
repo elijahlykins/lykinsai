@@ -87,6 +87,29 @@ html[data-chat-ai-size='custom'] .lykn-chat-ai-text h3 {
   font-size: 1.14em;
 }
 
+/* Bot reports live in chat, so they need more room than a chat bubble.
+   The first heading is the title. Later sections keep the usual scale. */
+.lykn-bot-report {
+  max-width: 40rem;
+}
+.lykn-bot-report > h1:first-child,
+.lykn-bot-report > h2:first-child {
+  font-size: 1.55em;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  margin-top: 0.15em;
+  margin-bottom: 0.7em;
+}
+.lykn-bot-report hr {
+  margin: 1.25em 0;
+  border: 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+.dark .lykn-bot-report hr {
+  border-top-color: rgba(255, 255, 255, 0.1);
+}
+
 /* Bubble shape. A shorthand `border-radius` beats the utility longhand
    (rounded-br-[4px]) it has to replace, which is what lets the shipped
    bottom-right notch flatten out for the corner-less shapes. */

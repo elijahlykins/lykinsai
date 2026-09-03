@@ -915,7 +915,7 @@ export function attachListenMeeting(host) {
       const isWin = window.lyknOverlay?.platform === "win32";
       host.updateAnswer(
         isWin
-          ? "Couldn't capture system audio. On Windows this uses loopback capture — try again, or restart LYKN if it still fails."
+          ? "Couldn't capture system audio. On Windows this uses loopback capture. Try again, or restart LYKN if it still fails."
           : "Couldn't capture system audio. This needs macOS 13 (Ventura) or newer.",
       );
       host.reportHeight();

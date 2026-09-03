@@ -1,14 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import lyknLogo from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-BLUE-web.png";
-import GlassBackdrop from "@/components/landing/GlassBackdrop";
+import lyknLogoMark from "@/assets/FINAL/LYKN-LOGO-B-Open/SVG/LYKN-Logo-Primary-B-Open-BLACK.svg";
 import LandingHeader from "@/components/landing/LandingHeader";
 import "./GlassLanding.css";
+import "@/components/landing/landingIcy.css";
 import "./DownloadLykn.css";
-
-// Copy sitting directly on the backdrop blends toward white as the wandering
-// blue glow passes behind it (same treatment as the pricing page).
-const MIX_TEXT_SELECTORS = [".dlp-tag", ".dlp-meta"];
 
 // Direct download of the latest signed builds. electron-builder publishes to
 // the public releases-only repo (see electron-builder.json "publish") with
@@ -113,23 +109,14 @@ export default function DownloadLykn() {
     <div className="glass-land dlp">
       <LandingHeader onBrandClick={() => navigate("/")} />
 
-      {/* The shared glass backdrop, same look and feel as the pricing page —
-          the orb rises in from the bottom edge instead of dropping from the
-          top, then wanders the same serpentine path. */}
-      <GlassBackdrop
-        mixTextSelectors={MIX_TEXT_SELECTORS}
-        wander
-        startAtBottom
-      />
-
       <main className="dlp-stage">
         {/* Centered copy in the upper third, like the reference poster. */}
         <section className="dlp-copy">
-          <img
-            src={lyknLogo}
-            alt="LYKN"
+          <span
             className="dlp-brand"
-            draggable={false}
+            role="img"
+            aria-label="LYKN"
+            style={{ ["--dlp-mark" as string]: `url("${lyknLogoMark}")` }}
           />
           <p className="dlp-tag">
             Your AI for{" "}
@@ -192,15 +179,15 @@ export default function DownloadLykn() {
           </p>
           {showWinComingSoon && (
             <p className="dlp-meta" style={{ marginTop: 8 }}>
-              Windows desktop is coming soon — use LYKN in your browser at
+              Windows desktop is coming soon. Use LYKN in your browser at
               lykn.io for now.
             </p>
           )}
           {showDesktopNote && (
             <p className="dlp-meta" style={{ marginTop: 8 }}>
               {WINDOWS_DOWNLOAD_ENABLED
-                ? "Desktop builds are for Mac and Windows — on this device, use LYKN in your browser at lykn.io."
-                : "The desktop app is available for Mac — on this device, use LYKN in your browser at lykn.io."}
+                ? "Desktop builds are for Mac and Windows. On this device, use LYKN in your browser at lykn.io."
+                : "The desktop app is available for Mac. On this device, use LYKN in your browser at lykn.io."}
             </p>
           )}
         </section>

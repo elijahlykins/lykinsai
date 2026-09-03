@@ -27,6 +27,7 @@ export const LOCAL_TOOL_NAMES = [
   'local_open_path',
   'local_organize_desktop',
   'local_browser_agent',
+  'local_ask_bot',
 ];
 
 export const LOCAL_CHAT_TOOLS = [
@@ -52,7 +53,10 @@ export const LOCAL_CHAT_TOOLS = [
     description:
       'Read a file on the user\'s Mac. Read-only; runs immediately. Text files return as-is; ' +
       'documents — PDF, Word (docx/doc/rtf/odt), Excel (xlsx), PowerPoint (pptx) — are extracted ' +
-      'to text page by page or sheet by sheet. Large files are truncated; other binary files are refused.',
+      'to text page by page or sheet by sheet; images (png/jpeg/gif/webp/heic) and screen ' +
+      'recordings (mp4/mov/webm) are looked at with vision so you can see what is on screen. ' +
+      'Do not ask the user to describe a screenshot you can read. Large files are truncated; ' +
+      'other binary files are refused.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -66,8 +70,9 @@ export const LOCAL_CHAT_TOOLS = [
     name: 'local_search_files',
     description:
       'Search the user\'s files and folders by name pattern and/or files by text content, starting from a folder. ' +
-      'Read-only; runs immediately. Provide namePattern (glob-like, e.g. "*.ts"), query (text to ' +
-      'find inside files), or both. Skips node_modules, .git, caches, and system folders.',
+      'Read-only; runs immediately. Provide namePattern (glob-like, e.g. "*.ts", "LYKN", "*Brand Assets*"), query (text to ' +
+      'find inside files), or both. Use this when they name a folder or file without a path — search Home for that name, then list or read the match. ' +
+      'Skips node_modules, .git, caches, and system folders.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -84,8 +89,9 @@ export const LOCAL_CHAT_TOOLS = [
       'Pull a file from the user\'s Mac into this chat — images, PDFs, videos, documents, any ' +
       'file type. The file is uploaded to the conversation and the result gives you a url. ' +
       'ALWAYS show pulled images inline in your reply with markdown: ![name](url). For other ' +
-      'file types, link them: [name](url). Read-only; runs immediately without asking ' +
-      'permission. Use local_list_dir or local_search_files first if you need to find the file.',
+      'file types, link them: [name](url). This downloads a file from the Mac into the chat, ' +
+      'so it requires the user to approve first. Use local_list_dir or local_search_files ' +
+      'first if you need to find the file.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -98,9 +104,8 @@ export const LOCAL_CHAT_TOOLS = [
   {
     name: 'local_write_file',
     description:
-      'Create or overwrite a text file on the user\'s Mac. This CHANGES their system, so it ' +
-      'requires the user to approve the action first. Creates parent folders as needed. State ' +
-      'clearly what you are writing and where.',
+      'Create or overwrite a text file on the user\'s Mac. Runs immediately without asking. ' +
+      'Creates parent folders as needed. State clearly what you are writing and where.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -122,9 +127,8 @@ export const LOCAL_CHAT_TOOLS = [
       'too: xlsx edits the matching cells and keeps formulas/formatting; PDF and Word/RTF/ODT ' +
       'are regenerated from their extracted text, so styling is flattened. Document edits write ' +
       'a sibling "name (edited).ext" by default and leave the original alone — pass overwrite: ' +
-      'true only if the user asked to replace the original. This CHANGES ' +
-      'their system, so it requires the user to approve the action first. State clearly what ' +
-      'you are changing and where.',
+      'true only if the user asked to replace the original. Runs immediately without asking. ' +
+      'State clearly what you are changing and where.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -142,8 +146,8 @@ export const LOCAL_CHAT_TOOLS = [
     name: 'local_run_command',
     description:
       'Run a shell command in the user\'s terminal (zsh) on their Mac and return its output. ' +
-      'Safe read-only commands (ls, cat, git status, etc.) run immediately; anything that could ' +
-      'modify the system, install software, or delete data requires the user to approve it first. ' +
+      'Reads, writes, and ordinary commands run immediately. Deleting files or downloading ' +
+      'anything (rm, curl, wget, git clone, and similar) requires the user to approve first. ' +
       'Commands are non-interactive (no stdin), time out after 60s, and output is capped.',
     inputSchema: {
       type: 'object',
@@ -308,6 +312,33 @@ export const LOCAL_CHAT_TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'local_ask_bot',
+    description:
+      'Ask one of the user\'s LYKN bots (named desktop teammates) a question and wait for ' +
+      'their reply so you can report it back. Their work streams into THIS chat so the user ' +
+      'can watch. Use this when the user names a bot ("ask Cody", "what does Scout think") or ' +
+      'asks you to consult a teammate. The bot answers in this same turn — relay their view ' +
+      'in your own words. Never tell the user to open the bot\'s chat or paste the question ' +
+      'themselves. These are LYKN bots, not published custom models and not Mac apps.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: 'The bot\'s name as listed in [LYKN BOTS] (e.g. "Cody").',
+        },
+        message: {
+          type: 'string',
+          description:
+            'The complete question or brief for that bot. It does not see this conversation, ' +
+            'so include everything it needs to answer.',
+        },
+      },
+      required: ['name', 'message'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 export const LOCAL_CHAT_TOOLS_BY_NAME = Object.freeze(
@@ -324,6 +355,10 @@ export function isLocalToolName(name) {
  * their tools stripped by the "no action intent" optimisation. Mirrors
  * looksLikeLocalSystemAsk in electron/localAgentTask.cjs — keep in sync.
  */
+/** Filename extensions that mean "read this file on disk", not an artifact. */
+export const LOCAL_NAMED_FILE_RE =
+  /\.(txt|md|markdown|js|jsx|ts|tsx|mjs|cjs|py|json|csv|html|css|rs|go|rb|yml|yaml|toml|sh|env|sql|xml)\b/;
+
 export function looksLikeLocalSystemAsk(text) {
   const t = String(text || '').toLowerCase();
   if (!t.trim()) return false;
@@ -358,6 +393,30 @@ export function looksLikeLocalSystemAsk(text) {
     return true;
   }
   if (/\bdesktop\b[^.?!]*\b(into|in|on)\s+(a\s+)?grid\b/.test(t)) return true;
+  // Named-file peek after a folder drop ("what's in agents.md", "read notes.txt").
+  // "what's in" is not a read/open/show verb, so the block below used to miss it
+  // and the lean-path gate stripped local_read_file — the model then announced
+  // it would read the file and the turn ended.
+  if (
+    LOCAL_NAMED_FILE_RE.test(t) &&
+    /\b(what('| i)?s|whats|what is|read|open|show|check|look|see|list)\b/.test(t)
+  ) {
+    return true;
+  }
+  if (/\b(what('| i)?s|whats|what is)\s+in\b/.test(t) && /\b(this|that|the)\s+file\b/.test(t)) {
+    return true;
+  }
+  // Named folder without a path ("read my LYKN folder", "list the invoices folder").
+  if (
+    /\b(my|the|our)\s+(?!this\b|that\b|same\b)[\w.+' -]{1,40}\s+folders?\b/.test(t) &&
+    /\b(read|open|list|show|check|look|see|search|find|what.?s in|whats in|what is in)\b/.test(t)
+  ) {
+    return true;
+  }
+  // "just list what's inside" after they already named a folder.
+  if (/\b(list|show|check|look|see|read)\b.{0,32}\b(what.?s|whats|what is)\s+inside\b/.test(t)) {
+    return true;
+  }
   // file operations with a file/folder-ish reference (but not artifact
   // builds like "create a document/deck/presentation").
   if (
@@ -390,6 +449,9 @@ export function mightBeBrowserTaskAsk(text) {
   if (/\b(browser|website|web\s?site|web\s?app|new tab|in a tab)\b/.test(t)) return true;
   if (/\b(log|sign)\s?(in|into)\b/.test(t)) return true;
   if (/\b(open|go to|visit|pull up|head to|check|use)\b[^.?!]{0,40}\b(gmail|mail|inbox|email|site|page|dashboard|account|store|cart|\w+\.(?:com|io|net|org|co|app|ai))\b/.test(t)) {
+    return true;
+  }
+  if (/\b(go to|visit|head to|navigate to)\b.{0,60}\b(website|web site|site|page|computer)\b/.test(t)) {
     return true;
   }
   return false;

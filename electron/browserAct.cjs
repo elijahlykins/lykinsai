@@ -335,7 +335,7 @@ function normalizeSearchSteps(steps) {
       type: "press",
       key: "Enter",
       selector: action.selector,
-      label: `${action.label || "Search"} — submit`,
+        label: `${action.label || "Search"} - submit`,
     });
   }
   return out;

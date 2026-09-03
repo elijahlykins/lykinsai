@@ -22,6 +22,21 @@ html.lykn-glass-embed:not(.dark) body.embedded-vault-mode .lykn-chat-grid-bg {
    composer (and Imagine's prompt bar) while hosted there; the desktop
    widgets stay visible behind the transparent chat page. */
 
+/* Menu-bar / camera-notch clearance. Electron writes the measured strip
+   for this display onto html; windowed Studio stays at 0. */
+html.lykn-studio-mode {
+  --lykn-display-top-inset: 0px;
+}
+.lykn-studio-mode-pill {
+  top: calc(0.75rem + var(--lykn-display-top-inset, 0px));
+}
+.lykn-studio-fs-pad {
+  padding-top: calc(0.75rem + var(--lykn-display-top-inset, 0px));
+}
+.lykn-studio-research-rail {
+  padding-top: calc(3.5rem + var(--lykn-display-top-inset, 0px));
+}
+
 /* Studio app motion — light pop from the dock when a surface opens, shrink
    away when it closes. Used by stage apps (Projects / Vault / Files), Home
    chat, dock popovers, and (via JS) floating windows. */
@@ -310,9 +325,8 @@ html:not(.dark) .lykn-split-quad-btn:hover {
   overflow-x: visible;
 }
 /* A taller attachment tray covers this pinned strip — hide it rather than
-   trying to keep the gap. Same for post-report follow-up pills. */
-html[data-home-bar-attached] .lykn-home-chat-host .lykn-studio-chips,
-html[data-home-bar-attached] .lykn-home-chat-host .lykn-studio-suggestions {
+   trying to keep the gap. */
+html[data-home-bar-attached] .lykn-home-chat-host .lykn-studio-chips {
   display: none !important;
 }
 /* Imagine's empty page on Home: the desktop rounded bar steps aside, so this
@@ -593,6 +607,60 @@ html.lykn-studio-mode:not(.dark) .lykn-rail-md .hover\:text-sky-200:hover { colo
 html.lykn-studio-mode:not(.dark) .lykn-rail-md pre { background-color: rgba(0, 0, 0, 0.06); }
 html.lykn-studio-mode:not(.dark) .lykn-rail-md code { background-color: rgba(0, 0, 0, 0.06); color: rgba(0, 0, 0, 0.85); }
 html.lykn-studio-mode:not(.dark) .lykn-rail-md pre > code { background-color: transparent; }
+
+/* Browser side chat: Home chat tokens, compact rail modifiers.
+   The pane is always light chrome, even when Studio itself is dark —
+   Home's dark: white ink would vanish on #f3f2f0. */
+.lykn-browser-rail,
+.lykn-browser-rail .lykn-chat-thread--browser,
+.lykn-browser-rail .lykn-chat-ai-text,
+.lykn-browser-rail .lykn-rail-md {
+  color: #000;
+}
+.lykn-browser-rail .lykn-chat-ai-text,
+.lykn-browser-rail .lykn-rail-md p,
+.lykn-browser-rail .lykn-rail-md li,
+.lykn-browser-rail .lykn-rail-md h1,
+.lykn-browser-rail .lykn-rail-md h2,
+.lykn-browser-rail .lykn-rail-md h3,
+.lykn-browser-rail .lykn-rail-md td,
+.lykn-browser-rail .lykn-rail-md th,
+.lykn-browser-rail .lykn-rail-md blockquote,
+.lykn-browser-rail .lykn-rail-md strong,
+.lykn-browser-rail .lykn-user-prompt-bubble {
+  color: #000 !important;
+}
+.lykn-browser-rail .lykn-outline-spinner {
+  color: #000 !important;
+}
+html.dark .lykn-browser-rail .lykn-chat-thinking-text,
+.lykn-browser-rail .lykn-chat-thinking-text {
+  --lykn-chat-thinking-dim: rgba(0, 0, 0, 0.42);
+  --lykn-chat-thinking-bright: #000;
+}
+.lykn-chat-thread--browser a {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.lykn-chat-thread--browser pre,
+.lykn-chat-thread--browser table {
+  max-width: 100%;
+}
+.lykn-browser-ask-bar.lg-desktop-surface {
+  background: rgba(255, 255, 255, 0.78);
+  border-color: rgba(0, 0, 0, 0.08);
+  color: #1c1c1c;
+}
+.lykn-browser-rail .lykn-browser-ask-field,
+.lykn-browser-ask-bar textarea.lykn-browser-ask-field {
+  color: #000 !important;
+  -webkit-text-fill-color: #000;
+}
+.lykn-browser-rail .lykn-browser-ask-field::placeholder,
+.lykn-browser-ask-bar textarea.lykn-browser-ask-field::placeholder {
+  color: rgba(0, 0, 0, 0.4) !important;
+  -webkit-text-fill-color: rgba(0, 0, 0, 0.4);
+}
 
 
 

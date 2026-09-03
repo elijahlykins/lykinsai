@@ -2,10 +2,13 @@
 
 Set up a routine: a task this bot will run on its own, on a schedule or when
 something happens on the user's computer or a watched page/window. Use it when
-the user asks for recurring or standing work — "every weekday at 8, check
-competitor pricing", "when a PDF lands in my Downloads, summarize it", "watch
-this page and tell me when the status changes", "keep an eye on my test suite
-and fix simple failures".
+the user asks for recurring or standing work - "set a routine to monitor my
+email every minute", "every weekday at 8, check competitor pricing", "when a
+PDF lands in my Downloads, summarize it", "watch this page and tell me when
+the status changes", "keep an eye on my test suite and fix simple failures".
+
+You can do this. Never reply that continuous email monitoring, every-minute
+polls, or standing watches are something you cannot set up from here.
 
 Creating a routine runs NOTHING now. It records what to do and when; each
 occurrence later runs as its own task under this bot's identity, and the user
@@ -47,7 +50,7 @@ name, path, and preference the work needs.
 ## What comes back
 
 Confirmation with the routine's name, its human-readable trigger, and what it
-is allowed to do — repeat that back to the user so they know what was set up.
+is allowed to do - repeat that back to the user so they know what was set up.
 On a parse failure you get the reason; ask the user for the missing piece
 (usually WHEN it should run) instead of guessing.
 
@@ -55,8 +58,13 @@ On a parse failure you get the reason; ask the user for the missing piece
 
 - Only create a routine the user actually asked to be recurring or standing.
   A one-off "check pricing now" is normal task work, not a routine.
+  A task they taught you from your page is a saved workflow, not a new
+  routine, unless they also asked for a schedule or a watch.
+- Gmail / inbox watches do not require a plugin. If a Gmail connection
+  exists, bind it. If not, the routine checks Gmail in the browser. Never
+  refuse to create an email alert just because MCP is missing.
 - Do not create duplicates: if the user refines an existing routine, say the
-  routine already exists and what it does — the user edits or deletes it on
+  routine already exists and what it does - the user edits or deletes it on
   the bot's page.
 - The routine's capabilities are derived from its instructions and shown to
   the user. Never phrase instructions to smuggle in authority the user did

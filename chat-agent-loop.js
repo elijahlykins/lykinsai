@@ -41,8 +41,14 @@ import {
   buildAnthropicTools,
   buildGeminiTools,
 } from './mcp-tools/chatTools.js';
+import { isSurgicalEditCtx } from './mcp-tools/artifactEditSchema.js';
 import { inferNewBuildActivities } from './lib/ai/buildNarration.js';
 import { boundToolResult } from './mcp-tools/toolResultBounds.js';
+import {
+  emptyOpenRouterUsage,
+  extractOpenRouterUsage,
+  mergeOpenRouterUsage,
+} from './lib/inference/openRouterGateway.js';
 
 const MAX_HOPS = 6;
 /** Complex coding / multi-file artifact builds get a longer tool loop. */
@@ -572,7 +578,7 @@ function extractTitleFromPartialArgs(buf) {
   try { return JSON.parse(`"${m[1]}"`); } catch { return m[1]; }
 }
 
-function makeToolArgNarrator(onStatus) {
+function makeToolArgNarrator(onStatus, { editing = false } = {}) {
   if (typeof onStatus !== 'function') return () => {};
   const announced = new Set();
   const titled = new Set();
@@ -584,12 +590,16 @@ function makeToolArgNarrator(onStatus) {
     try {
       if (!announced.has(name)) {
         announced.add(name);
-        const line = ARG_STREAM_START_LINES[name];
+        const line = editing && ARG_PROGRESS_VERBS[name]
+          ? 'Patching the source…'
+          : ARG_STREAM_START_LINES[name];
         if (line) onStatus(line);
       }
       const verb = ARG_PROGRESS_VERBS[name];
       if (!verb) return;
-      if (!titled.has(name)) {
+      const isEditArgs =
+        /"edits"\s*:/.test(String(argsBuf || '')) || /"file_ops"\s*:/.test(String(argsBuf || ''));
+      if (!titled.has(name) && !isEditArgs) {
         const title = extractTitleFromPartialArgs(argsBuf);
         if (title) {
           titled.add(name);
@@ -608,7 +618,7 @@ function makeToolArgNarrator(onStatus) {
       if (argsBuf.length >= 400 && now - lastProgressAt >= 1800 && now - lastPartAt >= 2800) {
         lastProgressAt = now;
         const kb = argsBuf.length >= 1000 ? `${Math.round(argsBuf.length / 100) / 10}k` : `${argsBuf.length}`;
-        onStatus(`${verb}… (${kb})`);
+        onStatus(`${isEditArgs ? 'Patching the source' : verb}… (${kb})`);
       }
     } catch {
       /* narration must never break the stream */
@@ -762,16 +772,12 @@ async function runToolBatch(calls, ctx, record, allowedToolNames, onActivity, ma
  * Returns a Promise that resolves once the stream ends or rejects on
  * a transport error.
  *
- * `onActivity` (optional) fires on every raw chunk received from the
- * upstream provider — BEFORE we parse / forward anything. The server's
- * stall watchdog only refreshes on text/tool SSE events it forwards to
- * the client, so a model that spends a long time streaming a large
- * tool-call argument (e.g. building an interactive HTML page passed as
- * tool args) emits no forwardable events for that whole stretch and the
- * watchdog would otherwise abort a perfectly healthy stream. Counting
- * raw upstream bytes as activity keeps the watchdog honest: it still
- * catches a genuinely wedged provider (no bytes at all) but no longer
- * kills a stream that's actively receiving argument tokens.
+ * `onActivity` (optional) fires when a real `data:` SSE event arrives.
+ * Tool-arg streaming (a large React component as function arguments)
+ * still counts, because those tokens arrive as `data:` deltas. OpenRouter
+ * / gateway comment keepalives (`: ping`) must NOT count — they used to
+ * reset the stall watchdog while grok sat silent on an edit turn for
+ * minutes, until the 10-minute hard kill.
  */
 async function readSseStream(body, processPayload, onActivity) {
   if (!body) return;
@@ -781,6 +787,7 @@ async function readSseStream(body, processPayload, onActivity) {
 
   const handlePayload = (payload) => {
     if (!payload || payload === '[DONE]') return;
+    try { onActivity?.(); } catch { /* swallow */ }
     processPayload(payload);
   };
 
@@ -798,7 +805,6 @@ async function readSseStream(body, processPayload, onActivity) {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (value) { try { onActivity?.(); } catch { /* swallow */ } }
       buffer += decoder.decode(value, { stream: true });
       drainBuffered();
     }
@@ -869,6 +875,7 @@ async function runOpenAiCompatLoop({
   onStatus,
   onActivity,                   // fires on every raw upstream chunk (stall-watchdog keepalive)
   providerLabel = 'openai',
+  extraHeaders = {},
   chatToolNames,
   forceToolName,                // when set, force this tool on the first hop
   maxHops,
@@ -876,14 +883,15 @@ async function runOpenAiCompatLoop({
   continueIncompleteResearch = false,
 }) {
   if (!apiKey) {
-    return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: `${providerLabel} API key missing` };
+    return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: `${providerLabel} API key missing`, usage: emptyOpenRouterUsage() };
   }
-  const tools = buildOpenAiTools(chatToolNames, ctx?.extraChatTools);
-  if (!tools) {
-    return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
-  }
-
   const editingArtifact = isEditArtifactTurn(ctx);
+  const tools = buildOpenAiTools(chatToolNames, ctx?.extraChatTools, {
+    surgicalEdit: isSurgicalEditCtx(ctx),
+  });
+  if (!tools) {
+    return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted', usage: emptyOpenRouterUsage() };
+  }
   const hopLimit = resolveMaxHops({ maxHops, codingMode, editingArtifact });
   const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode, editingArtifact });
   const effectiveHopLimit = continueIncompleteResearch
@@ -912,6 +920,8 @@ async function runOpenAiCompatLoop({
   let truncatedRetries = 0;
   let researchContinues = 0;
   let accumulatedAssistantText = '';
+  let totalUsage = emptyOpenRouterUsage();
+  const withUsage = (result) => ({ ...result, usage: totalUsage });
 
   for (let hop = 0; hop < effectiveHopLimit; hop++) {
     if (signal?.aborted) {
@@ -942,14 +952,16 @@ async function runOpenAiCompatLoop({
         // /chat/completions unless reasoning is off ("use /v1/responses or
         // set reasoning_effort to 'none'"). Tool turns don't need the
         // reasoning pass, so turn it off rather than porting the whole loop
-        // to the Responses API.
-        ...(providerLabel === 'openai' && /^gpt-5\.6/.test(String(model)) ? { reasoning_effort: 'none' } : {}),
+        // to the Responses API. Match the family on the id even when the
+        // call goes through OpenRouter (`openai/gpt-5.6-terra`).
+        ...( /gpt-5\.6/.test(String(model)) ? { reasoning_effort: 'none' } : {}),
       };
       res = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
+          ...extraHeaders,
         },
         body: JSON.stringify(body),
         signal,
@@ -970,11 +982,13 @@ async function runOpenAiCompatLoop({
     const pendingCalls = new Map(); // index → { id, name, argsBuf }
     let finishReason = '';
     let hopText = '';
-    const narrate = makeToolArgNarrator(onStatus);
+    let hopUsage = null;
+    const narrate = makeToolArgNarrator(onStatus, { editing: editingArtifact });
 
     try {
       await readSseStream(res.body, (payload) => {
         const parsed = safeJsonParse(payload);
+        if (parsed?.usage) hopUsage = extractOpenRouterUsage(parsed);
         const choice = parsed?.choices?.[0];
         if (!choice) return;
         const delta = choice.delta || {};
@@ -998,8 +1012,9 @@ async function runOpenAiCompatLoop({
       }, onActivity);
     } catch (err) {
       stripper.flush();
-      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
+      return withUsage({ ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) });
     }
+    if (hopUsage) totalUsage = mergeOpenRouterUsage(totalUsage, hopUsage);
 
     if (hopText) accumulatedAssistantText += hopText;
 
@@ -1053,13 +1068,13 @@ async function runOpenAiCompatLoop({
         messages.push({ role: 'user', content: RESEARCH_CONTINUE_PROMPT });
         continue;
       }
-      return {
+      return withUsage({
         ok: true,
         hadText,
         toolCalls: allToolCalls,
         reason: isLengthStopReason(finishReason) ? 'length' : 'stop',
         errorMessage: null,
-      };
+      });
     }
 
     // Build the assistant turn EXACTLY as OpenAI / Grok expect it.
@@ -1115,13 +1130,13 @@ async function runOpenAiCompatLoop({
   }
 
   stripper.flush();
-  return {
+  return withUsage({
     ok: false,
     hadText,
     toolCalls: allToolCalls,
     reason: 'hop_cap',
     errorMessage: `Tool loop exceeded ${effectiveHopLimit} hops`,
-  };
+  });
 }
 
 // ===========================================================================
@@ -1166,11 +1181,13 @@ async function runAnthropicLoop({
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'ANTHROPIC_API_KEY missing' };
   }
-  const tools = buildAnthropicTools(chatToolNames, ctx?.extraChatTools);
+  const editingArtifact = isEditArtifactTurn(ctx);
+  const tools = buildAnthropicTools(chatToolNames, ctx?.extraChatTools, {
+    surgicalEdit: isSurgicalEditCtx(ctx),
+  });
   if (!tools) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
   }
-  const editingArtifact = isEditArtifactTurn(ctx);
   const hopLimit = resolveMaxHops({ maxHops, codingMode, editingArtifact });
   const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode, editingArtifact });
   const effectiveHopLimit = continueIncompleteResearch
@@ -1255,7 +1272,7 @@ async function runAnthropicLoop({
     //                        { type: 'tool_use', id, name, input: ... , _argsBuf: '...' }
     const contentBlocks = [];
     let stopReason = '';
-    const narrate = makeToolArgNarrator(onStatus);
+    const narrate = makeToolArgNarrator(onStatus, { editing: editingArtifact });
 
     try {
       await readSseStream(res.body, (payload) => {
@@ -1452,11 +1469,13 @@ async function runGeminiLoop({
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'GOOGLE_API_KEY missing' };
   }
-  const tools = buildGeminiTools(chatToolNames, ctx?.extraChatTools);
+  const editingArtifact = isEditArtifactTurn(ctx);
+  const tools = buildGeminiTools(chatToolNames, ctx?.extraChatTools, {
+    surgicalEdit: isSurgicalEditCtx(ctx),
+  });
   if (!tools) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
   }
-  const editingArtifact = isEditArtifactTurn(ctx);
   const hopLimit = resolveMaxHops({ maxHops, codingMode, editingArtifact });
   const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode, editingArtifact });
   const effectiveHopLimit = continueIncompleteResearch
@@ -1544,7 +1563,7 @@ async function runGeminiLoop({
     const seenCallKeys = new Set(); // Gemini can re-emit the SAME functionCall across chunks
     // Gemini delivers functionCall args whole (no delta stream), so this
     // only fires the opening "Designing…" beat when the call lands.
-    const narrate = makeToolArgNarrator(onStatus);
+    const narrate = makeToolArgNarrator(onStatus, { editing: editingArtifact });
     let finishReason = '';
     let hopText = '';
 
@@ -1675,449 +1694,21 @@ async function runGeminiLoop({
   };
 }
 
-// ===========================================================================
-// Deterministic "show me what I saved" safety net
-// ===========================================================================
-// The #1 chat complaint: the user asks to SEE a saved item ("pull them in",
-// "show me my porsche pics"), the model runs lykn_searchVault, narrates the
-// hits, but never calls lykn_loadNeurons — so nothing actually renders in the
-// chat (searchVault hits are snippets; only loadNeuron(s) produce the visible
-// cards). Prompt guidance reduces this but can't guarantee it. This net runs
-// AFTER the model's turn: if the user clearly wanted to view saved items and
-// the model searched the vault but never loaded the results, we load the top
-// hits ourselves and emit the tool_call events so the cards appear.
-
-// Keep this small: auto-load is a repair for "model forgot to surface", not
-// a dump of the whole search page. Six unrelated cards under a careful reply
-// is worse than under-surfacing.
-const AUTO_LOAD_MAX = 3;
-
-// View verbs alone are NOT enough ("show me how X works", "I see", "bring
-// it together"). Require an explicit saved/vault cue, or a short yes after
-// the assistant offered to pull saved items up.
-const VIEW_INTENT_RE =
-  /\b(show|see|view|open|display|render|pull\s*(?:up|in)|bring\s*(?:up|in)|drop\s+in|load)\b/i;
-const SAVED_CONTEXT_RE =
-  /\b(?:vault|saved|artifact|artifacts|ai\s*drive|what\s+(?:have|did)\s+i\s+save|something\s+i\s+saved|what\s+i\s+saved)\b/i;
-const VAULT_AFFIRMATION_RE =
-  /^(?:\s*(?:yes|yep|yeah|yup|ya|sure|ok|okay|k|please|do\s*it|go(?:\s*ahead)?|go\s*for\s*it|sounds?\s*good|that\s*one|those|them|all\s*(?:of\s*)?(?:them|those))\b[\s.,!]*)+$/i;
-const VAULT_SURFACE_OFFER_RE =
-  /\b(pull\s*(?:them|those|it|up|in)|bring\s*(?:them|those|it|up|in)|show\s*(?:you|them|those|it)|want\s*me\s*to\s*(?:pull|show|bring|open|load)|i\s*(?:can|could)\s*(?:pull|show|bring)|in\s*(?:your\s*)?vault|saved\s*(?:note|notes|item|items|image|images|file|files))\b/i;
-
-// When the model already listed hits and is WAITING for the user to pick
-// ("let me know which…", "want me to pull any in?"), auto-loading the raw
-// search page dumps unrelated vault cards under an otherwise-correct reply.
-// Skip the repair; the next "yes / the porsche ones" turn still surfaces.
-const ASSISTANT_DEFERRED_SURFACE_RE =
-  /\b(?:let\s+me\s+know\s+if\s+you\s+(?:want|would)|(?:do\s+you\s+want|would\s+you\s+like)\s+me\s+to\s+(?:pull|bring|show|open|load)|want\s+me\s+to\s+(?:pull|bring|show|open|load)|if\s+you(?:'d|\s+would)?\s+like\s+(?:me\s+to\s+)?(?:pull|bring|show|open|load|see)|specify\s+which|which\s+one(?:s)?\s+you\s+(?:want|would|like)|just\s+(?:say|tell)\s+(?:the\s+word|me\s+which)|i\s+(?:can|could)\s+(?:pull|bring|show)\s+(?:them|those|it|any|one))\b/i;
-
-// Words to strip when deriving a search topic from the user's message: the
-// view verbs themselves plus pronouns / filler / vault-domain nouns that
-// carry no topic signal. What's left should be the actual subject ("porsche").
-const QUERY_STOPWORDS = new Set([
-  // view verbs
-  'show', 'see', 'view', 'open', 'display', 'render', 'pull', 'bring', 'drop',
-  'load', 'pullup', 'bringin',
-  // pronouns / determiners / filler
-  'the', 'them', 'they', 'those', 'these', 'that', 'this', 'it', 'its', 'my',
-  'mine', 'our', 'your', 'his', 'her', 'into', 'over', 'here', 'there', 'now',
-  'all', 'any', 'some', 'please', 'can', 'could', 'would', 'will', 'you',
-  'want', 'wanna', 'like', 'get', 'from', 'for', 'and', 'with', 'about', 'out',
-  'have', 'has', 'had', 'are', 'was', 'were', 'plz', 'pls',
-  // vault-domain nouns
-  'vault', 'saved', 'save', 'note', 'notes', 'image', 'images', 'img', 'pic',
-  'pics', 'picture', 'pictures', 'photo', 'photos', 'file', 'files', 'item',
-  'items', 'thing', 'things', 'stuff', 'link', 'links', 'content',
-]);
-
-function extractUserText(userContent) {
-  if (typeof userContent === 'string') return userContent;
-  if (Array.isArray(userContent)) {
-    return userContent
-      .map((p) => (typeof p === 'string' ? p : (typeof p?.text === 'string' ? p.text : '')))
-      .join(' ');
-  }
-  return '';
-}
-
-/** True only when the user asked to SEE saved vault items this turn. */
-function userAskedToViewSavedItems(userText, priorTurns) {
-  const t = String(userText || '').trim();
-  if (!t) return false;
-  if (VIEW_INTENT_RE.test(t) && SAVED_CONTEXT_RE.test(t)) return true;
-  // "pull up my porsche pics from the vault" / "show my saved notes on X"
-  if (
-    /\b(?:show|see|open|pull|bring|display|load)\b.{0,48}\b(?:vault|saved|artifact|artifacts)\b/i.test(
-      t,
-    )
-  ) {
-    return true;
-  }
-  if (
-    /\b(?:show|see|open|pull|bring|display|load)\b.{0,48}\b(?:my|the|that|those)\b.{0,24}\b(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|links?|articles?)\b/i.test(
-      t,
-    ) &&
-    /\b(?:vault|saved)\b/i.test(t)
-  ) {
-    return true;
-  }
-  if (VAULT_AFFIRMATION_RE.test(t) && Array.isArray(priorTurns)) {
-    for (let i = priorTurns.length - 1; i >= 0; i--) {
-      const m = priorTurns[i];
-      if (m?.role !== 'assistant') continue;
-      return VAULT_SURFACE_OFFER_RE.test(String(m.content || ''));
-    }
-  }
-  return false;
-}
-
-// Reduce the user's message to its topic words so we can run a vault search
-// when the model answered from injected context instead of calling the tool.
-// Returns '' when nothing meaningful is left (e.g. a bare "pull them in").
-function deriveVaultQuery(userText) {
-  const tokens = String(userText || '')
-    .toLowerCase()
-    .split(/[^a-z0-9]+/i)
-    .filter((t) => t.length >= 3 && !QUERY_STOPWORDS.has(t));
-  return [...new Set(tokens)].join(' ').trim();
-}
-
-function collectVaultNodeIds(searchHits, into = [], seen = new Set()) {
-  for (const h of searchHits || []) {
-    const id = typeof h?.node_id === 'string' ? h.node_id : '';
-    if (!id.startsWith('vault_') || seen.has(id)) continue;
-    seen.add(id);
-    into.push(id);
-    if (into.length >= AUTO_LOAD_MAX) break;
-  }
-  return into;
-}
-
-function assistantDeferredVaultSurface(assistantText) {
-  return ASSISTANT_DEFERRED_SURFACE_RE.test(String(assistantText || ''));
-}
-
-function userAskedForImages(userText) {
-  return /\b(?:pics?|pictures?|photos?|images?|imgs?)\b/i.test(String(userText || ''));
-}
 
 /**
- * AI-authored "I noted that you wanted X saved" rollups. Search ranks these
- * highly on the topic word, so the model loads them and claims it pulled the
- * real media — while the actual images never appear. Keep them out of
- * auto-load (and treat loading only these as a miss to repair).
- */
-function isMetaVaultHit(hit) {
-  const title = String(hit?.title || '').trim();
-  const snippet = String(hit?.snippet || hit?.content || '').trim();
-  if (/^saved items\s*:/i.test(title)) return true;
-  if (/i have noted this as a saved item/i.test(snippet)) return true;
-  if (/the user asked to save\b/i.test(snippet) && snippet.length < 800) return true;
-  if (/\b(?:pulled|pulling)\s+(?:in|up)\b.{0,40}\b(?:vault|saved)\b/i.test(snippet) && snippet.length < 800) {
-    return true;
-  }
-  return false;
-}
-
-/** true / false / null (unknown) — search hits don't carry a media type. */
-function looksLikeImageHit(hit) {
-  if (isMetaVaultHit(hit)) return false;
-  const blob = `${hit?.title || ''} ${hit?.snippet || ''} ${hit?.source || ''}`.toLowerCase();
-  if (
-    /\b(image|photo|picture|png|jpe?g|webp|gif|heic|pexels|unsplash|generated image)\b/.test(blob)
-    || /\.(png|jpe?g|webp|gif|heic)\b/.test(blob)
-  ) {
-    return true;
-  }
-  if (/\b(from:|subject:|replied to your post|mailto:)\b/.test(blob)) return false;
-  return null;
-}
-
-function loadedVaultPayloads(calls) {
-  const out = [];
-  for (const c of calls || []) {
-    if (c?.status !== 'done') continue;
-    if (c.name === 'lykn_loadNeuron' && c.result?.ok && c.result?.kind === 'vault') {
-      out.push(c.result);
-      continue;
-    }
-    if (c.name === 'lykn_loadNeurons' && Array.isArray(c.result?.results)) {
-      for (const r of c.result.results) {
-        if (r?.ok && r?.kind === 'vault') out.push(r);
-      }
-    }
-  }
-  return out;
-}
-
-function vaultPayloadLooksLikeImage(payload) {
-  const note = payload?.note || {};
-  const title = String(note.title || '');
-  const content = String(note.content || '');
-  if (isMetaVaultHit({ title, snippet: content.slice(0, 500) })) return false;
-  if (/\[ATTACHMENTS_JSON:/.test(content)) {
-    if (/"type"\s*:\s*"(?:image|photo)"/i.test(content)) return true;
-    if (/\.(png|jpe?g|webp|gif|heic)\b/i.test(content)) return true;
-    if (/"mime"\s*:\s*"image\//i.test(content)) return true;
-  }
-  return looksLikeImageHit({ title, snippet: content.slice(0, 240) }) === true;
-}
-
-function vaultPayloadIsMeta(payload) {
-  const note = payload?.note || {};
-  return isMetaVaultHit({
-    title: note.title,
-    snippet: String(note.content || '').slice(0, 800),
-  });
-}
-
-/**
- * True when the model already called loadNeuron(s) but what it brought in
- * still doesn't satisfy the user's ask (e.g. loaded a "Saved items: Porsche"
- * meta-note while they wanted the actual car photos).
- */
-function needsVaultLoadRepair(calls, userText) {
-  const loaded = loadedVaultPayloads(calls);
-  if (loaded.length === 0) return true;
-  if (loaded.every(vaultPayloadIsMeta)) return true;
-  if (userAskedForImages(userText) && !loaded.some(vaultPayloadLooksLikeImage)) return true;
-  return false;
-}
-
-/**
- * Pick which search hits to auto-load.
- *   1) Prefer hits whose titles the model already named in its reply.
- *   2) For pic/image asks, drop clear non-images (emails, etc.).
- *   3) Cap at `max`.
- */
-function selectAutoLoadHits(hits, { assistantText = '', userText = '', max = AUTO_LOAD_MAX } = {}) {
-  const list = Array.isArray(hits)
-    ? hits.filter(
-        (h) =>
-          typeof h?.node_id === 'string' &&
-          h.node_id.startsWith('vault_') &&
-          !isMetaVaultHit(h),
-      )
-    : [];
-  if (!list.length) return [];
-
-  const text = String(assistantText || '').toLowerCase();
-  const mentioned = [];
-  const rest = [];
-  for (const h of list) {
-    const title = String(h?.title || '').trim();
-    if (!title) {
-      rest.push(h);
-      continue;
-    }
-    // Models usually echo the vault title (or a long filename prefix) when
-    // narrating hits. Match a stable prefix so we only auto-load what they
-    // actually talked about — not the rest of a noisy search page.
-    // Skip meta titles even if the model narrated them ("Saved items: X").
-    if (isMetaVaultHit(h)) continue;
-    const needle = title.toLowerCase().slice(0, Math.min(title.length, 48));
-    if (needle.length >= 6 && text.includes(needle)) mentioned.push(h);
-    else rest.push(h);
-  }
-
-  let pool = mentioned.length > 0 ? mentioned : rest;
-
-  if (userAskedForImages(userText)) {
-    const images = pool.filter((h) => looksLikeImageHit(h) === true);
-    const unknown = pool.filter((h) => looksLikeImageHit(h) == null);
-    // Prefer real image hits. Meta / email / plain-text rollups are never
-    // good enough when the user asked for pics.
-    if (images.length > 0) {
-      pool = [...images, ...unknown];
-    } else if (mentioned.length > 0) {
-      pool = pool.filter((h) => looksLikeImageHit(h) !== false);
-    } else {
-      pool = unknown.length ? unknown : pool;
-    }
-  }
-
-  return pool.slice(0, Math.max(1, max));
-}
-
-/**
- * Make "show me / pull in my saved X" actually render the items as cards,
- * deterministically — independent of whether the model remembered to call
- * the tools. Runs AFTER the model's turn when:
- *   • the user expressed a view intent, AND
- *   • the model did NOT already loadNeuron(s) this turn — OR it loaded
- *     only meta / non-image junk while the user asked for real media.
- *
- * Node_ids come from (1) a searchVault the model ran this turn, or — when the
- * model answered straight from the injected vault dossier without searching —
- * (2) a search we run ourselves on the topic in the user's message. Then we
- * loadNeurons the top hits and emit the tool_call events so the cards appear.
- * Mutates `result.toolCalls`. Best-effort: failures are swallowed.
- */
-async function autoLoadVaultNeuronsIfMissed(opts, result, assistantText = '') {
-  if (!result || result.reason !== 'stop') return; // only on a clean finish
-  if (!opts?.ctx?.userId) return;
-
-  const userText = extractUserText(opts.userContent);
-  // Critical: do NOT fire on generic "show/see/pull" chat — only when the
-  // user clearly wants saved Vault items on screen.
-  if (!userAskedToViewSavedItems(userText, opts.priorTurns)) return;
-
-  const calls = Array.isArray(result.toolCalls) ? result.toolCalls : [];
-  // Model already loaded something — but it may have grabbed a meta "Saved
-  // items: …" note (or other non-image) while claiming it pulled the photos.
-  // Only skip repair when the load actually satisfies the ask.
-  const mustRepair = needsVaultLoadRepair(calls, userText);
-  const alreadyLoaded =
-    calls.some((c) => c.name === 'lykn_loadNeurons' || c.name === 'lykn_loadNeuron');
-  if (alreadyLoaded && !mustRepair) return;
-
-  // Model offered "want me to pull any in?" with no (or only-correct) load —
-  // wait for the user. Override only when it already loaded the WRONG thing
-  // (meta note / zero images for a pics ask) and claimed success.
-  if (assistantDeferredVaultSurface(assistantText) && !(alreadyLoaded && mustRepair)) return;
-
-  const allowedToolNames = Array.isArray(opts.chatToolNames) ? opts.chatToolNames : null;
-  // If loadNeurons isn't reachable for this model (custom agent with a
-  // narrowed tool set), skip rather than emit a misleading error card.
-  if (allowedToolNames && !allowedToolNames.includes('lykn_loadNeurons')) return;
-  const toolOpts = allowedToolNames ? { allowedToolNames } : {};
-
-  // 1) Prefer hits from a searchVault the model already ran this turn, then
-  //    narrow to titles it narrated (or image-like hits for pic asks).
-  const rawHits = [];
-  const seenHit = new Set();
-  for (const c of calls) {
-    if (c.name !== 'lykn_searchVault' || c.status !== 'done') continue;
-    for (const h of c.result?.hits || []) {
-      const id = typeof h?.node_id === 'string' ? h.node_id : '';
-      if (!id.startsWith('vault_') || seenHit.has(id)) continue;
-      seenHit.add(id);
-      rawHits.push(h);
-    }
-  }
-
-  // 2) The model answered from the injected vault dossier without searching.
-  //    Run our own search on the topic in the user's message so the cards
-  //    still render. Skip if there's no searchable topic (bare anaphora like
-  //    "pull them in" — the prompt guidance handles re-search in that case).
-  if (rawHits.length === 0) {
-    if (allowedToolNames && !allowedToolNames.includes('lykn_searchVault')) return;
-    const query = deriveVaultQuery(userText);
-    if (!query) return;
-    const sv = await runChatTool(
-      'lykn_searchVault',
-      { query, limit: Math.max(AUTO_LOAD_MAX, 8) },
-      opts.ctx,
-      toolOpts,
-    );
-    for (const h of sv?.payload?.hits || []) {
-      const id = typeof h?.node_id === 'string' ? h.node_id : '';
-      if (!id.startsWith('vault_') || seenHit.has(id)) continue;
-      seenHit.add(id);
-      rawHits.push(h);
-    }
-  }
-
-  const selected = selectAutoLoadHits(rawHits, {
-    assistantText,
-    userText,
-    max: AUTO_LOAD_MAX,
-  });
-  // Don't re-load node_ids the model already hydrated this turn.
-  const alreadyIds = new Set(
-    loadedVaultPayloads(calls)
-      .map((p) => (typeof p?.node_id === 'string' ? p.node_id : ''))
-      .filter(Boolean),
-  );
-  const nodeIds = [];
-  collectVaultNodeIds(
-    selected.filter((h) => !alreadyIds.has(h.node_id)),
-    nodeIds,
-  );
-
-  if (nodeIds.length === 0) return;
-
-  const id = `auto_load_${Date.now()}`;
-  const args = { node_ids: nodeIds };
-  const emit = (evt) => { try { opts.onToolCall?.(evt); } catch { /* swallow */ } };
-
-  emit({ id, name: 'lykn_loadNeurons', args, status: 'running' });
-  const { payload, isError, latencyMs } = await runChatTool(
-    'lykn_loadNeurons',
-    args,
-    opts.ctx,
-    toolOpts,
-  );
-  emit({
-    id,
-    name: 'lykn_loadNeurons',
-    args,
-    status: isError ? 'error' : 'done',
-    result: payload,
-    latencyMs,
-  });
-  calls.push({
-    id,
-    name: 'lykn_loadNeurons',
-    args,
-    status: isError ? 'error' : 'done',
-    result: payload,
-    error: isError ? (payload?.error || 'auto-load failed') : undefined,
-    latencyMs,
-  });
-  result.toolCalls = calls;
-}
-
-// ===========================================================================
-// Dispatcher
-// ===========================================================================
-/**
- * Run the in-app chat agent loop for one user turn. Dispatches on
- * `provider` to the right per-provider implementation.
- *
- *   await runAgentLoop({
- *     provider,               // 'openai' | 'grok' | 'anthropic' | 'gemini'
- *     model,                  // provider-correct model id
- *     systemPrompt,           // string (may be '')
- *     userContent,            // string OR provider-native multimodal parts
- *     priorTurns,             // [{ role: 'user'|'assistant', content }]
- *     maxOutputTokens,        // per-hop cap
- *     promptCacheKey,         // OpenAI only
- *     env,                    // { OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY, XAI_API_KEY }
- *     ctx,                    // buildChatToolCtx(req)
- *     signal,                 // optional AbortSignal
- *     onTextChunk,            // (text) => void
- *     onToolCall,             // (event) => void   running → done | error
- *     onStatus,               // (status) => void  optional human status
- *   });
+ * Run the in-app chat tool loop for one provider.
  *
  * Returns:
  *   { ok, hadText, toolCalls, reason, errorMessage }
  */
 export async function runAgentLoop(opts) {
   const provider = String(opts?.provider || '').toLowerCase();
-  // Capture the streamed assistant prose so the vault auto-load net can
-  // tell "model forgot to surface" apart from "model listed hits and is
-  // waiting for the user to pick which ones".
-  let assistantText = '';
-  const origOnTextChunk = opts?.onTextChunk;
-  const optsWithCapture = {
-    ...opts,
-    onTextChunk: (chunk) => {
-      if (typeof chunk === 'string' && chunk) assistantText += chunk;
-      try {
-        return origOnTextChunk?.(chunk);
-      } catch {
-        /* swallow — same contract as emitNormalized */
-      }
-    },
-  };
 
   let result;
   switch (provider) {
     case 'openai':
       result = await runOpenAiCompatLoop({
-        ...optsWithCapture,
+        ...opts,
         apiKey: opts.env?.OPENAI_API_KEY,
         baseUrl: 'https://api.openai.com/v1',
         providerLabel: 'openai',
@@ -2125,21 +1716,33 @@ export async function runAgentLoop(opts) {
       break;
     case 'grok':
       result = await runOpenAiCompatLoop({
-        ...optsWithCapture,
+        ...opts,
         apiKey: opts.env?.XAI_API_KEY,
         baseUrl: 'https://api.x.ai/v1',
         providerLabel: 'grok',
       });
       break;
+    case 'openrouter':
+      result = await runOpenAiCompatLoop({
+        ...opts,
+        apiKey: opts.env?.OPENROUTER_API_KEY,
+        baseUrl: 'https://openrouter.ai/api/v1',
+        providerLabel: 'openrouter',
+        extraHeaders: {
+          'HTTP-Referer': String(opts.env?.OPENROUTER_HTTP_REFERER || opts.env?.LYKN_PUBLIC_ORIGIN || 'https://lykn.io').slice(0, 200),
+          'X-Title': 'LYKN',
+        },
+      });
+      break;
     case 'anthropic':
       result = await runAnthropicLoop({
-        ...optsWithCapture,
+        ...opts,
         apiKey: opts.env?.ANTHROPIC_API_KEY,
       });
       break;
     case 'gemini':
       result = await runGeminiLoop({
-        ...optsWithCapture,
+        ...opts,
         apiKey: opts.env?.GOOGLE_API_KEY,
       });
       break;
@@ -2151,16 +1754,6 @@ export async function runAgentLoop(opts) {
         reason: 'error',
         errorMessage: `unsupported provider: ${provider}`,
       };
-  }
-
-  // Deterministic safety net: if the user asked to SEE saved items and the
-  // model searched the vault but never loaded the hits into view, load them
-  // now so the cards actually render in the chat. Runs before the caller
-  // closes the SSE stream, so the emitted tool_call events reach the client.
-  try {
-    await autoLoadVaultNeuronsIfMissed(optsWithCapture, result, assistantText);
-  } catch (err) {
-    console.warn('[chat-agent-loop] auto-load vault neurons failed:', err?.message || err);
   }
 
   return result;

@@ -71,7 +71,28 @@ function sanitizeBotSnapshot(raw) {
     color: String(raw.color || "").trim().slice(0, 60),
     chatId: String(raw.chatId || "").trim().slice(0, 160),
   };
+  const connectionIds = cleanConnectionIds(raw.connectionIds);
+  if (connectionIds !== undefined) snapshot.connectionIds = connectionIds;
+  const skills = sanitizeBotSkills(raw.skills);
+  if (skills.length) snapshot.skills = skills;
   return snapshot.id || snapshot.name ? snapshot : null;
+}
+
+function sanitizeBotSkills(value) {
+  const list = Array.isArray(value) ? value : [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of list) {
+    if (!raw || typeof raw !== "object") continue;
+    const id = String(raw.id || "").trim().slice(0, 80);
+    const name = String(raw.name || "").replace(/\s+/g, " ").trim().slice(0, 60);
+    const instructions = String(raw.instructions || "").trim().slice(0, 2000);
+    if (!id || !name || !instructions || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, name, instructions });
+    if (out.length >= 12) break;
+  }
+  return out;
 }
 
 function cleanConnectionIds(value) {
@@ -279,6 +300,10 @@ function createRoutineStore({ userDataPath, now = () => Date.now(), onChange = (
       lastRunAt: null,
       nextRunAt: null,
       lastFiredOccurrence: null,
+      ...(cleanWorkflowId(input.workflowId) ? { workflowId: cleanWorkflowId(input.workflowId) } : {}),
+      ...(cleanWorkflowId(input.workflowId) && cleanWorkflowVersion(input.workflowVersion)
+        ? { workflowVersion: cleanWorkflowVersion(input.workflowVersion) }
+        : {}),
     };
     routines.set(routine.id, routine);
     changed({ immediate: true });
@@ -316,6 +341,17 @@ function createRoutineStore({ userDataPath, now = () => Date.now(), onChange = (
     }
     if (patch.capabilities !== undefined) routine.capabilities = cleanCapabilities(patch.capabilities);
     if (patch.connectionIds !== undefined) routine.connectionIds = cleanConnectionIds(patch.connectionIds);
+    if (patch.workflowId !== undefined) {
+      const workflowId = cleanWorkflowId(patch.workflowId);
+      if (workflowId) routine.workflowId = workflowId;
+      else delete routine.workflowId;
+      if (!workflowId) delete routine.workflowVersion;
+    }
+    if (patch.workflowVersion !== undefined && routine.workflowId) {
+      const workflowVersion = cleanWorkflowVersion(patch.workflowVersion);
+      if (workflowVersion) routine.workflowVersion = workflowVersion;
+      else delete routine.workflowVersion;
+    }
     if (patch.notificationPolicy !== undefined) {
       routine.notificationPolicy = oneOf(patch.notificationPolicy, NOTIFICATION_POLICIES, routine.notificationPolicy);
     }

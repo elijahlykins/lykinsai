@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import TrafficLights from "@/components/macdesktop/TrafficLights";
+import { BOTS_TOGGLE_ACTIVITY, BotsActivityButton } from "@/components/bots/BotsPage";
 
 const RATIO_MIN = 0.26;
 const RATIO_MAX = 0.74;
@@ -28,6 +29,13 @@ function PaneChrome({ app, label, onClose, onFill }) {
           {app?.label || label}
         </span>
       </div>
+      {app?.id === "bots" ? (
+        <div className="relative z-10 ml-auto flex items-center">
+          <BotsActivityButton
+            onClick={() => window.dispatchEvent(new Event(BOTS_TOGGLE_ACTIVITY))}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

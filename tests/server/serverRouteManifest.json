@@ -4,32 +4,33 @@
     "Ordered registration surface of server.js (Express app). Entry order IS the contract:",
     "Express matches in registration order, so any reordering here is a behavior change."
   ],
-  "routeCount": 148,
-  "middlewareCount": 6,
+  "routeCount": 173,
+  "middlewareCount": 7,
   "byMethod": {
-    "DELETE": 6,
-    "GET": 47,
+    "DELETE": 7,
+    "GET": 63,
     "PATCH": 7,
-    "POST": 88
+    "POST": 94,
+    "PUT": 2
   },
   "byDomain": {
     "account": 8,
     "admin": 9,
     "assistAi": 8,
     "authFlows": 8,
-    "billing": 10,
+    "billing": 11,
     "chatCore": 5,
     "connections": 5,
-    "connectors": 3,
+    "connectors": 11,
     "customModels": 1,
     "desktop": 9,
     "feeds": 8,
     "files": 6,
     "learning": 1,
-    "other": 26,
+    "other": 39,
     "platform": 4,
     "synthesis": 5,
-    "usage": 3,
+    "usage": 6,
     "vaultMedia": 6,
     "voice": 12,
     "webtools": 3,
@@ -38,7 +39,15 @@
   "duplicates": [],
   "orderHazards": {
     "shadowedStatic": [],
-    "orderSensitive": []
+    "orderSensitive": [
+      {
+        "methods": [
+          "GET"
+        ],
+        "paramRoute": "/api/connections/managed/:provider",
+        "staticRoute": "/api/connections/managed/directory"
+      }
+    ]
   },
   "entries": [
     {
@@ -66,6 +75,7 @@
       ],
       "path": "/api/stripe/webhook",
       "chain": [
+        "<anonymous>",
         "rawParser",
         "<anonymous>"
       ],
@@ -90,6 +100,7 @@
       ],
       "path": "/api/client-error",
       "chain": [
+        "<anonymous>",
         "jsonParser",
         "<anonymous>",
         "<anonymous>"
@@ -104,6 +115,7 @@
       ],
       "path": "/api/health",
       "chain": [
+        "<anonymous>",
         "<anonymous>"
       ],
       "domain": "platform",
@@ -118,6 +130,7 @@
       ],
       "path": "/f/:token",
       "chain": [
+        "<anonymous>",
         "<anonymous>"
       ],
       "domain": "platform",
@@ -132,6 +145,7 @@
       ],
       "path": "/api/artifacts/react/rebuild",
       "chain": [
+        "<anonymous>",
         "requireAuth",
         "<anonymous>"
       ],
@@ -144,6 +158,12 @@
       "kind": "use",
       "name": "<anonymous>",
       "mount": "/api/",
+      "argc": 3
+    },
+    {
+      "kind": "use",
+      "name": "<anonymous>",
+      "mount": "/oauth/",
       "argc": 3
     },
     {
@@ -627,6 +647,132 @@
       "flags": [
         "auth"
       ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/public/toolkits",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/connections/managed",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/connections/managed/directory",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/connections/managed/:provider",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/connections/managed/:provider/connect",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/connections/managed/:provider/disconnect",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/connections/managed/complete",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/oauth/connections/callback",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/oauth/connections/verify",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "connectors",
+      "flags": []
     },
     {
       "kind": "route",
@@ -1251,6 +1397,7 @@
       "chain": [
         "requireAuth",
         "requireAppAccess",
+        "checkAiUsageLimit",
         "<anonymous>",
         "<anonymous>"
       ],
@@ -1258,6 +1405,8 @@
       "flags": [
         "auth",
         "appAccess",
+        "usageGate",
+        "billingSensitive",
         "agentTool"
       ]
     },
@@ -1270,6 +1419,7 @@
       "chain": [
         "requireAuth",
         "requireAppAccess",
+        "checkAiUsageLimit",
         "<anonymous>",
         "<anonymous>"
       ],
@@ -1277,6 +1427,8 @@
       "flags": [
         "auth",
         "appAccess",
+        "usageGate",
+        "billingSensitive",
         "agentTool"
       ]
     },
@@ -1289,6 +1441,7 @@
       "chain": [
         "requireAuth",
         "requireAppAccess",
+        "checkAiUsageLimit",
         "<anonymous>",
         "<anonymous>"
       ],
@@ -1296,6 +1449,8 @@
       "flags": [
         "auth",
         "appAccess",
+        "usageGate",
+        "billingSensitive",
         "agentTool"
       ]
     },
@@ -1308,6 +1463,7 @@
       "chain": [
         "requireAuth",
         "requireAppAccess",
+        "checkAiUsageLimit",
         "<anonymous>",
         "<anonymous>"
       ],
@@ -1315,6 +1471,8 @@
       "flags": [
         "auth",
         "appAccess",
+        "usageGate",
+        "billingSensitive",
         "agentTool"
       ]
     },
@@ -1327,6 +1485,7 @@
       "chain": [
         "requireAuth",
         "requireAppAccess",
+        "checkAiUsageLimit",
         "<anonymous>",
         "<anonymous>"
       ],
@@ -1334,6 +1493,8 @@
       "flags": [
         "auth",
         "appAccess",
+        "usageGate",
+        "billingSensitive",
         "agentTool"
       ]
     },
@@ -1346,6 +1507,7 @@
       "chain": [
         "requireAuth",
         "requireAppAccess",
+        "checkAiUsageLimit",
         "<anonymous>",
         "<anonymous>"
       ],
@@ -1353,6 +1515,8 @@
       "flags": [
         "auth",
         "appAccess",
+        "usageGate",
+        "billingSensitive",
         "agentTool"
       ]
     },
@@ -2052,6 +2216,228 @@
       "methods": [
         "GET"
       ],
+      "path": "/api/public/models",
+      "chain": [
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/models",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/models/recommended",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/models/billing-states",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/models/curated",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/models/catalog/sync",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/model-settings",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "path": "/api/model-settings",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/model-routes",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/model-routes",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "path": "/api/model-routes/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "path": "/api/model-routes/:id",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/usage/events",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "usage",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/usage/summary",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "usage",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/usage/daily",
+      "chain": [
+        "requireAuth",
+        "<anonymous>"
+      ],
+      "domain": "usage",
+      "flags": [
+        "auth"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
       "path": "/api/admin/usage/overview",
       "chain": [
         "requireAuth",
@@ -2255,6 +2641,23 @@
         "POST"
       ],
       "path": "/api/billing/topup",
+      "chain": [
+        "requireAuth",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "billing",
+      "flags": [
+        "auth",
+        "billingSensitive"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/billing/usage/fund",
       "chain": [
         "requireAuth",
         "<anonymous>",

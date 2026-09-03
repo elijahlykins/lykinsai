@@ -16,6 +16,7 @@ import {
 } from "@/lib/chat/chatAttachmentFile";
 import { macFileUrl } from "@/components/macfiles/preview";
 import type { LucideIcon } from "lucide-react";
+import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 
 export type FileMedia =
   | "image"
@@ -23,9 +24,8 @@ export type FileMedia =
   | "audio"
   | "pdf"
   | "text"
-  // A built page, framed and running. Never inferred from a .html extension —
-  // a stray HTML file on the user's disk reads as text, and only a caller that
-  // knows it is looking at an artifact asks for this.
+  // A built page or written document, framed and readable. `.html` on disk
+  // used to open as source; artifacts and letters must render as a page.
   | "html"
   | "youtube"
   | "unsupported";
@@ -69,6 +69,13 @@ export interface FileSource {
    * up straight away and fill in once the address comes back.
    */
   resolveUrl?: (() => Promise<string>) | null;
+  /**
+   * A fetchable address for the same bytes, for take-to-chat. The preview
+   * address can be iframe-only (the drive's branded file proxy blocks
+   * cross-origin fetch), so the opener hands over the raw storage URL here —
+   * the same address an image attachment fetches.
+   */
+  resolveAttachUrl?: (() => Promise<string>) | null;
   mime?: string | null;
   size?: number | null;
   /** Skip the sniffing when the caller already knows. */
@@ -87,6 +94,11 @@ export interface FileSource {
   onSaveToVault?: (() => void | Promise<void>) | null;
   /** Extra menus the opening surface offers for a file it owns. */
   picks?: FilePickAction[] | null;
+  /**
+   * The chat build this window is showing. Take-to-chat then stages this
+   * artifact on the composer so a later prompt can edit it in Build mode.
+   */
+  artifact?: ChatArtifact | null;
 }
 
 export interface ResolvedFile {
@@ -106,7 +118,7 @@ const EXT_MEDIA: Array<[RegExp, FileMedia]> = [
   [/^(mp3|m4a|wav|aac|flac|ogg)$/, "audio"],
   [/^pdf$/, "pdf"],
   [
-    /^(txt|md|markdown|log|json|csv|tsv|yaml|yml|toml|xml|html?|css|scss|js|jsx|ts|tsx|py|rb|go|rs|java|c|h|cpp|cs|swift|kt|php|sh|zsh|sql|env|gitignore)$/,
+    /^(txt|md|markdown|log|json|csv|tsv|yaml|yml|toml|xml|css|scss|js|jsx|ts|tsx|py|rb|go|rs|java|c|h|cpp|cs|swift|kt|php|sh|zsh|sql|env|gitignore)$/,
     "text",
   ],
 ];
@@ -148,6 +160,7 @@ export function mediaKindFor(opts: {
     return "unsupported";
   }
   if (mime === "application/pdf") return "pdf";
+  if (mime === "text/html" || ext === "html" || ext === "htm") return "html";
   if (mime.startsWith("image/")) return "image";
   if (mime.startsWith("video/")) return "video";
   if (mime.startsWith("audio/")) return "audio";

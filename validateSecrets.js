@@ -40,11 +40,25 @@ import { z } from 'zod';
 
 export const SECRET_RULES = [
   // === Supabase (database + auth) ===
+  ['VITE_SUPABASE_URL',         12, true,  'Supabase project URL used for JWT verification'],
+  ['VITE_SUPABASE_ANON_KEY',    20, true,  'Supabase public anon key used for JWT verification'],
   ['SUPABASE_SERVICE_ROLE_KEY', 40, true,  'Supabase service-role key — bypasses RLS'],
+
+  // === Public deployment origins ===
+  ['APP_URL',                    8, true,  'Canonical frontend origin for billing returns'],
+  ['PUBLIC_API_BASE_URL',        8, true,  'Canonical public API origin for OAuth callbacks'],
+  ['ALLOWED_ORIGINS',            8, true,  'Comma-separated browser CORS allowlist'],
 
   // === Stripe ===
   ['STRIPE_SECRET_KEY',         32, true,  'Stripe secret key (sk_live_...)'],
+  ['STRIPE_PUBLISHABLE_KEY',    12, true,  'Stripe publishable key (pk_live_...)'],
   ['STRIPE_WEBHOOK_SECRET',     32, true,  'Stripe webhook signing secret (whsec_...)'],
+  ['STRIPE_PRICE_STUDIO_MONTHLY', 7, true, 'Pro monthly Stripe Price id'],
+  ['STRIPE_PRICE_STUDIO_ANNUAL', 7, true, 'Pro annual Stripe Price id'],
+  ['STRIPE_PRICE_STUDENT_MONTHLY', 7, true, 'Student monthly Stripe Price id'],
+  ['STRIPE_PRICE_STUDENT_ANNUAL', 7, true, 'Student annual Stripe Price id'],
+  ['STRIPE_PRICE_MAX_MONTHLY',  7, true,  'Max monthly Stripe Price id'],
+  ['STRIPE_PRICE_MAX_ANNUAL',   7, true,  'Max annual Stripe Price id'],
 
   // === Operator-cron secrets (Agent 02 handoff: ≥32 chars in prod) ===
   ['BACKFILL_SECRET',           32, true,  'Synthesis-backfill cron bearer'],
@@ -67,10 +81,11 @@ export const SECRET_RULES = [
   ['VOICE_SESSION_SECRET',      32, true,  'HMAC signing key for voice/file-proxy session tokens'],
 
   // === AI provider keys (warn in prod if absent — service still boots) ===
-  ['OPENAI_API_KEY',            20, false, 'OpenAI API key'],
-  ['ANTHROPIC_API_KEY',         20, false, 'Anthropic API key'],
-  ['GOOGLE_API_KEY',            20, false, 'Gemini API key'],
-  ['XAI_API_KEY',               20, false, 'xAI / Grok API key'],
+  ['OPENROUTER_API_KEY',        20, false, 'OpenRouter API key (primary chat gateway)'],
+  ['OPENAI_API_KEY',            20, false, 'OpenAI API key (direct/fallback + non-chat)'],
+  ['ANTHROPIC_API_KEY',         20, false, 'Anthropic API key (direct/fallback + non-chat)'],
+  ['GOOGLE_API_KEY',            20, false, 'Gemini API key (direct/fallback, images, search)'],
+  ['XAI_API_KEY',               20, false, 'xAI / Grok API key (direct/fallback)'],
 
   // === Other server-side keys (warn-only) ===
   ['YOUTUBE_API_KEY',           20, false, 'YouTube Data API key'],
@@ -80,6 +95,10 @@ export const SECRET_RULES = [
   ['META_APP_TOKEN',            20, false, 'Meta (IG/FB) oEmbed app token'],
   ['WHISPER_HOSTED_API_KEY',    20, false, 'Hosted Whisper ASR key'],
   ['TRELLO_API_KEY',            16, false, 'Trello shared API key'],
+  // Composio project key for managed connected accounts (Gmail first).
+  // Server-side only — the managed-connections routes return
+  // `not_configured` when absent instead of failing boot.
+  ['COMPOSIO_API_KEY',          20, false, 'Composio project API key for managed connections'],
   // Voice custom-LLM shared secret — warn if short; route also refuses <32.
   ['ELEVENLABS_LLM_SECRET',     32, false, 'ElevenLabs custom-LLM bearer secret'],
 ];
@@ -219,6 +238,15 @@ export function validateSecrets(opts = {}) {
     if (r.kind === 'fatal') fatals.push(`${r.msg} (${description})`);
     else if (r.kind === 'warn') warns.push(`${r.msg} (${description})`);
     else oks.push(name);
+  }
+
+  for (const [name] of SECRET_RULES) {
+    if (!name.startsWith('STRIPE_PRICE_')) continue;
+    const value = String(env[name] || '').trim();
+    if (!value || /^price_[A-Za-z0-9]+$/.test(value)) continue;
+    const msg = `${name} must be a Stripe Price id beginning with price_`;
+    if (isProd) fatals.push(msg);
+    else warns.push(msg);
   }
 
   // Connector OAuth pair coherence

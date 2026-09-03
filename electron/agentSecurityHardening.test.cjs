@@ -21,6 +21,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
@@ -155,17 +157,25 @@ function makeHandler(registry, userDataPath) {
   };
 }
 
-// A synced-folders-any config so path allowlisting never masks the approval
-// behaviour under test. localSystem defaults to syncAll when the file is absent.
-const ANY_USERDATA = require("node:fs").mkdtempSync(
-  path.join(require("node:os").tmpdir(), "lykn-sec-local-"),
+// Approved-root config so path allowlisting never masks the approval
+// behaviour under test. The target paths sit inside this folder.
+const ANY_USERDATA = fs.mkdtempSync(path.join(os.tmpdir(), "lykn-sec-local-"));
+fs.writeFileSync(
+  path.join(ANY_USERDATA, "local-mode.json"),
+  JSON.stringify({
+    enabled: true,
+    syncAll: false,
+    syncedFolders: [ANY_USERDATA],
+    excludedFolders: [],
+    updatedAt: Date.now(),
+  }),
 );
 
-// A genuinely CONSEQUENTIAL command (rm is in the consequential tier — the
-// routine tier no longer stops for approval by design) so the approval gate
-// must fire — but inert if it ever wrongly executed (the path never exists).
-// We never expect it to run in the bypass cases.
-const RISKY_INERT = "rm -rf /tmp/lykn-sec-test-never-exists";
+function rmNever(name) {
+  return `rm -rf ${JSON.stringify(path.join(ANY_USERDATA, name))}`;
+}
+
+const RISKY_INERT = rmNever("lykn-sec-test-never-exists");
 
 test("Fix2: raw approved:true from a renderer cannot bypass the gate", async () => {
   const registry = createLocalApprovalRegistry();
@@ -196,14 +206,17 @@ test("Fix2: the legitimate mint→confirm→re-run flow works", async () => {
   const handler = makeHandler(registry, ANY_USERDATA);
   const cwd = ANY_USERDATA;
   // 1) First call: no token → risky → main mints a token.
-  const first = await handler({ name: "local_run_command", args: { command: "echo hi", cwd } });
+  const first = await handler({
+    name: "local_run_command",
+    args: { command: rmNever("lykn-sec-mint-never-exists"), cwd },
+  });
   assert.equal(first.needsApproval, true);
   assert.equal(typeof first.approvalToken, "string");
   assert.ok(first.approvalToken.length >= 32);
   // 2) User approves → re-invoke with the SAME token + args → runs.
   const run = await handler({
     name: "local_run_command",
-    args: { command: "echo hi", cwd },
+    args: { command: rmNever("lykn-sec-mint-never-exists"), cwd },
     approvalToken: first.approvalToken,
   });
   assert.equal(run.ok, true, `expected the command to run, got ${JSON.stringify(run)}`);
@@ -214,13 +227,13 @@ test("Fix2: a token minted for one command cannot approve a different command", 
   const handler = makeHandler(registry, ANY_USERDATA);
   const minted = await handler({
     name: "local_run_command",
-    args: { command: "rm -rf /tmp/lykn-sec-a-never-exists" },
+    args: { command: rmNever("lykn-sec-a-never-exists") },
   });
   assert.equal(typeof minted.approvalToken, "string");
   // Swap the command but keep the token — the token is bound to the original.
   const res = await handler({
     name: "local_run_command",
-    args: { command: "rm -rf /tmp/lykn-sec-b-never-exists" },
+    args: { command: rmNever("lykn-sec-b-never-exists") },
     approvalToken: minted.approvalToken,
   });
   assert.equal(res.needsApproval, true, "the token does not authorize a different command");

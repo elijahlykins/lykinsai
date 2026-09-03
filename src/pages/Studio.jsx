@@ -33,6 +33,7 @@ import { readAppearance, subscribeAppearance } from "@/lib/appearance";
 import { isDesktopShell } from "@/lib/webAppAccess";
 import StudioHoverTips from "@/components/StudioHoverTips";
 import { openLyknChat } from "@/components/macdock/DockContextMenu";
+import { STUDIO_HIDE_BROWSER_EVENT } from "@/lib/lyknChat/openInStudioBrowser";
 import InstalledAppFrame from "@/components/macdesktop/InstalledAppFrame";
 import {
   OPEN_APP_EVENT,
@@ -53,6 +54,7 @@ import {
   useWelcomeWidgetSync,
 } from "@/components/macdesktop/DesktopWidgets";
 import { useWelcomeDesignSync } from "@/lib/welcomeDesignPrefs";
+import { syncDisplayTopInset } from "@/lib/displayTopInset";
 import { useDesktopVisibility } from "@/components/macdesktop/desktopVisibility";
 import {
   DesktopLayerProvider,
@@ -79,16 +81,19 @@ import {
   OPEN_FILE_WINDOW_EVENT,
   subscribeFileWindows,
 } from "@/lib/files/fileWindows";
+import HomeChatBar from "@/components/macdesktop/HomeChatBar";
 import StudioPop from "@/components/macdesktop/StudioPop";
 import StudioSplit from "@/components/macdesktop/StudioSplit";
-import HomeChatBar from "@/components/macdesktop/HomeChatBar";
+import StudioUpdateBanners from "@/components/desktop/StudioUpdateBanners";
 import MacDesktopMirror from "@/components/macdesktop/MacDesktopMirror";
 import WidgetCanvas from "@/components/macdesktop/WidgetCanvas";
 import StudioSurface, { StudioChatPane } from "@/components/studio/StudioSurface";
-import StudioBrowserBody, {
+import { BOTS_TOGGLE_ACTIVITY, BotsActivityButton } from "@/components/bots/BotsPage";
+import StudioBrowserBody from "@/components/studio/StudioBrowserBody";
+import {
   BROWSER_CHROME_HEIGHT,
   BROWSER_VIEW_RADIUS,
-} from "@/components/studio/StudioBrowserBody";
+} from "@/components/studio/browserPaneLayout";
 import StudioDock from "@/components/studio/StudioDock";
 import {
   FROST_PANEL,
@@ -101,6 +106,7 @@ import {
   saveHiddenDockIds,
   stripQueryParam,
 } from "@/components/studio/studioAppRegistry";
+import { parseSettingsDeepLink } from "@/lib/settingsDeepLink";
 import {
   hiddenSplitIndex,
   splitCells,
@@ -141,8 +147,9 @@ export default function Studio() {
   // prompt bar (aspect ratios, reference images), so the rounded home bar
   // steps aside while it's up.
   const [homeView, setHomeView] = useState("chat");
-  // Browser rail is showing the same LyknChat bar — hide the desktop copy
-  // so the two don't both take attachments / keystrokes.
+  // Browser rail open: keep the Home LyknChat engine mounted so rail sends
+  // have a live board. Do not hide the desktop chat bar — Home and the
+  // browser rail are independent composers.
   const [railAttachedOpen, setRailAttachedOpen] = useState(false);
   // The desktop's widgets live in their own layout (position and size per
   // widget); the walkthrough's picks are seeded into it on first run. The
@@ -271,8 +278,17 @@ export default function Studio() {
   }, []);
   // Embedded frames mount on first visit and stay warm after that. A widget
   // can deep-link a section (e.g. a specific chat or project) via frameSrc.
-  const [visited, setVisited] = useState({});
+  // Chat stays warm from the first Home paint so a Bot pick / first send
+  // already has a live board. Hidden until homeChat is true.
+  const [visited, setVisited] = useState({ chat: true });
   const [frameSrc, setFrameSrc] = useState({});
+  // Ask LYKN in the browser rail uses the same LyknChat engine as Home.
+  // Mount the surface hidden so sends and the attached thread have a live
+  // conversation even if the user never opened chat on the desktop first.
+  useEffect(() => {
+    if (!railAttachedOpen) return;
+    setVisited((v) => (v.chat ? v : { ...v, chat: true }));
+  }, [railAttachedOpen]);
   // Floating Home windows (Browser / Calendar / To-dos), back to front: the
   // last id is the focused one. Minimized windows stay in the list (and stay
   // mounted, so their state survives) and come back from the dock or their
@@ -386,24 +402,41 @@ export default function Studio() {
   // the screen. Toggled from outside the page (native traffic lights, the app
   // menu, the OS); tracked here because the layout has to clear the notch and
   // run the panes to the window's edges.
+  // Measure before paint so the Chat / Build / Imagine / Research pill
+  // starts below the camera instead of jumping after first frame.
+  useLayoutEffect(() => {
+    syncDisplayTopInset();
+  }, []);
   useEffect(() => {
+    const applyHost = (payload) => {
+      setFullscreen(!!payload?.fullscreen);
+      syncDisplayTopInset(payload);
+    };
     if (window.lykn?.onStudioFullscreen) {
       let cancelled = false;
       window.lykn
         .getStudioFullscreen?.()
         .then((res) => {
-          if (!cancelled) setFullscreen(!!res?.fullscreen);
+          if (!cancelled) applyHost(res);
         })
         .catch(() => {});
-      const off = window.lykn.onStudioFullscreen((p) => setFullscreen(!!p?.fullscreen));
+      const off = window.lykn.onStudioFullscreen((p) => applyHost(p));
       return () => {
         cancelled = true;
         off?.();
       };
     }
-    const onChange = () => setFullscreen(!!document.fullscreenElement);
+    const onChange = () => {
+      setFullscreen(!!document.fullscreenElement);
+      syncDisplayTopInset();
+    };
+    onChange();
+    window.addEventListener("resize", onChange);
     document.addEventListener("fullscreenchange", onChange);
-    return () => document.removeEventListener("fullscreenchange", onChange);
+    return () => {
+      window.removeEventListener("resize", onChange);
+      document.removeEventListener("fullscreenchange", onChange);
+    };
   }, []);
 
   // The agent browser is native Electron views, not a web page, so the main
@@ -507,7 +540,7 @@ export default function Studio() {
       ro.disconnect();
       window.removeEventListener("resize", send);
     };
-  }, [browserDocked, browserHostEl]);
+  }, [browserDocked, browserHostEl, railAttachedOpen]);
 
   // The picture the window animates over while its native views are away (see
   // StudioBrowserBody). Main refreshes it as the browser changes and keeps the
@@ -566,21 +599,29 @@ export default function Studio() {
   }, []);
 
   // Artifact "Open" / a chat link routes the URL into the Studio browser
-  // and docks that window. The native agent rail opens so they can talk
-  // about the page — not the home Chat / Build / Imagine / Research bar.
+  // and docks that window. The side chat stays closed until Ask LYKN or
+  // AI Mode - bot work and opened tabs must not pop it open.
   useEffect(() => {
     const onShowBrowser = (event) => {
       setTab("dashboard");
       focusAppWindow("browser");
       const d = event?.detail || {};
-      const agentId = String(d.agentId || "").trim();
-      try {
-        window.lykn?.agentChatSet?.({ open: true, agentId: agentId || undefined });
-      } catch {
-        /* rail still opens from main's setAgentChatOpen */
+      if (d.openRail) {
+        const agentId = String(d.agentId || "").trim();
+        try {
+          window.lykn?.agentChatSet?.({ open: true, agentId: agentId || undefined });
+        } catch {
+          /* Ask LYKN / AI Mode still open the rail from chrome */
+        }
       }
     };
     window.addEventListener("lykn-studio-show-browser", onShowBrowser);
+    const onHideBrowser = () => {
+      // Yellow-minimize: park the frame and keep every tab alive so a Bot
+      // (or a LYKN-opened page) is still there when that chat comes back.
+      setMinimized((m) => (m.browser ? m : { ...m, browser: true }));
+    };
+    window.addEventListener(STUDIO_HIDE_BROWSER_EVENT, onHideBrowser);
     // "Ask AI" in the Mac Files surface hands the prompt to the chat surface
     // and fires this so the Studio flips to the Chat tab.
     const onOpenChat = (event) => {
@@ -588,13 +629,20 @@ export default function Studio() {
       if (event?.detail?.forceHome) setSplit(null);
       setTab("dashboard");
       setHomeChat(true);
-      if (event?.detail?.vaultPayload) setHomeView("chat");
       setVisited((v) => (v.chat ? v : { ...v, chat: true }));
+      const vaultPayload = event?.detail?.vaultPayload;
       const src = event?.detail?.src;
-      if (src) setFrameSrc((f) => (f.chat === src ? f : { ...f, chat: src }));
+      // A vault attach targets the conversation already on screen. The chat
+      // surface stays warm from the first Home paint, so re-keying frameSrc
+      // here would remount the whole MemoryRouter and stomping homeView would
+      // kick an active Imagine / Build / Research session back to plain Chat
+      // (mode pill and page both). Deliver the payload to the live surface
+      // instead and leave the mode session alone.
+      if (src && !vaultPayload) {
+        setFrameSrc((f) => (f.chat === src ? f : { ...f, chat: src }));
+      }
       const dismissApp = event?.detail?.dismissApp;
       if (dismissApp) setMinimized((m) => ({ ...m, [dismissApp]: true }));
-      const vaultPayload = event?.detail?.vaultPayload;
       if (vaultPayload) {
         // React commits the Home chat before the next frame. Delivering the
         // payload then handles both an already-mounted chat and a fresh mount;
@@ -611,6 +659,7 @@ export default function Studio() {
     window.addEventListener("lykn-studio-open-chat", onOpenChat);
     return () => {
       window.removeEventListener("lykn-studio-show-browser", onShowBrowser);
+      window.removeEventListener(STUDIO_HIDE_BROWSER_EVENT, onHideBrowser);
       window.removeEventListener("lykn-studio-open-chat", onOpenChat);
     };
   }, []);
@@ -1121,6 +1170,14 @@ export default function Studio() {
   const closeAppWindowRef = useRef(closeAppWindow);
   closeAppWindowRef.current = closeAppWindow;
   useEffect(() => {
+    try {
+      const view = parseSettingsDeepLink(window.location.search, SETTINGS_VIEWS);
+      if (view) openTabRef.current("settings", view);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  useEffect(() => {
     const onOpenTab = (e) => {
       const { id, src } = e.detail || {};
       if (!id) return;
@@ -1290,9 +1347,10 @@ export default function Studio() {
         // macOS simple-fullscreen makes chrome lag behind the frame.
         className={`relative z-10 flex h-full flex-col items-center ${
           // Fullscreen covers the whole display, so the top row must clear
-          // the camera notch / menu-bar strip (~38px on notched MacBooks).
+          // the camera notch / menu-bar strip for this display
+          // (`--lykn-display-top-inset`, measured from the work area).
           // Split View hides the dock and runs panes to the bottom edge.
-          fullscreen ? "px-2 pb-2 pt-11" : split ? "px-5 pb-2 pt-4" : "px-5 pb-4 pt-4"
+          fullscreen ? "lykn-studio-fs-pad px-2 pb-2" : split ? "px-5 pb-2 pt-4" : "px-5 pb-4 pt-4"
         }`}
       >
         {/* ── Main glass panel ── */}
@@ -1352,6 +1410,9 @@ export default function Studio() {
                     </span>
                   </div>
                 )}
+                <StudioUpdateBanners
+                  onOpenAccount={() => openTab("settings", "account")}
+                />
                 </DesktopSelectProvider>
                 </DesktopLayerProvider>
             </div>
@@ -1465,6 +1526,15 @@ export default function Studio() {
                   // Browser tab strip and Settings sidebar each draw their
                   // own traffic lights and drag the frame through `controls`.
                   chromeless={!!(app.native || app.chromeless)}
+                  titleTrailing={
+                    id === "bots" ? (
+                      <BotsActivityButton
+                        onClick={() =>
+                          window.dispatchEvent(new Event(BOTS_TOGGLE_ACTIVITY))
+                        }
+                      />
+                    ) : null
+                  }
                   controls={
                     app.native
                       ? browserControls
@@ -1511,9 +1581,7 @@ export default function Studio() {
                       shot={browserShot}
                       docked={browserDocked}
                       chromeHeight={browserChromeH}
-                      homeChatLive={homeChatLive}
-                      homeView={homeView}
-                      name={user ? firstName : ""}
+                      railOpen={railAttachedOpen}
                       onAttachedBarChange={setRailAttachedOpen}
                     />
                   ) : id === "settings" ? (
@@ -1562,9 +1630,8 @@ export default function Studio() {
                     desktop={desktop}
                     shot={browserShot}
                     docked={browserDocked}
-                    homeChatLive={homeChatLive}
-                    homeView={homeView}
-                    name={user ? firstName : ""}
+                    chromeHeight={browserChromeH}
+                    railOpen={railAttachedOpen}
                     onAttachedBarChange={setRailAttachedOpen}
                   />
                 );
@@ -1616,8 +1683,7 @@ export default function Studio() {
             bar with the other modes so typed text and attachments stay. */}
         {tab === "dashboard" &&
           !split &&
-          !coveringZoom &&
-          !railAttachedOpen && (
+          !coveringZoom && (
           <HomeChatBar
             active={homeChat}
             live={homeChatLive}

@@ -20,6 +20,12 @@ import {
   pollDueFeeds,
 } from '../../rss-service.js';
 import { pollRunningBuilds } from '../../lib/cursor/cursorBuilds.js';
+import {
+  getUserRowById,
+  updateUserRowById,
+  deleteUserRowById,
+  userOwnedTable,
+} from '../../lib/security/userOwnedAccess.js';
 
 /**
  * @param {import('express').Express} app
@@ -62,14 +68,12 @@ export function registerFeedsRoutes(app, {
       if (!userId) return res.status(401).json({ error: 'Not authenticated' });
       if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
 
-      const { data, error } = await supabaseAdmin
-        .from('rss_feeds')
+      const { data, error } = await userOwnedTable(supabaseAdmin, 'rss_feeds', userId)
         .select(
           'id, feed_url, site_url, title, description, icon_url, status, ' +
           'last_fetched_at, last_success_at, last_entry_pub_at, ' +
           'poll_interval_minutes, consecutive_errors, last_error, created_at',
         )
-        .eq('user_id', userId)
         .order('created_at', { ascending: false });
 
       if (error) { console.error('[supabase]', req.method, req.path, error); return res.status(500).json({ error: 'database_error' }); }
@@ -128,10 +132,8 @@ export function registerFeedsRoutes(app, {
         Math.min(50, Number.isFinite(initialBackfillCount) ? initialBackfillCount : 5),
       );
 
-      const { data: feed, error } = await supabaseAdmin
-        .from('rss_feeds')
+      const { data: feed, error } = await userOwnedTable(supabaseAdmin, 'rss_feeds', userId)
         .insert({
-          user_id: userId,
           feed_url: discovery.feedUrl,
           site_url: discovery.siteUrl,
           title: discovery.title,
@@ -187,13 +189,14 @@ export function registerFeedsRoutes(app, {
         allowed.poll_interval_minutes = req.body.poll_interval_minutes;
       }
 
-      const { data, error } = await supabaseAdmin
-        .from('rss_feeds')
-        .update(allowed)
-        .eq('id', id)
-        .eq('user_id', userId)
-        .select('*')
-        .single();
+      const { data, error } = await updateUserRowById(
+        supabaseAdmin,
+        'rss_feeds',
+        userId,
+        id,
+        allowed,
+        '*',
+      );
 
       if (error) { console.error('[supabase]', req.method, req.path, error); return res.status(500).json({ error: 'database_error' }); }
       if (!data) return res.status(404).json({ error: 'Feed not found' });
@@ -210,11 +213,7 @@ export function registerFeedsRoutes(app, {
       if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
 
       const { id } = req.params;
-      const { error } = await supabaseAdmin
-        .from('rss_feeds')
-        .delete()
-        .eq('id', id)
-        .eq('user_id', userId);
+      const { error } = await deleteUserRowById(supabaseAdmin, 'rss_feeds', userId, id);
 
       if (error) { console.error('[supabase]', req.method, req.path, error); return res.status(500).json({ error: 'database_error' }); }
       return res.json({ ok: true });
@@ -230,12 +229,7 @@ export function registerFeedsRoutes(app, {
       if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
 
       const { id } = req.params;
-      const { data: feed, error } = await supabaseAdmin
-        .from('rss_feeds')
-        .select('*')
-        .eq('id', id)
-        .eq('user_id', userId)
-        .single();
+      const { data: feed, error } = await getUserRowById(supabaseAdmin, 'rss_feeds', userId, id, '*');
 
       if (error || !feed) return res.status(404).json({ error: 'Feed not found' });
 

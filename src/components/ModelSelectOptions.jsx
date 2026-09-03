@@ -6,9 +6,13 @@ import {
   SelectLabel,
   SelectSeparator,
 } from "@/components/ui/select";
-import { MODEL_GROUPS, LYKN_ID } from "@/lib/modelCatalog";
+import { useQuery } from "@tanstack/react-query";
+import { MODEL_GROUPS, LYKN_ID, MY_SETUP_ID } from "@/lib/modelCatalog";
 import { customModelSelectValue } from "@/lib/modelBuilder/customModelSelect";
 import { isModelAllowedForPlan } from "@/lib/modelTiers";
+import { fetchModelBillingStates } from "@/lib/models/modelPlatformClient";
+import { planHasUnlimitedNormalChat } from "@/lib/pricing-config";
+import { useUserPlan } from "@/lib/useUserPlan";
 import lyknWordmarkBlack from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-BLACK-web.png";
 import lyknWordmarkNeutral from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-NEUTRAL-web.png";
 
@@ -45,7 +49,32 @@ export default function ModelSelectOptions({
   modelTier,
   publishedCustomModels = [],
   lyknLabel,
+  hideRoutingModes = false,
 }) {
+  const { planId, isGuest } = useUserPlan();
+  // "Included" vs "Uses usage" badges only make sense on plans where normal
+  // chat is included; on prepaid accounts every turn draws from the balance,
+  // so per-model badges would just be noise.
+  const showBillingBadges = !isGuest && planHasUnlimitedNormalChat(planId);
+  const { data: billingStates } = useQuery({
+    queryKey: ["model-billing-states"],
+    queryFn: fetchModelBillingStates,
+    enabled: showBillingBadges,
+    staleTime: 5 * 60_000,
+  });
+
+  const billingHint = (item, baseHint) => {
+    if (!showBillingBadges || !billingStates?.states) return baseHint;
+    // Auto routing modes are always included; the server classifies the rest.
+    const state =
+      item.value === LYKN_ID || item.value === MY_SETUP_ID
+        ? "included"
+        : billingStates.states[item.value];
+    if (!state) return baseHint;
+    const label = state === "metered" ? "Uses usage" : "Included";
+    return baseHint ? `${baseHint} · ${label}` : label;
+  };
+
   const gate = (item) => {
     const allowed = modelTier ? isModelAllowedForPlan(item.value, modelTier) : true;
     const isLykn = item.value === LYKN_ID;
@@ -57,7 +86,7 @@ export default function ModelSelectOptions({
       <SelectItem
         key={item.value}
         value={item.value}
-        hint={item.hint}
+        hint={billingHint(item, item.hint)}
         disabled={!allowed}
         className={!allowed ? "opacity-50 cursor-not-allowed" : undefined}
       >
@@ -101,7 +130,9 @@ export default function ModelSelectOptions({
           {gi > 0 && <SelectSeparator />}
           <SelectGroup>
             {group.label ? <SelectLabel>{group.label}</SelectLabel> : null}
-            {group.items.map((item) => gate(item))}
+            {group.items
+              .filter((item) => !hideRoutingModes || (item.value !== LYKN_ID && item.value !== MY_SETUP_ID))
+              .map((item) => gate(item))}
           </SelectGroup>
         </React.Fragment>
       ))}

@@ -23,9 +23,10 @@ const PREVIEW_KINDS = [
   { kind: "video", re: /^(mp4|mov|m4v|webm)$/ },
   { kind: "audio", re: /^(mp3|m4a|wav|aac|flac|ogg)$/ },
   { kind: "pdf", re: /^pdf$/ },
+  { kind: "html", re: /^html?$/ },
   {
     kind: "text",
-    re: /^(txt|md|markdown|log|json|csv|tsv|yaml|yml|toml|xml|html?|css|scss|js|jsx|ts|tsx|py|rb|go|rs|java|c|h|cpp|cs|swift|kt|php|sh|zsh|sql|env|gitignore)$/,
+    re: /^(txt|md|markdown|log|json|csv|tsv|yaml|yml|toml|xml|css|scss|js|jsx|ts|tsx|py|rb|go|rs|java|c|h|cpp|cs|swift|kt|php|sh|zsh|sql|env|gitignore)$/,
   },
 ];
 

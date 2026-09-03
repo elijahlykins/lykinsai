@@ -1,5 +1,5 @@
 /**
- * Recovery system — explicit, tracked behavior when an action fails or
+ * Recovery system - explicit, tracked behavior when an action fails or
  * verification shows no progress. Retries are counted per action signature
  * in structured state (never by asking the model to remember); after 2
  * retries of essentially the same operation the strategy escalates.
@@ -26,7 +26,7 @@ function createRecoveryTracker() {
    * Verified progress earns recovery budget back.
    *
    * The total used to be a lifetime cap, which punished exactly the runs that
-   * were working: a long task that hit — and got past — a few scattered snags
+   * were working: a long task that hit - and got past - a few scattered snags
    * arrived at its last step with nothing left, and died on the first
    * two-failure wobble there while its ladder still had rungs to try. Each
    * verified success decays the total by one, so the cap only ever ends runs
@@ -43,7 +43,7 @@ function createRecoveryTracker() {
    * `click_coord` on a page shared one budget however far apart the points
    * were, every `press_key` shared one whatever the key, and every `select` on
    * a field shared one whatever the value. Two unrelated attempts read as one
-   * action failing twice, and the ladder answered with "do NOT repeat it" —
+   * action failing twice, and the ladder answered with "do NOT repeat it" -
    * on the canvas editors where coordinate clicking is the only method
    * available, that spent the escalation path on the agent's second try.
    */
@@ -55,7 +55,7 @@ function createRecoveryTracker() {
     const bucket = (n) => (Number.isFinite(Number(n)) ? Math.round(Number(n) / 20) : "");
     // References embed the observation generation and are re-minted on every
     // snapshot, so two retries of the same element never share a raw ref. The
-    // uid is the document-lifetime identity — that is what "the same action
+    // uid is the document-lifetime identity - that is what "the same action
     // again" means here. Without this the ladder could never get past its
     // first rung for ref-targeted actions: every retry re-observes, and the
     // fresh ref read as a brand-new action.
@@ -103,7 +103,7 @@ function createRecoveryTracker() {
         String(verification?.reason || ""),
       );
     // The view was resized or changed between reading the page and acting on
-    // it — the aim was refused before anything ran, so this is not a failed
+    // it - the aim was refused before anything ran, so this is not a failed
     // approach.
     const staleLayout = /layout_changed|stale_screenshot|stale_view/i.test(
       String(verification?.reason || ""),
@@ -113,10 +113,10 @@ function createRecoveryTracker() {
       return {
         mode: "retry_fresh",
         hint: staleLayout
-          ? "The view you aimed with was out of date — the page was resized, scrolled or changed after it was read — so nothing actually ran. Re-observe, take a fresh screenshot if you were aiming at a point, and do the same step again."
+          ? "The view you aimed with was out of date - the page was resized, scrolled or changed after it was read - so nothing actually ran. Re-observe, take a fresh screenshot if you were aiming at a point, and do the same step again."
           : staleRef
             ? "The element reference went stale. Re-observe the page and act on the equivalent element in the fresh snapshot."
-            : `The action did not produce the expected result (${verification?.reason || "no progress"}). Re-observe and retry — the target may have moved, or the page may have changed unexpectedly.`,
+            : `The action did not produce the expected result (${verification?.reason || "no progress"}). Re-observe and retry - the target may have moved, or the page may have changed unexpectedly.`,
       };
     }
     if (count === 2) {
@@ -127,7 +127,7 @@ function createRecoveryTracker() {
         // render the same control twice (a header "Create" and an in-content
         // "Create"), and when one is dead to clicks the twin usually is not.
         hint:
-          "The same action failed twice. Do NOT act on that same element reference again — not once more. " +
+          "The same action failed twice. Do NOT act on that same element reference again - not once more. " +
           "Pick a DIFFERENT control: an identically-labeled one elsewhere on the page counts, and is often " +
           "the fix when a header button ignores clicks. If no alternative exists, take a `screenshot` and " +
           "act on what you can see with click_coord.",
@@ -138,7 +138,7 @@ function createRecoveryTracker() {
       return {
         mode: "visual",
         hint:
-          "Semantic targeting keeps failing — a screenshot of the page is attached. " +
+          "Semantic targeting keeps failing - a screenshot of the page is attached. " +
           "Find the target in the image. If it is visible there but missing from the " +
           "element list, act on it directly with click_coord (or drag) using 0-1000 " +
           "coordinates read off the image. If the image shows the approach itself is " +
@@ -147,7 +147,7 @@ function createRecoveryTracker() {
     }
     return {
       mode: "replan",
-      hint: `Repeated failures on "${decision?.action?.type || "action"}" — the current approach appears invalid. Replan the remaining work.`,
+      hint: `Repeated failures on "${decision?.action?.type || "action"}" - the current approach appears invalid. Replan the remaining work.`,
     };
   }
 
@@ -161,7 +161,7 @@ function createRecoveryTracker() {
 
   /**
    * The environment changed underneath us in a way that invalidates the failure
-   * history — the user signed in, cleared a wall, or advanced the page by hand.
+   * history - the user signed in, cleared a wall, or advanced the page by hand.
    * Past failures describe a page that no longer exists, so the agent gets a
    * fresh budget rather than inheriting a spent one.
    */

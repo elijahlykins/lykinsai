@@ -144,6 +144,9 @@ export default function DesktopAppWindow({
   // Ref handed the window's title-bar actions, for a chromeless page that
   // can't reach them any other way (native views paint above the renderer).
   controls,
+  // Right-side title-bar control (e.g. the Bots window's Activity button).
+  // Clicks stay on the control; they must not start a window drag.
+  titleTrailing,
   // Zoom runs to the desktop's bottom edge, dock strip included. Used by the
   // Browser (native views already paint above the dock) and by installed apps
   // (the host raises this window above the dock while it's zoomed).
@@ -606,6 +609,15 @@ export default function DesktopAppWindow({
               {title}
             </span>
           </div>
+          {titleTrailing ? (
+            <div
+              className="relative z-10 ml-auto flex items-center"
+              style={NO_DRAG}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              {titleTrailing}
+            </div>
+          ) : null}
         </div>
       )}
 

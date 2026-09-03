@@ -18,7 +18,9 @@
 import type { ComposerMode } from "@/hooks/useChatEngine";
 import { type ChatArtifact, isEditableArtifact } from "@/lib/ai/chatArtifacts";
 import {
+  isExplicitNewAppAsk,
   isInsistFreshBuildAsk,
+  isOpenArtifactReferenceAsk,
   isRedesignAsk,
   isTypedNewDeliverableAsk,
   isVagueBuildAsk,
@@ -70,6 +72,12 @@ export function resolveArtifactSendPlan(input: ArtifactSendPlanInput): ArtifactS
   // panel state must not force edits or strip Build on a fresh chat.
   const artifactBelongsHere =
     !!editArtifact && !!thisChatId && artifactChatId === thisChatId;
+  // Installed app this chat edits ("Edit in Build mode" seed or the chat's
+  // remembered app link). Needed up front: it decides whether "make the app
+  // …" wording is an edit of THAT app or a fresh commission.
+  const installedAppEditId =
+    String(editArtifact?.installedAppId || input.linkedAppId || "").trim();
+  const appEditChat = artifactBelongsHere && !!installedAppEditId;
   const stickyModeInstructions = String(input.studioModeInstructions || "");
   const stickyBuildMode =
     stickyModeInstructions.includes("The user is in Build mode");
@@ -85,12 +93,22 @@ export function resolveArtifactSendPlan(input: ArtifactSendPlanInput): ArtifactS
   // Create/Build must be armed (server also enforces this).
   let createArmed =
     typeof sendMode === "string" && sendMode.startsWith("create:");
-  const typedNewDeliverableAsk =
-    createArmed && isTypedNewDeliverableAsk(text);
+  // "make the app darker" names THE open build — an edit, not a commission.
+  // With a same-chat build attached, only indefinite phrasing ("build me a
+  // quiz app") commissions fresh; and in an installed-app edit chat even
+  // that stays an edit while the ask references the open app without
+  // explicitly asking for another one. Keep in sync with
+  // server/ai/chatStream.routes.js (typedDeliverableCommission).
+  const typedDeliverableCommission =
+    isTypedNewDeliverableAsk(text, {
+      excludeDefiniteReferences: artifactBelongsHere,
+    }) &&
+    !(appEditChat && isOpenArtifactReferenceAsk(text) && !isExplicitNewAppAsk(text));
+  const typedNewDeliverableAsk = createArmed && typedDeliverableCommission;
   const insistFreshBuildAsk = createArmed && isInsistFreshBuildAsk(text);
   const regularChatBuildAsk =
     !createArmed &&
-    (isTypedNewDeliverableAsk(text) || isInsistFreshBuildAsk(text));
+    (typedDeliverableCommission || isInsistFreshBuildAsk(text));
   const redesignAsk = isRedesignAsk(text);
   // Edit/add asks against an open artifact — keep in sync with server.js.
   // Length cap is soft: longer "add X and fix Y" messages still refine.
@@ -230,7 +248,7 @@ export function resolveArtifactSendPlan(input: ArtifactSendPlanInput): ArtifactS
   const CREATE_TOOL_BY_KIND: Record<string, string> = {
     deck: "lykn_build_template",
     study: "lykn_build_react_artifact",
-    document: "lykn_build_react_artifact",
+    document: "lykn_write_document",
     worksheet: "lykn_build_react_artifact",
     spreadsheet: "lykn_build_spreadsheet",
     chart: "lykn_generate_chart",
@@ -277,9 +295,7 @@ export function resolveArtifactSendPlan(input: ArtifactSendPlanInput): ArtifactS
   // Keep its source + installedAppId attached so the server can authorize
   // a full rewrite and the returned artifact keeps the Update target.
   // Clear new-commission signals below still win for explicit requests
-  // for another/different app.
-  const installedAppEditId =
-    String(editArtifact?.installedAppId || input.linkedAppId || "").trim();
+  // for another/different app. (installedAppEditId is computed up top.)
   // An installed app remains the edit target for this chat even if the UI
   // is currently showing Chat instead of Build. Explicit mutation asks
   // should update that app; questions still take the discuss-only path.

@@ -1,23 +1,23 @@
 "use strict";
 
 /**
- * Bots decide tools with a model, and only ask about the browser when the
- * verdict is actually "browser".
+ * Bots decide tools with a model, and start the browser when the verdict
+ * is actually "browser" — no permission ask first.
  *
  * The old gate parked "want me to use the browser?" whenever the keyword
  * heuristics smelled a website — which they did on ordinary chat ("check
  * this", app names, "open"…), so the Bot interrupted constantly. Now the
  * heuristics only nominate; a small model call decides chat / tool /
  * browser, and when that call cannot run (offline, signed out) the Bot
- * answers conversationally instead of asking. The one exception that needs
- * no model: the user naming the browser outright.
+ * answers conversationally instead of opening a tab. The one exception
+ * that needs no model: the user naming the browser outright.
  *
- * ONE route, not two: a "browser" verdict never parks the question itself.
+ * ONE route, not two: a "browser" verdict never starts the browse itself.
  * The Bot and the browser agent are the same agent — the browser is one of
  * the Bot's tools, so the verdict only preloads that tool's doc and the
- * Bot's own harness loop decides to park the opt-in (or not). The stub
- * server below answers the harness's "decide" stage separately from the
- * router's "route" stage so these tests exercise that full path.
+ * Bot's own harness loop starts the run. The stub server below answers the
+ * harness's "decide" stage separately from the router's "route" stage so
+ * these tests exercise that full path.
  *
  * Run: node --test electron/botToolRouting.test.cjs
  */
@@ -61,21 +61,29 @@ test.before(async () => {
           body = null;
         }
         // The Bot harness's decide stage: play a bot that calls its browser
-        // tool properly — the unified route ends with the harness's own
-        // parked opt-in question, never a pre-harness park.
+        // tool. These tests have no real tab, so the child fails and the
+        // next decide delivers — never an opt-in question.
         if (body?.stage === "decide") {
           harnessDecides.push(body);
+          const blob = JSON.stringify(body);
+          const alreadyRan = /browser tab is not available|`browser` failed/i.test(blob);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(
             JSON.stringify({
               ok: true,
-              json: {
-                kind: "use_tool",
-                tool: "browser",
-                instruction: "carry out the user's errand on the live site",
-                narration: "This needs the real browser.",
-                risk: "low",
-              },
+              json: alreadyRan
+                ? {
+                    kind: "deliver",
+                    answer: "I started the browser but the tab was not available.",
+                    narration: "Wrapping up.",
+                  }
+                : {
+                    kind: "use_tool",
+                    tool: "browser",
+                    instruction: "carry out the user's errand on the live site",
+                    narration: "This needs the real browser.",
+                    risk: "low",
+                  },
             }),
           );
           return;
@@ -99,7 +107,7 @@ test.before(async () => {
 });
 test.after(() => server?.close());
 
-function newRuntime() {
+function newRuntime(extras = {}) {
   const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), "lykn-bot-route-"));
   return createAgentRuntime({
     userDataPath,
@@ -119,6 +127,7 @@ function newRuntime() {
     destroyOwnedArtifactTabs: () => {},
     focusOverlayComposer: () => {},
     notifyAgentFinished: () => {},
+    ...extras,
   });
 }
 
@@ -135,14 +144,15 @@ function newBot(runtime) {
 
 const BROWSER_ASK_RE = /need the browser for/i;
 
-test("naming the browser outright parks the question — no model needed", async () => {
+test("naming the browser outright starts the browse — no model needed, no ask", async () => {
   const runtime = newRuntime();
   const id = newBot(runtime);
   const out = await runtime.send(id, {
     text: "[You are Scout, my researcher. Stay warm and friendly — you're a teammate, not a formal assistant.]\n\nuse the browser to order a pizza from dominos",
   });
   assert.ok(out?.ok);
-  assert.match(String(out.text || ""), BROWSER_ASK_RE);
+  assert.doesNotMatch(String(out.text || ""), BROWSER_ASK_RE);
+  assert.doesNotMatch(String(out.text || ""), /connect \w+ through a plugin/i);
 });
 
 test("a browser-shaped ask with no model verdict answers in chat, not with the ask", async () => {
@@ -157,7 +167,7 @@ test("a browser-shaped ask with no model verdict answers in chat, not with the a
   assert.doesNotMatch(String(out.text || ""), BROWSER_ASK_RE);
 });
 
-test("a genuine errand parks the ask when the model's verdict is browser", async (t) => {
+test("a genuine errand starts the browse when the model's verdict is browser", async (t) => {
   modelVerdict = "browser";
   t.after(() => {
     modelVerdict = "";
@@ -169,30 +179,26 @@ test("a genuine errand parks the ask when the model's verdict is browser", async
     text: "[You are Scout, my researcher.]\n\ngo to my dominos account and reorder my usual pizza",
   });
   assert.ok(out?.ok);
-  assert.match(String(out.text || ""), BROWSER_ASK_RE);
-  // One route: the verdict handed the ask to the Bot's OWN loop, and the
-  // question above is the harness's browser tool parking its opt-in — not a
-  // separate pre-harness browser path.
+  assert.doesNotMatch(String(out.text || ""), BROWSER_ASK_RE);
+  // One route: the verdict handed the ask to the Bot's OWN loop, which
+  // started the browse — not a separate pre-harness browser path.
   assert.ok(harnessDecides.length > before, "the Bot harness must make the browser decision");
 });
 
-test("a no to the parked question answers in chat — the bot must not re-ask", async (t) => {
-  modelVerdict = "browser";
+test("a chat verdict does not strip a research ask into a restated report", async (t) => {
+  modelVerdict = "chat";
   t.after(() => {
     modelVerdict = "";
   });
   const runtime = newRuntime();
   const id = newBot(runtime);
-  const parked = await runtime.send(id, {
-    text: "[You are Scout, my researcher.]\n\ngo to my dominos account and reorder my usual pizza",
+  const before = harnessDecides.length;
+  const out = await runtime.send(id, {
+    text: "[You are Scout, my researcher.]\n\nresearch espresso machines under $500 and give me a report",
   });
-  assert.match(String(parked.text || ""), BROWSER_ASK_RE);
-  // The decline re-runs the errand headless. The harness's browser tool sees
-  // the decline and must not park the same question one round later — even
-  // though the scripted decide above keeps picking the browser.
-  const out = await runtime.send(id, { text: "no, just answer here" });
   assert.ok(out?.ok);
-  assert.doesNotMatch(String(out.text || ""), BROWSER_ASK_RE);
+  assert.equal(out.skill, "research");
+  assert.ok(harnessDecides.length > before, "the Bot harness must still run the research task");
 });
 
 test("a chat verdict overrides the browser-shaped heuristics", async (t) => {
@@ -225,16 +231,16 @@ test("a pronoun follow-up ('send that to him') still reaches the router", async 
   assert.ok(first?.ok);
   // The follow-up carries no address, no app name, no URL — only the verb
   // and pronouns. The verb alone must nominate it so the model (which sees
-  // the recent turns) can say "browser" and park the question, instead of
+  // the recent turns) can say "browser" and start the browse, instead of
   // the bot shrugging "I can't send it from this chat".
   const out = await runtime.send(id, {
     text: "[You are Scout, my researcher.]\n\nok can you actually send that to him",
   });
   assert.ok(out?.ok);
-  assert.match(String(out.text || ""), BROWSER_ASK_RE);
+  assert.doesNotMatch(String(out.text || ""), /plugin|need the browser for/i);
 });
 
-test("a mail errand naming the user's own account reaches the router and parks", async (t) => {
+test("a mail errand naming the user's own account starts the browse, no plugin ask", async (t) => {
   // Live failure this ask produced before the prompt fix: the router said
   // "chat" with the reason "I cannot access your Gmail account". No keyword
   // shortcut here — the model's verdict alone decides.
@@ -248,7 +254,8 @@ test("a mail errand naming the user's own account reaches the router and parks",
     text: "[You are Scout, my researcher.]\n\ngo to my gmail and write an email to elijah@lykn.io — make it funny",
   });
   assert.ok(out?.ok);
-  assert.match(String(out.text || ""), BROWSER_ASK_RE);
+  assert.doesNotMatch(String(out.text || ""), /connect Gmail through a plugin/i);
+  assert.doesNotMatch(String(out.text || ""), BROWSER_ASK_RE);
 });
 
 test("the router is told the teammate CAN use the browser — dispatch, never decline", async (t) => {
@@ -267,11 +274,37 @@ test("the router is told the teammate CAN use the browser — dispatch, never de
     text: "[You are Scout, my researcher.]\n\nplease send that report over to dana",
   });
   assert.ok(out?.ok);
-  assert.match(String(out.text || ""), BROWSER_ASK_RE);
+  assert.doesNotMatch(String(out.text || ""), BROWSER_ASK_RE);
   const system = String(lastRouteBody?.system || "");
   assert.match(system, /can open a real browser/i);
   assert.match(system, /never answer "chat" because/i);
   assert.doesNotMatch(system, /has no browser/i);
+});
+
+test("a set-a-routine ask is a routine, not a browser errand or a chat refusal", async () => {
+  const runtime = newRuntime();
+  const id = newBot(runtime);
+  lastRouteBody = null;
+  const out = await runtime.send(id, {
+    text: "[You are Scout, my researcher.]\n\nset a routine to monitor my email every minute",
+  });
+  assert.ok(out?.ok);
+  assert.equal(out.skill, "routine");
+  assert.doesNotMatch(String(out.text || ""), BROWSER_ASK_RE);
+  assert.doesNotMatch(String(out.text || ""), /cannot monitor|can't monitor|not something i can/i);
+  // Heuristic is enough — do not spend a dispatcher call that might pick browser.
+  assert.equal(lastRouteBody, null);
+});
+
+test("an inbox-watch ask is a routine even without the word routine", async () => {
+  const runtime = newRuntime();
+  const id = newBot(runtime);
+  const out = await runtime.send(id, {
+    text: "[You are Scout, my researcher.]\n\nwatch my email and ping me when I get a new email",
+  });
+  assert.ok(out?.ok);
+  assert.equal(out.skill, "routine");
+  assert.doesNotMatch(String(out.text || ""), BROWSER_ASK_RE);
 });
 
 test("casual chat never consults the router and never asks", async () => {

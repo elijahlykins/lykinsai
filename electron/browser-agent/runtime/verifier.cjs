@@ -8,6 +8,7 @@
 const contextRouter = require("./contextRouter.cjs");
 const { formatSnapshotForModel, hasObservableChange } = require("../browser/snapshot.cjs");
 const visionPolicy = require("./visionPolicy.cjs");
+const { looksLikeDocsTitleTarget } = require("../../docsTitleGuard.cjs");
 
 /**
  * Some surfaces genuinely cannot report back. A design tool's canvas, a code
@@ -232,6 +233,21 @@ async function verifyOutcome({ model, decision, actionResult, before, after, dif
     if (diff?.urlChanged || diff?.titleChanged || type === "close_tab") {
       return { success: true, evidence: diff.summary, reason: "", next: "continue", method: "deterministic" };
     }
+  }
+  const titleField = looksLikeDocsTitleTarget(
+    extracted?.label,
+    action.label,
+    before?.byRef?.get?.(String(action.target || ""))?.label,
+  );
+  // Google Docs' filename widget almost never echoes what you typed. Scoring
+  // that as a miss is what sent the agent back into Rename over and over.
+  if ((type === "type" || type === "type_coord") && titleField) {
+    return unconfirmed(
+      `typed into the document filename ("${extracted?.label || action.label || "Rename"}"). ` +
+        "That field is the title, not the page. Do NOT type into it again. " +
+        "Put the document body in with paste_text. To change a passage, paste_text the revised body " +
+        "with mode replace - replace_text cannot see canvas text.",
+    );
   }
   if (type === "type" && extracted?.ok) {
     // Actual form value is the evidence — not the fact that a type action ran.

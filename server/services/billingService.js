@@ -1,15 +1,18 @@
 // Billing service: plan caches, requireAppAccess, Stripe event sync.
-// Caches (`userPlanCache`, `appAccessGrace`, `freeCreditsCache`) are process
-// singletons. Stripe client is constructed in the composition root and bound.
-import { PLAN_LIMITS, CREDIT_PACKS, creditPackById } from '../../src/lib/pricing-config.js';
-import { getCreditWallet, grantTopupCredits, markTopupPayer } from '../../lib/billing/creditWallet.js';
-import { getUserMonthlyUsage, getUserLifetimeCredits } from '../../usageTracking.js';
+// Caches (`userPlanCache`, `appAccessGrace`) are process singletons. Stripe
+// client is constructed in the composition root and bound.
+import { PLAN_LIMITS, CREDIT_PACKS, CREDIT_PACKS_FOR_SALE, creditPackById } from '../../src/lib/pricing-config.js';
+import { getCreditWallet, markTopupPayer } from '../../lib/billing/creditWallet.js';
+import { ensureSignupGrant, fundUsageBalance, getUsageBalance } from '../../lib/billing/usageBalance.js';
+import { grantPlanUsageFromInvoice } from '../../lib/billing/planFunding.js';
+import { classifyCheckoutPaymentSession, grantUsageFundingFromCheckoutSession, isUsageFundingSession } from '../../lib/billing/usageFunding.js';
+import { logBillingEvent } from '../../lib/billing/billingEvents.js';
 
 let stripe = null;
 let supabaseAdmin = null;
 let STRIPE_PRICE_MAP = {};
 let STRIPE_TOPUP_PRICE_MAP = {};
-let STRIPE_TRIAL_DAYS = 14;
+let STRIPE_TRIAL_DAYS = 7;
 
 export function bindBillingService(deps) {
   stripe = deps.stripe;
@@ -20,6 +23,7 @@ export function bindBillingService(deps) {
 }
 
 export function availableCreditPacks() {
+  if (!CREDIT_PACKS_FOR_SALE) return [];
   return CREDIT_PACKS.filter((pack) => Boolean(STRIPE_TOPUP_PRICE_MAP[pack.id]));
 }
 
@@ -219,38 +223,11 @@ export function hasAppAccessRow(row) {
 const APP_ACCESS_GRACE_MS = 10 * 60 * 1000;
 const appAccessGrace = new Map(); // userId → expiresAt (last-known-good)
 
-// ── Free signup credits ──────────────────────────────────────────────────────
-// New accounts are NOT hard-walled at signup. Every account gets a one-time
-// allowance of AI credits (ai_usage_logs.credits_used, lifetime sum); the
-// 402 → /start-trial paywall only kicks in once the allowance is spent.
-// Tune without a deploy via FREE_PLAN_CREDITS; set 0 to restore the old
-// wall-at-signup behavior.
-export const FREE_PLAN_CREDITS = Math.max(0, Number(process.env.FREE_PLAN_CREDITS ?? 3000) || 0);
-const FREE_CREDITS_CACHE_MS = 30 * 1000;
-const freeCreditsCache = new Map(); // userId → { used, expiresAt }
-
-/**
- * Lifetime credit usage vs the free allowance, cached briefly so the check
- * doesn't add a usage-table scan to every AI request. Returns null when the
- * usage backend is unreachable — callers must fail closed.
- */
-export async function freeCreditsStatus(userId) {
-  if (!userId) return null;
-  const cached = freeCreditsCache.get(userId);
-  let used;
-  if (cached && cached.expiresAt > Date.now()) {
-    used = cached.used;
-  } else {
-    used = await getUserLifetimeCredits(userId, { stopAt: FREE_PLAN_CREDITS + 1 });
-    if (used === null || used === undefined) return null;
-    freeCreditsCache.set(userId, { used, expiresAt: Date.now() + FREE_CREDITS_CACHE_MS });
-  }
-  return {
-    used,
-    limit: FREE_PLAN_CREDITS,
-    remaining: Math.max(0, FREE_PLAN_CREDITS - used),
-  };
-}
+// ── Signup usage grant ───────────────────────────────────────────────────────
+// Every account receives $10 of promotional usage exactly once (ledger-level
+// idempotency in lib/billing). The old FREE_PLAN_CREDITS soft allowance is
+// retired: the free tier runs on the same dollar Usage Balance as everything
+// else.
 
 export async function requireAppAccess(req, res, next) {
   const uid = req.user?.id;
@@ -268,27 +245,26 @@ export async function requireAppAccess(req, res, next) {
     if (error) throw new Error(error.message || 'billing_query_failed');
     if (hasAppAccessRow(data || null)) {
       if (uid) appAccessGrace.set(uid, Date.now() + APP_ACCESS_GRACE_MS);
-      // The plan covers this request, so purchased credits must not be
-      // touched. checkAiUsageLimit runs after us and flips this back on if
-      // they're past their monthly cap.
+      // The plan covers included chat; metered actions authorize per action
+      // against the Usage Balance, never against legacy credits.
       markTopupPayer(uid, false);
       return next();
     }
-    // No subscription: free accounts ride the signup credit allowance until
-    // it's spent. A failed usage lookup throws → fail closed (503/grace),
-    // never a silent free pass on routes that cost provider spend.
-    if (FREE_PLAN_CREDITS > 0) {
-      const credits = await freeCreditsStatus(uid);
-      if (!credits) throw new Error('free_credit_check_unavailable');
-      if (credits.remaining > 0) {
-        markTopupPayer(uid, false);
-        appAccessGrace.set(uid, Date.now() + APP_ACCESS_GRACE_MS);
-        return next();
-      }
+
+    // Free account: make sure the one-time $10 signup grant exists (idempotent,
+    // so this is a no-op after the first call), then gate on usable balance.
+    await ensureSignupGrant(uid).catch((err) => {
+      console.warn('⚠️ ensureSignupGrant failed:', err?.message || err);
+    });
+    const usage = await getUsageBalance(uid);
+    if ((usage?.available || 0) > 0) {
+      markTopupPayer(uid, false);
+      appAccessGrace.set(uid, Date.now() + APP_ACCESS_GRACE_MS);
+      return next();
     }
-    // Signup allowance spent: purchased credits are the only thing left that
-    // can keep this account running. logAiUsage debits the real cost of
-    // whatever the request turns out to be.
+
+    // Leftover purchased legacy credits still spend until the credit
+    // migration converts them; logAiUsage debits the real cost.
     const wallet = await getCreditWallet(uid);
     if (wallet === null) throw new Error('credit_wallet_unavailable');
     if (wallet.balance > 0) {
@@ -296,14 +272,15 @@ export async function requireAppAccess(req, res, next) {
       appAccessGrace.set(uid, Date.now() + APP_ACCESS_GRACE_MS);
       return next();
     }
+
     markTopupPayer(uid, false);
     if (uid) appAccessGrace.delete(uid);
     return res.status(402).json({
-      error: "You've used all your free credits. Upgrade to keep going.",
-      code: 'subscription_required',
-      needs_trial_checkout: true,
-      free_credits_exhausted: FREE_PLAN_CREDITS > 0,
-      topup_available: availableCreditPacks().length > 0,
+      error: "You're out of usage. Top up your balance or upgrade to keep going.",
+      code: 'insufficient_usage_balance',
+      needs_trial_checkout: false,
+      add_funds: true,
+      upgrade_available: true,
     });
   } catch (err) {
     console.error('❌ requireAppAccess failed:', err?.message || err);
@@ -690,10 +667,13 @@ export async function syncSubscriptionToBilling(subscription) {
 }
 
 /**
- * A one-time credit purchase completed. Throws on anything unexpected so the
- * webhook route 500s and Stripe redelivers; the grant RPC is idempotent on the
- * session id, so a retry can never double-credit. Credits come from the pack
- * catalog keyed by metadata.topup_pack, not from a number in metadata.
+ * A historical credit-pack checkout completed (packs are retired from sale,
+ * but Stripe can still redeliver old sessions). Credits are never granted
+ * anymore: the paid amount funds the purchased Usage Balance instead, at the
+ * authoritative session amount (catalog price as fallback). Idempotent on the
+ * session id, so a retry can never double-fund — and can't double-apply even
+ * if the same session was previously granted as wallet credits, because the
+ * funding idempotency key is namespaced to usage funding.
  */
 export async function grantTopupFromCheckoutSession(session) {
   const packId = String(session.metadata?.topup_pack || '').trim();
@@ -702,7 +682,7 @@ export async function grantTopupFromCheckoutSession(session) {
 
   const paymentStatus = session.payment_status;
   if (paymentStatus && paymentStatus !== 'paid' && paymentStatus !== 'no_payment_required') {
-    console.warn(`⚠️ Top-up session ${session.id} is ${paymentStatus} — no credits granted`);
+    console.warn(`⚠️ Top-up session ${session.id} is ${paymentStatus} — nothing granted`);
     return;
   }
 
@@ -714,19 +694,67 @@ export async function grantTopupFromCheckoutSession(session) {
   ).trim();
   if (!userId) throw new Error(`top-up session ${session.id} carries no user reference`);
 
-  const result = await grantTopupCredits({
-    userId,
-    credits: pack.credits,
-    sessionId: session.id,
-    packId: pack.id,
-    amountCents: session.amount_total ?? null,
-    currency: session.currency || 'usd',
+  const cents = Number.isInteger(session.amount_total) && session.amount_total > 0
+    ? session.amount_total
+    : Math.round(pack.priceUsd * 100);
+
+  const result = await fundUsageBalance(userId, {
+    amountMicros: cents * 10_000,
+    stripeSessionId: session.id,
+    idempotencyKey: `funding:${session.id}`,
+    metadata: { legacy_pack: pack.id, converted_from: 'credit_pack' },
   });
 
-  const outcome = result?.duplicate ? 'already granted' : 'granted';
-  console.log(
-    `💳 Top-up ${outcome}: ${pack.credits} credits → ${userId.slice(0, 8)} (balance ${result?.balance ?? '?'})`,
-  );
+  logBillingEvent(result?.duplicate ? 'legacy_pack_funding_duplicate' : 'legacy_pack_funded_usage', {
+    userId,
+    sessionId: session.id,
+    packId: pack.id,
+    cents,
+  });
+}
+
+/**
+ * Fund monthly plan usage from a paid subscription invoice. Resolves which
+ * user(s) the invoice's customer maps to via user_billing (sync runs first,
+ * so the row exists by the time this is called) and which plan Stripe billed
+ * from the subscription's price. Grant idempotency is on the invoice id.
+ */
+export async function fundPlanUsageFromInvoice(invoice, subscription) {
+  if (!supabaseAdmin) return;
+  const customerId = typeof invoice.customer === 'string'
+    ? invoice.customer
+    : invoice.customer?.id;
+  if (!customerId) return;
+
+  const priceId = subscription?.items?.data?.[0]?.price?.id;
+  const match = planFromPriceId(priceId);
+  if (!match) {
+    logBillingEvent('plan_funding_unmatched_price', { invoiceId: invoice.id, priceId });
+    return;
+  }
+
+  const { data: rows, error } = await supabaseAdmin
+    .from('user_billing')
+    .select('user_id')
+    .eq('stripe_customer_id', customerId);
+  if (error) throw new Error(`fundPlanUsageFromInvoice lookup failed: ${error.message}`);
+  if (!rows?.length) {
+    // Sync links the customer before we get here; if it still isn't linked,
+    // throw so the webhook 500s and Stripe redelivers after linking lands.
+    throw new Error(`fundPlanUsageFromInvoice: no user linked for customer ${customerId} (invoice ${invoice.id})`);
+  }
+
+  for (const row of rows) {
+    if (!row.user_id) continue;
+    const result = await grantPlanUsageFromInvoice({
+      userId: row.user_id,
+      invoice,
+      planId: match.plan,
+    });
+    if (result && result.ok === false) {
+      throw new Error(`plan usage grant failed for invoice ${invoice.id}: ${result.error || 'unknown'}`);
+    }
+  }
 }
 
 export async function handleStripeEvent(event) {
@@ -757,7 +785,14 @@ export async function handleStripeEvent(event) {
         await linkBillingRowFromCheckoutSession(session, subscription);
         await syncSubscriptionToBilling(subscription);
       } else if (session.mode === 'payment') {
-        await grantTopupFromCheckoutSession(session);
+        const kind = classifyCheckoutPaymentSession(session);
+        if (kind === 'usage_funding' || isUsageFundingSession(session)) {
+          await grantUsageFundingFromCheckoutSession(session);
+        } else if (kind === 'credit_pack') {
+          await grantTopupFromCheckoutSession(session);
+        } else {
+          logBillingEvent('checkout_payment_unclassified', { sessionId: session.id });
+        }
       }
       break;
     }
@@ -781,6 +816,12 @@ export async function handleStripeEvent(event) {
           typeof subId === 'string' ? subId : subId.id,
         );
         await syncSubscriptionToBilling(sub);
+        // A PAID invoice is the one and only source of monthly plan usage:
+        // the invoice amount becomes plan-bucket Usage that expires at the
+        // end of the paid period. Idempotent on the invoice id.
+        if (event.type === 'invoice.paid') {
+          await fundPlanUsageFromInvoice(invoice, sub);
+        }
       }
       break;
     }

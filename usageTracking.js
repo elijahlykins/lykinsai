@@ -1,6 +1,10 @@
 // usageTracking.js — Session management and AI cost tracking
 import fetch from 'node-fetch';
 import { isTopupPayer, spendTopupCredits } from './lib/billing/creditWallet.js';
+import { recordUsageAfterLog } from './lib/billing/usageBalance.js';
+import { resolveBillableCredits } from './server/ai/chatRouting/chatBilling.js';
+import { MODEL_PRICING, findModelPricing } from './lib/models/pricingTable.js';
+import { recordNormalizedUsage } from './lib/usage/usageEvents.js';
 
 // Read env vars lazily (dotenv runs after imports in server.js)
 const getSupabaseUrl = () => process.env.VITE_SUPABASE_URL;
@@ -49,68 +53,7 @@ async function supabaseAdmin(method, table, { query = '', body } = {}) {
   }
 }
 
-// ─── Model Pricing (USD per 1K tokens) ──────────────────────────────────────
-
-const MODEL_PRICING = {
-  // OpenAI
-  // GPT-5.6 family (GA July 9, 2026): Sol $5/$30, Terra $2.50/$15, Luna $1/$6 per M.
-  'gpt-5.6-sol':       { input: 0.005,  output: 0.030 },
-  'gpt-5.6-terra':     { input: 0.0025, output: 0.015 },
-  'gpt-5.6-luna':      { input: 0.001,  output: 0.006 },
-  'gpt-5.5':           { input: 0.005,  output: 0.015 },
-  'gpt-5.4':           { input: 0.005,  output: 0.015 },
-  'gpt-5.4-pro':       { input: 0.010,  output: 0.030 },
-  'gpt-5.2':           { input: 0.004,  output: 0.012 },
-  'gpt-5.1':           { input: 0.003,  output: 0.010 },
-  'gpt-5':             { input: 0.003,  output: 0.010 },
-  'gpt-5-mini':        { input: 0.001,  output: 0.004 },
-  'gpt-4.1':           { input: 0.002,  output: 0.008 },
-  'gpt-4.1-mini':      { input: 0.0004, output: 0.0016 },
-  'gpt-4.1-nano':      { input: 0.0001, output: 0.0004 },
-  'gpt-4o':            { input: 0.0025, output: 0.010 },
-  'gpt-4o-mini':       { input: 0.00015,output: 0.0006 },
-  'gpt-5.3-code':      { input: 0.004,  output: 0.012 },
-  'o3':                { input: 0.010,  output: 0.040 },
-  'o3-pro':            { input: 0.020,  output: 0.080 },
-  'o4-mini':           { input: 0.0011, output: 0.0044 },
-
-  // Anthropic
-  'claude-sonnet-4-6':            { input: 0.003, output: 0.015 },
-  'claude-opus-4-20250514':       { input: 0.015, output: 0.075 },
-  'claude-opus-4-8':              { input: 0.005, output: 0.025 },
-  'claude-opus-4-7':              { input: 0.005, output: 0.025 },
-  'claude-sonnet-4-20250514':     { input: 0.003, output: 0.015 },
-  'claude-3-5-haiku-20241022':    { input: 0.0008, output: 0.004 },
-  'claude-3-5-sonnet-20241022':   { input: 0.003, output: 0.015 },
-
-  // Google Gemini
-  'gemini-3.1-pro-preview':  { input: 0.00125, output: 0.005 },
-  'gemini-3-flash-preview':  { input: 0.00015, output: 0.0006 },
-  'gemini-2.5-pro-preview-05-06': { input: 0.00125, output: 0.01 },
-  'gemini-2.5-flash-preview-05-20': { input: 0.00015, output: 0.0006 },
-  'gemini-2.0-flash':        { input: 0.0001, output: 0.0004 },
-  'gemini-flash-latest':     { input: 0.0001, output: 0.0004 },
-
-  // xAI / Grok
-  'grok-4.5':   { input: 0.002, output: 0.006 },
-  'grok-4.3':   { input: 0.00125, output: 0.0025 },
-  'grok-4.1':   { input: 0.003, output: 0.015 },
-  'grok-4':     { input: 0.003, output: 0.015 },
-  'grok-3':     { input: 0.003, output: 0.015 },
-  'grok-3-mini':{ input: 0.0005, output: 0.002 },
-
-  // Whisper (cost per second of audio, stored as "input")
-  'whisper-1': { input: 0.0001, output: 0 },
-
-  // TTS (cost per 1K characters, stored as "input")
-  'tts-1': { input: 0.015, output: 0 },
-  'tts-1-hd': { input: 0.030, output: 0 },
-
-  // OpenAI Embeddings (output cost is always 0, only input tokens billed)
-  'text-embedding-3-small': { input: 0.00002, output: 0 },
-  'text-embedding-3-large': { input: 0.00013, output: 0 },
-  'text-embedding-ada-002': { input: 0.0001,  output: 0 },
-};
+// Model pricing now lives in lib/models/pricingTable.js (imported above).
 
 // Fixed costs for non-token-based actions (in USD)
 const FIXED_COSTS = {
@@ -154,21 +97,23 @@ const CREDIT_COSTS = {
 
 // ─── Cost Calculation ────────────────────────────────────────────────────────
 
-function calculateCost(model, inputTokens, outputTokens) {
+function cachedInputUnitPrice(pricing) {
+  if (Number.isFinite(Number(pricing?.cachedInput))) return Number(pricing.cachedInput);
+  return Number(pricing?.input) || 0;
+}
+
+function calculateCost(model, inputTokens, outputTokens, cachedInputTokens = 0) {
   const pricing = findPricing(model);
   if (!pricing) return 0;
-  return (inputTokens / 1000) * pricing.input + (outputTokens / 1000) * pricing.output;
+  const cached = Math.max(0, Number(cachedInputTokens) || 0);
+  const fresh = Math.max(0, (Number(inputTokens) || 0) - cached);
+  return (fresh / 1000) * pricing.input
+    + (cached / 1000) * cachedInputUnitPrice(pricing)
+    + (outputTokens / 1000) * pricing.output;
 }
 
 function findPricing(model) {
-  if (!model) return null;
-  if (MODEL_PRICING[model]) return MODEL_PRICING[model];
-  const lower = model.toLowerCase();
-  for (const [key, val] of Object.entries(MODEL_PRICING)) {
-    if (lower.includes(key) || key.includes(lower)) return val;
-  }
-  // Fallback: moderate pricing assumption
-  return { input: 0.002, output: 0.008 };
+  return findModelPricing(model);
 }
 
 function getFixedCost(actionType, provider) {
@@ -199,13 +144,19 @@ function classifyActionType(endpoint, { promptLength = 0, responseLength = 0, ha
   return 'chat_short';
 }
 
-function getCreditCost(actionType) {
+function getCreditCost(actionType, opts = {}) {
   const cost = CREDIT_COSTS[actionType];
   // 0 is a real weight, not a missing one: the internal/system actions above
   // (background embedding, profile refresh, chat naming…) are deliberately
   // free. A `|| 1` fallback here silently charged every one of them a credit.
   // Unknown action types still fall back to 1.
-  return Number.isFinite(cost) ? cost : 1;
+  const catalog = Number.isFinite(cost) ? cost : 1;
+  return resolveBillableCredits({
+    actionType,
+    catalogCredits: catalog,
+    planId: opts.planId,
+    hasBillableToolAction: Boolean(opts.hasBillableToolAction),
+  });
 }
 
 function estimateTokens(text) {
@@ -336,6 +287,10 @@ async function logAiUsage({
   provider,
   inputTokens = 0,
   outputTokens = 0,
+  cachedInputTokens = 0,
+  reasoningTokens = 0,
+  planId = null,
+  hasBillableToolAction = false,
   metadata = null,
 }) {
   // Allow guest rows (no userId) as long as we have a guestSessionId so they
@@ -343,10 +298,14 @@ async function logAiUsage({
   if (!userId && !guestSessionId) return;
 
   const totalTokens = inputTokens + outputTokens;
-  const costUsd = (actionType === 'image_gen' || actionType === 'video' || actionType === 'image_edit')
+  const estimatedUsd = (actionType === 'image_gen' || actionType === 'video' || actionType === 'image_edit')
     ? getFixedCost(actionType, provider)
-    : calculateCost(model, inputTokens, outputTokens);
-  const creditsUsed = getCreditCost(actionType);
+    : calculateCost(model, inputTokens, outputTokens, cachedInputTokens);
+  const upstreamUsd = Number.isFinite(Number(metadata?.upstream_cost_usd))
+    ? Number(metadata.upstream_cost_usd)
+    : null;
+  const costUsd = upstreamUsd != null ? upstreamUsd : estimatedUsd;
+  const creditsUsed = getCreditCost(actionType, { planId, hasBillableToolAction });
 
   const row = {
     user_id: userId || null,
@@ -358,7 +317,17 @@ async function logAiUsage({
     total_tokens: totalTokens,
     cost_usd: costUsd,
     credits_used: creditsUsed,
-    metadata: metadata || null,
+    metadata: {
+      ...(metadata && typeof metadata === 'object' ? metadata : {}),
+      plan: planId || metadata?.plan || null,
+      cached_input_tokens: cachedInputTokens || metadata?.cached_input_tokens || 0,
+      uncached_input_tokens: Math.max(0, inputTokens - (cachedInputTokens || metadata?.cached_input_tokens || 0)),
+      reasoning_tokens: reasoningTokens || metadata?.reasoning_tokens || 0,
+      consumed_credits: creditsUsed > 0,
+      // Keep credit counts and dollar Usage on separate fields. Never add them.
+      legacy_credits_spent: userId && creditsUsed > 0 && isTopupPayer(userId) ? creditsUsed : 0,
+      payer: userId && creditsUsed > 0 && isTopupPayer(userId) ? 'legacy_credits' : null,
+    },
   };
   if (sessionId) row.session_id = sessionId;
   if (guestSessionId) row.guest_session_id = String(guestSessionId).slice(0, 200);
@@ -370,6 +339,40 @@ async function logAiUsage({
   // response is already on its way to the user.
   if (userId && creditsUsed > 0 && isTopupPayer(userId)) {
     void spendTopupCredits(userId, creditsUsed);
+  }
+
+  if (userId) {
+    void recordUsageAfterLog({
+      userId,
+      actionType,
+      planId,
+      model,
+      provider,
+      providerCostUsd: costUsd,
+      creditCost: creditsUsed,
+      usageLogId: inserted?.[0]?.id || null,
+      metadata: row.metadata,
+    });
+    void recordNormalizedUsage({
+      userId,
+      chatId: metadata?.chat_id || null,
+      botId: metadata?.bot_id || null,
+      requestId: metadata?.usage_idempotency_key || inserted?.[0]?.id || null,
+      routeId: metadata?.route_id || null,
+      gateway: metadata?.gateway || 'direct',
+      upstreamProvider: provider,
+      modelId: model,
+      inputTokens,
+      outputTokens,
+      reasoningTokens,
+      cachedInputTokens,
+      providerCostUsd: costUsd,
+      estimatedCostUsd: estimatedUsd,
+      costSource: upstreamUsd != null ? 'upstream' : 'estimate',
+      payerType: row.metadata.payer,
+      actionType,
+      metadata: { usage_log_id: inserted?.[0]?.id || null, plan: planId },
+    }).catch(() => {});
   }
 
   // Update session totals in the background (only for logged-in users with sessions)
@@ -471,35 +474,6 @@ async function getUserMonthlyUsage(userId) {
   };
 }
 
-/**
- * Total credits a user has consumed across ALL time — the meter behind the
- * free plan's signup allowance (FREE_PLAN_CREDITS in server.js).
- *
- * PostgREST aggregates are disabled on this project, so we page the
- * credits_used column. `stopAt` lets callers early-exit as soon as the
- * running total crosses the allowance (free accounts never accumulate many
- * rows past it, and paid accounts never call this).
- *
- * Returns null when the query fails — quota callers must fail closed.
- */
-async function getUserLifetimeCredits(userId, { stopAt = Infinity } = {}) {
-  const PAGE = 1000;
-  // Bound the scan: 25k rows is far beyond any free allowance; if a user has
-  // more, they're unquestionably over.
-  const MAX_PAGES = 25;
-  let total = 0;
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const rows = await supabaseAdmin('GET', 'ai_usage_logs', {
-      query: `user_id=eq.${userId}&select=credits_used&limit=${PAGE}&offset=${page * PAGE}`,
-    });
-    if (rows === null) return null;
-    for (const row of rows) total += row.credits_used || 0;
-    if (total >= stopAt) return total;
-    if (rows.length < PAGE) return total;
-  }
-  return total;
-}
-
 async function getUserSessions(userId, limit = 20) {
   const sessions = await supabaseAdmin('GET', 'usage_sessions', {
     query: `user_id=eq.${userId}&order=started_at.desc&limit=${limit}&select=id,chat_id,started_at,last_activity_at,ended_at,total_cost,total_tokens,total_credits`,
@@ -537,29 +511,35 @@ function detectProvider(model) {
 // ─── Extract Usage from Provider Responses ───────────────────────────────────
 
 function extractOpenAIUsage(data) {
-  if (!data) return { input_tokens: 0, output_tokens: 0 };
+  if (!data) return { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, reasoning_tokens: 0 };
   const u = data.usage;
-  if (!u) return { input_tokens: 0, output_tokens: 0 };
+  if (!u) return { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, reasoning_tokens: 0 };
   return {
     input_tokens: u.prompt_tokens || u.input_tokens || 0,
     output_tokens: u.completion_tokens || u.output_tokens || 0,
+    cached_input_tokens: u.prompt_tokens_details?.cached_tokens || u.input_tokens_details?.cached_tokens || 0,
+    reasoning_tokens: u.completion_tokens_details?.reasoning_tokens || u.output_tokens_details?.reasoning_tokens || 0,
   };
 }
 
 function extractAnthropicUsage(data) {
-  if (!data?.usage) return { input_tokens: 0, output_tokens: 0 };
+  if (!data?.usage) return { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, reasoning_tokens: 0 };
   return {
     input_tokens: data.usage.input_tokens || 0,
     output_tokens: data.usage.output_tokens || 0,
+    cached_input_tokens: data.usage.cache_read_input_tokens || data.usage.cached_tokens || 0,
+    reasoning_tokens: 0,
   };
 }
 
 function extractGeminiUsage(data) {
   const meta = data?.usageMetadata;
-  if (!meta) return { input_tokens: 0, output_tokens: 0 };
+  if (!meta) return { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, reasoning_tokens: 0 };
   return {
     input_tokens: meta.promptTokenCount || 0,
     output_tokens: meta.candidatesTokenCount || 0,
+    cached_input_tokens: meta.cachedContentTokenCount || 0,
+    reasoning_tokens: meta.thoughtsTokenCount || 0,
   };
 }
 
@@ -813,7 +793,6 @@ export {
   calculateCost,
   getCreditCost,
   getUserMonthlyUsage,
-  getUserLifetimeCredits,
   getUserSessions,
   getSessionWithLogs,
   startSessionCleanup,

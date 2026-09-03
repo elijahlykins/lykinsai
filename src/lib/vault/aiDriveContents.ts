@@ -1,8 +1,8 @@
 /**
  * What LYKN has made for this user, as a list small enough to put in a prompt.
  *
- * AI Drive is the drive for the AI's own output and nothing else — artifacts in
- * one folder, generated images in the other (see DRIVE_FOLDERS in Vault.jsx).
+ * AI Drive is the drive for the AI's own output and nothing else — artifacts,
+ * written documents, and generated images (see DRIVE_FOLDERS in Vault.jsx).
  * To the person asking, those are the things they built: "pull up the dashboard
  * I made", "open that chart". The model has no way to know they exist, so the
  * client sends their names with the turn, the same way it sends the apps they
@@ -22,8 +22,9 @@ import { resolveRenderType } from "@/lib/vault/attachmentType";
  */
 export const AI_DRIVE_FOLDER = "Generated";
 
-/** The two folders AI Drive has, and what they are called on screen. */
+/** The folders AI Drive has, and what they are called on screen. */
 export const AI_DRIVE_FOLDERS = [
+  { id: "docs", name: "Docs" },
   { id: "artifacts", name: "Artifacts" },
   { id: "images", name: "Image Gen" },
 ] as const;
@@ -78,9 +79,17 @@ export interface AiDriveListing {
   items: AiDriveItem[];
   /** How many of each kind the scan actually found — not how many are named. */
   artifacts: number;
+  docs: number;
   images: number;
   /** False when the scan hit its page budget before the vault ran out. */
   complete: boolean;
+}
+
+/** Letters, memos, and other write-outs filed with the document tag. */
+export function isWrittenDocument(tags: unknown): boolean {
+  return (Array.isArray(tags) ? tags : []).some(
+    (t) => String(t).toLowerCase() === "document",
+  );
 }
 
 // Names to carry into the prompt. Everything found is counted, but only the
@@ -89,7 +98,7 @@ export interface AiDriveListing {
 const MAX_NAMES = 40;
 
 /**
- * Sorts rows into the drive's two folders, newest first.
+ * Sorts rows into the drive's folders, newest first.
  *
  * Two numbers come out of this, and they are deliberately different. Every item
  * found is COUNTED, because "how many images have I made" has one true answer.
@@ -100,10 +109,12 @@ export function collectAiDriveItems() {
   const items: AiDriveItem[] = [];
   const seen = new Set<string>();
   let artifacts = 0;
+  let docs = 0;
   let images = 0;
 
   const keep = (id: string, rawName: string, folder: AiDriveFolder) => {
     if (folder === "images") images += 1;
+    else if (folder === "docs") docs += 1;
     else artifacts += 1;
 
     const name = String(rawName || "").replace(/\s+/g, " ").trim().slice(0, 80);
@@ -125,18 +136,22 @@ export function collectAiDriveItems() {
         // drive — so this walks attachments, not rows.
         const attachments = parseAttachmentsFromNote(row) as Record<string, unknown>[];
         if (!attachments.length) {
-          keep(id, String(row.title || ""), "artifacts");
+          keep(id, String(row.title || ""), isWrittenDocument(row.tags) ? "docs" : "artifacts");
           continue;
         }
         for (const attachment of attachments) {
           const folder: AiDriveFolder =
-            resolveRenderType(attachment) === "image" ? "images" : "artifacts";
+            resolveRenderType(attachment) === "image"
+              ? "images"
+              : isWrittenDocument(row.tags)
+                ? "docs"
+                : "artifacts";
           keep(id, String(attachment?.name || row.title || ""), folder);
         }
       }
     },
     result(complete: boolean): AiDriveListing {
-      return { items: items.slice(0, MAX_NAMES), artifacts, images, complete };
+      return { items: items.slice(0, MAX_NAMES), artifacts, docs, images, complete };
     },
   };
 }
@@ -164,7 +179,7 @@ const MAX_PAGES = 15;
 const CACHE_MS = 5 * 60_000;
 let cache: { key: string; at: number; listing: AiDriveListing } | null = null;
 
-const EMPTY: AiDriveListing = { items: [], artifacts: 0, images: 0, complete: false };
+const EMPTY: AiDriveListing = { items: [], artifacts: 0, docs: 0, images: 0, complete: false };
 
 /** Forget the cached listing — call after saving something to the drive. */
 export function clearAiDriveCache(): void {

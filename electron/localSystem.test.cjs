@@ -43,7 +43,7 @@ test.beforeEach(() => {
 });
 
 test("a shared Mac reads everything until a folder is switched off", () => {
-  write({ syncAll: true, syncedFolders: [] });
+  write({ syncAll: true, syncedFolders: [home] });
   assert.equal(allows(desktop), true);
 
   toggle(desktop, false);
@@ -54,7 +54,7 @@ test("a shared Mac reads everything until a folder is switched off", () => {
 });
 
 test("switching a folder back on restores it", () => {
-  write({ syncAll: true, syncedFolders: [] });
+  write({ syncAll: true, syncedFolders: [home] });
 
   toggle(desktop, false);
   toggle(desktop, true);
@@ -89,7 +89,7 @@ test("a folder switched off stays on the list so it can come back", () => {
 });
 
 test("the more specific switch wins", () => {
-  write({ syncAll: true, syncedFolders: [] });
+  write({ syncAll: true, syncedFolders: [home] });
 
   toggle(home, false);
   assert.equal(allows(desktop), false);
@@ -101,7 +101,7 @@ test("the more specific switch wins", () => {
 });
 
 test("switching a parent on leaves a child's own switch off", () => {
-  write({ syncAll: true, syncedFolders: [] });
+  write({ syncAll: true, syncedFolders: [home] });
 
   toggle(desktop, false);
   toggle(home, false);
@@ -112,7 +112,7 @@ test("switching a parent on leaves a child's own switch off", () => {
 });
 
 test("the AI's file tools are blocked by a switched-off folder", () => {
-  write({ syncAll: true, syncedFolders: [] });
+  write({ syncAll: true, syncedFolders: [home] });
   toggle(desktop, false);
 
   const config = localSystem.readLocalMode(userData);
@@ -126,7 +126,7 @@ test("the AI's file tools are blocked by a switched-off folder", () => {
 });
 
 test("the AI can validate folders and files for normal opening", async () => {
-  write({ syncAll: true, syncedFolders: [] });
+  write({ syncAll: true, syncedFolders: [home] });
   const folder = path.join(desktop, "Brand Assets");
   const file = path.join(folder, "logo.svg");
   fs.mkdirSync(folder);
@@ -152,7 +152,7 @@ test("the AI can validate folders and files for normal opening", async () => {
 });
 
 test("the AI can find a folder by name before opening it", async () => {
-  write({ syncAll: true, syncedFolders: [] });
+  write({ syncAll: true, syncedFolders: [home] });
   const folder = path.join(desktop, "Brand Assets");
   fs.mkdirSync(folder);
 
@@ -166,7 +166,7 @@ test("the AI can find a folder by name before opening it", async () => {
 });
 
 test("the AI cannot open a missing path", async () => {
-  write({ syncAll: true, syncedFolders: [] });
+  write({ syncAll: true, syncedFolders: [home] });
   const result = await localSystem.run(
     "local_open_path",
     { path: path.join(desktop, "Missing") },
@@ -176,31 +176,36 @@ test("the AI cannot open a missing path", async () => {
   assert.match(result.error, /no such file/i);
 });
 
-test("editing a file asks for approval, then swaps only the matched snippet", async () => {
-  write({ syncAll: true, syncedFolders: [] });
+test("editing a file runs without approval and swaps only the matched snippet", async () => {
+  write({ syncAll: true, syncedFolders: [home] });
   const file = path.join(desktop, "notes.md");
   fs.writeFileSync(file, "# Plan\n- buy milk\n- walk dog\n");
-
-  const pending = await localSystem.run(
-    "local_edit_file",
-    { path: file, oldText: "- buy milk", newText: "- buy oat milk" },
-    { userDataPath: userData },
-  );
-  assert.equal(pending.needsApproval, true);
-  assert.match(pending.summary, /Edit file: /);
 
   const done = await localSystem.run(
     "local_edit_file",
     { path: file, oldText: "- buy milk", newText: "- buy oat milk" },
-    { userDataPath: userData, approved: true },
+    { userDataPath: userData },
   );
   assert.equal(done.ok, true);
   assert.equal(done.replacements, 1);
   assert.equal(fs.readFileSync(file, "utf8"), "# Plan\n- buy oat milk\n- walk dog\n");
 });
 
+test("pulling a file into chat asks for approval first", async () => {
+  write({ syncAll: true, syncedFolders: [home] });
+  const file = path.join(desktop, "photo.png");
+  fs.writeFileSync(file, "fake-png");
+
+  const pending = await localSystem.run(
+    "local_pull_file",
+    { path: file },
+    { userDataPath: userData },
+  );
+  assert.equal(pending.needsApproval, true);
+});
+
 test("an edit whose snippet isn't in the file changes nothing", async () => {
-  write({ syncAll: true, syncedFolders: [] });
+  write({ syncAll: true, syncedFolders: [home] });
   const file = path.join(desktop, "notes.md");
   fs.writeFileSync(file, "hello world\n");
 
@@ -215,7 +220,7 @@ test("an edit whose snippet isn't in the file changes nothing", async () => {
 });
 
 test("an ambiguous snippet is refused unless replaceAll is set", async () => {
-  write({ syncAll: true, syncedFolders: [] });
+  write({ syncAll: true, syncedFolders: [home] });
   const file = path.join(desktop, "notes.md");
   fs.writeFileSync(file, "a\nTODO\nb\nTODO\n");
 
@@ -238,7 +243,7 @@ test("an ambiguous snippet is refused unless replaceAll is set", async () => {
 });
 
 test("editing a missing file points at local_write_file instead", async () => {
-  write({ syncAll: true, syncedFolders: [] });
+  write({ syncAll: true, syncedFolders: [home] });
   const result = await localSystem.run(
     "local_edit_file",
     { path: path.join(desktop, "nope.txt"), oldText: "x", newText: "y" },
@@ -290,8 +295,8 @@ test("a traversal out of a synced folder is rejected", async () => {
 });
 
 test("abort kills the shell process group, not only zsh", async () => {
-  write({ syncAll: true, syncedFolders: [] });
-  const marker = path.join(userData, "grandchild-still-running");
+  write({ syncAll: true, syncedFolders: [home] });
+  const marker = path.join(home, "grandchild-still-running");
   const controller = new AbortController();
   const pending = localSystem.run(
     "local_run_command",
@@ -306,7 +311,7 @@ test("abort kills the shell process group, not only zsh", async () => {
 });
 
 test("an aborted shell command is killed instead of running to timeout", async () => {
-  write({ syncAll: true, syncedFolders: [] });
+  write({ syncAll: true, syncedFolders: [home] });
   const controller = new AbortController();
   const started = Date.now();
   const pending = localSystem.run(
@@ -320,4 +325,157 @@ test("an aborted shell command is killed instead of running to timeout", async (
   assert.equal(result.ok, false);
   assert.match(String(result.error || ""), /aborted/i);
   assert.ok(Date.now() - started < 5000);
+});
+
+test("missing local-mode.json does not grant whole-home access", () => {
+  const config = localSystem.readLocalMode(userData);
+  assert.equal(config.enabled, false);
+  assert.equal(config.syncAll, false);
+  assert.deepEqual(config.syncedFolders, []);
+  assert.equal(allows(desktop), false);
+  assert.equal(allows("/etc/passwd"), false);
+});
+
+test("enabling Local Mode without folders does not grant home", async () => {
+  localSystem.writeLocalMode(userData, true);
+  const config = localSystem.readLocalMode(userData);
+  assert.equal(config.enabled, true);
+  assert.equal(config.syncAll, false);
+  const result = await localSystem.run(
+    "local_read_file",
+    { path: path.join(desktop, "notes.txt") },
+    { userDataPath: userData },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.error, /no folders are approved/i);
+});
+
+test("legacy enabled config without syncAll keeps whole-home", () => {
+  fs.writeFileSync(
+    path.join(userData, "local-mode.json"),
+    JSON.stringify({ enabled: true, syncedFolders: [] }),
+  );
+  const config = localSystem.readLocalMode(userData);
+  assert.equal(config.syncAll, true);
+  assert.equal(allows(os.homedir()), true);
+  assert.equal(allows("/etc/passwd"), false);
+});
+
+test("approved-root reads allow nested files and reject escapes", async () => {
+  const allowed = path.join(home, "Documents", "Allowed");
+  const other = path.join(home, "Documents", "Other");
+  fs.mkdirSync(path.join(allowed, "sub"), { recursive: true });
+  fs.mkdirSync(other, { recursive: true });
+  fs.writeFileSync(path.join(allowed, "file.txt"), "ok\n");
+  fs.writeFileSync(path.join(allowed, "sub", "file.txt"), "nested\n");
+  fs.writeFileSync(path.join(other, "file.txt"), "secret\n");
+  write({ syncAll: false, syncedFolders: [allowed] });
+
+  const own = await localSystem.run(
+    "local_read_file",
+    { path: path.join(allowed, "file.txt") },
+    { userDataPath: userData },
+  );
+  assert.equal(own.ok, true);
+  const nested = await localSystem.run(
+    "local_read_file",
+    { path: path.join(allowed, "sub", "file.txt") },
+    { userDataPath: userData },
+  );
+  assert.equal(nested.ok, true);
+
+  const neighbor = await localSystem.run(
+    "local_read_file",
+    { path: path.join(other, "file.txt") },
+    { userDataPath: userData },
+  );
+  assert.equal(neighbor.ok, false);
+  const etc = await localSystem.run(
+    "local_read_file",
+    { path: "/etc/passwd" },
+    { userDataPath: userData },
+  );
+  assert.equal(etc.ok, false);
+  const traversal = await localSystem.run(
+    "local_read_file",
+    { path: path.join(allowed, "..", "..", "Other", "file.txt") },
+    { userDataPath: userData },
+  );
+  assert.equal(traversal.ok, false);
+});
+
+test("symlink that escapes an approved root is rejected", async () => {
+  const allowed = path.join(home, "Allowed");
+  fs.mkdirSync(allowed);
+  const secret = path.join(home, "secret.txt");
+  fs.writeFileSync(secret, "private\n");
+  const link = path.join(allowed, "escape.txt");
+  fs.symlinkSync(secret, link);
+  write({ syncAll: false, syncedFolders: [allowed] });
+
+  const result = await localSystem.run(
+    "local_read_file",
+    { path: link },
+    { userDataPath: userData },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.error, /not synced/i);
+});
+
+test("shell commands cannot trivially target paths outside approved roots", async () => {
+  const allowed = path.join(home, "Documents", "Allowed");
+  const other = path.join(home, "Documents", "Other");
+  fs.mkdirSync(allowed, { recursive: true });
+  fs.mkdirSync(other, { recursive: true });
+  fs.writeFileSync(path.join(allowed, "file.txt"), "ok\n");
+  fs.writeFileSync(path.join(other, "file.txt"), "secret\n");
+  write({ syncAll: false, syncedFolders: [allowed] });
+
+  const inside = await localSystem.run(
+    "local_run_command",
+    { command: "cat file.txt", cwd: allowed },
+    { userDataPath: userData, approved: true },
+  );
+  assert.equal(inside.ok, true);
+  assert.match(inside.output, /ok/);
+
+  const absOther = await localSystem.run(
+    "local_run_command",
+    { command: `cat ${other}/file.txt`, cwd: allowed },
+    { userDataPath: userData, approved: true },
+  );
+  assert.equal(absOther.ok, false);
+  assert.match(absOther.error, /not synced/i);
+
+  const etc = await localSystem.run(
+    "local_run_command",
+    { command: "cat /etc/passwd", cwd: allowed },
+    { userDataPath: userData, approved: true },
+  );
+  assert.equal(etc.ok, false);
+
+  const traversal = await localSystem.run(
+    "local_run_command",
+    { command: "cat ../../Other/file.txt", cwd: allowed },
+    { userDataPath: userData, approved: true },
+  );
+  assert.equal(traversal.ok, false);
+
+  const quoted = await localSystem.run(
+    "local_run_command",
+    { command: "python3 -c \"open('/etc/passwd')\"", cwd: allowed },
+    { userDataPath: userData, approved: true },
+  );
+  assert.equal(quoted.ok, false);
+});
+
+test("routine commands without path tokens still run inside an approved cwd", async () => {
+  write({ syncAll: false, syncedFolders: [desktop] });
+  const result = await localSystem.run(
+    "local_run_command",
+    { command: "printf hi", cwd: desktop },
+    { userDataPath: userData, approved: true },
+  );
+  assert.equal(result.ok, true);
+  assert.match(result.output, /hi/);
 });

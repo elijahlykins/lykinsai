@@ -8,15 +8,23 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 
 import { toast } from "@/components/ui/use-toast";
 import { takePendingBotChatAttachments } from "@/lib/bots/botAttachments";
+import { LYKN_CHAT_OPEN_EVENT } from "@/lib/bots/botChatBridge";
 import { getBot, getBots, setBotChatBoard } from "@/lib/bots/botsClient";
 import { normalizeResearchSourcePref, type ResearchSourcePref } from "@/lib/ai/researchSourcePrefs";
 import { isImagineAspect, loadImagineAspect, saveImagineAspect } from "@/lib/chat/imagineLayout";
 import { getAttachedPageForChat, subscribeBrowserChatAttach } from "@/lib/lyknChat/browserChatAttach";
+import { syncStudioBrowserToChat } from "@/lib/lyknChat/openInStudioBrowser";
 import { createNewChat } from "@/lib/chat/chatThreadsClient";
-import { addOpenThread, patchThreadSnapshot } from "@/lib/chat/chatThreadRuntime";
+import {
+  addOpenThread,
+  getLastLyknChatId,
+  patchThreadSnapshot,
+  rememberLyknChatId,
+} from "@/lib/chat/chatThreadRuntime";
 import { notifyLyknChatsChanged } from "@/lib/lyknChat/chatsChanged";
 import { ingestChatFiles } from "@/lib/chat/ingestChatFiles";
 import {
+  takePendingHomeChatArtifacts,
   takePendingHomeChatFiles,
   takePendingHomeChatFolders,
 } from "@/lib/homeChatFiles";
@@ -31,6 +39,7 @@ import {
 } from "@/lib/apps/editApp";
 import { publishAppSourceStrip, subscribeDismissAppEdit } from "@/components/lyknChat/AppSourceStrip";
 import { detectStudioModeRedirect, imagineSwitchNotice } from "@/lib/ai/studioModeIntent";
+import { isTypedNewDeliverableAsk } from "@/lib/ai/artifactBuildIntent";
 import {
   IMAGINE_CLEAR_EVENT,
   imagineBatchesFromTurns,
@@ -54,15 +63,32 @@ import {
   makeAttId,
 } from "@/lib/lyknChat/chatAttachmentInput";
 import {
+  focusedAttachmentFromArtifact,
+  isChatArtifact,
+} from "@/lib/lyknChat/artifactChatAttach";
+import {
   STUDIO_VIEW_MODES,
   studioInstructionsFor,
   type StudioView,
 } from "@/components/lyknChat/StudioChatChrome";
 import type { ComposerMode } from "@/hooks/useChatEngine";
 import { useBotChatBridge } from "@/hooks/useBotChatBridge";
+import type { ChatSendOpts } from "@/lib/ai/chatSendTarget";
+import {
+  LYKN_CHAT_SEND_EVENT,
+  LYKN_CHAT_STOP_EVENT,
+  parseLyknChatSendDetail,
+  parseLyknChatStopDetail,
+} from "@/lib/lyknChat/browserChatSend";
+import { fetchTrustedBrowserTabPage } from "@/lib/lyknChat/browserSurfaceContext";
+import {
+  startChatForUnboundBrowserTab,
+  stampBrowserTabChatInMain,
+} from "@/lib/lyknChat/startBrowserTabChat";
 
 export function useStudioChatSession({
   handleChatSend,
+  handleStopAi,
   setChatInput,
   setComposerMode,
   composerMode,
@@ -95,7 +121,8 @@ export function useStudioChatSession({
   studioModeHydratedCbRef,
   researchSourcePrefsRef,
 }: {
-  handleChatSend: () => Promise<void>;
+  handleChatSend: (opts?: ChatSendOpts) => Promise<void>;
+  handleStopAi: (targetChatId?: string) => void;
   setChatInput: (valOrFn: string | ((prev: string) => string)) => void;
   setComposerMode: (mode: ComposerMode) => void;
   composerMode: ComposerMode;
@@ -132,6 +159,10 @@ export function useStudioChatSession({
   // mode sessions: the chat stays in that mode (forced tool lane + mode
   // system prompt) until the user switches the pill back.
   const [studioView, setStudioView] = useState<StudioView>("chat");
+  // Live pill for effects whose deps shouldn't restart on every mode flip
+  // (e.g. the home-bar send consumer resolving "keep the current mode").
+  const studioViewRef = useRef<StudioView>(studioView);
+  studioViewRef.current = studioView;
   const editAppChatRef = useRef<string | null>(null);
   // Named while an app opened from the dock is still loading its source, so
   // the surface says what it is doing instead of looking like a blank chat.
@@ -229,6 +260,63 @@ export function useStudioChatSession({
     }
   }, [studioView, user?.id, routeChatId, nav]);
 
+  // Switching back to LYKN must leave the Bot's board (and its browser)
+  // behind. Restore the last LYKN thread, or mint a fresh one.
+  const handleOpenLyknChat = useCallback(async () => {
+    try {
+      sessionStorage.removeItem("lykn_pending_lykn_open");
+    } catch {
+      /* event path still works */
+    }
+    const last = String(getLastLyknChatId() || "").trim();
+    const lastIsBot = last && getBots().some((b) => b.chatId === last);
+    if (last && !lastIsBot) {
+      if (last !== routeChatId) nav(`/chat/${encodeURIComponent(last)}`);
+      return;
+    }
+    if (!user?.id) return;
+    try {
+      const { chatId: freshChatId } = await createNewChat(user.id);
+      rememberLyknChatId(freshChatId);
+      addOpenThread(freshChatId);
+      notifyLyknChatsChanged();
+      nav(`/chat/${encodeURIComponent(freshChatId)}`);
+    } catch {
+      /* stay on the current board */
+    }
+  }, [routeChatId, nav, user?.id]);
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem("lykn_pending_lykn_open");
+      if (raw) {
+        sessionStorage.removeItem("lykn_pending_lykn_open");
+        const p = JSON.parse(raw) as { at?: number };
+        if (Date.now() - Number(p?.at || 0) < 15000) {
+          void handleOpenLyknChat();
+        }
+      }
+    } catch {
+      /* event path below still works */
+    }
+    const onOpen = () => {
+      void handleOpenLyknChat();
+    };
+    window.addEventListener(LYKN_CHAT_OPEN_EVENT, onOpen);
+    return () => window.removeEventListener(LYKN_CHAT_OPEN_EVENT, onOpen);
+  }, [handleOpenLyknChat]);
+
+  useEffect(() => {
+    const id = String(routeChatId || chatId || "").trim();
+    if (!id) return;
+    if (getBots().some((b) => b.chatId === id)) return;
+    rememberLyknChatId(id);
+  }, [routeChatId, chatId]);
+
+  useEffect(() => {
+    syncStudioBrowserToChat(routeChatId || chatId);
+  }, [routeChatId, chatId]);
+
   // Quick-start chip → drop the template into the composer, cursor at the
   // end, ready for the user to finish the sentence. Picking one dismisses
   // the demo strip so it doesn't sit under a prompt that's already started.
@@ -252,8 +340,8 @@ export function useStudioChatSession({
     }, 0);
   }, [setChatInput, chatPanelInputRef, centerChatInputRef]);
 
-  // Post-report / post-build suggestion: flip to the target Studio mode,
-  // arm its lane, and send immediately so the user lands mid-task.
+  // Home-bar / mode-switch send: flip to the target Studio mode, arm its
+  // lane, and send immediately so the user lands mid-task.
   // Uses handleChatSend (not studioGuardedSend) because we intentionally left
   // the prior lane — the mode-redirect guard would otherwise block the turn.
   // Refs are patched sync before send so the orchestrator and snapshot tag
@@ -328,12 +416,13 @@ export function useStudioChatSession({
   //
   // Bot chat integration (send / re-attach / hop / seen / held sends) — see
   // useBotChatBridge.
-  const { handleBotChatSend, pendingBotSendRef, chatIdLiveRef } = useBotChatBridge({
+  const { handleBotChatSend, pendingBotSendRef, chatIdLiveRef, resolveBotBoard } = useBotChatBridge({
     chatId,
     routeChatId,
     nav,
     chatMessages,
     setChatMessages,
+    userId: user?.id,
   });
 
   // Home-screen chat bar: the Studio desktop stashes {view, text} and flips
@@ -399,33 +488,38 @@ export function useStudioChatSession({
       // them here so they ride the send to the worker agent.
       if (botId && text) {
         const botAtts = takePendingBotChatAttachments() as BotSendAttachment[];
-        const botBoard = String(getBot(botId)?.chatId || "");
-        if (botBoard && botBoard !== routeChatId) {
-          // Every Bot keeps its own thread. Hop to its board first; the
-          // hydration flush above fires the send once that board settles.
-          pendingBotSendRef.current = { botId, text, attachments: botAtts };
-          nav(`/chat/${botBoard}`);
-        } else if (chatIdLiveRef.current === routeChatId) {
-          handleBotChatSend(botId, text, botAtts);
-        } else {
-          // Still hydrating — flushed by the effect above once it settles.
-          pendingBotSendRef.current = { botId, text, attachments: botAtts };
-        }
+        pendingBotSendRef.current = { botId, text, attachments: botAtts };
+        void resolveBotBoard(botId).then((botBoard) => {
+          if (botBoard && botBoard !== routeChatId) {
+            nav(`/chat/${botBoard}`);
+            return;
+          }
+          if (chatIdLiveRef.current === routeChatId) {
+            pendingBotSendRef.current = null;
+            handleBotChatSend(botId, text, botAtts);
+          }
+        });
         return;
       }
       // Claimed before the empty-prompt bail so files/folders can't linger
       // and reappear on a later send. A file with no words is a valid turn.
       const homeFiles = takePendingHomeChatFiles();
       const homeFolders = takePendingHomeChatFolders();
-      if (!text && !homeFiles.length && !homeFolders.length && !vaultPayloads.length) return;
+      const homeArtifacts = takePendingHomeChatArtifacts().filter(isChatArtifact);
+      if (!text && !homeFiles.length && !homeFolders.length && !vaultPayloads.length && !homeArtifacts.length) return;
       // Empty view = follow-up from the home bar mid-conversation: keep
-      // whatever mode this surface is currently in (its pill owns it).
+      // whatever mode this surface is currently in. The live pill is the
+      // source of truth; the persistence bridge ref only breaks ties when
+      // the pill hasn't hydrated yet.
+      const liveView = studioViewRef.current;
       const resolved: StudioView =
         view === "build" || view === "research" || view === "imagine" || view === "chat"
           ? (view as StudioView)
-          : ((studioModeSaveRef.current as StudioView) || "chat");
+          : liveView !== "chat"
+            ? liveView
+            : ((studioModeSaveRef.current as StudioView) || "chat");
       homeModeOverrideRef.current = { view: resolved, at: Date.now() };
-      if (homeFiles.length || homeFolders.length || vaultPayloads.length) {
+      if (homeFiles.length || homeFolders.length || vaultPayloads.length || homeArtifacts.length) {
         pendingHomeAttachSendRef.current = { view: resolved, text, ready: false };
         for (const snap of homeFolders) {
           addFocusedAttachment({
@@ -437,7 +531,11 @@ export function useStudioChatSession({
             size: 0,
             vaultTitle: snap.name,
             vaultContent: snap.listing,
+            localPath: snap.path,
           });
+        }
+        for (const artifact of homeArtifacts) {
+          addFocusedAttachment(focusedAttachmentFromArtifact(artifact));
         }
         const attachmentTasks: Promise<unknown>[] = [];
         if (homeFiles.length) {
@@ -477,10 +575,66 @@ export function useStudioChatSession({
     window.addEventListener("lykn-home-chat-send", onSend);
     return () => window.removeEventListener("lykn-home-chat-send", onSend);
   }, [
-    routeChatId, nav, handleStudioFollowUp, handleBotChatSend, setComposerMode,
-    addFocusedAttachment, updateFocusedAttachment, user?.id,
+    routeChatId, nav, handleStudioFollowUp, handleBotChatSend, resolveBotBoard,
+    setComposerMode, addFocusedAttachment, updateFocusedAttachment, user?.id,
     applyVaultDropToChat,
   ]);
+
+  useEffect(() => {
+    const onBrowserSend = (e: Event) => {
+      const parsed = parseLyknChatSendDetail((e as CustomEvent).detail);
+      if (!parsed) return;
+      void (async () => {
+        let chatId = parsed.chatId;
+        if (!chatId) {
+          chatId =
+            (await startChatForUnboundBrowserTab({
+              tabId: parsed.tabId,
+              userId: user?.id,
+              createChat: createNewChat,
+              stampMain: stampBrowserTabChatInMain,
+            })) || "";
+        }
+        if (!chatId) return;
+        const page = parsed.tabId
+          ? await fetchTrustedBrowserTabPage(parsed.tabId)
+          : undefined;
+        const attachments: FocusedChatAttachment[] = [];
+        if (parsed.files.length) {
+          await ingestChatFiles(parsed.files, (att) => attachments.push(att), {
+            userId: user?.id,
+            updateAttachment: (id, patch) => {
+              const i = attachments.findIndex((a) => a.id === id);
+              if (i >= 0) attachments[i] = { ...attachments[i], ...patch };
+            },
+          });
+        }
+        if (!parsed.text && !attachments.length) return;
+        await handleChatSend({
+          chatId,
+          text: parsed.text,
+          attachments,
+          surfaceContext: {
+            surface: "browser",
+            tabId: parsed.tabId,
+            ...(page ? { page } : {}),
+          },
+        });
+      })();
+    };
+    window.addEventListener(LYKN_CHAT_SEND_EVENT, onBrowserSend);
+    return () => window.removeEventListener(LYKN_CHAT_SEND_EVENT, onBrowserSend);
+  }, [handleChatSend, user?.id]);
+
+  useEffect(() => {
+    const onBrowserStop = (e: Event) => {
+      const parsed = parseLyknChatStopDetail((e as CustomEvent).detail);
+      if (!parsed) return;
+      handleStopAi(parsed.chatId);
+    };
+    window.addEventListener(LYKN_CHAT_STOP_EVENT, onBrowserStop);
+    return () => window.removeEventListener(LYKN_CHAT_STOP_EVENT, onBrowserStop);
+  }, [handleStopAi]);
 
   // The armed home-bar send, fired on the render that commits the last
   // attachment so handleChatSend's closure includes it. Same shape as the
@@ -859,21 +1013,6 @@ export function useStudioChatSession({
     return null;
   }, [chatMessages, studioView]);
 
-  // Topic for post-build suggestions: prefer the open artifact title, else
-  // the latest user prompt that produced it.
-  const latestBuildTopic = useMemo(() => {
-    const titled = String(activeArtifact?.title || "").trim();
-    if (titled) return titled;
-    for (let i = chatMessages.length - 1; i >= 0; i--) {
-      const m = chatMessages[i] as any;
-      if (m?.role === "user") {
-        const content = String(m.content || "").trim();
-        if (content) return content;
-      }
-    }
-    return "this build";
-  }, [activeArtifact?.title, chatMessages]);
-
   // Sticky-mode lane guard: explicit deliverable requests on Chat / Build /
   // Imagine / Research route down that page's pipeline, so a clearly
   // out-of-lane commission (e.g. "generate an image of a dog" on Chat or
@@ -883,6 +1022,16 @@ export function useStudioChatSession({
   const studioGuardedSend = useCallback(async () => {
     if (isGlassChat) {
       const text = chatInputRef.current.trim();
+      if (studioView === "chat" && isTypedNewDeliverableAsk(text)) {
+        studioModeInstructionsRef.current = studioInstructionsFor(
+          "build",
+          openBrowserPageRef.current,
+        );
+        setStudioView("build");
+        setComposerMode("create:webapp");
+        await handleChatSend();
+        return;
+      }
       const redirect = text ? detectStudioModeRedirect(text, studioView) : null;
       if (redirect) {
         const CURRENT_LABEL: Record<string, string> = {
@@ -907,7 +1056,7 @@ export function useStudioChatSession({
             ? imagineSwitchNotice()
             : `That looks like ${ASK_KIND[redirect.target]}, and this ${CURRENT_LABEL[studioView]} page only ` +
               `${LANE_DESC[studioView]}. Switch to **${redirect.label}** using the pills at the top of the page ` +
-              `and send it again — I'll take it from there.`;
+              `and send it again. I'll take it from there.`;
         const id =
           typeof crypto !== "undefined" && crypto.randomUUID
             ? crypto.randomUUID()
@@ -950,6 +1099,8 @@ export function useStudioChatSession({
     handleChatSend,
     focusedChatAttachments,
     setFocusedChatAttachments,
+    setComposerMode,
+    studioModeInstructionsRef,
   ]);
 
   // Imagine writes the prompt the moment a batch starts, then patches the
@@ -1113,7 +1264,6 @@ export function useStudioChatSession({
     appSourceStrip,
     editingAppId,
     latestResearch,
-    latestBuildTopic,
     hasChatTurns,
     hideSuggestionPills,
     homeBarAttached,

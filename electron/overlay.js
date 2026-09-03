@@ -12,6 +12,7 @@ import {
 import { attachSidePanel } from "./overlay-ui/sidePanel.js";
 import { attachVoice } from "./overlay-ui/voice.js";
 import { attachListenMeeting } from "./overlay-ui/listenMeeting.js";
+import { attachAppUpdate } from "./overlay-ui/appUpdate.js";
 
 // Glass-bar overlay renderer. The user types a question; the main process
 // silently captures the screen, sends it to LYKN, and streams the answer back
@@ -69,6 +70,7 @@ let pushLiveState, startListen, stopListen, closeLive;
 
 let statusRotateLane = "think";
 let statusRotateActive = false;
+let statusDidNonBuildWork = false;
 
 let sideContext = null;
 let liveNotesSnapshot = {
@@ -162,7 +164,12 @@ function reportHeight() {
       : 0;
     // The live meeting notes and side-panel cards are their own floating
     // windows now, so they never contribute to the chat column size.
-    const chatH = title.offsetHeight + threadH + attH + bar.offsetHeight + 2;
+    const extraBannerH = ["night-brief", "app-update"].reduce((sum, id) => {
+      const banner = document.getElementById(id);
+      if (!banner || banner.hidden || !banner.classList.contains("show")) return sum;
+      return sum + banner.offsetHeight + 8;
+    }, 0);
+    const chatH = title.offsetHeight + threadH + attH + extraBannerH + bar.offsetHeight + 2;
 
     const w = CHAT_WIDTH;
     const h = chatH;
@@ -193,7 +200,7 @@ function stopStepNoteTyping() {
 
 // Start a new turn: collapse every prior turn, append an expanded item for this
 // question, and return its answer element to stream into.
-function startTurn(question) {
+function startTurn(question, opts = {}) {
   // A new question is pending — reset sources side data but keep live watch panel open.
   stopStatusRotation();
   stopStepNoteTyping();
@@ -238,8 +245,8 @@ function startTurn(question) {
   currentQuestion = question || "";
   currentHasText = false;
   answerStillWorking = true;
-  lastThinkingStatus = "Thinking…";
-  setThinkingStatus("Thinking…");
+  lastThinkingStatus = opts.build ? "Designing the build…" : "Thinking…";
+  setThinkingStatus(lastThinkingStatus);
 
   threadEl.scrollTop = threadEl.scrollHeight;
   reportHeight();
@@ -785,30 +792,32 @@ const COMPOSER_MODES = {
   chat: { placeholder: DEFAULT_ASK_PLACEHOLDER, title: "" },
   image: {
     placeholder: "Describe the image to create, then Send…",
-    title: "Image mode — click to exit",
+    title: "Image mode, click to exit",
   },
   build: {
     placeholder: "Describe what to build, then Send…",
-    title: "Build mode — click to exit",
+    title: "Build mode, click to exit",
   },
   agent: {
-    placeholder: "Agent goal — research, build, browse, or monitor…",
-    title: "Agent mode — click to exit",
+    placeholder: "Agent goal: research, build, browse, or monitor…",
+    title: "Agent mode, click to exit",
   },
   research: {
-    placeholder: "Deep research a topic — multi-source analysis…",
-    title: "Deep research — click to exit",
+    placeholder: "Deep research a topic, multi-source analysis…",
+    title: "Deep research, click to exit",
   },
   translate: {
     placeholder: "Translate your screen, or type text…",
-    title: "Translate mode — click to exit",
+    title: "Translate mode, click to exit",
   },
   transcribe: {
-    placeholder: "Listening to system + mic — ask about what's being said…",
-    title: "Transcribe — click to exit",
+    placeholder: "Listening to system + mic. Ask about what's being said…",
+    title: "Transcribe, click to exit",
   },
 };
 let composerMode = "chat";
+const GLASS_LIVE_WATCH_ENABLED = window.lyknOverlay?.glassLiveWatchEnabled === true;
+const GLASS_AGENT_MODE_ENABLED = window.lyknOverlay?.glassAgentModeEnabled === true;
 const modeBadgeEl = document.getElementById("mode-badge");
 const modeBadgeIconEl = document.getElementById("mode-badge-icon");
 const projectPillEl = document.getElementById("project-pill");
@@ -972,7 +981,7 @@ function renderProjectPill() {
   if (projectPillLabelEl) {
     projectPillLabelEl.textContent = name ? name.slice(0, 28) : "Project";
   }
-  projectPillEl.title = name ? `Scoped to ${name} — click to clear` : "Clear project scope";
+  projectPillEl.title = name ? `Scoped to ${name}, click to clear` : "Clear project scope";
   reportHeight();
 }
 
@@ -989,6 +998,7 @@ function setScopedProject(next) {
 }
 
 function setComposerMode(mode) {
+  if (mode === "agent" && !GLASS_AGENT_MODE_ENABLED) mode = "chat";
   const prev = composerMode;
   composerMode = COMPOSER_MODES[mode] ? mode : "chat";
   imageGenArmed = composerMode === "image";
@@ -1051,6 +1061,7 @@ function setComposerMode(mode) {
 }
 
 async function enterAgentMode() {
+  if (!GLASS_AGENT_MODE_ENABLED) return;
   try {
     const res = await window.lyknOverlay.agentModeSet(true);
     if (res?.activeAgentId) activeAgentId = res.activeAgentId;
@@ -1347,7 +1358,7 @@ function formatBrowserStep(action) {
     return `Type “${v}” into “${label}”`;
   }
   if (action.type === "press") {
-    const base = String(label).replace(/ — submit$/i, "");
+    const base = String(label).replace(/ [—–\-] submit$/i, "");
     return `Press Enter to submit “${base}”`;
   }
   if (action.type === "scroll") {
@@ -1369,13 +1380,13 @@ function browserActErrorMessage(plan) {
   if (code === "needs_extension") {
     return (
       plan?.message ||
-      "Install **Chrome Live Feed** so LYKN can read your active tab. Browser click-control is macOS-only for now — ask about what's on screen instead."
+      "Install **Chrome Live Feed** so LYKN can read your active tab. Browser click-control is macOS-only for now. Ask about what's on screen instead."
     );
   }
   if (code === "control_mac_only") {
     return (
       plan?.message ||
-      "Clicking and typing in the browser is macOS-only for now. LYKN can still read your tab via Chrome Live Feed — ask about the page or what's on screen."
+      "Clicking and typing in the browser is macOS-only for now. LYKN can still read your tab via Chrome Live Feed. Ask about the page or what's on screen."
     );
   }
   if (code === "new_tab") {
@@ -1706,6 +1717,17 @@ async function clearWatchRules(q) {
   askEl.focus();
 }
 
+function looksLikeBuildCommission(text) {
+  const t = String(text || "").trim();
+  if (!t || t.length > 600) return false;
+  const verb =
+    /\b(?:make|build|create|generate|design|draft|produce|prepare|compose|put together|whip up|mock up|draw up|write|give|need|want)\b(?:\s+(?:me|us))?\s+(?:a|an|the|some|my|another|one)\s+/i;
+  if (!verb.test(t)) return false;
+  return /\b(?:web\s?apps?|web\s?sites?|sites?|landing\s?pages?|dashboards?|apps?|mini[- ]?apps?|games?(?! ?plan)|tools?|calculators?|prototypes?|widgets?|quiz(?:zes)?|trackers?|forms?|simulators?|pitch\s?decks?|slide\s?decks?|presentations?|spread\s?sheets?|flow\s?charts?|diagrams?|charts?|study\s?guides?|work\s?sheets?|flash\s?cards?|interactive\s+(?:page|app|tool|demo))\b/i.test(
+    t,
+  );
+}
+
 function ask() {
   const qRaw = askEl.value.trim();
   if (browserActArmed) {
@@ -1726,9 +1748,9 @@ function ask() {
   // the streamed chat with forceImage so the server forces GPT Image 2.
   // Attachment-only sends count too ("remix this picture" with no caption).
   const imageAsk = imageGenArmed && (!!qRaw || attachments.length > 0);
-  // Build mode armed (menu → "Build mode"): this send is a build brief —
-  // route it straight to the streamed chat with buildMode so the server
-  // forces the React artifact builder (Claude-style coded artifact).
+  if (!imageAsk && !buildModeArmed && looksLikeBuildCommission(qRaw)) {
+    setComposerMode("build");
+  }
   const buildAsk = !imageAsk && buildModeArmed && (!!qRaw || attachments.length > 0);
   const researchAsk = !imageAsk && !buildAsk && researchModeArmed && !!qRaw;
   // Translate mode: empty send = translate what's on screen into the target lang.
@@ -1744,13 +1766,13 @@ function ask() {
   // mode via the composer pill's ✕, the menu toggle, or a new chat.
   if (!imageAsk && !buildAsk && !researchAsk && !translateAsk) {
     // Live watch alerts — "tell me when an enemy is near", "watch for stock drop", etc.
-    if (q && attachments.length === 0 && looksLikeClearWatchRules(q)) {
+    if (GLASS_LIVE_WATCH_ENABLED && q && attachments.length === 0 && looksLikeClearWatchRules(q)) {
       askEl.value = "";
       askEl.style.height = "52px";
       void clearWatchRules(q);
       return;
     }
-    if (q && attachments.length === 0 && looksLikeWatchRule(q)) {
+    if (GLASS_LIVE_WATCH_ENABLED && q && attachments.length === 0 && looksLikeWatchRule(q)) {
       askEl.value = "";
       askEl.style.height = "52px";
       void registerWatchRule(q);
@@ -1779,7 +1801,7 @@ function ask() {
   attachmentsEl.classList.remove("show");
   const label =
     q || (sentAttachments.length ? `Sent ${sentAttachments.length} attachment(s)` : "");
-  startTurn(label);
+  startTurn(label, { build: buildAsk });
   history.push({ role: "user", content: q, at: new Date().toISOString() });
   const askOpts = {
     ...(imageAsk ? { forceImage: true } : {}),
@@ -1866,7 +1888,7 @@ async function askAgent(qRaw) {
     }
     if (res?.agentId) activeAgentId = res.agentId;
     if (!res?.ok && res?.error && res.error !== "superseded") {
-      updateAnswer(res.error === "not_found" ? "No agent available — try Agent mode again." : res.error);
+      updateAnswer(res.error === "not_found" ? "No agent available. Try Agent mode again." : res.error);
       answerStillWorking = false;
       clearBuildingUnder();
       setBusy(false);
@@ -2988,6 +3010,7 @@ window.__lyknMenuCmd = (name, arg) => {
       break;
     }
     case "menu-live-watch": {
+      if (!GLASS_LIVE_WATCH_ENABLED) break;
       const b = document.getElementById("menu-live-watch");
       if (b) b.click();
       break;
@@ -3005,6 +3028,7 @@ window.__lyknMenuCmd = (name, arg) => {
       break;
     }
     case "menu-agent": {
+      if (!GLASS_AGENT_MODE_ENABLED) break;
       const b = document.getElementById("menu-agent");
       if (b) b.click();
       break;
@@ -3307,7 +3331,9 @@ if (menuBuildEl) {
 
 const menuAgentEl = document.getElementById("menu-agent");
 if (menuAgentEl) {
+  menuAgentEl.hidden = !GLASS_AGENT_MODE_ENABLED;
   menuAgentEl.addEventListener("click", () => {
+    if (!GLASS_AGENT_MODE_ENABLED) return;
     setMenuOpen(false);
     setComposerMode(composerMode === "agent" ? "chat" : "agent");
     askEl.focus();
@@ -3396,6 +3422,7 @@ if (stealthBtn) {
 // Live Watch — feed lives in the side panel; chat thread stays for user prompts.
 const liveWatchBtn = document.getElementById("menu-live-watch");
 const liveWatchStateEl = document.getElementById("live-watch-state");
+if (liveWatchBtn) liveWatchBtn.hidden = !GLASS_LIVE_WATCH_ENABLED;
 
 function appendWatchCommentary(text, { system = false, alert = false } = {}) {
   const t = String(text || "").trim();
@@ -3456,7 +3483,7 @@ async function requestWatchSuggestions(status) {
   if (pageTitle) contextLines.push(`Page: ${pageTitle}`);
   if (pageUrl) contextLines.push(`URL: ${pageUrl}`);
   if (contextSource === "vision") {
-    contextLines.push("View: screen capture (app or game — may not be a browser page)");
+    contextLines.push("View: screen capture (app or game, may not be a browser page)");
   } else if (contextSource === "extension") {
     contextLines.push("View: live browser page via Chrome Live Feed");
   }
@@ -3501,7 +3528,7 @@ function handleLiveWatchCommentary(status) {
 }
 
 function renderLiveWatchState(status) {
-  const on = !!(status && status.enabled);
+  const on = GLASS_LIVE_WATCH_ENABLED && !!(status && status.enabled);
   const wasOn = liveWatchEnabled;
   liveWatchEnabled = on;
   if (status?.contextSource) watchContextSource = status.contextSource;
@@ -3523,6 +3550,11 @@ function renderLiveWatchState(status) {
 
 (async () => {
   try {
+    if (!GLASS_LIVE_WATCH_ENABLED) {
+      try { await window.lyknOverlay.setLiveWatch(false); } catch (_) {}
+      renderLiveWatchState({ enabled: false });
+      return;
+    }
     renderLiveWatchState(await window.lyknOverlay.getLiveWatch());
   } catch (_) {}
 })();
@@ -3530,6 +3562,7 @@ function renderLiveWatchState(status) {
 if (liveWatchBtn) {
   liveWatchBtn.addEventListener("click", async (e) => {
     e.stopPropagation();
+    if (!GLASS_LIVE_WATCH_ENABLED) return;
     const current = liveWatchBtn.getAttribute("aria-pressed") === "true";
     try {
       const next = await window.lyknOverlay.setLiveWatch(!current);
@@ -3550,6 +3583,7 @@ if (liveWatchBtn) {
 }
 
 window.lyknOverlay.onLiveWatchUpdate((status) => {
+  if (!GLASS_LIVE_WATCH_ENABLED) return;
   const prevRules = JSON.stringify(watchActiveRules);
   const prevSource = watchContextSource;
   const prevExt = watchExtensionConnected;
@@ -3746,6 +3780,8 @@ const overlayHost = {
   set statusRotateLane(v) { statusRotateLane = v; },
   get statusRotateActive() { return statusRotateActive; },
   set statusRotateActive(v) { statusRotateActive = v; },
+  get statusDidNonBuildWork() { return statusDidNonBuildWork; },
+  set statusDidNonBuildWork(v) { statusDidNonBuildWork = !!v; },
   get listening() { return listening; },
   set listening(v) { listening = v; },
   get composerMode() { return composerMode; },
@@ -3826,6 +3862,8 @@ function bindOverlayModules() {
   applyLiveNotesLayout = side.applyLiveNotesLayout;
   startWatchConnPoll = side.startWatchConnPoll;
   stopWatchConnPoll = side.stopWatchConnPoll;
+
+  attachAppUpdate({ reportHeight });
 
   const voice = attachVoice(overlayHost);
   stopVoice = voice.stopVoice;

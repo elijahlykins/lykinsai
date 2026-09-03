@@ -75,7 +75,7 @@ function fmtTokens(v) {
 }
 
 function fmtRelative(iso) {
-  if (!iso) return "—";
+  if (!iso) return "-";
   const ms = Date.now() - new Date(iso).getTime();
   if (!Number.isFinite(ms) || ms < 0) return new Date(iso).toLocaleString();
   const sec = Math.floor(ms / 1000);
@@ -107,7 +107,7 @@ async function adminFetch(path) {
   return res.json();
 }
 
-function Card({ className, children }) {
+function Card({ className = "", children }) {
   return (
     <div
       className={cn(
@@ -198,7 +198,7 @@ function DiagnosticsBanner() {
     errors.push({
       title: "Diagnostics endpoint failed",
       detail: String(diagQ.error.message || diagQ.error),
-      hint: "The server may be running an older build — restart the Node process so it picks up the new /api/admin/usage/diagnostics route.",
+      hint: "The server may be running an older build. Restart the Node process so it picks up the new /api/admin/usage/diagnostics route.",
     });
   }
   if (d && d.service_role_configured === false) {
@@ -237,7 +237,7 @@ function DiagnosticsBanner() {
   ) {
     errors.push({
       title: "ai_usage_logs is empty",
-      detail: "The dashboard reads from ai_usage_logs, and that table has zero rows. This usually means the server can read the table but has never successfully written to it — most often because of a missing service-role key or a NOT NULL constraint blocking inserts.",
+      detail: "The dashboard reads from ai_usage_logs, and that table has zero rows. This usually means the server can read the table but has never successfully written to it, most often because of a missing service-role key or a NOT NULL constraint blocking inserts.",
       hint: "Make sure SUPABASE_SERVICE_ROLE_KEY is the service_role key (not anon), and that migration 040 has run (it drops NOT NULL on user_id so guest rows can insert).",
     });
   }
@@ -252,7 +252,7 @@ function DiagnosticsBanner() {
   ) {
     errors.push({
       title: "No rows logged today",
-      detail: `Total rows in DB: ${d.total_rows}. Rows in last hour: ${d.rows_last_hour ?? "?"}. Latest row: ${d.latest_row?.created_at ? new Date(d.latest_row.created_at).toLocaleString() : "—"}.`,
+      detail: `Total rows in DB: ${d.total_rows}. Rows in last hour: ${d.rows_last_hour ?? "?"}. Latest row: ${d.latest_row?.created_at ? new Date(d.latest_row.created_at).toLocaleString() : "-"}.`,
       hint: "If you have active users right now, restart the Node server so the new logAiUsage call sites in stream-guest, embeddings, transcription and YouTube are loaded. The previous build was running the old code that didn't log them.",
     });
   }
@@ -285,7 +285,7 @@ function DiagnosticsBanner() {
       <div className="flex items-start justify-between gap-3">
         <div className="space-y-1">
           <div className="text-sm font-semibold">
-            {ok ? "Tracking OK" : `Dashboard isn't seeing data — ${errors.length} issue${errors.length === 1 ? "" : "s"} detected`}
+            {ok ? "Tracking OK" : `Dashboard isn't seeing data. ${errors.length} issue${errors.length === 1 ? "" : "s"} detected`}
           </div>
           <div className="text-xs text-muted-foreground">
             Service role: <span className={d.service_role_configured ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}>{d.service_role_configured ? "configured" : "missing"}</span>
@@ -459,7 +459,7 @@ function LiveSection() {
         <LiveKpi label="Active users" value={fmtNum(totals.active_users)} sub={`${fmtNum(totals.guest_requests)} guest reqs`} />
         <LiveKpi
           label="Hottest action"
-          value={byAction[0]?.action_type || "—"}
+          value={byAction[0]?.action_type || "-"}
           sub={byAction[0] ? `${fmtMoney(byAction[0].cost_usd)} · ${fmtNum(byAction[0].calls)}× ` : "no activity"}
         />
       </div>
@@ -467,7 +467,7 @@ function LiveSection() {
       {/* Per-minute area chart */}
       <div className="mt-4">
         {sparkline.length === 0 ? (
-          <EmptyChart label="No activity yet — calls will appear here in real time" />
+          <EmptyChart label="No activity yet. Calls will appear here in real time." />
         ) : (
           <ResponsiveContainer width="100%" height={140}>
             <AreaChart data={sparkline} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
@@ -683,7 +683,7 @@ function SurfaceRow({ surface, totalCost, isExpanded, onToggle }) {
               {hasRisks && (
                 <span
                   className="inline-flex items-center gap-1 rounded-md bg-red-500/10 text-red-700 dark:text-red-300 border border-red-500/30 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider"
-                  title="Has known double-spend or waste risks — see details."
+                  title="Has known double-spend or waste risks. See details."
                 >
                   <AlertTriangle className="size-3" /> Risk
                 </span>
@@ -804,7 +804,7 @@ function AISurfacesSection({ byAction }) {
     <Card>
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-4">
         <div>
-          <h3 className="text-sm font-medium">AI surfaces — every call site, ranked by live spend</h3>
+          <h3 className="text-sm font-medium">AI surfaces, every call site, ranked by live spend</h3>
           <p className="text-xs text-muted-foreground">
             {AI_SURFACES.length} known surfaces · {fmtMoney(totalCost)} attributed cost in range · click any row for optimization notes.
           </p>
@@ -1022,7 +1022,7 @@ function CostOptimizationsSection() {
         <div>
           <h3 className="text-sm font-medium">Cost optimizations shipped</h3>
           <p className="text-xs text-muted-foreground">
-            {summary.total} change{summary.total === 1 ? "" : "s"} shipped · last update {summary.latest || "—"}.
+            {summary.total} change{summary.total === 1 ? "" : "s"} shipped · last update {summary.latest || "-"}.
             Click any row for details.
           </p>
         </div>
@@ -1061,7 +1061,7 @@ function CostOptimizationsSection() {
       <div className="mt-4 text-[11px] text-muted-foreground border-t border-emerald-500/15 pt-2">
         Add new entries by editing
         {" "}<code className="font-mono">src/lib/admin/costOptimizationsLog.js</code>{" "}
-        — they appear here automatically.
+        . They appear here automatically.
       </div>
     </Card>
   );
@@ -1176,6 +1176,97 @@ function OverviewView({ range, setRange }) {
         />
         <Kpi label="All-time spend" value={fmtMoney(allTime.total_cost_usd)} sub={`${fmtNum(allTime.request_count)} requests ever`} />
       </div>
+
+      {byModel.length > 0 && (() => {
+        const counts = { fast: 0, standard: 0, advanced: 0 };
+        let total = 0;
+        let cost = 0;
+        for (const row of byModel) {
+          const n = Number(row?.calls || 0);
+          if (!Number.isFinite(n) || n <= 0) continue;
+          const id = String(row.model || "").toLowerCase();
+          const tier = id.includes("luna") || id.includes("nano") || id.includes("flash") || id.includes("haiku")
+            ? "fast"
+            : id.includes("sol") || id.includes("opus")
+              ? "advanced"
+              : "standard";
+          counts[tier] += n;
+          total += n;
+          cost += Number(row.cost_usd) || 0;
+        }
+        if (total <= 0) return null;
+        return (
+          <Card>
+            <div className="mb-2">
+              <h3 className="text-sm font-medium">Auto chat routing mix</h3>
+              <p className="text-xs text-muted-foreground">
+                Share of calls on fast / standard / advanced models from live usage, plus average cost in range.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+              <div>
+                <div className="text-xs text-muted-foreground">Fast</div>
+                <div className="font-semibold">{Math.round((counts.fast / total) * 100)}%</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Standard</div>
+                <div className="font-semibold">{Math.round((counts.standard / total) * 100)}%</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Advanced</div>
+                <div className="font-semibold">{Math.round((counts.advanced / total) * 100)}%</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Avg cost / call</div>
+                <div className="font-semibold">{fmtMoney(cost / total)}</div>
+              </div>
+            </div>
+          </Card>
+        );
+      })()}
+
+      {(() => {
+        let input = 0;
+        let cached = 0;
+        let reported = 0;
+        for (const row of byModel) {
+          const inTok = Number(row?.input_tokens || row?.total_input_tokens || 0);
+          const cachedTok = Number(row?.cached_input_tokens || 0);
+          if (inTok <= 0) continue;
+          input += inTok;
+          cached += Math.max(0, cachedTok);
+          reported += Number(row?.calls || 0) || 1;
+        }
+        if (reported <= 0 || input <= 0) return null;
+        return (
+          <Card>
+            <div className="mb-2">
+              <h3 className="text-sm font-medium">Prompt cache utilization</h3>
+              <p className="text-xs text-muted-foreground">
+                Provider-reported cached input only. Rows without cached token counts are omitted.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+              <div>
+                <div className="text-xs text-muted-foreground">Cache hit rate</div>
+                <div className="font-semibold">{Math.round((cached / input) * 100)}%</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Avg input tokens</div>
+                <div className="font-semibold">{fmtTokens(input / reported)}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Avg cached</div>
+                <div className="font-semibold">{fmtTokens(cached / reported)}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Avg uncached</div>
+                <div className="font-semibold">{fmtTokens((input - cached) / reported)}</div>
+              </div>
+            </div>
+          </Card>
+        );
+      })()}
 
       {/* Charts row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -1513,7 +1604,7 @@ function DrilldownView({ userId, range, setRange }) {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Kpi label="Spend in range" value={fmtMoney(totals.total_cost_usd)} sub={`${fmtNum(totals.request_count)} requests`} />
         <Kpi label="Tokens (in/out)" value={fmtTokens(totals.total_tokens)} sub={`${fmtTokens(totals.total_input_tokens)} in · ${fmtTokens(totals.total_output_tokens)} out`} />
-        <Kpi label="Credits" value={fmtNum(totals.total_credits)} sub="Internal credit accounting" />
+        <Kpi label="Credits" value={fmtNum(totals.total_credits)} sub="Legacy credit accounting. Usage Balance ledger is separate." />
         <Kpi label="Last seen" value={fmtRelative(totals.last_request)} sub={totals.first_request ? `First: ${fmtRelative(totals.first_request)}` : ""} />
       </div>
 

@@ -210,4 +210,5 @@ test("the agent is told to paste rather than hunt for the surface first", () => 
   });
   assert.match(system, /DO NOT hunt for the writing area first/);
   assert.match(system, /Hunting for the writing surface before pasting is the way this goes wrong/);
+  assert.match(system, /Do not click Rename or "Untitled document" afterwards/);
 });

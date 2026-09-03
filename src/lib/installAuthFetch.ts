@@ -131,14 +131,17 @@ window.fetch = async function patchedFetch(input: RequestInfo | URL, init?: Requ
     }
   }
 
-  if (response.status === 429 && url.includes('/api/ai/')) {
+  // 402 = the usage balance is empty. Announce it once, globally, so the
+  // out-of-usage card appears no matter which feature hit the wall.
+  if (response.status === 402) {
     try {
-      const cloned = response.clone();
-      const body = await cloned.json();
-      if (body?.error === 'ai_limit_reached') {
-        window.dispatchEvent(new CustomEvent('lykn:ai-limit-reached', { detail: body }));
+      const body = await response.clone().json();
+      if (body?.code === 'insufficient_usage_balance' || body?.add_funds) {
+        window.dispatchEvent(new CustomEvent('lykn:out-of-usage', { detail: body }));
       }
-    } catch { /* ignore parse errors */ }
+    } catch {
+      /* non-JSON 402 — ignore */
+    }
   }
 
   return response;

@@ -11,68 +11,13 @@
 // DISCLOSURE IS NOT AUTHORIZATION. Runtime dispatch is still
 // POST /api/ai/realtime/tool (plus client-only update_voice_instructions).
 
-export const LYKN_VOICE_TOOL_DEFS = [
-    // ── Vault / retrieval ────────────────────────────────────────────────
-    {
-      name: 'search_vault',
-      special: 'search_vault',
-      description:
-        "Look up something they made with LYKN (AI Drive) or a file on their Mac — not a connected-apps library. " +
-        'Call this WHENEVER the user asks about something they saved or generated — "what did I save about X", ' +
-        '"the dashboard I made", "did I take notes on Z". Ground your spoken answer in the hits. Files on disk ' +
-        'need Local Mode; things LYKN built live in AI Drive inside the Vault Finder.',
-      parameters: {
-        type: 'object',
-        properties: { query: { type: 'string', description: 'What to look for, phrased as a search query (a topic or question).' } },
-        required: ['query'],
-      },
-    },
-    {
-      name: 'read_document',
-      special: 'read_document',
-      description:
-        "Read the FULL text content of one saved item in the user's vault (a note, " +
-        'document, saved article, or file) — not just a snippet. Call this WHENEVER ' +
-        'the user asks you to READ, open, pull up, go through, summarize, or tell them ' +
-        'what one of their saved items SAYS — e.g. "read me my notes on X", "what does ' +
-        'that doc say", "go through the article I saved about Y", "summarize my saved Z". ' +
-        'search_vault only returns short snippets; this returns the complete body so you ' +
-        'can read it aloud, summarize it, or answer detailed questions about it. ' +
-        'Pass the topic / title as `query` (preferred for voice). After reading, speak ' +
-        'a natural summary or the relevant parts — do not read formatting tokens or URLs aloud.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'The title or topic of the saved item to read (e.g. "my pricing doc", "notes on onboarding").' },
-          node_id: { type: 'string', description: 'Optional exact id of the item if you already have it from a prior search_vault result (vault_<uuid>).' },
-        },
-        required: ['query'],
-      },
-    },
-    {
-      name: 'display_document',
-      special: 'display_document',
-      description:
-        'PULL UP a saved vault item as an embedded window ON THE USER\'S SCREEN so they ' +
-        'can actually LOOK at it (the full note body, the image, the article, the file). ' +
-        'Call this WHENEVER the user asks to SEE / show / pull up / bring up / open / ' +
-        'display / "put that on screen" / "let me look at" one of their saved items — ' +
-        'e.g. "pull up that document", "bring that note up", "show me the file", "yeah ' +
-        'open it" (after you offered). This is DIFFERENT from read_document: read_document ' +
-        'reads the text ALOUD; display_document opens a visible reader window the user ' +
-        'looks at. When the user wants to SEE it (not just hear it), use this. You may ' +
-        'call both if they want to see AND hear it. After calling, say something short ' +
-        'and natural like "Pulling it up now" — the window appears automatically; do not ' +
-        'read the body aloud unless they also asked you to.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'The title or topic of the saved item to pull up (e.g. "my pricing doc", "the onboarding notes").' },
-          node_id: { type: 'string', description: 'Optional exact id of the item if you already have it from a prior search_vault result (vault_<uuid>).' },
-        },
-        required: ['query'],
-      },
-    },
+import { VOICE_SKILL_ALIAS_CLASS, VOICE_SKILL_DEFS } from './voiceSkillTools.js';
+
+const CORE_VOICE_TOOL_DEFS = [
+    // Vault retrieval parity with Chat: things LYKN built live in AI Drive and
+    // are pulled up with open_app (voiceSkillTools.js). The legacy hybrid-search
+    // trio (search_vault / read_document / display_document) is retired — see
+    // RETIRED_VOICE_ALIASES below.
     // ── Personal memory ────────────────────────────────────────────────
     {
       name: 'memory_list',
@@ -220,6 +165,66 @@ export const LYKN_VOICE_TOOL_DEFS = [
           reason: { type: 'string', description: 'Optional one-sentence justification.' },
         },
         required: ['state_key', 'state_value'],
+      },
+    },
+    {
+      name: 'resolve_project',
+      mcp: 'lykn_resolveProject',
+      description:
+        'Find which of the user\'s projects best matches a topic. Call when they mention work but you are not sure which project it belongs to.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The work they named, in their words.' },
+        },
+        required: ['query'],
+      },
+    },
+    {
+      name: 'update_project',
+      mcp: 'lykn_updateProject',
+      description:
+        'Rename, re-describe, or archive an existing project. Get its id from list_projects first. This does not switch the active project.',
+      parameters: {
+        type: 'object',
+        properties: {
+          project_id: { type: 'string', description: 'Project id from list_projects.' },
+          name: { type: 'string', description: 'New display name.' },
+          description: { type: 'string', description: 'New one-sentence summary.' },
+          status: { type: 'string', description: 'active or archived.' },
+        },
+        required: ['project_id'],
+      },
+    },
+    {
+      name: 'delete_project',
+      mcp: 'lykn_deleteProject',
+      description:
+        'Permanently delete a project after they clearly asked. Pass confirm:true and the current name as a guardrail. Prefer archive via update_project unless they want it gone.',
+      parameters: {
+        type: 'object',
+        properties: {
+          project_id: { type: 'string', description: 'Project id from list_projects.' },
+          name: { type: 'string', description: 'Current display name, must match.' },
+          confirm: { type: 'boolean', description: 'Must be true.' },
+        },
+        required: ['project_id', 'name', 'confirm'],
+      },
+    },
+    {
+      name: 'merge_projects',
+      mcp: 'lykn_mergeProjects',
+      description:
+        'Fold one project into another. Dry-run unless confirm:true plus the source project name. Irreversible when confirmed.',
+      parameters: {
+        type: 'object',
+        properties: {
+          source_project_id: { type: 'string', description: 'Project that will be deleted after merge.' },
+          target_project_id: { type: 'string', description: 'Project that survives.' },
+          source_name: { type: 'string', description: 'Current name of the source project.' },
+          confirm: { type: 'boolean', description: 'false = preview; true = commit.' },
+        },
+        required: ['source_project_id', 'target_project_id'],
       },
     },
     // ── Activity feed ────────────────────────────────────────────────────
@@ -490,10 +495,10 @@ export const LYKN_VOICE_TOOL_DEFS = [
       name: 'web_search',
       mcp: 'lykn_web_search',
       description:
-        'Search the live web for CURRENT information that is not in the user\'s Vault or Markdown Memory — ' +
+        'Search the live web for CURRENT information that is not in the user\'s AI Drive or Markdown Memory — ' +
         'news, prices, recent events, "what happened today", facts after your training cutoff. Call when the ' +
         'user asks you to look something up / search / google, or when answering clearly needs live data. ' +
-        'Do NOT use it for the user\'s own saved notes (use search_vault). Returns ranked snippets; ' +
+        'Do NOT use it for things they made with LYKN (open_app pulls those up). Returns ranked snippets; ' +
         'summarise the findings out loud and say where they came from. Never invent results you did not get.',
       parameters: {
         type: 'object',
@@ -652,6 +657,61 @@ export const LYKN_VOICE_TOOL_DEFS = [
         },
       },
     },
+    // ── Desktop bots + browser agent (client-side; Electron only) ──────────
+    {
+      name: 'ask_bot',
+      client: true,
+      description:
+        "Send one of the user's LYKN bots (named desktop teammates in [LYKN BOTS]) off to do work, " +
+        'including opening a real browser and operating a website. Call this when they name a bot ' +
+        '("send Scout", "have Cody do it") or ask you to run / send a bot. The bot starts immediately ' +
+        'and their work streams into this chat — you do NOT wait for them. Pass their name and a ' +
+        'complete brief (what to do, which site or product, any specifics). After calling, say they ' +
+        "are underway and the user can watch. Never say you cannot run bots or browse. These are " +
+        'LYKN bots, not custom models. If they did not name a bot and just want a website opened, ' +
+        'use browser_agent instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'The bot\'s name as listed in [LYKN BOTS] (e.g. "Scout").' },
+          message: {
+            type: 'string',
+            description:
+              'The complete brief. The bot does not hear this conversation, so include what to do, ' +
+              'where (site or product), and any names or constraints the user gave.',
+          },
+        },
+        required: ['name', 'message'],
+      },
+    },
+    {
+      name: 'browser_agent',
+      client: true,
+      description:
+        "Hand a task to LYKN's browser agent — a separate agent that opens a real browser tab on " +
+        'the desktop and operates websites: navigating, clicking, typing, filling forms. Use when ' +
+        'they ask you to GO DO something on a website without naming a bot: "run a browser agent", ' +
+        '"go to Perplexity Computer", "open Gmail and reply to Sarah". The task starts immediately. ' +
+        "Tell them it is underway in the browser and they can watch or take over. Do not narrate " +
+        'steps you did not do. Do not use this for a question you can answer yourself or a web lookup ' +
+        '(use web_search / web_fetch). If they named a LYKN bot, use ask_bot instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          task: {
+            type: 'string',
+            description:
+              'The complete goal for the browser agent. It sees nothing of this conversation, so ' +
+              'include what to do, where, and any specifics.',
+          },
+          url: {
+            type: 'string',
+            description: 'Where to start when known — a full URL like "https://www.perplexity.ai". Omit if they only named a product.',
+          },
+        },
+        required: ['task'],
+      },
+    },
     // ── Self-tuning: rewrite the user's own voice instructions ───────────────
     {
       name: 'update_voice_instructions',
@@ -680,7 +740,9 @@ export const LYKN_VOICE_TOOL_DEFS = [
         required: ['suggestion'],
       },
     },
-  ];
+];
+
+export const LYKN_VOICE_TOOL_DEFS = Object.freeze([...CORE_VOICE_TOOL_DEFS, ...VOICE_SKILL_DEFS]);
 
 export const LYKN_VOICE_TOOL_NAMES = Object.freeze(LYKN_VOICE_TOOL_DEFS.map((t) => t.name));
 
@@ -702,9 +764,6 @@ export const LYKN_VOICE_TOOL_MCP = Object.freeze(
  * ISOLATED_LANE — custom REST, not Universal MCP; disclose only on that ask.
  */
 export const VOICE_TOOL_ALIAS_CLASS = Object.freeze({
-  search_vault: { class: 'LEGACY', canonical: 'lykn_searchVault', note: 'Voice-only vault search; Chat skipVaultSearch rejects the MCP name.' },
-  read_document: { class: 'REQUIRED_VOICE_ADAPTER', canonical: 'lykn_loadNeuron', note: 'Spoken full-read path; query-or-id contract.' },
-  display_document: { class: 'REQUIRED_VOICE_ADAPTER', canonical: 'lykn_loadNeuron', note: 'On-screen reader; not a Chat tool.' },
   memory_list: { class: 'CANONICAL_ALIAS', canonical: 'memory_list', note: 'Same name as Chat; Voice schema is a subset.' },
   memory_read: { class: 'CANONICAL_ALIAS', canonical: 'memory_read', note: 'Same name as Chat; Voice schema is a subset.' },
   memory_patch: { class: 'CANONICAL_ALIAS', canonical: 'memory_patch', note: 'Same name as Chat; Voice schema is a subset.' },
@@ -715,6 +774,10 @@ export const VOICE_TOOL_ALIAS_CLASS = Object.freeze({
   set_active_project: { class: 'CANONICAL_ALIAS', canonical: 'lykn_setActiveProject', note: 'Voice-shaped schema over the Chat handler.' },
   create_project: { class: 'REQUIRED_VOICE_ADAPTER', canonical: 'lykn_createProject', note: 'Confirm-first Voice create flow.' },
   update_project_state: { class: 'CANONICAL_ALIAS', canonical: 'lykn_pushProjectState', note: 'Voice-shaped schema over the Chat handler.' },
+  resolve_project: { class: 'CANONICAL_ALIAS', canonical: 'lykn_resolveProject', note: 'Voice-shaped schema over the Chat handler.' },
+  update_project: { class: 'CANONICAL_ALIAS', canonical: 'lykn_updateProject', note: 'Voice-shaped schema over the Chat handler.' },
+  delete_project: { class: 'CANONICAL_ALIAS', canonical: 'lykn_deleteProject', note: 'Voice-shaped schema over the Chat handler.' },
+  merge_projects: { class: 'CANONICAL_ALIAS', canonical: 'lykn_mergeProjects', note: 'Voice-shaped schema over the Chat handler.' },
   get_recent_activity: { class: 'CANONICAL_ALIAS', canonical: 'lykn_getRecentActivity', note: 'Voice-shaped schema over the Chat handler.' },
   create_reminder: { class: 'CANONICAL_ALIAS', canonical: 'lykn_createReminder', note: 'Voice-shaped schema over the Chat handler.' },
   list_reminders: { class: 'CANONICAL_ALIAS', canonical: 'lykn_listReminders', note: 'Voice-shaped schema over the Chat handler.' },
@@ -735,11 +798,32 @@ export const VOICE_TOOL_ALIAS_CLASS = Object.freeze({
   call_app: { class: 'ISOLATED_LANE', canonical: 'lykn_call_app', note: 'Custom REST Connections. Not Universal MCP. Voice-only.' },
   save_to_vault: { class: 'CANONICAL_ALIAS', canonical: 'lykn_createVaultNote', note: 'Voice-shaped schema over the Chat handler.' },
   save_link_to_vault: { class: 'CANONICAL_ALIAS', canonical: 'lykn_saveLinkToVault', note: 'Voice-shaped schema over the Chat handler.' },
-  add_to_project: { class: 'REQUIRED_VOICE_ADAPTER', canonical: 'lykn_addProjectNeurons', note: 'Session-attachment clustering; not a Chat alias.' },
+  add_to_project: { class: 'REQUIRED_VOICE_ADAPTER', canonical: null, note: 'Session-attachment clustering into lykn_project_neurons; Chat analog is lykn_uploadToProject.' },
+  ask_bot: { class: 'REQUIRED_VOICE_ADAPTER', canonical: 'local_ask_bot', note: 'Client-only desktop dispatch; Voice does not wait.' },
+  browser_agent: { class: 'REQUIRED_VOICE_ADAPTER', canonical: 'local_browser_agent', note: 'Client-only desktop browser handoff.' },
   update_voice_instructions: { class: 'REQUIRED_VOICE_ADAPTER', canonical: null, note: 'Client-only; never hits server dispatch.' },
+  ...VOICE_SKILL_ALIAS_CLASS,
 });
 
 export const RETIRED_VOICE_ALIASES = Object.freeze([
+  Object.freeze({
+    name: 'search_vault',
+    class: 'DEAD',
+    canonical: 'lykn_searchVault',
+    note: 'Old vault hybrid search. Chat parity: AI Drive items open with open_app; Mac files use local_*.',
+  }),
+  Object.freeze({
+    name: 'read_document',
+    class: 'DEAD',
+    canonical: null,
+    note: 'Spoken full-read over the old vault search. Retired with search_vault.',
+  }),
+  Object.freeze({
+    name: 'display_document',
+    class: 'DEAD',
+    canonical: null,
+    note: 'On-screen reader over the old vault search. open_app pulls AI Drive items up instead.',
+  }),
   Object.freeze({
     name: 'list_custom_models',
     class: 'DEAD',

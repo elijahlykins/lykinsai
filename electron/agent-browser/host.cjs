@@ -27,6 +27,16 @@ function attachAgentBrowser(d) {
   const { createRoutineRuntime } = require("../bot-routines/routineRuntime.cjs");
   const { createTeachService } = require("../teach/service.cjs");
   const agentTabIds = require("../agentTabIds.cjs");
+  const botTabVisibility = require("./botTabVisibility.cjs");
+  const tabChatLineage = require("./tabChatLineage.cjs");
+  const { dockedPageBoundsForOverlay } = require("./menuOverlayLayout.cjs");
+  const {
+    applyViewRadius,
+    normalizeViewRadius,
+    pageClipRadius,
+    viewRadiiEqual,
+    viewRadiusMax,
+  } = require("./viewRadius.cjs");
   const { createAgentHomeIdentity } = require("../agentHomeIdentity.cjs");
   const agentHomeIdentity = createAgentHomeIdentity(path.join(__dirname, ".."));
   const {
@@ -266,22 +276,6 @@ function emitAgentToUi(channel, payload) {
   } catch (_) {}
   const agentId = String(payload?.agentId || "");
   const stream = agentId ? browserWelcomeChatStreams.get(agentId) : null;
-  // Open the task panel only after the runtime has resolved the turn into
-  // actual work. This avoids the old keyword-based behavior that opened it
-  // for ordinary questions.
-  if (
-    stream &&
-    channel === "lykn:agent-progress" &&
-    !stream.taskPanelOpened &&
-    ["browse", "build", "image", "local", "tool-create", "sheets-create", "sheets-fill"].includes(
-      String(payload?.skill || ""),
-    )
-  ) {
-    stream.taskPanelOpened = true;
-    try {
-      openBrowserTaskChat?.(agentId);
-    } catch (_) {}
-  }
   if (
     stream &&
     ["lykn:agent-status", "lykn:agent-delta", "lykn:agent-done", "lykn:agent-error"].includes(
@@ -428,8 +422,10 @@ function agentTabFamilyActive(ownerId) {
   if (agentTabIds.subTabOwner(active) === owner) return true;
   return String(agentBrowserMeta.get(active)?.ownerAgentId || "") === owner;
 }
-/** Studio agent chat side panel — closed until "Use LYKN" in browser chrome. */
+/** Studio agent chat side panel — closed until "Ask LYKN" in browser chrome. */
 let agentChatOpen = false;
+/** Tab ids destroyed since the last Studio tab-chat projection. */
+let pendingClosedTabIds = [];
 /** Saved-links dropdown open — the chrome surface overlays the page view so
  *  the menu renders in front instead of being buried behind the browser. */
 let agentStageMenuOverlay = false;
@@ -458,7 +454,8 @@ const MAX_AGENT_BROWSER_TABS = 20;
 function agentBrowserMainTabCount() {
   let n = 0;
   for (const id of agentBrowserViews.keys()) {
-    if (!isAgentArtifactTabId(id)) n += 1;
+    if (isAgentArtifactTabId(id) || isHiddenBotTab(id)) continue;
+    n += 1;
   }
   return n;
 }
@@ -1067,10 +1064,10 @@ let studioStageEmbedded = false;
 // light). Closing the last tab must not spawn a replacement — the next open
 // starts a fresh session. Minimize never sets this.
 let studioBrowserDisposing = false;
-// The browser docks into the body of the Studio's floating Browser window:
-// square along the top, where the window's own title bar sits, and rounded at
-// the bottom to sit concentric with the frame's corners. The renderer owns
-// that radius (it knows the frame) and reports it with the bounds; this is
+// The browser docks into the body of the Studio's floating Browser window.
+// Chrome wears the frame's corner curve. The live page stays square so it
+// meets the tab strip flush — Electron cannot round only the bottom. The
+// renderer owns that chrome radius and reports it with the bounds; this is
 // just the fallback until the first report lands.
 const STUDIO_DOCK_RADIUS = 14;
 let studioStageRadius = STUDIO_DOCK_RADIUS;
@@ -1117,9 +1114,7 @@ function raiseAgentStageView(win, view, key) {
 }
 
 function setViewRadius(view, radius) {
-  try {
-    view?.setBorderRadius?.(Math.max(0, Math.round(Number(radius) || 0)));
-  } catch (_) {}
+  applyViewRadius(view, radius);
 }
 
 /** Place a docked view, then clip it. Electron applies `setBorderRadius`
@@ -1133,7 +1128,7 @@ function setDockedViewBounds(view, bounds, { radius = 0 } = {}) {
   } catch (_) {}
   const w = Math.max(0, Number(bounds.width) || 0);
   const h = Math.max(0, Number(bounds.height) || 0);
-  if (w >= 2 && h >= 2 && radius > 0) setViewRadius(view, radius);
+  if (w >= 2 && h >= 2) setViewRadius(view, radius);
 }
 
 function ensureStudioStageChromeView() {
@@ -1281,15 +1276,14 @@ function setStudioBrowserEmbed({ open, bounds, radius } = {}) {
     fitAgentTabsToPane(studioStageBounds.width);
   }
   // The window frame's radius can only reach the views from the renderer, so
-  // pick it up here and repaint any that are already docked.
-  if (Number.isFinite(Number(radius))) {
-    const next = Math.max(0, Math.round(Number(radius)));
-    if (next !== studioStageRadius) {
-      studioStageRadius = next;
-      if (studioStageEmbedded) {
-        for (const view of agentBrowserViews.values()) setViewRadius(view, next);
-        setViewRadius(studioStageChromeView, next);
-      }
+  // pick it up here and repaint any that are already docked. Open rail uses
+  // per-corner radii so the page meets the chat on a straight edge.
+  const nextRadius = normalizeViewRadius(radius);
+  if (nextRadius != null && !viewRadiiEqual(nextRadius, studioStageRadius)) {
+    studioStageRadius = nextRadius;
+    if (studioStageEmbedded) {
+      for (const view of agentBrowserViews.values()) setViewRadius(view, pageClipRadius());
+      setViewRadius(studioStageChromeView, nextRadius);
     }
   }
   const freshDock = !studioStageEmbedded;
@@ -1306,7 +1300,7 @@ function setStudioBrowserEmbed({ open, bounds, radius } = {}) {
     const chrome = ensureStudioStageChromeView();
     attachViewToWindow(d.studioWindow, chrome);
     for (const view of agentBrowserViews.values()) {
-      setViewRadius(view, studioStageRadius);
+      setViewRadius(view, pageClipRadius());
       attachViewToWindow(d.studioWindow, view);
     }
     // Tabs wait on the persisted agent list so a raced load() can't add
@@ -1417,7 +1411,7 @@ function fillEmptyStudioBrowser({ show = false } = {}) {
   try {
     initAgentRuntime().ensureAgentTabs?.();
   } catch (_) {}
-  if (!agentBrowserViews.size) openFreshStudioBrowserTab({ show });
+  if (!hasUserBrowserTab()) openFreshStudioBrowserTab({ show });
 }
 
 async function warmStudioBrowser() {
@@ -1426,15 +1420,119 @@ async function warmStudioBrowser() {
     ensureStudioStageChromeView();
   } catch (_) {}
   await whenAgentRuntimeLoaded();
-  if (agentBrowserViews.size) return;
+  if (hasUserBrowserTab()) return;
   fillEmptyStudioBrowser({ show: false });
+}
+
+/** Click-to-reveal set: Bot work surfaces the user opened from the peek.
+ *  Cleared when the Studio Browser session closes or the user hides that tab. */
+const revealedBotTabs = new Set();
+
+function botVisibilityOpts() {
+  return {
+    isHeadless: (id) => {
+      try {
+        return !!initAgentRuntime().isHeadless?.(id);
+      } catch {
+        return false;
+      }
+    },
+    isRevealed: (id) => revealedBotTabs.has(String(id || "").trim()),
+    partitionOwner: (id) => agentTabIds.partitionOwner(id) || id,
+  };
+}
+
+function isHeadlessBotTab(id) {
+  return botTabVisibility.isHeadlessBotTab(id, botVisibilityOpts());
+}
+
+/** Hidden until the user opens the peek. Revealed Bot tabs are user tabs. */
+function isHiddenBotTab(id) {
+  return botTabVisibility.isHiddenBotTab(id, botVisibilityOpts());
+}
+
+function tabChatProjection(extra = {}) {
+  const activeId = extra.activeAgentId || extra.agentId || agentStageActiveId;
+  return {
+    ...tabChatLineage.projectTabChatBindings({
+      metaById: agentBrowserMeta,
+      activeId,
+      chatOpen: extra.open ?? agentChatOpen,
+      isHiddenTab: isHiddenBotTab,
+      closedTabIds: extra.closedTabIds || [],
+    }),
+    ...extra,
+  };
+}
+
+function notifyStudioTabChatState(extra = {}) {
+  const win = d.studioWindow;
+  if (!win || win.isDestroyed()) return;
+  const closed = pendingClosedTabIds.splice(0);
+  const payload = tabChatProjection({
+    ...extra,
+    closedTabIds: [...closed, ...(extra.closedTabIds || [])],
+  });
+  try {
+    win.webContents.send("lykn:agent-chat-visibility", payload);
+  } catch (_) {}
+}
+
+function clearTabSourceChatIds() {
+  tabChatLineage.stripSourceChatIds(agentBrowserMeta);
+  notifyStudioTabChatState();
+}
+
+function noteClosedTabChat(tabId) {
+  const id = String(tabId || "").trim();
+  if (id) pendingClosedTabIds.push(id);
+}
+
+function revealBotBrowserTab(id) {
+  const owner = botTabVisibility.botTabOwner(id, botVisibilityOpts().partitionOwner);
+  if (owner) revealedBotTabs.add(owner);
+}
+
+function concealBotBrowserTab(id) {
+  const raw = String(id || "").trim();
+  const owner = botTabVisibility.botTabOwner(id, botVisibilityOpts().partitionOwner);
+  if (raw) revealedBotTabs.delete(raw);
+  if (owner) revealedBotTabs.delete(owner);
+  if (agentStageActiveId === raw || (owner && agentStageActiveId === owner)) {
+    agentStageActiveId = userBrowserTabIds().find((tabId) => tabId !== raw && tabId !== owner) || null;
+  }
+  if (!hasUserBrowserTab() && studioStageEmbedActive() && !studioBrowserDisposing) {
+    openFreshStudioBrowserTab({ focusOmnibox: true });
+  }
+  if (owner && agentBotShotIds.has(owner)) {
+    try {
+      prepareBotShotSurface(owner);
+    } catch {
+      /* peek park is best-effort */
+    }
+  }
+  layoutAgentStageViews();
+  pushAgentStageState();
+}
+
+/** Tabs the user can see and switch. Hidden Bot shot surfaces stay off-strip. */
+function userBrowserTabIds() {
+  return [...agentBrowserViews.keys()].filter((id) => !isHiddenBotTab(id));
+}
+
+function hasUserBrowserTab() {
+  return userBrowserTabIds().length > 0;
 }
 
 /** Red traffic light: close the Studio Browser window for real. Tabs go to
  *  History, agents are retired, views are destroyed. The next press warms a
  *  fresh session. Minimize never calls this — it only undocks the views. */
 function closeStudioBrowserSession() {
-  const tabIds = [...agentBrowserViews.keys()];
+  // Closing the Studio Browser is a fresh *browser* session. Headless Bots
+  // are teammates, not tabs - keep their agents and work surfaces alive so
+  // a mid-task research/browse run does not die as `agent_closed`.
+  const tabIds = [...agentBrowserViews.keys()].filter((id) => !isHeadlessBotTab(id));
+  revealedBotTabs.clear();
   const snaps = tabIds.map((id) => snapshotAgentBrowserHistory(id));
   studioBrowserDisposing = true;
   try {
@@ -1444,7 +1542,7 @@ function closeStudioBrowserSession() {
     try {
       initAgentRuntime().closeAllWorkers?.();
     } catch (_) {}
-    for (const id of [...agentBrowserViews.keys()]) {
+    for (const id of tabIds) {
       destroyAgentBrowserWindow(id);
     }
     for (const snap of snaps) commitAgentBrowserHistory(snap);
@@ -1460,13 +1558,20 @@ function closeStudioBrowserSession() {
 
 /** Open a manual browser tab already navigated to `url` (used by Chrome sync).
  *  Returns the tab id, or null when at the tab cap / on failure. */
-function openStudioBrowserTabWithUrl(url, { focus = false } = {}) {
+function openStudioBrowserTabWithUrl(url, { focus = false, sourceChatId } = {}) {
   if (agentBrowserMainTabCount() >= MAX_AGENT_BROWSER_TABS) return null;
   const target = String(url || "").trim();
   if (!/^https?:\/\//i.test(target)) return null;
   const id = `studio-tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const chat = String(sourceChatId || "").trim();
   try {
     const wrap = ensureAgentBrowserWindow(id, { show: false, focus, label: "Loading…" });
+    if (chat) {
+      agentBrowserMeta.set(id, {
+        ...(agentBrowserMeta.get(id) || {}),
+        sourceChatId: chat,
+      });
+    }
     const wc = wrap?.webContents;
     if (wc && !wc.isDestroyed()) {
       // Fire-and-forget: the tab strip updates from the view's own load events.
@@ -1497,7 +1602,7 @@ function normalizeSyncUrl(url) {
  *  agent so the AI can act on it. Returns the agent id, or null on cap/failure.
  *  `show:false` creates the tab without raising the hosting window — for
  *  callers about to dock the browser somewhere else (Studio Browser tab). */
-function openAgentBrowserTabWithUrl(url, { title, focus = false, show = true } = {}) {
+function openAgentBrowserTabWithUrl(url, { title, focus = false, show = true, sourceChatId } = {}) {
   const target = String(url || "").trim();
   if (!/^https?:\/\//i.test(target)) return null;
   if (agentBrowserMainTabCount() >= MAX_AGENT_BROWSER_TABS) return null;
@@ -1509,6 +1614,7 @@ function openAgentBrowserTabWithUrl(url, { title, focus = false, show = true } =
       label = "Tab";
     }
   }
+  const chat = String(sourceChatId || "").trim();
   try {
     const rt = initAgentRuntime();
     if (!rt.isAgentModeOn?.()) rt.setAgentMode?.(true);
@@ -1525,6 +1631,7 @@ function openAgentBrowserTabWithUrl(url, { title, focus = false, show = true } =
       kind: "browsing",
       url: target,
       pageTitle: label,
+      ...(chat ? { sourceChatId: chat } : {}),
     });
     if (show) {
       showAgentBrowserWindow(id, { focus, label });
@@ -1971,11 +2078,10 @@ function layoutAgentStageViews() {
     const b = shift ? { ...studioStageBounds, x: studioStageBounds.x + shift } : studioStageBounds;
     const chromeH = agentStageChromeH();
     const pageH = Math.max(0, b.height - chromeH);
-    const r = studioStageRadius;
-    // The page view's radius cuts notches into its own top corners at the
-    // seam. Extending the chrome view well below the seam (hidden behind the
-    // page, which stacks on top) fills those notches with the chrome's light
-    // background instead of letting the studio frost bleed through.
+    const r = viewRadiusMax(studioStageRadius);
+    // Chrome is clipped with the frame curve, which also rounds its bottom.
+    // Extending it below the seam (hidden behind the square page, which stacks
+    // on top) keeps that bottom curve off the tab strip.
     setDockedViewBounds(
       studioStageChromeView,
       {
@@ -1988,7 +2094,7 @@ function layoutAgentStageViews() {
           ? b.height
           : Math.min(chromeH + r * 2, b.height),
       },
-      { radius: r },
+      { radius: studioStageRadius },
     );
     fitAgentTabsToPane(b.width);
     for (const [id, view] of agentBrowserViews) {
@@ -2005,12 +2111,20 @@ function layoutAgentStageViews() {
           continue;
         }
         if (id === agentStageActiveId) {
-          setDockedViewBounds(
-            view,
-            { x: b.x, y: b.y + chromeH, width: b.width, height: pageH },
-            { radius: r },
-          );
-          if (!agentStageMenuOverlay) {
+          const pageBounds = dockedPageBoundsForOverlay({
+            overlay: agentStageMenuOverlay,
+            x: b.x,
+            y: b.y,
+            chromeH,
+            width: b.width,
+            pageH,
+          });
+          if (agentStageMenuOverlay) {
+            // Park like the standalone stage: the Sync / omnibox menus overflow
+            // the toolbar into this rect. Leaving a live page here swallows clicks.
+            view.setBounds(pageBounds);
+          } else {
+            setDockedViewBounds(view, pageBounds, { radius: pageClipRadius() });
             raiseAgentStageView(d.studioWindow, view, `studio:page:${id}`);
           }
         } else {
@@ -2067,9 +2181,13 @@ function pushAgentStageState() {
     studioStageChromeView &&
     studioStageChromeView.webContents &&
     !studioStageChromeView.webContents.isDestroyed();
-  if (!stageAlive && !dockAlive) return;
+  if (!stageAlive && !dockAlive) {
+    notifyStudioTabChatState();
+    return;
+  }
   const tabs = [];
   for (const [id, view] of agentBrowserViews) {
+    if (isHiddenBotTab(id)) continue;
     const meta = agentBrowserMeta.get(id) || {};
     let url = meta.url || "";
     let pageTitle = meta.pageTitle || "";
@@ -2109,6 +2227,7 @@ function pushAgentStageState() {
         (typeof meta.favicon === "string" && meta.favicon) ||
         agentFaviconFallback(url) ||
         "";
+    const sourceChatId = String(meta.sourceChatId || "").trim();
     tabs.push({
       id,
       title: agentBrowserLabels.get(id) || (kind === "artifact" ? "Artifact" : "Agent"),
@@ -2118,6 +2237,7 @@ function pushAgentStageState() {
       kind,
       artifactKind: meta.artifactKind || "",
       ownerAgentId: meta.ownerAgentId || "",
+      sourceChatId: sourceChatId || undefined,
     });
   }
   // Group deliverable subtabs directly under their owner tab, in creation
@@ -2176,6 +2296,7 @@ function pushAgentStageState() {
       : !!agentStageIncognitoDefault,
     recents,
     chatOpen: !!agentChatOpen,
+    sourceChatId: String(activeMeta.sourceChatId || "").trim() || undefined,
   };
   if (stageAlive) {
     try {
@@ -2203,6 +2324,7 @@ function pushAgentStageState() {
   // Whatever just changed about the browser, the picture the Studio animates
   // its window over is now a little out of date.
   scheduleStudioStageShot();
+  notifyStudioTabChatState();
 }
 
 function wireAgentBrowserViewEvents(agentId, view) {
@@ -2436,6 +2558,29 @@ function wireAgentBrowserViewEvents(agentId, view) {
   wc.on("will-prevent-unload", (event) => {
     event.preventDefault();
   });
+  // OAuth-style pages end with window.close(). For a tab's WebContentsView
+  // Electron destroys the contents outright, and with no BrowserWindow around
+  // it there is no 'close' event — the strip would keep a dead tab painting a
+  // blank surface. If the host did not initiate the teardown (the tab is
+  // still registered when the destruction lands), close the tab for real:
+  // the same flow as the tab-strip x, except a web page must never retire an
+  // agent, so only the browser surface goes.
+  wc.on("destroyed", () => {
+    setImmediate(() => {
+      try {
+        if (agentBrowserViews.get(agentId) !== view) return;
+        const historySnap = snapshotAgentBrowserHistory(agentId);
+        destroyAgentBrowserWindow(agentId);
+        if (!isAgentArtifactTabId(agentId) && !agentTabIds.isSubTabId(agentId)) {
+          try {
+            agentRuntime?.clearBrowserSurface?.(agentId);
+          } catch (_) {}
+        }
+        commitAgentBrowserHistory(historySnap);
+        pushAgentStageState();
+      } catch (_) {}
+    });
+  });
   try {
     if (app.userAgentFallback) wc.setUserAgent(app.userAgentFallback);
   } catch (_) {}
@@ -2591,7 +2736,7 @@ function saveHtmlToDownloads(html, title) {
  * re-parent into the Studio once it reports bounds). The standalone stage
  * window is only a fallback for when there is no Studio window at all.
  */
-function raiseAgentBrowserHost({ focus = true } = {}) {
+function raiseAgentBrowserHost({ focus = true, agentId } = {}) {
   const overlayAlive =
     d.overlayWindow && !d.overlayWindow.isDestroyed() && d.overlayWindow.isVisible();
   const overlayTyping = !!(overlayAlive && d.overlayWindow.isFocused());
@@ -2614,7 +2759,7 @@ function raiseAgentBrowserHost({ focus = true } = {}) {
     // of popping the standalone stage window. Layout happens when the Studio
     // renderer reports the dock bounds and the embed activates.
     raiseWin(d.studioWindow);
-    notifyStudioShowBrowser();
+    notifyStudioShowBrowser({ agentId });
     return "studio-pending";
   }
   const stage = ensureAgentStageWindow();
@@ -2623,7 +2768,13 @@ function raiseAgentBrowserHost({ focus = true } = {}) {
   return "stage";
 }
 
-function ensureAgentBrowserWindow(agentId, { show = false, focus = true, label } = {}) {
+function applyTabSourceChatId(tabId, chatId) {
+  const result = tabChatLineage.applySourceChatId(agentBrowserMeta, tabId, chatId);
+  if (result.changed) notifyStudioTabChatState();
+  return result.ok;
+}
+
+function ensureAgentBrowserWindow(agentId, { show = false, focus = true, label, sourceChatId } = {}) {
   const id = String(agentId || "").trim();
   if (!id) return null;
   if (label) agentBrowserLabels.set(id, String(label).trim().slice(0, 40) || "Agent");
@@ -2673,15 +2824,18 @@ function ensureAgentBrowserWindow(agentId, { show = false, focus = true, label }
       stage.setContentProtection(isContentProtectionEnabled());
     } catch (_) {}
     agentBrowserViews.set(id, view);
+    const chat = String(sourceChatId || "").trim();
     agentBrowserMeta.set(id, {
       url: AGENT_BROWSER_HOME_URL,
       pageTitle: "New tab",
       kind: "browse",
       incognito,
+      ...(chat ? { sourceChatId: chat } : {}),
     });
     wireAgentBrowserViewEvents(id, view);
     loadAgentBrowserHome(view.webContents);
   } else {
+    applyTabSourceChatId(id, sourceChatId);
     // Re-show the home page only for truly empty tabs — never clobber a report/artifact
     // (those often load as data: URLs, which used to look like placeholders),
     // and never interrupt an in-flight navigation (Studio docking used to call
@@ -2710,16 +2864,22 @@ function ensureAgentBrowserWindow(agentId, { show = false, focus = true, label }
     } catch (_) {}
   }
 
-  // Select this tab for layout whenever we're focusing it, or when the stage
-  // has no active tab yet. Agent Mode startup uses focus:false so Glass keeps
-  // typing focus — but the welcome page must still be the visible tab.
-  if (focus !== false || !agentStageActiveId || !agentBrowserViews.has(agentStageActiveId)) {
+  // A click on the Bot peek (show:true) reveals that live tab. Hidden Bot
+  // shot surfaces must never become the visible tab on their own.
+  if (show && isHeadlessBotTab(id)) revealBotBrowserTab(id);
+  if (
+    !isHiddenBotTab(id) &&
+    (focus !== false ||
+      !agentStageActiveId ||
+      isHiddenBotTab(agentStageActiveId) ||
+      !agentBrowserViews.has(agentStageActiveId))
+  ) {
     agentStageActiveId = id;
   }
 
   if (show) {
     // Always through the Studio when it exists — never a separate window.
-    raiseAgentBrowserHost({ focus: focus !== false });
+    raiseAgentBrowserHost({ focus: focus !== false, agentId: id });
     pushAgentStageState();
     notifyAgentBrowserVisibility(true);
   }
@@ -2741,8 +2901,17 @@ function destroyAgentBrowserWindow(agentId) {
   const view = agentBrowserViews.get(id);
   agentBrowserLabels.delete(id);
   agentBrowserMeta.delete(id);
+  noteClosedTabChat(id);
   agentIncognito.delete(id);
-  if (!view) return;
+  revealedBotTabs.delete(id);
+  {
+    const owner = botTabVisibility.botTabOwner(id, botVisibilityOpts().partitionOwner);
+    if (owner) revealedBotTabs.delete(owner);
+  }
+  if (!view) {
+    notifyStudioTabChatState();
+    return;
+  }
   agentBrowserViews.delete(id);
   agentBrowserViewsReady.delete(id);
   agentBotShotIds.delete(id);
@@ -2753,12 +2922,10 @@ function destroyAgentBrowserWindow(agentId) {
     view.webContents?.close?.();
   } catch (_) {}
   if (agentStageActiveId === id) {
-    agentStageActiveId = agentBrowserViews.size
-      ? [...agentBrowserViews.keys()][0]
-      : null;
+    agentStageActiveId = userBrowserTabIds().find((tabId) => tabId !== id) || null;
   }
   if (
-    !agentBrowserViews.size &&
+    !hasUserBrowserTab() &&
     !studioStageEmbedActive() &&
     agentStageWindow &&
     !agentStageWindow.isDestroyed()
@@ -2768,9 +2935,10 @@ function destroyAgentBrowserWindow(agentId) {
     // Closing the last docked tab leaves the studio browser open — keep a
     // fresh new-tab in place like a real browser window would. Closing the
     // window itself (not a tab, not minimize) skips that so reopen is empty.
+    // Headless Bot shot surfaces do not count as user tabs.
     if (
       !studioBrowserDisposing &&
-      !agentBrowserViews.size &&
+      !hasUserBrowserTab() &&
       studioStageEmbedActive()
     ) {
       openFreshStudioBrowserTab({ focusOmnibox: true });
@@ -2904,7 +3072,7 @@ async function toggleAgentIncognito(agentId) {
   } catch (_) {}
   if (studioStageEmbedActive()) {
     try {
-      setViewRadius(newView, studioStageRadius);
+      setViewRadius(newView, pageClipRadius());
     } catch (_) {}
     attachViewToWindow(d.studioWindow, newView);
   } else {
@@ -3009,7 +3177,7 @@ function ensureAgentArtifactProtocolForPartition(partition) {
         const key = new URL(request.url).hostname.replace(/\/$/, "");
         const html = artifactHtmlCache.get(key);
         if (!html) {
-          return new Response("Artifact preview expired — run the agent again.", {
+          return new Response("Artifact preview expired. Run the agent again.", {
             status: 404,
             headers: { "Content-Type": "text/plain; charset=utf-8" },
           });
@@ -3437,7 +3605,7 @@ function resolveAgentBrowseTargetId() {
   const rt = agentRuntime;
   const isBrowseTab = (id) => {
     const tabId = String(id || "").trim();
-    if (!tabId || isAgentArtifactTabId(tabId)) return false;
+    if (!tabId || isAgentArtifactTabId(tabId) || isHiddenBotTab(tabId)) return false;
     const meta = agentBrowserMeta.get(tabId) || {};
     return meta.kind !== "artifact";
   };
@@ -3452,7 +3620,9 @@ function resolveAgentBrowseTargetId() {
   const active = agents.find((a) => a && a.id === activeId);
   if (active && active.role !== "main" && isBrowseTab(active.id)) return active.id;
 
-  const worker = agents.find((a) => a && a.role !== "main" && a.id);
+  const worker = agents.find(
+    (a) => a && a.role !== "main" && a.id && isBrowseTab(a.id),
+  );
   if (worker?.id) return worker.id;
 
   for (const id of agentBrowserViews.keys()) {
@@ -3467,7 +3637,7 @@ function resolveAgentBrowseTargetId() {
  * links each get their own agent. Falls back to the OS default for
  * mailto/tel or when the in-app browser cannot take the URL.
  */
-async function openUrlPreferAgentBrowser(url, { title } = {}) {
+async function openUrlPreferAgentBrowser(url, { title, sourceChatId } = {}) {
   const u = String(url || "").trim();
   if (!u) return { ok: false, error: "empty" };
 
@@ -3500,12 +3670,17 @@ async function openUrlPreferAgentBrowser(url, { title } = {}) {
 
     // Always a new agent per link/artifact so each page is independently
     // actionable in the rail.
+    const chat = String(sourceChatId || "").trim();
     const id =
       openAgentBrowserTabWithUrl(target, {
         title: label || undefined,
         focus: true,
         show: !quiet,
-      }) || openStudioBrowserTabWithUrl(target, { focus: !quiet });
+        ...(chat ? { sourceChatId: chat } : {}),
+      }) || openStudioBrowserTabWithUrl(target, {
+        focus: !quiet,
+        ...(chat ? { sourceChatId: chat } : {}),
+      });
     if (id) {
       if (label) agentBrowserLabels.set(id, label);
       notifyStudioShowBrowser();
@@ -3567,10 +3742,20 @@ function initAgentRuntime() {
       // and any per-id checks honest too.
       if (isAgentIncognito(owner)) agentIncognito.set(id, true);
       const label = `${agentBrowserLabels.get(owner) || "Agent"} · tab ${n + 1}`;
-      const wrap = ensureAgentBrowserWindow(id, { show: false, focus: false, label });
+      const inherit = tabChatLineage.sourceChatIdOf(agentBrowserMeta.get(owner));
+      const wrap = ensureAgentBrowserWindow(id, {
+        show: false,
+        focus: false,
+        label,
+        sourceChatId: inherit || undefined,
+      });
       if (!wrap) return { ok: false, error: "tab_create_failed" };
       const meta = agentBrowserMeta.get(id) || {};
-      agentBrowserMeta.set(id, { ...meta, ownerAgentId: owner });
+      agentBrowserMeta.set(id, {
+        ...meta,
+        ownerAgentId: owner,
+        ...(inherit ? { sourceChatId: inherit } : {}),
+      });
       const target = String(url || "").trim();
       if (target && /^https?:\/\//i.test(target)) {
         try {
@@ -3843,6 +4028,7 @@ function initTeachService() {
   d.agentBrandIconFor = agentBrandIconFor;
   d.agentFaviconFallback = agentFaviconFallback;
   d.isAgentArtifactTabId = isAgentArtifactTabId;
+  d.MAX_AGENT_BROWSER_TABS = MAX_AGENT_BROWSER_TABS;
   d.agentBrowserHistoryFile = agentBrowserHistoryFile;
   d.readAgentBrowserHistory = readAgentBrowserHistory;
   d.persistAgentBrowserHistory = persistAgentBrowserHistory;
@@ -3909,6 +4095,9 @@ function initTeachService() {
   d.setBotShotAgents = setBotShotAgents;
   d.layoutAgentStageViews = layoutAgentStageViews;
   d.pushAgentStageState = pushAgentStageState;
+  d.tabChatProjection = tabChatProjection;
+  d.applyTabSourceChatId = applyTabSourceChatId;
+  d.clearTabSourceChatIds = clearTabSourceChatIds;
   d.wireAgentBrowserViewEvents = wireAgentBrowserViewEvents;
   d.agentBrowserAllowsPermission = agentBrowserAllowsPermission;
   d.wireAgentSessionPermissions = wireAgentSessionPermissions;
@@ -3920,6 +4109,9 @@ function initTeachService() {
   d.ensureAgentBrowserWindow = ensureAgentBrowserWindow;
   d.destroyAgentBrowserWindow = destroyAgentBrowserWindow;
   d.showAgentBrowserWindow = showAgentBrowserWindow;
+  d.revealBotBrowserTab = revealBotBrowserTab;
+  d.concealBotBrowserTab = concealBotBrowserTab;
+  d.isHiddenBotTab = isHiddenBotTab;
   d.waitForWebContentsLoad = waitForWebContentsLoad;
   d.toggleAgentIncognito = toggleAgentIncognito;
   d.escapeHtmlForStage = escapeHtmlForStage;
@@ -3968,6 +4160,9 @@ function initTeachService() {
   bindLet("agentStageActiveId", () => agentStageActiveId, (v) => { agentStageActiveId = v; });
   bindLet("agentChatOpen", () => agentChatOpen, (v) => { agentChatOpen = v; });
   bindLet("agentSidebarOpen", () => agentSidebarOpen, (v) => { agentSidebarOpen = v; });
+  bindLet("agentStageMenuOverlay", () => agentStageMenuOverlay, (v) => { agentStageMenuOverlay = v; });
+  bindLet("agentStageChromeHeight", () => agentStageChromeHeight, (v) => { agentStageChromeHeight = v; });
+  bindLet("studioStageChromeView", () => studioStageChromeView, (v) => { studioStageChromeView = v; });
   bindLet("agentFinishedPopup", () => agentFinishedPopup, (v) => { agentFinishedPopup = v; });
   bindLet("agentRuntimeLoadPromise", () => agentRuntimeLoadPromise, (v) => { agentRuntimeLoadPromise = v; });
 }

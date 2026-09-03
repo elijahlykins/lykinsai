@@ -2,10 +2,12 @@
 // server/routes/preLimiterPlatform.routes.js — pre-limiter platform routes
 // ============================================================================
 // ORDERING-SENSITIVE (Wave 7). These four routes are registered BEFORE the
-// global /api/ rate limiter and are therefore limiter-exempt (current
-// production behavior — see DEFERRED SECURITY FINDINGS below). They span two
-// distinct bootstrap positions, so this module exports THREE registrars, each
-// called from server.js at the exact position the inline route occupied:
+// global /api/ rate limiter mounts, so the global limiter never covers them.
+// Each therefore receives a DEDICATED perimeter limiter from the bootstrap
+// (declared in server.js next to the webhook limiter) — no route in this
+// module is rate-limit exempt. They span two distinct bootstrap positions,
+// so this module exports THREE registrars, each called from server.js at the
+// exact position the inline route occupied:
 //
 //   registerClientErrorRoute      — right after the global branching JSON
 //                                   parser, before the auth core exists.
@@ -24,8 +26,10 @@
 //     effectively INERT — the global 1mb parser has already consumed the
 //     body by the time it runs. Oversized bodies are rejected by zod field
 //     caps (400), not by the parser (413). Current behavior, kept.
-//   • /api/artifacts/react/rebuild sits before the /api/ global limiter and
-//     is rate-limit EXEMPT. Current behavior, kept.
+//
+// RESOLVED FINDINGS:
+//   • The former rate-limit EXEMPTION on these routes is closed: each route
+//     now runs behind a dedicated perimeter limiter passed in by server.js.
 
 import express from 'express';
 import { z, validate } from '../../validation.js';
@@ -70,9 +74,10 @@ const clientErrorSchema = z.object({
   lsKeys: z.array(z.string().max(200)).max(100).optional().catch([]),
 });
 
-export function registerClientErrorRoute(app) {
+export function registerClientErrorRoute(app, { clientErrorLimiter }) {
   app.post(
     '/api/client-error',
+    clientErrorLimiter,
     express.json({ limit: '10kb' }),
     validate(clientErrorSchema),
     (req, res) => {
@@ -126,8 +131,8 @@ export function registerClientErrorRoute(app) {
 // supabaseAdmin const is initialized in the bootstrap (temporal dead zone),
 // exactly as the inline version referenced the not-yet-declared module
 // binding. The handler resolves it per request, same as before.
-export function registerHealthRoute(app, { getSupabaseAdmin }) {
-  app.get('/api/health', async (req, res) => {
+export function registerHealthRoute(app, { getSupabaseAdmin, healthLimiter }) {
+  app.get('/api/health', healthLimiter, async (req, res) => {
     const supabaseAdmin = getSupabaseAdmin();
     const checks = {};
     let healthy = true;
@@ -239,8 +244,11 @@ const FILE_PROXY_FRAME_ANCESTORS = [
   .filter((v, i, arr) => arr.indexOf(v) === i)
   .join(' ');
 
-export function registerFileProxyAndArtifactRoutes(app, { supabaseAdmin, requireAuth }) {
-  app.get(FILE_PROXY_ROUTE, async (req, res) => {
+export function registerFileProxyAndArtifactRoutes(
+  app,
+  { supabaseAdmin, requireAuth, fileProxyLimiter, artifactRebuildLimiter },
+) {
+  app.get(FILE_PROXY_ROUTE, fileProxyLimiter, async (req, res) => {
     const claims = verifyFileToken(req.params.token);
     if (!claims) {
       return res.status(403).type('text/plain').send('Link expired or invalid');
@@ -322,7 +330,9 @@ export function registerFileProxyAndArtifactRoutes(app, { supabaseAdmin, require
   // validate → wrap-in-runner → persist pipeline as the lykn_build_react_artifact
   // tool (no AI involved), returning the same result shape (file_url,
   // preview_html, download_links) so the client swaps the artifact in place.
-  app.post('/api/artifacts/react/rebuild', requireAuth, async (req, res) => {
+  // The limiter runs BEFORE requireAuth (IP-keyed): rejecting a flood at the
+  // perimeter also spares the per-request Supabase token-verification fetch.
+  app.post('/api/artifacts/react/rebuild', artifactRebuildLimiter, requireAuth, async (req, res) => {
     try {
       const result = await buildReactArtifact(
         {

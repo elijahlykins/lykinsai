@@ -2,6 +2,7 @@ import {
   BookOpen,
   FileText,
   Folder as FolderIcon,
+  LayoutPanelTop,
   Link2,
   Music,
   Play,
@@ -17,9 +18,11 @@ import type { FocusedChatAttachment } from "@/lib/lyknChat/chatTurnTypes";
 export default function FocusedAttachmentPreview({
   att,
   onRemove,
+  chatId,
 }: {
   att: FocusedChatAttachment;
   onRemove: (id: string) => void;
+  chatId?: string | null;
 }) {
   const t = att.type.toLowerCase();
   const videoId = att.videoId || (t === "youtube" ? extractYouTubeVideoId(att.url) : null);
@@ -86,6 +89,15 @@ export default function FocusedAttachmentPreview({
       </div>
     );
   }
+  if (t === "artifact") {
+    return (
+      <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 px-3 py-2 group">
+        <LayoutPanelTop className="w-4 h-4 flex-shrink-0 opacity-60" />
+        <span className="max-w-[11.25rem] truncate text-xs">{att.vaultTitle || att.name || "Artifact"}</span>
+        <button type="button" onClick={() => onRemove(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center"><X className="w-3 h-3" /></button>
+      </div>
+    );
+  }
   if (t === "note") {
     return (
       <div className="relative inline-flex items-center gap-2 rounded-xl border border-amber-300/40 bg-amber-100/40 px-3 py-2 max-w-[16.25rem] group">
@@ -121,6 +133,7 @@ export default function FocusedAttachmentPreview({
           authorHandle={att.authorHandle || ""}
           oembedType={att.oembedType || ""}
           variant="vault"
+          chatId={chatId}
         />
         <button type="button" onClick={() => onRemove(att.id)} className="absolute top-1 right-1 h-5 w-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"><X className="w-3 h-3" /></button>
       </div>

@@ -250,7 +250,7 @@ export default function WallpaperSettings({ appearance, onChange }) {
                 label={paper.name}
                 title={
                   paper.needsDownload
-                    ? `${paper.name} — ${megabytes(paper.sizeBytes)} download from Apple`
+                    ? `${paper.name} - ${megabytes(paper.sizeBytes)} download from Apple`
                     : paper.name
                 }
                 selected={photoId === paper.id}

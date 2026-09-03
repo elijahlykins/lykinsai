@@ -79,25 +79,43 @@ test('the /api/ global rate limiter is active on post-limiter routes', async () 
   assert.ok(hasRateLimitHeader, 'expected a RateLimit-* header on routes behind app.use("/api/", globalLimiter)');
 });
 
-test('the 5 pre-limiter routes stay EXEMPT from the global limiter (current behavior)', async () => {
-  const res = await get('/api/health');
-  const hasRateLimitHeader = [...res.headers.keys()].some((k) => k.toLowerCase().startsWith('ratelimit'));
-  assert.equal(hasRateLimitHeader, false, '/api/health is registered before the limiter and must stay exempt');
+const hasRateLimitHeader = (res) =>
+  [...res.headers.keys()].some((k) => k.toLowerCase().startsWith('ratelimit'));
+
+test('pre-limiter routes carry their own dedicated perimeter limiter', async () => {
+  // These register before app.use('/api/', globalLimiter) so the global
+  // limiter never covers them; each must answer with RateLimit-* headers
+  // from its dedicated perimeter limiter instead. (Closes the former
+  // rate-limit-exemption DEFERRED SECURITY FINDING.)
+  const health = await get('/api/health');
+  assert.ok(hasRateLimitHeader(health), '/api/health runs behind healthLimiter');
+  const fileProxy = await get('/f/zz-bogus-token');
+  assert.ok(hasRateLimitHeader(fileProxy), '/f/:token runs behind fileProxyLimiter');
+  const clientError = await postJson('/api/client-error', { message: 'limiter probe' });
+  assert.ok(hasRateLimitHeader(clientError), '/api/client-error runs behind clientErrorLimiter');
+  const webhook = await postJson('/api/stripe/webhook', {});
+  assert.ok(hasRateLimitHeader(webhook), '/api/stripe/webhook runs behind stripeWebhookLimiter');
 });
 
-test('artifacts rebuild stays limiter-EXEMPT and behind requireAuth (current behavior)', async () => {
-  // CHARACTERIZATION (Wave 7): POST /api/artifacts/react/rebuild registers
-  // BEFORE app.use('/api/', globalLimiter) and therefore never sees the
-  // limiter — a DEFERRED SECURITY FINDING preserved as-is by the extraction
-  // (server/routes/preLimiterPlatform.routes.js). requireAuth still gates it.
+test('artifacts rebuild is rate limited AND behind requireAuth', async () => {
+  // POST /api/artifacts/react/rebuild registers before the global limiter,
+  // so it carries its own perimeter limiter. The limiter runs BEFORE
+  // requireAuth (IP-keyed), so even this unauthenticated 401 shows the
+  // RateLimit-* headers.
   const res = await fetch(`${baseUrl}/api/artifacts/react/rebuild`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: '{}',
   });
   assert.equal(res.status, 401, 'unauthenticated rebuild is rejected by requireAuth');
-  const hasRateLimitHeader = [...res.headers.keys()].some((k) => k.toLowerCase().startsWith('ratelimit'));
-  assert.equal(hasRateLimitHeader, false, 'rebuild route is registered before the limiter and must stay exempt');
+  assert.ok(hasRateLimitHeader(res), 'rebuild route runs behind artifactRebuildLimiter');
+});
+
+test('/oauth/* callback pages run behind the /oauth/ perimeter limiter', async () => {
+  // Mounted OUTSIDE /api/, so the global limiter never matches them; the
+  // dedicated app.use('/oauth/', ...) mount must cover every callback.
+  const res = await get('/oauth/mcp/callback');
+  assert.ok(hasRateLimitHeader(res), '/oauth/mcp/callback runs behind oauthCallbackLimiter');
 });
 
 test('unknown routes 404 via the Express default (no custom catch-all)', async () => {
@@ -161,10 +179,13 @@ test('a >1mb JSON body 413s on a standard route (global 1mb parser)', async () =
 });
 
 test('the same >1mb body is ACCEPTED by an image-bearing AI route (12mb parser branch)', async () => {
-  // /api/ai/invoke is in IMAGE_BEARING_AI_ROUTES: the parser accepts the body,
+  // These paths are in IMAGE_BEARING_AI_ROUTES: the parser accepts the body,
   // so the request reaches requireAuth and 401s instead of 413ing.
+  // agent-model is on the list because local screenshot reads post a data URL.
   const res = await postJson('/api/ai/invoke', bigBody);
   assert.equal(res.status, 401);
+  const model = await postJson('/api/desktop/agent-model', bigBody);
+  assert.equal(model.status, 401);
 });
 
 // ── Authentication ─────────────────────────────────────────────────────────
@@ -228,6 +249,28 @@ test('billing/stripe-config is public and returns the publishable-key shape', as
   } else {
     assert.equal(body.error, 'stripe_not_configured');
   }
+});
+
+test('public toolkit catalog is unauthenticated and never includes connection state', async () => {
+  const res = await get('/api/public/toolkits');
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.ok, true);
+  assert.equal(Array.isArray(body.tools), true);
+  assert.equal(body.tools.every((t) => !('connected' in t) && !('connectionId' in t)), true);
+});
+
+test('public model catalog is unauthenticated and never includes pricing', async () => {
+  const res = await get('/api/public/models');
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.ok, true);
+  assert.equal(Array.isArray(body.models), true);
+  assert.ok(body.models.length >= 8);
+  assert.equal(
+    body.models.every((m) => !('pricing' in m) && !('capabilities' in m) && typeof m.name === 'string' && typeof m.logoUrl === 'string'),
+    true,
+  );
 });
 
 test('every non-public billing route 401s without an Authorization header', async () => {

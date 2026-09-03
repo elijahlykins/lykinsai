@@ -25,6 +25,7 @@
 //   the user's last message.
 
 import { jsonContent, errorContent } from './index.js';
+import { deleteUserRowById, getUserRowById } from '../lib/security/userOwnedAccess.js';
 
 function normaliseNameKey(name) {
   return String(name || '')
@@ -41,7 +42,7 @@ export const deleteProjectTool = {
   description: [
     'CALL THIS only when the user has explicitly asked to delete a',
     'project. This is the one IRREVERSIBLE write in the project tier:',
-    'it cascades into `lykn_project_neurons` (clustered neurons) and',
+    'it cascades into project membership and',
     '`lykn_project_state` (AI-pushed working memory). The user\'s',
     'active project pointer is cleared if it was pointing here.',
     '',
@@ -49,7 +50,6 @@ export const deleteProjectTool = {
     '  • To stop showing it in the default project list →',
     '    lykn_updateProject({ project_id, status: "archived" })',
     '  • To rename it → lykn_updateProject({ project_id, name: "..." })',
-    '  • To drop a few clustered neurons → lykn_removeProjectNeurons',
     '  • To switch to a different active project →',
     '    lykn_setActiveProject({ project_id })',
     '',
@@ -100,12 +100,13 @@ export const deleteProjectTool = {
     const passedKey = normaliseNameKey(passedName);
     if (!passedKey) return errorContent('name is required for the delete confirmation.');
 
-    const { data: existing, error: findErr } = await ctx.supabaseAdmin
-      .from('lykn_projects')
-      .select('id, name, name_key, status')
-      .eq('user_id', ctx.userId)
-      .eq('id', projectId)
-      .maybeSingle();
+    const { data: existing, error: findErr } = await getUserRowById(
+      ctx.supabaseAdmin,
+      'lykn_projects',
+      ctx.userId,
+      projectId,
+      'id, name, name_key, status',
+    );
     if (findErr) {
       return errorContent(`project lookup failed: ${findErr.message}`);
     }
@@ -126,13 +127,21 @@ export const deleteProjectTool = {
       });
     }
 
-    const { error: delErr } = await ctx.supabaseAdmin
-      .from('lykn_projects')
-      .delete()
-      .eq('id', projectId)
-      .eq('user_id', ctx.userId);
+    const { error: delErr, deleted } = await deleteUserRowById(
+      ctx.supabaseAdmin,
+      'lykn_projects',
+      ctx.userId,
+      projectId,
+    );
     if (delErr) {
       return errorContent(`project delete failed: ${delErr.message}`);
+    }
+    if (!deleted) {
+      return jsonContent({
+        ok: false,
+        reason: 'project_not_found',
+        message: 'That project_id is not in the user\'s project list. Already deleted, or wrong id.',
+      });
     }
 
     return jsonContent({

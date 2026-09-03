@@ -5,7 +5,7 @@
 // handler payloads BEFORE they enter model context.
 //
 // Small results pass through. Search/list results are compacted. Full-read
-// paths (loadNeuron, Voice read_document) stay available and are only capped
+// paths (Voice read_document) stay available and are only capped
 // at a generous body limit. Local/Remote already have their own output limits
 // — this layer must not re-expand them. Universal MCP bounding stays in MCP.
 
@@ -219,7 +219,7 @@ function boundNamedPayload(name, payload) {
     return payload;
   }
 
-  if (name === 'lykn_loadNeuron' || name === 'read_document') {
+  if (name === 'read_document') {
     const content = payload.content || payload.note?.content || payload.display;
     if (typeof content === 'string' && content.length > DOCUMENT_BODY_CHARS) {
       const clipped = content.slice(0, DOCUMENT_BODY_CHARS);

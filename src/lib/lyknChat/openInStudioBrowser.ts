@@ -1,8 +1,8 @@
 /**
  * Route http(s) clicks from chat (artifacts, sources, markdown links) into
- * the LYKN in-app browser — each open creates a new agent tab so the AI can
- * act on that page independently. The native agent side chat opens with
- * that tab — not the home Chat / Build / Imagine / Research composer.
+ * the LYKN in-app browser — each open creates a new agent tab so the page
+ * can be watched independently. The browser side chat stays closed until
+ * the user clicks Ask LYKN or AI Mode.
  *
  * Preference order:
  *  1. studioOpenUrl — fresh labeled agent tab + Studio Browser tab switch
@@ -14,13 +14,18 @@
  * preventDefault); false means fall back to the default <a> / window.open.
  */
 
-import { getActiveThreadChatId } from "@/lib/chat/chatThreadRuntime";
 import {
   bindBrowserTabChat,
-  markPendingBrowserChat,
+  chatHasRevealedBrowser,
+  getAttachedPageForChat,
+  markBrowserTabRevealed,
+  otherChatHasRevealedBrowser,
 } from "@/lib/lyknChat/browserChatAttach";
 
 export const STUDIO_SHOW_BROWSER_EVENT = "lykn-studio-show-browser";
+/** Park the Studio Browser window without killing tabs. Switching chats
+ *  must not carry another board's preview along. */
+export const STUDIO_HIDE_BROWSER_EVENT = "lykn-studio-hide-browser";
 
 type OpenResult = { ok?: boolean; id?: string; agentId?: string };
 
@@ -37,7 +42,12 @@ type LyknStudioBridge = {
     kind?: string;
     chatId?: string;
   }) => Promise<OpenResult | unknown>;
-  openExternal?: (url: string, title?: string) => void;
+  openExternal?: (
+    url: string,
+    title?: string,
+    opts?: { chatId?: string },
+  ) => void;
+  agentSwitch?: (agentId: string) => Promise<unknown>;
 };
 
 /** @deprecated Kept for call-site compatibility; every open is a new agent now. */
@@ -46,13 +56,21 @@ export type OpenInStudioBrowserOptions = {
   chatId?: string;
 };
 
+/** Explicit owning lykn_chats.id, or undefined so the tab stays unbound. */
+export function studioOpenChatOpts(
+  chatId?: string | null,
+): OpenInStudioBrowserOptions | undefined {
+  const id = String(chatId || "").trim();
+  return id ? { chatId: id } : undefined;
+}
+
+function explicitChatId(opts?: OpenInStudioBrowserOptions | null): string {
+  return String(opts?.chatId || "").trim();
+}
+
 function lyknBridge(): LyknStudioBridge | undefined {
   if (typeof window === "undefined") return undefined;
   return (window as unknown as { lykn?: LyknStudioBridge }).lykn;
-}
-
-function activeChatId(explicit?: string): string {
-  return String(explicit || getActiveThreadChatId() || "").trim();
 }
 
 export type ShowStudioBrowserDetail = {
@@ -65,9 +83,42 @@ export type ShowStudioBrowserDetail = {
 
 function showStudioBrowserTab(detail: ShowStudioBrowserDetail = {}) {
   if (typeof window === "undefined") return;
+  if (detail.agentId) markBrowserTabRevealed(detail.agentId);
   window.dispatchEvent(
     new CustomEvent(STUDIO_SHOW_BROWSER_EVENT, { detail }),
   );
+}
+
+export function hideStudioBrowser() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(STUDIO_HIDE_BROWSER_EVENT));
+}
+
+/**
+ * Raise this chat's revealed browser tab, or park the window when the
+ * visible preview belongs to a different board. Hidden Bot work stays a
+ * peek on that Bot's chat — it does not follow the user.
+ */
+export function syncStudioBrowserToChat(chatId?: string | null) {
+  if (typeof window === "undefined") return;
+  if (chatHasRevealedBrowser(chatId)) {
+    const page = getAttachedPageForChat(chatId);
+    const agentId = String(page?.agentId || "").trim();
+    if (agentId) {
+      try {
+        void lyknBridge()?.agentSwitch?.(agentId)?.catch?.(() => {});
+      } catch {
+        /* tab switch is best-effort */
+      }
+      showStudioBrowserTab({
+        agentId,
+        url: page?.url,
+        title: page?.title,
+      });
+    }
+    return;
+  }
+  if (otherChatHasRevealedBrowser(chatId)) hideStudioBrowser();
 }
 
 function showOpenedTab(
@@ -85,7 +136,6 @@ function showOpenedTab(
     agentId: agentId || undefined,
     url: meta.url,
     title: meta.title,
-    openRail: true,
   });
 }
 
@@ -112,18 +162,14 @@ export function openInStudioBrowser(
   if (!/^https?:\/\//i.test(target)) return false;
   const lykn = lyknBridge();
   if (!lykn) return false;
-  const chatId = activeChatId(opts?.chatId);
+  const chatId = explicitChatId(opts);
 
   try {
     // Prefer studioOpenUrl so each link/artifact gets its own labeled agent.
     if (typeof lykn.studioOpenUrl === "function") {
-      // Park the chat id before the tab id exists — the rail claims it the
-      // moment the new tab reports in, even if that beats the open's reply.
-      if (chatId) markPendingBrowserChat(chatId);
       showStudioBrowserTab({
         url: target,
         title,
-        openRail: true,
       });
       void Promise.resolve(
         lykn.studioOpenUrl(target, title, {
@@ -135,9 +181,8 @@ export function openInStudioBrowser(
       return true;
     }
     if (typeof lykn.openExternal === "function") {
-      if (chatId) markPendingBrowserChat(chatId);
-      lykn.openExternal(target, title);
-      showStudioBrowserTab({ url: target, title, openRail: true });
+      lykn.openExternal(target, title, chatId ? { chatId } : undefined);
+      showStudioBrowserTab({ url: target, title });
       return true;
     }
   } catch {
@@ -165,17 +210,15 @@ export function openArtifactInStudioBrowser(artifact: {
   const html = typeof artifact.srcDoc === "string" ? artifact.srcDoc : "";
   const title = String(artifact.title || "Artifact").trim() || "Artifact";
   const kind = String(artifact.kind || "artifact").trim() || "artifact";
-  const chatId = activeChatId(opts?.chatId);
+  const chatId = explicitChatId(opts);
 
   if (!/^https?:\/\//i.test(url) && !html.trim()) return false;
 
   try {
     if (typeof lykn.studioOpenArtifact === "function") {
-      if (chatId) markPendingBrowserChat(chatId);
       showStudioBrowserTab({
         url: url || undefined,
         title,
-        openRail: true,
       });
       void Promise.resolve(
         lykn.studioOpenArtifact({
@@ -206,11 +249,16 @@ export function openArtifactInStudioBrowser(artifact: {
 export function handleLyknBrowserClick(
   e: { preventDefault: () => void; metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean; button?: number },
   url: string,
-  title?: string,
+  titleOrOpts?: string | OpenInStudioBrowserOptions,
   opts?: OpenInStudioBrowserOptions,
 ): boolean {
   if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return false;
-  if (!openInStudioBrowser(url, title, opts)) return false;
+  const title = typeof titleOrOpts === "string" ? titleOrOpts : undefined;
+  const options =
+    typeof titleOrOpts === "object" && titleOrOpts
+      ? { ...titleOrOpts, ...(opts || {}) }
+      : opts;
+  if (!openInStudioBrowser(url, title, options)) return false;
   e.preventDefault();
   return true;
 }

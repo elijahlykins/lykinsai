@@ -17,6 +17,8 @@ import {
   MCP_STATUSES,
   MCP_TRANSPORTS,
 } from '../../lib/mcp/index.js';
+import { MANAGED_TOOL_PROVIDER } from '../../lib/mcp/protocol.js';
+import { createComposioGateway } from '../../lib/connections/composioGateway.js';
 import { assertMcpUrlSafe } from '../../lib/mcp/urlPolicy.js';
 import { createSupabaseOAuthSessionStore, createMemoryOAuthSessionStore } from '../../lib/mcp/oauth/oauthSession.js';
 import { mcpOAuthRedirectUri, publicClientMetadataDocument } from '../../lib/mcp/oauth/clientIdentity.js';
@@ -36,6 +38,21 @@ function mcpErr(e) {
 }
 
 let singleton;
+let managedGateway;
+
+// Managed rows (providedThrough='composio') get their endpoint URL and auth
+// headers minted live from a Composio tool session. Nothing here is
+// persisted or logged; the gateway caches endpoints in-process only.
+async function resolveManagedEndpoint(userId, row, { fresh = false } = {}) {
+  const toolkit = String(row?.catalogId || '').replace(/^composio:/, '').trim();
+  if (!toolkit) {
+    const err = new Error('managed_endpoint_unavailable');
+    err.code = 'managed_endpoint_unavailable';
+    throw err;
+  }
+  if (!managedGateway) managedGateway = createComposioGateway();
+  return managedGateway.getMcpEndpoint(userId, toolkit, { fresh });
+}
 
 export function getMcpManager(supabaseAdmin, { port } = {}) {
   if (singleton) return singleton;
@@ -58,6 +75,7 @@ export function getMcpManager(supabaseAdmin, { port } = {}) {
       const row = await credentials.get(spec.userId, ref.id, { includeSecret: true });
       return row?.secret || null;
     },
+    resolveManagedEndpoint,
   });
   singleton.localProcesses.registerShutdownHooks?.();
   return singleton;
@@ -218,7 +236,11 @@ export function registerMcpRoutes(app, { requireAuth, supabaseAdmin, PORT }) {
         accountIdentity: req.body?.accountIdentity,
         catalogId: req.body?.catalogId,
         catalogSource: req.body?.catalogSource,
-        providedThrough: req.body?.providedThrough,
+        // 'composio' is reserved for rows created by the managed tool
+        // bridge: it switches the manager onto the live-minted endpoint
+        // path, so client input must never set it.
+        providedThrough:
+          req.body?.providedThrough === MANAGED_TOOL_PROVIDER ? null : req.body?.providedThrough,
       });
       const httpStatus = result.ok
         ? 200

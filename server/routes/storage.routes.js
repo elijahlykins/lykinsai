@@ -18,7 +18,9 @@
 //   Memory Architecture Replacement. Passed/imported unchanged, not
 //   modularized further on purpose.
 // - Stateless service imports rely on ESM module-cache identity.
+import { assertUserPath } from '../../lib/exterior/capabilityStorage.js';
 import { buildFileProxyUrl } from '../../lib/exterior/fileProxy.js';
+import { userOwnedTable, getUserRowById } from '../../lib/security/userOwnedAccess.js';
 import { chunkTextForSynthesis } from '../../synthesis-service.js';
 import {
   getOrCreateSession,
@@ -142,9 +144,10 @@ export function registerStorageRoutes(app, deps) {
       }
 
       // Tenant prefix check — uploads are written under `${userId}/...`
-      // (see `uploadFileToStorage`), so any path that doesn't begin with
-      // the caller's id is either someone else's file or a probe.
-      if (!path.startsWith(`${userId}/`)) {
+      // (see `uploadFileToStorage`). `assertUserPath` also rejects `..`
+      // so `${userId}/../${otherUser}/file` cannot mint a URL.
+      const owned = assertUserPath(userId, path);
+      if (!owned.ok) {
         return res.status(403).json({ error: 'Access denied' });
       }
 
@@ -179,7 +182,8 @@ export function registerStorageRoutes(app, deps) {
       if (!SIGNED_URL_ALLOWED_BUCKETS.has(bkt)) {
         return res.status(400).json({ error: 'Invalid bucket' });
       }
-      if (!path.startsWith(`${userId}/`)) {
+      const owned = assertUserPath(userId, path);
+      if (!owned.ok) {
         return res.status(403).json({ error: 'Access denied' });
       }
 
@@ -355,10 +359,8 @@ export function registerStorageRoutes(app, deps) {
       const authHeader = req.headers.authorization;
       const batchSize = Math.max(1, Math.min(12, Number(req.body?.batchSize) || 6));
 
-      const { data: notes, error } = await client
-        .from('vault_items')
+      const { data: notes, error } = await userOwnedTable(client, 'vault_items', userId)
         .select('id, title, content, updated_at, ai_summary')
-        .eq('user_id', userId)
         .or(VAULT_BACKFILL_OR_FILTER)
         .order('updated_at', { ascending: true })
         .limit(batchSize);
@@ -409,11 +411,9 @@ export function registerStorageRoutes(app, deps) {
             if (changed) {
               const rebuilt = `${content.slice(0, span.start)}[ATTACHMENTS_JSON:${JSON.stringify(atts)}]${content.slice(span.markerEnd)}`
                 .replace(/\n{3,}/g, '\n\n');
-              const { error: upErr } = await client
-                .from('vault_items')
+              const { error: upErr } = await userOwnedTable(client, 'vault_items', userId)
                 .update({ content: rebuilt })
                 .eq('id', note.id)
-                .eq('user_id', userId)
                 .eq('updated_at', note.updated_at);
               if (!upErr) content = rebuilt;
             }
@@ -424,12 +424,13 @@ export function registerStorageRoutes(app, deps) {
           const enr = await enrichVaultNoteSummary({ userId, noteId: note.id, supabaseAdmin: client });
 
           // Re-embed for retrieval with the summary prepended as a dense key.
-          const { data: after } = await client
-            .from('vault_items')
-            .select('title, content')
-            .eq('id', note.id)
-            .eq('user_id', userId)
-            .maybeSingle();
+          const { data: after } = await getUserRowById(
+            client,
+            'vault_items',
+            userId,
+            note.id,
+            'title, content',
+          );
           if (after) {
             const baseText = backfillVaultText(after.title, after.content);
             const summary = (enr && enr.summary) || note.ai_summary || '';

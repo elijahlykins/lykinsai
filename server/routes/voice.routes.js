@@ -23,16 +23,17 @@
 // (LEGACY CANDIDATE — pending Memory Architecture Replacement).
 
 import { searchWeb } from '../../lib/exterior/webSearch.js';
-import { LYKN_TOOLS_BY_NAME } from '../../mcp-tools/index.js';
-import { EXTERIOR_TOOLS_BY_NAME } from '../../mcp-tools/exterior/index.js';
 import { communicateWithModelTool } from '../../mcp-tools/communicateWithModel.js';
 import { lastUserTextFromMessages, LYKN_VOICE_TOOL_MCP } from '../../mcp-tools/voiceTools.js';
+import { attachVoiceDisplay, lookupVoiceMcpTool } from '../../mcp-tools/voiceToolDispatch.js';
 import {
   filterOpenAiToolsForVoiceDisclosure,
   resolveVoiceTurnDisclosure,
   serializeVoiceRealtimeTools,
 } from '../../mcp-tools/voiceToolResolver.js';
+import { sanitizeLyknBots } from '../../mcp-tools/chatTools.js';
 import { buildVoiceFamilyGuidance } from '../../mcp-tools/chatToolGuidance.js';
+import { buildVoiceBotsSection } from '../ai/chatGuidance.js';
 import { boundToolResult } from '../../mcp-tools/toolResultBounds.js';
 import {
   createUserAuthorizedProject,
@@ -44,6 +45,14 @@ import {
   estimateTokens,
   extractOpenAIUsage,
 } from '../../usageTracking.js';
+import {
+  VOICE_SESSION_TTL_MS,
+  resolveVoiceSessionSecret,
+  signLyknVoiceToken as signVoiceToken,
+  verifyLyknVoiceToken as verifyVoiceToken,
+} from '../ai/voiceSessionToken.js';
+import { resolveMcpToolsForTurn, executeMcpToolByBridgedName } from '../../lib/mcp/chatTurn.js';
+import { getMcpManager } from './mcp.routes.js';
 
 /**
  * @param {import('express').Express} app
@@ -190,9 +199,11 @@ export function registerVoiceRoutes(app, {
     "plus any text extracted from it (look for 'The user just shared…', 'What the image shows:', or extracted/OCR text). " +
     "TREAT THAT AS HAVING SEEN OR READ IT. NEVER say you can't view images or files. If details have not arrived yet, " +
     "say you're still taking it in — never that you're unable to. " +
-    "TOOLS: only the tools listed for this turn exist. Call a tool in the SAME turn you decide to use it. " +
-    "Do not announce a search and then stop. Keep spoken acknowledgements brief. " +
-    "search_vault is only the user's own saved items. Weather, news, prices, and current events use web_search — never the vault. " +
+    "TOOLS: only the tools listed for this turn exist. Before you act, say ONE short natural sentence about what " +
+    "you're doing ('Sure — pulling that up now', 'Running that now'), then call the tool in the SAME turn. " +
+    "Never announce an action and then stop without calling the tool. " +
+    "Things the user made with LYKN live in AI Drive — pull them up with open_app. Files and real apps on their " +
+    "Mac use the local_ tools. Weather, news, prices, and current events use web_search. There is no vault search. " +
     "Suggest a new project in one line, then create_project only after a clear yes. " +
     "Never mention deleted memory stores (facts, beliefs, rules, synthesis, propose_fact, get_facts, get_beliefs). " +
     "VENDOR SILENCE (absolute): you are LYKN. NEVER name ElevenLabs, Whisper, Deepgram, Together AI, Render, Vercel, Supabase, or AWS. " +
@@ -293,13 +304,44 @@ export function registerVoiceRoutes(app, {
   app.post('/api/ai/realtime/tools', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
     try {
       const message = String(req.body?.message || req.body?.transcript || '').trim();
-      const disclosure = resolveVoiceTurnDisclosure({ message });
-      const tools = serializeVoiceRealtimeTools(disclosure.firstPartyToolNames);
+      // Connected-app (MCP) tools for this utterance — same resolution the
+      // text chat uses, so a connected Gmail behaves identically in voice.
+      let mcpTurn = { tools: [] };
+      if (message && req.user?.id) {
+        try {
+          mcpTurn = await resolveMcpToolsForTurn({
+            manager: getMcpManager(supabaseAdmin),
+            userId: req.user.id,
+            text: message,
+          });
+        } catch {
+          mcpTurn = { tools: [] };
+        }
+      }
+      const disclosure = resolveVoiceTurnDisclosure({
+        message,
+        localMode: Boolean(req.body?.localMode ?? req.body?.desktop),
+        lyknBots: sanitizeLyknBots(req.body?.lyknBots),
+        resolveExternal: () => mcpTurn.tools,
+      });
+      const tools = [
+        ...serializeVoiceRealtimeTools(disclosure.firstPartyToolNames),
+        ...(disclosure.externalTools || []).map((t) => ({
+          type: 'function',
+          name: t.name,
+          description: t.description || '',
+          parameters:
+            t.inputSchema && typeof t.inputSchema === 'object'
+              ? t.inputSchema
+              : { type: 'object', properties: {} },
+        })),
+      ];
       const guidance = buildVoiceFamilyGuidance(disclosure.capabilities);
       return res.json({
         tools,
         capabilities: disclosure.capabilities,
         firstPartyToolNames: disclosure.firstPartyToolNames,
+        externalToolNames: (disclosure.externalTools || []).map((t) => t.name),
         guidance,
         inspect: disclosure.inspect,
       });
@@ -326,6 +368,22 @@ export function registerVoiceRoutes(app, {
       if (!args || typeof args !== 'object') args = {};
       const authHeader = req.headers.authorization;
 
+      // Connected-app (MCP) tools disclosed by /realtime/tools carry bridged
+      // mcp_* names. Execute through the shared MCP gate stack (connection
+      // status, capability check, consequence approval, untrusted wrapping).
+      if (/^mcp_/.test(name)) {
+        const executed = await executeMcpToolByBridgedName({
+          manager: getMcpManager(supabaseAdmin),
+          userId,
+          name,
+          args,
+          taskId: `voice_${userId}`,
+        });
+        return res.json(
+          boundToolResult(name, executed.observation || { ok: executed.ok !== false, ...executed }),
+        );
+      }
+
       // Run one of the existing MCP tool handlers with a JWT ctx (in-LYKN
       // privileges — no read-only token gate), unwrapping its content block
       // into plain JSON.
@@ -334,7 +392,7 @@ export function registerVoiceRoutes(app, {
         // exterior capabilities (web search/fetch, etc.) live in
         // EXTERIOR_TOOLS_BY_NAME. Voice tool defs can map to either, so fall
         // through to exterior.
-        const tool = LYKN_TOOLS_BY_NAME[mcpName] || EXTERIOR_TOOLS_BY_NAME[mcpName];
+        const tool = lookupVoiceMcpTool(mcpName);
         if (!tool) return { ok: false, error: 'tool_unavailable' };
         const ctx = buildToolCtx(req);
         const result = await tool.handler(mcpArgs, ctx);
@@ -346,115 +404,9 @@ export function registerVoiceRoutes(app, {
         return boundToolResult(mcpName, { ok: !result?.isError });
       };
 
-      // Vault search and project context reuse the same retained handlers as Chat.
-      if (name === 'search_vault') {
-        const query = String(args.query || '').trim();
-        if (!query) return res.json({ ok: false, error: 'query is required.' });
-        const fb = await runMcp('lykn_searchVault', { query, limit: 6 });
-        const hits = Array.isArray(fb?.hits) ? fb.hits : [];
-        if (!hits.length) {
-          return res.json({ ok: true, results: 'No matching items found in the vault for that query.' });
-        }
-        const documents = hits.slice(0, 6).map((h) => ({
-          title: h.title || '(untitled)',
-          snippet: String(h.snippet || '').replace(/\s+/g, ' ').slice(0, 300),
-        }));
-        return res.json({
-          ok: true,
-          documents,
-          results: documents.map((d, i) => `${i + 1}. ${d.title}: ${d.snippet}`).join('\n'),
-          hint: documents.length
-            ? 'These are snippets. To read or summarize the FULL text of one of these items, call read_document with its title as the query.'
-            : undefined,
-        });
-      }
-
-      // Read the FULL body of a saved vault item. search_vault only returns
-      // snippets; this resolves the best-matching item (by node_id if the model
-      // has one, else by re-running the vault search on `query`) and hydrates its
-      // complete content via lykn_loadNeuron so voice can read / summarize it.
-      if (name === 'read_document') {
-        const query = String(args.query || '').trim();
-        let nodeId = String(args.node_id || '').trim();
-        if (!nodeId && !query) {
-          return res.json({ ok: false, error: 'Provide the title or topic of the item to read.' });
-        }
-        if (!nodeId) {
-          const sr = await runMcp('lykn_searchVault', { query, limit: 5 });
-          const hits = Array.isArray(sr?.hits) ? sr.hits : [];
-          if (!hits.length) {
-            return res.json({ ok: true, found: false, message: `I couldn't find anything saved matching "${query}".` });
-          }
-          nodeId = String(hits[0].node_id || (hits[0].id ? `vault_${hits[0].id}` : '')).trim();
-          if (!nodeId) {
-            return res.json({ ok: true, found: false, message: `I couldn't open the saved item for "${query}".` });
-          }
-        } else if (!/^(vault_|belief_|fact_|concept_)/.test(nodeId)) {
-          nodeId = `vault_${nodeId}`;
-        }
-        const loaded = await runMcp('lykn_loadNeuron', { node_id: nodeId });
-        if (!loaded || loaded.ok === false) {
-          return res.json({ ok: true, found: false, message: 'I found a match but could not read its contents.' });
-        }
-        const note = loaded.note || {};
-        const title = note.title || String(loaded.display || '').split('\n')[0] || 'your saved item';
-        const content = String(note.content || loaded.display || '').slice(0, 8000);
-        return res.json({
-          ok: true,
-          found: true,
-          title,
-          content,
-          truncated: Boolean(note.truncated),
-          ...(content ? {} : { message: 'That item has no readable text content.' }),
-        });
-      }
-
-      // Pull a saved vault item UP ON SCREEN as an embedded reader window. Same
-      // resolution as read_document, but instead of returning text for the model
-      // to speak, it returns a `display` payload the voice client intercepts to
-      // open VaultDocumentViewer so the user can actually LOOK at the document.
-      if (name === 'display_document') {
-        const query = String(args.query || '').trim();
-        let nodeId = String(args.node_id || '').trim();
-        if (!nodeId && !query) {
-          return res.json({ ok: false, error: 'Provide the title or topic of the item to pull up.' });
-        }
-        if (!nodeId) {
-          const sr = await runMcp('lykn_searchVault', { query, limit: 5 });
-          const hits = Array.isArray(sr?.hits) ? sr.hits : [];
-          if (!hits.length) {
-            return res.json({ ok: true, found: false, message: `I couldn't find anything saved matching "${query}".` });
-          }
-          nodeId = String(hits[0].node_id || (hits[0].id ? `vault_${hits[0].id}` : '')).trim();
-          if (!nodeId) {
-            return res.json({ ok: true, found: false, message: `I couldn't open the saved item for "${query}".` });
-          }
-        } else if (!/^(vault_|belief_|fact_|concept_)/.test(nodeId)) {
-          nodeId = `vault_${nodeId}`;
-        }
-        const loaded = await runMcp('lykn_loadNeuron', { node_id: nodeId });
-        if (!loaded || loaded.ok === false || loaded.kind !== 'vault') {
-          return res.json({ ok: true, found: false, message: 'I found a match but could not pull it up.' });
-        }
-        const note = loaded.note || {};
-        const title = note.title || String(loaded.display || '').split('\n')[0] || 'your saved item';
-        // `display` is the ChatNeuronVaultPayload the viewer renders; the client
-        // intercepts it. `message` is what the model should speak.
-        return res.json({
-          ok: true,
-          found: true,
-          displayed: true,
-          title,
-          display: {
-            ok: true,
-            kind: 'vault',
-            node_id: loaded.node_id || nodeId,
-            display: loaded.display,
-            note,
-          },
-          message: `Pulling up "${title}" on screen now.`,
-        });
-      }
+      // The legacy vault trio (search_vault / read_document / display_document)
+      // is retired — Chat parity: AI Drive items open with open_app, Mac files
+      // use local_*. Retired names fall through to the unknown_tool response.
 
       if (name === 'get_project_state') {
         const projectSection = await fetchProjectSection(authHeader, userId);
@@ -641,7 +593,7 @@ export function registerVoiceRoutes(app, {
       const mcpName = LYKN_VOICE_TOOL_MCP[name];
       if (mcpName) {
         const out = await runMcp(mcpName, args);
-        return res.json(boundToolResult(name, out));
+        return res.json(boundToolResult(name, attachVoiceDisplay(name, out)));
       }
 
       return res.status(404).json({ ok: false, error: 'unknown_tool' });
@@ -757,15 +709,10 @@ export function registerVoiceRoutes(app, {
   // Dedicated HMAC key for voice/file-proxy session tokens. Must NOT fall back to
   // the service-role key (that would couple token-forgery blast radius to the DB
   // master key) or to a hard-coded dev string (forgeable). validateSecrets()
-  // makes VOICE_SESSION_SECRET mandatory in production; the dev-only fallback
-  // below is a clearly-marked random per-process value so local runs still work
+  // makes VOICE_SESSION_SECRET mandatory in production; resolveVoiceSessionSecret
+  // mints a random per-process fallback in development so local runs still work
   // without ever shipping a predictable secret.
-  const VOICE_SESSION_SECRET =
-    process.env.VOICE_SESSION_SECRET ||
-    (process.env.NODE_ENV === 'production'
-      ? (() => { throw new Error('VOICE_SESSION_SECRET is required in production'); })()
-      : `dev-ephemeral-${crypto.randomBytes(24).toString('hex')}`);
-  const VOICE_SESSION_TTL_MS = 60 * 60 * 1000; // 1h — covers a long voice call.
+  const VOICE_SESSION_SECRET = resolveVoiceSessionSecret();
 
   // Per-conversation grounding, keyed by the signed session token. Lets the
   // custom-LLM endpoint recover the client-built context (workspace summary +
@@ -787,24 +734,10 @@ export function registerVoiceRoutes(app, {
   }
 
   function signLyknVoiceToken(payload) {
-    const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + VOICE_SESSION_TTL_MS })).toString('base64url');
-    const sig = crypto.createHmac('sha256', VOICE_SESSION_SECRET).update(body).digest('base64url');
-    return `${body}.${sig}`;
+    return signVoiceToken(payload, VOICE_SESSION_SECRET, VOICE_SESSION_TTL_MS);
   }
   function verifyLyknVoiceToken(token) {
-    try {
-      const [body, sig] = String(token || '').split('.');
-      if (!body || !sig) return null;
-      const expected = crypto.createHmac('sha256', VOICE_SESSION_SECRET).update(body).digest('base64url');
-      const a = Buffer.from(sig);
-      const b = Buffer.from(expected);
-      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
-      const data = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
-      if (!data?.exp || Date.now() > data.exp) return null;
-      return data;
-    } catch {
-      return null;
-    }
+    return verifyVoiceToken(token, VOICE_SESSION_SECRET);
   }
 
   // Mint an ElevenLabs signed URL for the configured agent + a signed session
@@ -870,7 +803,11 @@ export function registerVoiceRoutes(app, {
       const parts = [];
       // Briefing block goes first so it survives the 14k truncation below.
       const briefingBlock = formatVoiceBriefingInstructionBlock(req.user, briefingData);
+      const sessionBots = sanitizeLyknBots(req.body?.lyknBots);
+      const sessionLocalMode = Boolean(req.body?.localMode ?? req.body?.desktop);
+      const botsBlock = buildVoiceBotsSection(sessionBots);
       if (briefingBlock) parts.push(briefingBlock);
+      if (botsBlock) parts.push(botsBlock);
       if (memoryGrounding) parts.push(memoryGrounding);
       if (clientGrounding) parts.push(`[WORKSPACE_AND_CONVERSATION]\n${clientGrounding}`);
       const instructions = (parts.length
@@ -884,7 +821,14 @@ export function registerVoiceRoutes(app, {
       // the voice model the user's LOCAL "now" (the custom-LLM calls come from
       // ElevenLabs, which has no idea what timezone the user is in).
       const sessionTz = typeof req.body?.timezone === 'string' ? req.body.timezone.trim().slice(0, 64) : '';
-      voiceSessionGrounding.set(sessionToken, { instructions, tz: sessionTz, at: Date.now() });
+      voiceSessionGrounding.set(sessionToken, {
+        instructions,
+        tz: sessionTz,
+        lyknBots: sessionBots,
+        desktop: sessionLocalMode,
+        localMode: sessionLocalMode,
+        at: Date.now(),
+      });
 
       getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
         logAiUsage({
@@ -1045,10 +989,14 @@ export function registerVoiceRoutes(app, {
       let grounding = '';
       let sessionTz = '';
       let screenText = '';
+      let sessionBots = [];
+      let sessionDesktop = false;
       if (sessionToken && voiceSessionGrounding.has(sessionToken)) {
         const stored = voiceSessionGrounding.get(sessionToken);
         grounding = stored?.instructions || '';
         sessionTz = stored?.tz || '';
+        sessionBots = Array.isArray(stored?.lyknBots) ? stored.lyknBots : [];
+        sessionDesktop = Boolean(stored?.localMode ?? stored?.desktop);
       } else if (userId) {
         const synth = await buildRealtimeMemoryGrounding(null, userId);
         grounding = (synth
@@ -1115,7 +1063,28 @@ export function registerVoiceRoutes(app, {
       }
       rebuilt.push({ role: 'system', content: localTimeContextLine(sessionTz) });
       const userText = lastUserTextFromMessages(messages);
-      const voiceDisclosure = resolveVoiceTurnDisclosure({ message: userText });
+      // Connected-app (MCP) tools for this utterance. The browser executes
+      // the resulting tool_calls through /api/ai/realtime/tool, which
+      // handles bridged mcp_* names with the full MCP gate stack.
+      let elevenMcpTurn = { tools: [] };
+      if (userText && userId) {
+        try {
+          elevenMcpTurn = await resolveMcpToolsForTurn({
+            manager: getMcpManager(supabaseAdmin),
+            userId,
+            text: userText,
+          });
+        } catch {
+          elevenMcpTurn = { tools: [] };
+        }
+      }
+      const voiceDisclosure = resolveVoiceTurnDisclosure({
+        message: userText,
+        conversation: messages,
+        localMode: sessionDesktop,
+        lyknBots: sessionBots,
+        resolveExternal: () => elevenMcpTurn.tools,
+      });
       const voiceGuidance = buildVoiceFamilyGuidance(voiceDisclosure.capabilities);
       if (voiceGuidance) {
         rebuilt.push({ role: 'system', content: voiceGuidance });
@@ -1130,6 +1099,23 @@ export function registerVoiceRoutes(app, {
       }
 
       const filteredTools = filterOpenAiToolsForVoiceDisclosure(body.tools, voiceDisclosure);
+      // Connected-app tools are per-user, so they are never in the agent's
+      // static tool config — append them here.
+      const haveToolNames = new Set(filteredTools.map((t) => t?.function?.name || t?.name));
+      for (const t of voiceDisclosure.externalTools || []) {
+        if (!t?.name || haveToolNames.has(t.name)) continue;
+        filteredTools.push({
+          type: 'function',
+          function: {
+            name: t.name,
+            description: t.description || '',
+            parameters:
+              t.inputSchema && typeof t.inputSchema === 'object'
+                ? t.inputSchema
+                : { type: 'object', properties: {} },
+          },
+        });
+      }
       const upstreamBody = {
         ...body,
         model: process.env.ELEVENLABS_LLM_MODEL || body.model || 'gpt-4o',

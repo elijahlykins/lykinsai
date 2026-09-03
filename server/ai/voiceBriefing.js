@@ -427,17 +427,15 @@ export function formatVoiceBriefingInstructionBlock(user, data) {
   const firstName = pickUserDisplayName(user);
   const header = [
     '[VOICE_BRIEFING]',
-    'The user just opened Voice Mode and your spoken opening line OFFERED to run through their recent updates. Behaviour for THIS session:',
-    '- If the user says yes / "go ahead" / "sure", or asks for their updates, status, progress, or what\'s new, deliver a SHORT spoken briefing from the FACTS below: lead with any due/upcoming REMINDERS and CALENDAR events (they are time-sensitive), then any overdue/high-priority TO-DOS, then where the active project stands and what recently got done, then anything new in the Vault or any custom models they built. 2-4 calm sentences, spoken style, no lists or markdown — group naturally, don\'t robotically read every category.',
-    '- Use ONLY these facts. Never invent projects, updates, vault items, numbers, dates, or names.',
-    '- If the user declines or jumps straight into another topic, skip the briefing entirely and just help with what they asked.',
-    '- After delivering the briefing, hand it back with one short, open question.',
+    'The user just opened Voice Mode. The spoken opening line offered to run through their recent updates.',
+    '- If they want updates, brief from the FACTS below.',
+    '- If they decline or change the subject, skip the briefing.',
   ];
   if (!voiceBriefingHasContent(data)) {
     return [
       ...header,
       '',
-      'FACTS: There is nothing new to report in the lookback window. If they ask for updates, tell them plainly there is nothing new since last time, then ask where they want to start.',
+      'FACTS: There is nothing new to report in the lookback window.',
     ].join('\n');
   }
   return [...header, '', formatVoiceBriefingFacts(firstName, data)].join('\n');

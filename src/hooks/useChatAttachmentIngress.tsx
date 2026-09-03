@@ -14,7 +14,13 @@ import { useDropZone } from "@/lib/drag/dragEngine";
 import {
   fileNameFromPath,
   filesFromMacPaths,
+  homeChatArtifactKey,
+  listStagedHomeChatArtifacts,
+  onHomeChatArtifactsQueued,
+  onHomeChatFilesQueued,
   snapshotMacFolders,
+  takeQueuedHomeChatFiles,
+  unstageHomeChatArtifact,
 } from "@/lib/homeChatFiles";
 import {
   VAULT_PICK_ITEMS_EVENT,
@@ -33,6 +39,10 @@ import {
   inferUrlAttachmentType,
   makeAttId,
 } from "@/lib/lyknChat/chatAttachmentInput";
+import {
+  focusedAttachmentFromArtifact,
+  isChatArtifact,
+} from "@/lib/lyknChat/artifactChatAttach";
 import FocusedAttachmentPreview from "@/components/lyknChat/FocusedAttachmentPreview";
 
 export function useChatAttachmentIngress({
@@ -274,13 +284,14 @@ export function useChatAttachmentIngress({
       for (const folder of folders) {
         addFocusedAttachment({
           id: makeAttId(),
-          type: "vault",
+          type: "folder",
           url: "",
           name: folder.name,
           mime: "",
           size: 0,
           vaultTitle: folder.name,
           vaultContent: folder.listing,
+          localPath: folder.path,
         });
       }
     },
@@ -288,6 +299,62 @@ export function useChatAttachmentIngress({
   );
   const ingestMacPathsRef = useRef(ingestMacPathsToChat);
   ingestMacPathsRef.current = ingestMacPathsToChat;
+
+  // Files stay take-once: the home bar claims them when it is on screen.
+  // Artifacts are staged for every composer — Home hides this shell, and a
+  // Chat window has its own bar, so skipping here left the chip on a bar
+  // the user could not see.
+  useEffect(() => {
+    const homeBarUp = () => !!document.querySelector(".lykn-home-chat-bar");
+    const claimFiles = () => {
+      if (homeBarUp()) return;
+      const files = takeQueuedHomeChatFiles();
+      if (!files.length) return;
+      void ingestChatFiles(files, addFocusedAttachment, {
+        userId,
+        updateAttachment: updateFocusedAttachment,
+      });
+      chatPanelInputRef.current?.focus();
+    };
+    const syncArtifacts = (event?: Event) => {
+      const detail = event && "detail" in event ? (event as CustomEvent).detail : null;
+      const arts = Array.isArray(detail?.artifacts)
+        ? detail.artifacts
+        : listStagedHomeChatArtifacts();
+      setFocusedChatAttachments((prev) => {
+        const others = prev.filter((row) => row.type !== "artifact");
+        const existing = prev.filter((row) => row.type === "artifact");
+        const nextArts = [];
+        for (const artifact of arts) {
+          if (!isChatArtifact(artifact)) continue;
+          const id = String(artifact.id || "");
+          const found = id
+            ? existing.find(
+                (row) =>
+                  String((row.artifact as { id?: string } | undefined)?.id || "") === id,
+              )
+            : null;
+          nextArts.push(found || focusedAttachmentFromArtifact(artifact));
+        }
+        return [...others, ...nextArts];
+      });
+      if (arts.length) chatPanelInputRef.current?.focus();
+    };
+    claimFiles();
+    syncArtifacts();
+    const unsubFiles = onHomeChatFilesQueued(claimFiles);
+    const unsubArts = onHomeChatArtifactsQueued(syncArtifacts);
+    return () => {
+      unsubFiles();
+      unsubArts();
+    };
+  }, [
+    addFocusedAttachment,
+    chatPanelInputRef,
+    setFocusedChatAttachments,
+    updateFocusedAttachment,
+    userId,
+  ]);
 
   // Desktop icons dragged onto the open chat. They carry paths, not File
   // objects (the drag engine is pointer-based, not HTML5), so they can't ride
@@ -444,8 +511,19 @@ export function useChatAttachmentIngress({
   }, []);
 
   const renderFocusedAttachmentPreview = useCallback((att: FocusedChatAttachment): React.ReactNode => (
-    <FocusedAttachmentPreview att={att} onRemove={removeFocusedAttachment} />
-  ), [removeFocusedAttachment]);
+    <FocusedAttachmentPreview
+      att={att}
+      onRemove={(id) => {
+        // A staged build's chip is mirrored on the Home pill from the shared
+        // staged list — unstage it too, or the sync would put it right back.
+        if (att.type === "artifact") {
+          unstageHomeChatArtifact(homeChatArtifactKey(att.artifact));
+        }
+        removeFocusedAttachment(id);
+      }}
+      chatId={chatId}
+    />
+  ), [removeFocusedAttachment, chatId]);
 
   const handleFocusedChatDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();

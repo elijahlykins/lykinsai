@@ -22,6 +22,39 @@ const TYPED_BUILD_VERB_RE =
 const TYPED_BUILD_NOUN_RE =
   /\b(?:pitch\s?deck|slide\s?deck|slide\s?show|slides?|presentation|keynote|power\s?point|ppt|study\s?guide|work\s?sheet|flash\s?cards?|spread\s?sheet|documents?|\bdocs?\b|report|essay|memo|white\s?paper|web\s?apps?|web\s?sites?|landing\s?pages?|dashboards?|games?(?! ?plan)|apps?|mini[- ]?apps?|prototypes?|flow\s?charts?|diagrams?|charts?|calculators?|quizzes?|quiz|trackers?|forms?|widgets?|portals?|simulators?|interactive\s+(?:page|app|tool|demo|artifact)|(?:ui|interface)|tools?(?!\s+for\s+(?:thinking|me\b))|mp4|videos?(?! ?game))\b/i;
 
+/**
+ * The same commissioning verbs, but restricted to INDEFINITE articles.
+ * "make me a quiz app" commissions something new; "make the app darker" /
+ * "update my app" names a build that already exists. With an artifact open
+ * for editing, only the indefinite phrasing may start a fresh build.
+ */
+const TYPED_BUILD_VERB_INDEFINITE_RE =
+  /\b(?:make|build|create|generate|design|draft|produce|prepare|compose|put together|whip up|mock up|draw up|draw|write|give|need|want|turn (?:this|that|it) into)\b(?:\s+(?:me|us))?\s+(?:a|an|some|another|one)\s+/i;
+
+/**
+ * Definite reference to the build already open / attached for editing —
+ * "the app", "this game", "my site". Such asks mutate THAT build; on their
+ * own they never commission a new one.
+ */
+const OPEN_ARTIFACT_REFERENCE_RE =
+  /\b(?:the|this|that|my|our|its)\s+(?:current\s+|existing\s+|whole\s+|entire\s+)?(?:apps?|applications?|games?(?! ?plan)|web\s?apps?|web\s?sites?|sites?|pages?|dashboards?|tools?|ui|builds?|artifacts?|projects?)\b/i;
+
+/**
+ * Explicitly commissioning ANOTHER app-like deliverable while one is open —
+ * the only wording that turns an installed-app edit chat into a fresh build.
+ * The lookahead keeps "new app icon" / "new game mode" as edits.
+ */
+const EXPLICIT_NEW_APP_RE =
+  /\b(?:an?other|different|separate|second|extra|additional|brand[- ]?new|entirely\s+new|whole\s+new|completely\s+new|new)\s+(?:apps?|applications?|games?(?! ?plan)|web\s?apps?|web\s?sites?|sites?|projects?)\b(?!\s*(?:icons?|names?|titles?|logos?|store|modes?|ids?)\b)/i;
+
+export function isOpenArtifactReferenceAsk(text: string): boolean {
+  return OPEN_ARTIFACT_REFERENCE_RE.test(String(text || ""));
+}
+
+export function isExplicitNewAppAsk(text: string): boolean {
+  return EXPLICIT_NEW_APP_RE.test(String(text || ""));
+}
+
 const BRAINSTORM_LEAD_RE =
   /^(?:(?:ok|okay|so|now|hey|also)[,\s]+)*(?:we(?:'re| are)|i(?:'m| am)|just)\s+(?:also\s+)?(?:thinking|brainstorming|considering|exploring|talking|discussing)\b/i;
 
@@ -117,7 +150,16 @@ export function isVagueBuildAsk(text: string): boolean {
   );
 }
 
-export function isTypedNewDeliverableAsk(text: string): boolean {
+/**
+ * opts.excludeDefiniteReferences: with an artifact open for editing in the
+ * same chat, definite-article asks ("make the app darker", "update my game")
+ * refer to THAT build and are edits — only indefinite phrasing ("build me a
+ * quiz app") still commissions something new.
+ */
+export function isTypedNewDeliverableAsk(
+  text: string,
+  opts: { excludeDefiniteReferences?: boolean } = {},
+): boolean {
   const raw = String(text || "").trim();
   if (!raw) return false;
   if (isHypotheticalOrBrainstormBuildMention(raw)) return false;
@@ -130,7 +172,10 @@ export function isTypedNewDeliverableAsk(text: string): boolean {
   ) {
     return false;
   }
-  const verbRe = new RegExp(TYPED_BUILD_VERB_RE.source, "gi");
+  const verbSource = opts.excludeDefiniteReferences
+    ? TYPED_BUILD_VERB_INDEFINITE_RE.source
+    : TYPED_BUILD_VERB_RE.source;
+  const verbRe = new RegExp(verbSource, "gi");
   let m: RegExpExecArray | null;
   while ((m = verbRe.exec(t)) !== null) {
     // Noun should sit in the commissioning clause, not later in the paragraph.

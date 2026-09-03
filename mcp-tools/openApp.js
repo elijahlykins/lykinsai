@@ -79,7 +79,7 @@ const PAGES = [
 ];
 
 /**
- * AI Drive and its two folders — where everything LYKN has built for the user
+ * AI Drive and its folders — where everything LYKN has built for the user
  * is kept. Not in PAGES because they are places INSIDE the Vault window rather
  * than windows of their own: the client opens one by handing the vault tab a
  * route, which is also how a single item is reached.
@@ -93,6 +93,11 @@ const DRIVE_PLACES = [
       'what you built', 'what you made', 'stuff you made', 'things i built',
       'things i made', 'my creations',
     ],
+  },
+  {
+    folder: 'docs',
+    label: 'Docs',
+    aliases: ['docs', 'documents', 'docs folder', 'my docs', 'written documents'],
   },
   {
     folder: 'artifacts',
@@ -131,7 +136,7 @@ function readDrive(ctx) {
     .map((item) => ({
       id: typeof item?.id === 'string' ? item.id.trim() : '',
       name: typeof item?.name === 'string' ? item.name.trim() : '',
-      folder: item?.folder === 'images' ? 'images' : 'artifacts',
+      folder: item?.folder === 'images' ? 'images' : item?.folder === 'docs' ? 'docs' : 'artifacts',
     }))
     .filter((item) => item.id && item.name);
 }
@@ -147,8 +152,39 @@ function matchDriveItem(asked, items) {
   return (
     items.find((item) => normalize(item.name) === want) ||
     onlyOne(items.filter((item) => normalize(item.name).includes(want))) ||
+    matchDrivePointer(want, items) ||
     null
   );
+}
+
+/** "that image", "the picture you made", "image from whenever" → newest match. */
+function matchDrivePointer(want, items) {
+  const images = items.filter((item) => item.folder === 'images');
+  const docs = items.filter((item) => item.folder === 'docs');
+  const artifacts = items.filter((item) => item.folder === 'artifacts');
+  if (
+    /^(that |the |this |my |an |latest |recent |newest |last )?(image|picture|photo|pic|generation)s?$/.test(
+      want,
+    ) ||
+    (/\b(image|picture|photo|pic)s?\b/.test(want) && !items.some((item) => normalize(item.name) === want))
+  ) {
+    return images[0] || null;
+  }
+  if (
+    /^(that |the |this |my |an |latest |recent |newest |last )?(artifact|generation)s?$/.test(
+      want,
+    )
+  ) {
+    return artifacts[0] || null;
+  }
+  if (
+    /^(that |the |this |my |an |latest |recent |newest |last )?(doc|docs|document|letter|memo)s?$/.test(
+      want,
+    )
+  ) {
+    return docs[0] || null;
+  }
+  return null;
 }
 
 /**
@@ -239,13 +275,16 @@ export const openAppTool = {
     '   be matched. If that section is absent or empty they have not built any.',
     '',
     '3. AI Drive, or one thing in it. AI Drive holds everything you have built',
-    '   for them — "artifacts" (apps, pages, documents, charts) and "image gen"',
-    '   (pictures you generated). Pass "drive" for the drive, "artifacts" or',
-    '   "image gen" for a folder, or the NAME of a single item to open that one.',
+    '   for them — "docs" (letters, memos, write-outs), "artifacts" (apps,',
+    '   pages, charts), and "image gen" (pictures you generated). Pass "drive"',
+    '   for the drive, "docs", "artifacts", or "image gen" for a folder, or the',
+    '   NAME of a single item to open that one.',
     '   What is in there is listed in the [AI DRIVE] section of your context.',
-    '   A named file, image, or artifact opens in the preview pop on their screen',
-    '   — the same overlay as clicking it. Do NOT open the Vault Finder window',
-    '   for a single item; that window is for browsing the drive or a folder.',
+    '   A named file, image, or artifact opens in view mode on their screen -',
+    '   the same window as clicking it in AI Drive. Do NOT embed it in chat.',
+    '   Do NOT open the Vault Finder window for a single item; that window is',
+    '   for browsing the drive or a folder. "That image" / "the picture" opens',
+    '   the newest image. Pass the item name when they named one.',
     '   These are things the user made with you — "open the dashboard you made',
     '   me", "pull up that chart" — so look here before saying you cannot.',
     '',
@@ -272,7 +311,7 @@ export const openAppTool = {
         type: 'string',
         description:
           'What to open: a built-in page id ("todos", "calendar", "projects", "vault", ' +
-          '"files", "browser"), a place in AI Drive ("drive", "artifacts", "image gen"), ' +
+          '"files", "browser"), a place in AI Drive ("drive", "docs", "artifacts", "image gen"), ' +
           'the name of an app the user built in LYKN, or the name of something in AI ' +
           'Drive.',
       },
@@ -357,11 +396,12 @@ export const openAppTool = {
         ok: true,
         kind: 'drive',
         id: made.id,
+        folder: made.folder,
         src: driveSrc(made.folder, made.id),
         label: made.name,
         message:
-          `${made.name} is now open on the user's screen, in AI Drive. It is ` +
-          'something you built for them.',
+          `${made.name} is now open on the user's screen, in view mode. ` +
+          'Do not embed it in the chat.',
       });
     }
 

@@ -23,10 +23,11 @@ const CHOICE = {
 };
 
 test("a live choice for the active agent renders its buttons", () => {
-  const row = agentChoiceRow(CHOICE, "a1");
+  const row = agentChoiceRow({ ...CHOICE, tool: "browser" }, "a1");
   assert.ok(row);
   assert.equal(row.agentId, "a1");
   assert.equal(row.choiceId, "c1");
+  assert.equal(row.tool, "browser");
   assert.deepEqual(
     row.buttons.map((b) => b.id),
     ["approve", "decline"],

@@ -256,7 +256,7 @@ async function runProbe(p) {
   // Decide whether this matches the expected outcome.
   let observed;
   if (status === 401 || status === 403) observed = 'denied';
-  else if (status === 404 && code === '42P01') observed = 'missing';
+  else if (status === 404 && (code === '42P01' || code === 'PGRST205')) observed = 'missing';
   else if (status === 404) observed = 'denied'; // PostgREST returns 404 for revoked RPCs
   else if (status >= 400 && code === '42501') observed = 'denied';
   else if (status >= 200 && status < 300) observed = 'allowed';

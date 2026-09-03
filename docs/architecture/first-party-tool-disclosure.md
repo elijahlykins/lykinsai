@@ -51,11 +51,13 @@ Grammar is small and shared by Chat and Voice:
 - `compute.math` / `compute.code` / `compute.time`
 - `media.image` / `media.video` / `media.audio` / `media.parse` / `media.translate`
 - `artifacts.build` / `artifacts.edit`
+- `documents.write`
 - `coding.cursor`
 - `shell.open`
 - `self.write`
 - `local.files.read` / `local.files.write` / `local.apps` / `local.shell` / `local.desktop`
 - `browser.agent`
+- `bots.ask`
 - `connections.external` (MCP need; zero first-party Chat tools)
 
 There is no always-visible core.
@@ -75,13 +77,14 @@ That is the schema owner for the spoken surface.
 Chat handler schemas stay on the Chat/MCP tools.
 
 `resolveVoiceTurnDisclosure` reuses `resolveFirstPartyCapabilities`, then maps families onto Voice-supported names (`VOICE_TOOLS_BY_CAPABILITY`).
+Spoken Imagine / Create / document / local asks unlock the same families Chat uses, without a composer-mode toggle.
+Skill aliases live in `mcp-tools/voiceSkillTools.js`.
 
 Voice-only adapters (kept):
 
-- `search_vault` — live Voice vault search (`lykn_searchVault` under the hood; Chat still rejects it)
-- `read_document` / `display_document` — hear vs show
 - `add_to_project` — session-attachment clustering
 - `update_voice_instructions` — client-only
+- `ask_bot` / `browser_agent` — client-only desktop dispatch (`local_ask_bot` / `local_browser_agent`)
 - `create_project` / `get_project_state` — confirm-first / no-arg Voice contracts
 
 OpenAI Realtime mints a session with **zero** tools (`create_response: false`).
@@ -122,7 +125,7 @@ Voice applies it in `/api/ai/realtime/tool`.
 | Vault search | cap 10 hits: `node_id`, title, snippet, match |
 | Web search | snippets + ≤3 pages at 2k chars |
 | HTTP | 8k body |
-| `lykn_loadNeuron` / Voice `read_document` | full-read path kept, 16k cap |
+| Voice `read_document` | retired with the vault trio; bounding branch kept for legacy payloads |
 | Local / Remote | existing limits; Chat does not re-expand |
 | Universal MCP | MCP bounding stays in MCP |
 
@@ -132,7 +135,7 @@ Classified on current HEAD, not from the Phase A label alone:
 
 | Tool | Class | Why |
 | --- | --- | --- |
-| `lykn_searchVault` | LIVE Voice / Chat-rejected | Voice `search_vault` still dispatches |
+| `lykn_searchVault` | DEAD on both surfaces | Voice `search_vault` / `read_document` / `display_document` retired; `vault.read` now maps to `open_app` (Chat parity — AI Drive items open with the open-app tool) |
 | `lykn_list_apps` / `lykn_call_app` | LIVE Voice isolated | Custom REST Connections still exist; not MCP |
 | `lykn_listCustomModels` + orchestration four | FEATURE-GATED | Product/UI/runtime remain behind `CUSTOM_MODELS_ENABLED` |
 | `lykn_proposeBelief` | DEAD | Runtime mapping removed; historical ChatNeuron kinds kept |

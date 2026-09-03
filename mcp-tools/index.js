@@ -4,7 +4,7 @@
 // One source of truth for what LYKN's own AI can do for the user.
 // These are consumed by two in-app surfaces:
 //   • the text chat  — via the whitelist in chatTools.js
-//   • the voice agent — via the runMcp dispatcher in server.js
+//   • the voice agent — via voice.routes.js aliases over the same handlers
 //
 // LYKN does NOT expose these tools to outside AI models. There is no MCP
 // server, no REST mirror, and no bearer-token transport; every call runs
@@ -44,14 +44,9 @@ import { getProjectStateTool } from './getProjectState.js';
 import { listProjectsTool } from './listProjects.js';
 import { resolveProjectTool } from './resolveProject.js';
 import { updateProjectTool } from './updateProject.js';
-import { addProjectNeuronsTool } from './addProjectNeurons.js';
-import { removeProjectNeuronsTool } from './removeProjectNeurons.js';
 import { deleteProjectTool } from './deleteProject.js';
 import { mergeProjectsTool } from './mergeProjects.js';
 import { createVaultNoteTool } from './createVaultNote.js';
-import { loadNeuronTool } from './loadNeuron.js';
-import { loadNeuronsTool } from './loadNeurons.js';
-import { getProjectNeuronsTool } from './getProjectNeurons.js';
 import { getUserPreferencesTool } from './getUserPreferences.js';
 import { updateUserPreferenceTool } from './updateUserPreference.js';
 import { getRecentActivityTool } from './getRecentActivity.js';
@@ -93,9 +88,6 @@ export const LYKN_TOOLS = [
   mergeProjectsTool,
   pushProjectStateTool,
   getProjectStateTool,
-  addProjectNeuronsTool,
-  removeProjectNeuronsTool,
-  getProjectNeuronsTool,
   // Markdown memory (production personal-memory authority)
   memoryListTool,
   memoryReadTool,
@@ -104,8 +96,6 @@ export const LYKN_TOOLS = [
   memoryForgetTool,
   // Cross-tier helpers
   searchVaultTool,
-  loadNeuronTool,
-  loadNeuronsTool,
   createVaultNoteTool,
   // URL-specialised vault save — produces a rich link card with favicon
   // + platform tags, dedupes by URL. Pairs with the chat handler's

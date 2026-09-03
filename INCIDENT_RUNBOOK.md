@@ -35,6 +35,10 @@ LYKN emits security events into **two** sinks for every notable security event. 
 
 3. **`/api/health`** — Render polls this every interval. Returns `503` when degraded. The response includes `replay_events_5m` as an informational counter (does not flip the health gate).
 
+4. **GitHub production-health workflow** — `.github/workflows/production-health.yml` checks the web app, API health payload, database and secret health flags, and artifact-host isolation every five minutes.
+   Configure GitHub Actions failure notifications for the on-call owner.
+   This is a baseline availability alarm, not a replacement for a Render log drain or Stripe webhook alerts.
+
 ---
 
 ## Event catalog → which alert / where to look

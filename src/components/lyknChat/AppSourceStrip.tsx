@@ -110,4 +110,39 @@ const AppSourceStrip = React.memo(function AppSourceStrip({
   );
 });
 
+export function SentAppEditChip({
+  title,
+  paths = [],
+  kind = "app",
+}: {
+  title: string;
+  paths?: string[];
+  kind?: "app" | "artifact";
+}) {
+  const shown = paths.slice(0, 4);
+  const extra = paths.length > shown.length ? paths.length - shown.length : 0;
+  return (
+    <div className="inline-flex max-w-full flex-wrap items-center justify-end gap-1.5 rounded-xl border border-black/10 bg-black/[0.04] px-2.5 py-1 dark:border-white/15 dark:bg-white/[0.06]">
+      <span className="whitespace-nowrap text-[12px] font-medium text-black/80 dark:text-white/85">
+        Editing {title}
+      </span>
+      {shown.map((path) => (
+        <span
+          key={path}
+          title={path}
+          className="max-w-[9rem] truncate font-mono text-[11px] text-black/45 dark:text-white/45"
+        >
+          {path}
+        </span>
+      ))}
+      {extra ? (
+        <span className="font-mono text-[11px] text-black/40 dark:text-white/40">+{extra}</span>
+      ) : null}
+      <span className="sr-only">
+        {kind === "app" ? "Installed app source attached to this prompt" : "Build source attached to this prompt"}
+      </span>
+    </div>
+  );
+}
+
 export default AppSourceStrip;

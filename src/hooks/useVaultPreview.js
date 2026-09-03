@@ -297,7 +297,7 @@ export function useVaultPreview({
     }
     toast({
       title: "Already open",
-      description: "This item is shown in the preview — there's no separate page to expand.",
+      description: "This item is shown in the preview. There's no separate page to expand.",
     });
     return false;
   }, [openVaultArtifactInBrowser, openUrlInSystemBrowser, resolvedAttachmentUrls]);

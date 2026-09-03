@@ -12,6 +12,10 @@ import {
   assignBotConnections,
   bindRuntimeTask,
   botForAgent,
+  botShouldResumeBoard as botShouldResumeBoardState,
+  addBotSkill,
+  cleanSkills,
+  cleanModelPolicy,
   createBot,
   enqueueTask,
   finishTask,
@@ -19,13 +23,20 @@ import {
   nextQueuedTask,
   parseAskTeammate,
   parseBots,
+  presentBotTaskResult,
+  queuedTasks,
+  removeBotSkill,
+  settleUnfinishedTasks,
   removeQueuedTask,
+  updateBotSkill,
   runningTask,
+  sanitizeBotDeliverables,
   serializeBots,
   startTask,
   stripAskTeammate,
+  teammatesNamedInAsk,
 } from "@/lib/bots/botStore";
-import { bindBrowserTabChat } from "@/lib/lyknChat/browserChatAttach";
+import { bindBrowserTabChat, markBrowserTabRevealed } from "@/lib/lyknChat/browserChatAttach";
 
 const lykn = () => (typeof window !== "undefined" ? window.lykn : undefined);
 
@@ -33,7 +44,17 @@ let bots = null; // lazy — localStorage isn't touched until someone asks
 let agentStates = {}; // agentId → publicAgent, from list/progress broadcasts
 let live = {}; // agentId → { text, waiting, choice } for the streaming turn
 let shots = {}; // agentId → { dataUrl, url, at } — tiny browser viewport feed
+// botTaskId → BotDeliverable[] from the task's completion event. Held in
+// memory only — a report document can be hundreds of KB, which has no
+// business in the localStorage roster. The chat row copies these into its
+// own message (which the chat store persists) when the task settles.
+const taskDeliverables = new Map();
+const TASK_DELIVERABLES_CAP = 24;
 const subs = new Set();
+/** botId → chatId opened in THIS Studio session. Last session's idle
+ *  thread is not in here, so a cold pick starts a fresh board. */
+const sessionBoards = new Map();
+const mintingBoards = new Map();
 
 function load() {
   if (bots === null) {
@@ -90,6 +111,8 @@ function botRuntimeIdentity(bot) {
     color: bot.color,
     chatId: bot.chatId,
     ...(Array.isArray(bot.connectionIds) ? { connectionIds: bot.connectionIds } : {}),
+    skills: cleanSkills(bot.skills),
+    modelPolicy: cleanModelPolicy(bot.modelPolicy),
   };
 }
 
@@ -134,16 +157,23 @@ export function getBotShots() {
   return shots;
 }
 
+/** Structured deliverables a settled task produced (this session only). */
+export function getTaskDeliverables(botTaskId) {
+  return taskDeliverables.get(String(botTaskId || "")) || [];
+}
+
 /** Reveal the real browser tab a Bot is working in (mini viewport click). */
 export function revealBotBrowser(bot) {
   if (!bot?.agentId) return;
-  // Pair this tab with the Bot's own chat so the rail dropdown shows that
-  // Bot — not LYKN — as the one working the screen.
+  // Keep the Bot's board paired with its tab for page context. Do not open
+  // the browser question rail - that stays opt-in via Ask LYKN / AI Mode.
+  // agentShowBrowser reveals that same hidden tab - it must not mint a
+  // fresh empty page beside it.
   if (bot.chatId) bindBrowserTabChat(bot.agentId, bot.chatId);
+  markBrowserTabRevealed(bot.agentId);
   const api = lykn();
   api?.agentSwitch?.(bot.agentId)?.catch?.(() => {});
   api?.agentShowBrowser?.(bot.agentId)?.catch?.(() => {});
-  api?.agentChatSet?.({ open: true, agentId: bot.agentId })?.catch?.(() => {});
 }
 
 /** True when the desktop shell (and so the agent runtime) is reachable. */
@@ -198,6 +228,10 @@ export function botHasUnseenResult(bot) {
 
 /* ── Actions ─────────────────────────────────────────────────────────────── */
 
+export function setBotModelPolicy(botId, policy) {
+  patchBot(botId, (b) => ({ ...b, modelPolicy: cleanModelPolicy(policy) }));
+}
+
 export function addBot(draft) {
   const bot = createBot(draft);
   setBots([...load(), bot]);
@@ -207,6 +241,24 @@ export function addBot(draft) {
 /** Missing/undefined = all connections. Empty array = none. */
 export function setBotConnectionIds(botId, connectionIds) {
   patchBot(botId, (b) => assignBotConnections(b, connectionIds));
+}
+
+export function teachBotSkill(botId, input) {
+  let taught = null;
+  patchBot(botId, (b) => {
+    const next = addBotSkill(b, input);
+    if (next) taught = next.skills[next.skills.length - 1];
+    return next || b;
+  });
+  return taught;
+}
+
+export function editBotSkill(botId, skillId, input) {
+  patchBot(botId, (b) => updateBotSkill(b, skillId, input));
+}
+
+export function forgetBotSkill(botId, skillId) {
+  patchBot(botId, (b) => removeBotSkill(b, skillId));
 }
 
 /**
@@ -220,6 +272,58 @@ export function setBotChatBoard(botId, chatId) {
   // The stamp marks earlier tasks as belonging to retired boards, so the
   // chat bar strip hides the bot until this fresh chat actually has turns.
   patchBot(botId, (b) => ({ ...b, chatId: board, chatStartedAt: new Date().toISOString() }));
+  rememberSessionBotBoard(botId, board);
+}
+
+export function rememberSessionBotBoard(botId, chatId) {
+  const id = String(botId || "").trim();
+  const board = String(chatId || "").trim();
+  if (!id || !board) return;
+  sessionBoards.set(id, board);
+}
+
+export function botShouldResumeBoard(bot) {
+  if (!bot) return false;
+  return botShouldResumeBoardState(bot, {
+    live: bot.agentId ? live[bot.agentId] : null,
+    agent: bot.agentId ? agentStates[bot.agentId] : null,
+    sessionChatId: sessionBoards.get(bot.id) || "",
+  });
+}
+
+/** Test helper — drop this session's opened boards. */
+export function resetSessionBotBoards() {
+  sessionBoards.clear();
+  mintingBoards.clear();
+}
+
+/**
+ * The board a Bot send / hop should use. Mid-work and boards opened in
+ * this session resume. Idle bots on a cold start get a fresh board from
+ * `mintFresh` so last night's thread does not pop up.
+ */
+export async function ensureBotSessionBoard(botId, mintFresh) {
+  const bot = getBot(botId);
+  if (!bot) return "";
+  if (botShouldResumeBoard(bot) && bot.chatId) {
+    rememberSessionBotBoard(bot.id, bot.chatId);
+    return bot.chatId;
+  }
+  const pending = mintingBoards.get(bot.id);
+  if (pending) return pending;
+  const work = Promise.resolve()
+    .then(() => (typeof mintFresh === "function" ? mintFresh(bot) : ""))
+    .then((chatId) => {
+      const board = String(chatId || "").trim();
+      if (!board) return "";
+      setBotChatBoard(bot.id, board);
+      return board;
+    })
+    .finally(() => {
+      mintingBoards.delete(bot.id);
+    });
+  mintingBoards.set(bot.id, work);
+  return work;
 }
 
 export function removeBot(botId) {
@@ -276,12 +380,15 @@ export async function dispatchNext(botId) {
   if (!bot || runningTask(bot)) return;
   const task = nextQueuedTask(bot);
   if (!task) return;
+  // Claim the desk before any await. A shut-off during worker create used
+  // to leave this task queued, and the next launch silently resumed it.
+  patchBot(botId, (b) => startTask(b, task.id));
   let agentId;
   try {
-    ({ agentId } = await ensureAgent(bot));
+    ({ agentId } = await ensureAgent(getBot(botId) || bot));
   } catch {
     patchBot(botId, (b) =>
-      finishRunningTask(startTask(b, task.id), {
+      finishRunningTask(b, {
         ok: false,
         result: "Couldn't start a worker agent (agent limit reached?). Task kept in the log.",
       }),
@@ -290,10 +397,11 @@ export async function dispatchNext(botId) {
   }
   // Relayed teammate questions must be answered directly — no chained
   // hand-offs — so their brief omits the roster entirely.
-  const teammates = relays.has(task.id) ? [] : load().filter((b) => b.id !== botId);
+  const roster = relays.has(task.id) ? [] : load().filter((b) => b.id !== botId);
+  const teammates = teammatesNamedInAsk(task.text, roster);
   const atts = attachmentsByTask.get(task.id) || [];
   attachmentsByTask.delete(task.id);
-  patchBot(botId, (b) => startTask({ ...b, agentId }, task.id));
+  patchBot(botId, (b) => (b.agentId === agentId ? b : { ...b, agentId }));
   setLiveFor(agentId, { text: "", waiting: null, choice: null });
   try {
     await lykn().studioAgentSend(task.text, atts, agentId, {
@@ -302,9 +410,39 @@ export async function dispatchNext(botId) {
     });
   } catch {
     patchBot(botId, (b) =>
-      finishRunningTask(b, { ok: false, result: "The send failed — try assigning it again." }),
+      finishRunningTask(b, { ok: false, result: "The send failed. Try assigning it again." }),
     );
   }
+}
+
+/** Stop this bot now: cancel the worker and settle running + queued tasks. */
+export function stopBotWork(botId, { result = "Stopped." } = {}) {
+  const bot = getBot(botId);
+  if (!bot) return false;
+  if (bot.agentId) lykn()?.agentStop?.(bot.agentId)?.catch?.(() => {});
+  for (const task of bot.tasks) hopsByTask.delete(task.id);
+  attachmentsByTask.forEach((_value, taskId) => {
+    if (bot.tasks.some((task) => task.id === taskId)) attachmentsByTask.delete(taskId);
+  });
+  patchBot(botId, (current) => settleUnfinishedTasks(current, { result }));
+  if (bot.agentId) setLiveFor(bot.agentId, { text: "", waiting: null, choice: null });
+  return true;
+}
+
+/** Stop bots the user can see from this chat - their own board, or any live run. */
+export function stopBotsWorkingOnChat(chatId) {
+  const board = String(chatId || "").trim();
+  let stopped = 0;
+  for (const bot of load()) {
+    if (runningTask(bot)) {
+      if (stopBotWork(bot.id)) stopped += 1;
+      continue;
+    }
+    if (board && bot.chatId === board && queuedTasks(bot).length) {
+      if (stopBotWork(bot.id)) stopped += 1;
+    }
+  }
+  return stopped;
 }
 
 /**
@@ -422,7 +560,7 @@ function resumeAfterRelay(relay, note) {
       patchBot(from.id, (b) =>
         finishRunningTask(b, {
           ok: false,
-          result: "The teammate hand-off broke — try assigning this again.",
+          result: "The teammate hand-off broke. Try assigning this again.",
         }),
       );
     });
@@ -470,7 +608,15 @@ function ensureWired() {
   api.onAgentList?.(applyList);
   api.onAgentProgress?.((p) => {
     if (!p?.agentId || !agentStates[p.agentId]) return;
-    agentStates = { ...agentStates, [p.agentId]: { ...agentStates[p.agentId], ...p } };
+    agentStates = {
+      ...agentStates,
+      [p.agentId]: {
+        ...agentStates[p.agentId],
+        ...p,
+        ...(p.status === "waiting" ? { waiting: true } : {}),
+        ...(p.status === "running" || p.status === "idle" ? { waiting: false } : {}),
+      },
+    };
     // Back to running = whatever it was parked on is answered. Clear the
     // stale question/approval so the chat row stops asking.
     if (p.status === "running" && (live[p.agentId]?.waiting || live[p.agentId]?.choice)) {
@@ -535,14 +681,27 @@ function ensureWired() {
     }
 
     if (!["task_completed", "task_failed", "task_cancelled"].includes(event.type)) return;
-    const ok = event.type === "task_completed";
-    const result = String(event?.detail?.output || event?.detail?.reason || "");
+    const { ok, result } = presentBotTaskResult(event);
+    // Keep the task's structured work (report document, artifact, image) so
+    // the chat row can render persistent cards beside the closing message.
+    const deliverables = sanitizeBotDeliverables(event?.detail?.deliverables);
+    if (deliverables.length) {
+      taskDeliverables.set(botTaskId, deliverables);
+      while (taskDeliverables.size > TASK_DELIVERABLES_CAP) {
+        taskDeliverables.delete(taskDeliverables.keys().next().value);
+      }
+    }
+    const stopped = event.type === "task_cancelled";
     hopsByTask.delete(botTaskId);
-    patchBot(botId, (current) => finishTask(current, botTaskId, { ok, result }));
+    patchBot(botId, (current) => {
+      let next = finishTask(current, botTaskId, { ok, result });
+      if (stopped) next = settleUnfinishedTasks(next, { result: result || "Stopped." });
+      return next;
+    });
     attachmentsByTask.delete(botTaskId);
     if (relays.has(botTaskId)) completeRelay(botTaskId, bot, result);
     if (bot.agentId) setLiveFor(bot.agentId, { text: "", waiting: null, choice: null });
-    setTimeout(() => dispatchNext(botId), 400);
+    if (!stopped) setTimeout(() => dispatchNext(botId), 400);
   });
   api.onAgentDone?.((p) => {
     if (!p?.agentId) return;
@@ -559,19 +718,20 @@ function ensureWired() {
     // question runs on that bot and the answer comes back.
     if (!p.stopped && tryRelayHandoff(bot, task, text)) return;
     hopsByTask.delete(task.id);
-    patchBot(bot.id, (b) =>
-      finishRunningTask(b, {
+    patchBot(bot.id, (b) => {
+      const finished = finishRunningTask(b, {
         ok: !p.stopped,
         // An unrelayable hand-off marker (unknown teammate / hop limit) reads
         // as noise — show the reply without it.
         result: p.stopped ? text || "Stopped." : stripAskTeammate(text) || text,
-      }),
-    );
+      });
+      return p.stopped ? settleUnfinishedTasks(finished, { result: "Stopped." }) : finished;
+    });
     setLiveFor(p.agentId, { text: "", waiting: null, choice: null });
     // This answer may itself be a teammate's reply someone is waiting on.
     completeRelay(task.id, bot, stripAskTeammate(text) || text);
-    // The Bot moves straight to whatever is next on its desk.
-    setTimeout(() => dispatchNext(bot.id), 400);
+    // A stop ends the desk. A finished turn can pick up whatever is next.
+    if (!p.stopped) setTimeout(() => dispatchNext(bot.id), 400);
   });
 }
 

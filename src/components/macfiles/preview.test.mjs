@@ -15,6 +15,7 @@ test("an entry labelled with ext is classified by it", () => {
   assert.equal(previewKind({ type: "file", name: "clip.mov", ext: "mov" }), "video");
   assert.equal(previewKind({ type: "file", name: "report.pdf", ext: "pdf" }), "pdf");
   assert.equal(previewKind({ type: "file", name: "notes.txt", ext: "txt" }), "text");
+  assert.equal(previewKind({ type: "file", name: "Cover-Letter.html", ext: "html" }), "html");
 });
 
 test("an entry with only a name falls back to reading the name", () => {

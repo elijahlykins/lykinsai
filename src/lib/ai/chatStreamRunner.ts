@@ -31,6 +31,7 @@ import {
 } from "@/lib/ai/vaultSurfaceGate";
 import { openStudioTab } from "@/lib/studioTabs";
 import { openLyknMediaPop } from "@/lib/lyknMediaPop";
+import { openAiDriveItem } from "@/lib/vault/openAiDriveItem";
 import { openInstalledApp } from "@/lib/apps/installApp";
 import type { ChatNeuronAttachment } from "@/lib/lyknChat/chatTurnTypes";
 import type { ChatSendParams } from "@/lib/ai/chatSendOrchestrator";
@@ -125,10 +126,16 @@ export function createChatStreamFetcher(args: {
       });
       clearTimeout(timeout);
       if (res.status === 402) {
-        const data = await res.json().catch(() => ({}));
+        const data = await res.json().catch(() => ({})) as {
+          error?: string;
+          code?: string;
+          message?: string;
+        };
         paywallText =
-          String((data as { error?: string })?.error || "").trim() ||
-          "You've used all your free credits. Upgrade your plan to keep going.";
+          data.code === "insufficient_usage_balance"
+            ? (data.message || "Add funds to continue with this action.")
+            : String(data.message || data.error || "").trim()
+              || "Add funds or upgrade your plan to keep going.";
         return null;
       }
       // The server swaps to a cheaper model for out-of-tier requests; tell
@@ -216,6 +223,14 @@ export async function runChatStream(
             const parsed = JSON.parse(payload);
             if (parsed.error) {
               if (import.meta.env.DEV) console.error('SSE error:', parsed.error);
+              // Mid-stream billing block rides the SSE channel (headers are
+              // already flushed), so a status hook can't see it. Announce it
+              // so the global out-of-usage card appears.
+              if (parsed.code === "insufficient_usage_balance" || parsed.add_funds) {
+                window.dispatchEvent(new CustomEvent("lykn:out-of-usage", {
+                  detail: { code: parsed.code, message: parsed.error },
+                }));
+              }
               // Stash the server's message but DO NOT wipe accumulated
               // text. If the user already saw paragraphs render, blowing
               // them away with "something went wrong" is a worse UX than
@@ -277,6 +292,11 @@ export async function runChatStream(
                       localStreamId: tc.localStreamId,
                     },
                     localApiBase,
+                    {
+                      chatId:
+                        String(p.identity?.routeChatId || p.identity?.chatId || "").trim() ||
+                        undefined,
+                    },
                   );
                 })();
               }
@@ -413,6 +433,24 @@ export async function runChatStream(
                 state.setChatStatusText(toolRunningStatus(tc.name, tc.args));
               } else if (tc.status === "awaiting_approval") {
                 state.setChatStatusText("Waiting for your approval…");
+                // Connected-app (MCP) approvals: show the approval dialog and
+                // post the verdict back so the paused server turn resumes.
+                if (tc.name === "mcp_approval" && tc.localStreamId) {
+                  void (async () => {
+                    const { API_BASE_URL: localApiBase } = await import("@/lib/api-config");
+                    const { respondToMcpApproval } = await import("@/lib/ai/localToolExecutor");
+                    type ApprovalPayload = Parameters<typeof respondToMcpApproval>[0]["approval"];
+                    await respondToMcpApproval(
+                      {
+                        id: tc.id,
+                        name: tc.name,
+                        localStreamId: tc.localStreamId,
+                        approval: (tc as { approval?: ApprovalPayload }).approval,
+                      },
+                      localApiBase,
+                    );
+                  })();
+                }
               } else if (
                 shouldEmitProjectsChanged(tc.name, tc.status, tc.result)
               ) {
@@ -472,17 +510,22 @@ export async function runChatStream(
                 && typeof tc.result === "object"
                 && (tc.result as { ok?: boolean }).ok === true
               ) {
-                const r = tc.result as { kind?: string; id?: string; src?: string | null; label?: string };
+                const r = tc.result as {
+                  kind?: string;
+                  id?: string;
+                  src?: string | null;
+                  label?: string;
+                  folder?: string;
+                };
                 if (typeof r.id === "string" && r.id) {
                   if (r.kind === "installed") void openInstalledApp(r.id);
                   else if (r.kind === "drive") {
-                    // A specific file/image/artifact: the universal preview pop.
-                    // Opening the Finder window is for the drive or a folder.
                     if (r.id !== "drive") {
-                      openLyknMediaPop({
-                        type: "vault-note",
+                      void openAiDriveItem({
                         noteId: r.id,
                         title: typeof r.label === "string" ? r.label : undefined,
+                        folder: typeof r.folder === "string" ? r.folder : undefined,
+                        userId: p.identity.userId,
                       });
                     } else {
                       openStudioTab("vault", r.src || "/vault?pane=drive");

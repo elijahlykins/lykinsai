@@ -26,6 +26,18 @@ export type BotTask = {
   result?: string;
 };
 
+/** A user-authored playbook this bot follows when the work matches. */
+export type BotSkill = {
+  id: string;
+  name: string;
+  instructions: string;
+  createdAt: string;
+};
+
+export const BOT_SKILL_LIMIT = 12;
+export const BOT_SKILL_NAME_MAX = 60;
+export const BOT_SKILL_INSTRUCTIONS_MAX = 2000;
+
 export type Bot = {
   id: string;
   name: string;
@@ -38,8 +50,10 @@ export type Bot = {
   eyes: string;
   color: string;
   /**
-   * Optional MCP connection allowlist. Missing/undefined = all user connections.
-   * Empty array = no external connections. Never stores secrets.
+   * Optional MCP connection allowlist.
+   * Missing/undefined = all user connections.
+   * Empty array = no external connections.
+   * Never stores secrets.
    */
   connectionIds?: string[];
   /** Paired worker agent in the runtime; null until first hire/dispatch. */
@@ -54,40 +68,59 @@ export type Bot = {
    */
   chatStartedAt: string;
   createdAt: string;
+  /** User-taught skills this bot follows when the work matches. */
+  skills: BotSkill[];
+  /**
+   * How this bot picks a model. Missing means LYKN default routing.
+   * mode: lykn | my_setup | route | model
+   */
+  modelPolicy?: {
+    mode: "lykn" | "my_setup" | "route" | "model";
+    routeId?: string | null;
+    modelId?: string | null;
+  };
   tasks: BotTask[];
 };
 
 /* ── Faces — the animated characters a user builds from parts ────────────── */
 
-// Ids only; BotAvatar draws each as procedural SVG (soft blob-shape body,
+// Ids only; BotAvatar draws each as procedural SVG (soft body shape,
 // eye style, blink/bob/scan animation) — the same token/glyph split
 // CHAT_SEND_ICONS uses so this module never imports components.
 export type BotPartOption = { id: string; name: string };
 
 export const BOT_FACES: BotPartOption[] = [
-  { id: "blob", name: "Blob" },
+  { id: "blob", name: "Dumpling" },
   { id: "square", name: "Square" },
   { id: "squircle", name: "Squircle" },
   { id: "circle", name: "Circle" },
-  { id: "triangle", name: "Triangle" },
   { id: "hex", name: "Hex" },
   { id: "cloud", name: "Cloud" },
-  { id: "drop", name: "Drop" },
-  { id: "flower", name: "Flower" },
-  { id: "diamond", name: "Diamond" },
-  { id: "egg", name: "Egg" },
-  { id: "pebble", name: "Pebble" },
-  { id: "ghost", name: "Ghost" },
 ];
+
+// Retired picker shapes. Existing bots keep them; new ones cannot pick them.
+const RETIRED_FACES = new Set([
+  "triangle",
+  "drop",
+  "flower",
+  "diamond",
+  "egg",
+  "pebble",
+  "ghost",
+]);
 
 export const BOT_EYES: BotPartOption[] = [
   { id: "dot", name: "Dots" },
   { id: "bar", name: "Bars" },
   { id: "arc", name: "Happy" },
+  { id: "visor", name: "Visor" },
 ];
 
 export function botFaceId(id: string | null | undefined): string {
-  return BOT_FACES.some((f) => f.id === id) ? (id as string) : BOT_FACES[0].id;
+  if (BOT_FACES.some((f) => f.id === id) || RETIRED_FACES.has(String(id || ""))) {
+    return id as string;
+  }
+  return BOT_FACES[0].id;
 }
 
 export function botEyesId(id: string | null | undefined): string {
@@ -155,6 +188,8 @@ export function createBot(input: {
   eyes?: string;
   color?: string;
   connectionIds?: string[];
+  skills?: BotSkill[];
+  modelPolicy?: Bot["modelPolicy"];
 }): Bot {
   const connectionIds = cleanConnectionIds(input.connectionIds);
   return {
@@ -170,8 +205,86 @@ export function createBot(input: {
     chatId: newChatBoardId(),
     chatStartedAt: "",
     createdAt: new Date().toISOString(),
+    skills: cleanSkills(input.skills),
+    ...(input.modelPolicy ? { modelPolicy: cleanModelPolicy(input.modelPolicy) } : {}),
     tasks: [],
   };
+}
+
+export function cleanModelPolicy(raw: unknown): Bot["modelPolicy"] {
+  if (!raw || typeof raw !== "object") return { mode: "lykn" };
+  const item = raw as { mode?: string; routeId?: string; modelId?: string };
+  const mode = item.mode;
+  if (mode !== "lykn" && mode !== "my_setup" && mode !== "route" && mode !== "model") {
+    return { mode: "lykn" };
+  }
+  return {
+    mode,
+    routeId: mode === "route" ? String(item.routeId || "").slice(0, 80) || null : null,
+    modelId: mode === "model" ? String(item.modelId || "").slice(0, 80) || null : null,
+  };
+}
+
+export function cleanSkills(value: unknown): BotSkill[] {
+  const list = Array.isArray(value) ? value : [];
+  const out: BotSkill[] = [];
+  const seen = new Set<string>();
+  for (const raw of list) {
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as Partial<BotSkill>;
+    const id = String(item.id || "").trim().slice(0, 80);
+    const name = clean(item.name).slice(0, BOT_SKILL_NAME_MAX);
+    const instructions = String(item.instructions ?? "").trim().slice(0, BOT_SKILL_INSTRUCTIONS_MAX);
+    if (!id || !name || !instructions) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      id,
+      name,
+      instructions,
+      createdAt: typeof item.createdAt === "string" ? item.createdAt : "",
+    });
+    if (out.length >= BOT_SKILL_LIMIT) break;
+  }
+  return out;
+}
+
+export function createBotSkill(input: { name: string; instructions: string }): BotSkill | null {
+  const name = clean(input.name).slice(0, BOT_SKILL_NAME_MAX);
+  const instructions = String(input.instructions ?? "").trim().slice(0, BOT_SKILL_INSTRUCTIONS_MAX);
+  if (!name || !instructions) return null;
+  return {
+    id: newId("skill"),
+    name,
+    instructions,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export function addBotSkill(bot: Bot, input: { name: string; instructions: string }): Bot | null {
+  if (cleanSkills(bot.skills).length >= BOT_SKILL_LIMIT) return null;
+  const skill = createBotSkill(input);
+  if (!skill) return null;
+  return { ...bot, skills: [...cleanSkills(bot.skills), skill] };
+}
+
+export function updateBotSkill(
+  bot: Bot,
+  skillId: string,
+  input: { name: string; instructions: string },
+): Bot {
+  const name = clean(input.name).slice(0, BOT_SKILL_NAME_MAX);
+  const instructions = String(input.instructions ?? "").trim().slice(0, BOT_SKILL_INSTRUCTIONS_MAX);
+  return {
+    ...bot,
+    skills: cleanSkills(bot.skills).map((skill) =>
+      skill.id === skillId && name && instructions ? { ...skill, name, instructions } : skill,
+    ),
+  };
+}
+
+export function removeBotSkill(bot: Bot, skillId: string): Bot {
+  return { ...bot, skills: cleanSkills(bot.skills).filter((skill) => skill.id !== skillId) };
 }
 
 export function assignBotConnections(bot: Bot, connectionIds: string[] | undefined): Bot {
@@ -209,28 +322,68 @@ export function botHasBoardActivity(bot: Bot): boolean {
 }
 
 /**
+ * Resume this bot's saved board only when it is mid-work, or when this
+ * Studio session already opened that exact board. Last session's idle
+ * thread must not pop up on a cold pick / first send.
+ */
+export function botShouldResumeBoard(
+  bot: Bot | null | undefined,
+  {
+    live,
+    agent,
+    sessionChatId,
+  }: {
+    live?: { text?: string; waiting?: unknown; choice?: unknown } | null;
+    agent?: { busy?: boolean; botBrowser?: boolean } | null;
+    sessionChatId?: string | null;
+  } = {},
+): boolean {
+  if (!bot?.id) return false;
+  if (runningTask(bot) || queuedTasks(bot).length) return true;
+  if (agent?.botBrowser || agent?.busy) return true;
+  if (live && (live.text || live.waiting || live.choice)) return true;
+  const session = String(sessionChatId || "").trim();
+  return !!session && session === String(bot.chatId || "").trim();
+}
+
+/**
  * The prompt actually sent to the runtime. The persona rides along only on a
  * bot's first task (`introduce`) — after that the agent's own history carries
  * who it is, and re-stating it every turn reads as noise in the transcript.
  *
- * Teammates ride along on EVERY dispatch (they're two short lines and the
- * roster changes over time): a bot that sees part of an ask clearly belongs
- * to a teammate hands it off with the ASK_TEAMMATE marker, and botsClient
- * relays the question and brings the answer back.
+ * Teammates ride along only when this ask names them. A leftover mention
+ * from an earlier turn is not a request to hand off.
  */
+/** Teammates the user actually named in this ask - not the whole roster. */
+export function teammatesNamedInAsk<T extends { name?: string }>(
+  text: string,
+  teammates: T[] = [],
+): T[] {
+  const ask = String(text || "");
+  if (!ask.trim()) return [];
+  return (teammates || []).filter((teammate) => {
+    const name = String(teammate?.name || "").trim();
+    if (name.length < 2) return false;
+    return new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(ask);
+  });
+}
+
 export function taskBrief(
   bot: Bot,
   text: string,
   { introduce = false, teammates = [] as Bot[] } = {},
 ): string {
   const ask = String(text ?? "").trim();
-  const team = (teammates || []).filter((t) => t && t.id !== bot.id && t.name?.trim());
+  const team = teammatesNamedInAsk(
+    ask,
+    (teammates || []).filter((t) => t && t.id !== bot.id && t.name?.trim()),
+  );
   const teamLines = team.length
     ? [
         `Teammates you can ask: ${team
           .map((t) => `${t.name}${t.role ? ` (${t.role})` : ""}`)
           .join(", ")}.`,
-        `If part of this is clearly a teammate's job, reply with ONLY one line — [[ask ${team[0].name}: the question]] — and I'll bring you their answer so you can finish.`,
+        `The user named ${team.map((t) => t.name).join(", ")} in this ask. If their part is necessary, reply with ONLY one line - [[ask ${team[0].name}: the question]] - and I'll bring you their answer so you can finish. Do not consult a teammate the user did not name.`,
       ]
     : [];
   // Identity rides on EVERY dispatch, not just the introduction: the model
@@ -244,6 +397,13 @@ export function taskBrief(
     `You are ${bot.name}${bot.role ? `, my ${bot.role}` : ""} — a standing teammate, not a one-off assistant.`,
   ];
   if (bot.persona) lines.push(`Working style: ${bot.persona}`);
+  const skills = cleanSkills(bot.skills);
+  if (skills.length) {
+    lines.push("Custom skills the user taught you — follow one when the work matches:");
+    for (const skill of skills) {
+      lines.push(`- ${skill.name}: ${skill.instructions}`);
+    }
+  }
   lines.push(
     `Be warm, friendly, and personable — you're ${bot.name}, a teammate I enjoy working with. Refer to yourself by name when it's natural, and keep the tone upbeat without being fake.`,
     "Ask me only when something genuinely needs my decision; otherwise finish the job end to end.",
@@ -256,7 +416,7 @@ export function taskBrief(
 
 /* ── Bot-to-bot hand-offs ─────────────────────────────────────────────────── */
 
-const ASK_TEAMMATE_RE = /\[\[\s*ask\s+([^:\]]{1,60}?)\s*:\s*([\s\S]{1,800}?)\s*\]\]/i;
+const ASK_TEAMMATE_RE = /\[\[\s*ask\s+([^:\]]{1,60}?)\s*:\s*([\s\S]{1,4000}?)\s*\]\]/i;
 
 /**
  * A reply that is really a hand-off: "[[ask Fin: what's our runway?]]".
@@ -275,6 +435,82 @@ export function stripAskTeammate(text: string): string {
   return String(text ?? "").replace(ASK_TEAMMATE_RE, "").trim();
 }
 
+const CANCEL_REASON_COPY: Record<string, string> = {
+  agent_closed:
+    "The browser session closed while I was still working. Ask me again and I'll pick it up.",
+  user_stop: "Stopped.",
+};
+
+/**
+ * A structured work product the task produced beside its closing message —
+ * a research report as an HTML document, a built artifact, a generated
+ * image. The chat row renders one persistent card per entry, so the work
+ * survives the final reply replacing the streamed text.
+ */
+export type BotDeliverable = {
+  kind: "html" | "artifact" | "image";
+  title: string;
+  /** Which harness tool produced it (one card per tool per task). */
+  tool?: string;
+  html?: string;
+  filename?: string;
+  url?: string;
+  code?: string;
+};
+
+const DELIVERABLE_LIMIT = 8;
+const DELIVERABLE_HTML_MAX = 400_000;
+const DELIVERABLE_CODE_MAX = 400_000;
+
+/** Validate deliverables off a runtime task event — IPC payloads are untrusted shape-wise. */
+export function sanitizeBotDeliverables(raw: unknown): BotDeliverable[] {
+  if (!Array.isArray(raw)) return [];
+  const out: BotDeliverable[] = [];
+  for (const item of raw.slice(0, DELIVERABLE_LIMIT)) {
+    const d = (item ?? {}) as Record<string, unknown>;
+    const kind = String(d.kind || "");
+    const title = String(d.title || "").trim();
+    const tool = String(d.tool || "").trim() || undefined;
+    if (kind === "html" && typeof d.html === "string" && d.html.trim()) {
+      out.push({
+        kind,
+        title: title || "Document",
+        tool,
+        html: d.html.slice(0, DELIVERABLE_HTML_MAX),
+        filename: String(d.filename || "").trim() || undefined,
+      });
+    } else if (kind === "artifact" && (d.url || d.code)) {
+      out.push({
+        kind,
+        title: title || "Interactive artifact",
+        tool,
+        url: String(d.url || "").trim() || undefined,
+        code: typeof d.code === "string" ? d.code.slice(0, DELIVERABLE_CODE_MAX) : undefined,
+      });
+    } else if (kind === "image" && typeof d.url === "string" && d.url.trim()) {
+      out.push({ kind, title: title || "Generated image", tool, url: d.url.trim() });
+    }
+  }
+  return out;
+}
+
+/** Turn a runtime task event into the line the chat row keeps. */
+export function presentBotTaskResult(event: {
+  type?: string;
+  detail?: { output?: string; reason?: string };
+}): { ok: boolean; result: string } {
+  const type = String(event?.type || "");
+  const output = String(event?.detail?.output || "").trim();
+  const reason = String(event?.detail?.reason || "").trim();
+  if (type === "task_cancelled") {
+    return {
+      ok: false,
+      result: output || CANCEL_REASON_COPY[reason] || reason || "Stopped.",
+    };
+  }
+  return { ok: type === "task_completed", result: output || reason };
+}
+
 /** True when a new assignment must wait: something is already running or parked. */
 export function botHasActiveTask(bot: Bot): boolean {
   return bot.tasks.some((t) => t.status === "running");
@@ -286,6 +522,20 @@ export function queuedTasks(bot: Bot): BotTask[] {
 
 export function runningTask(bot: Bot): BotTask | null {
   return bot.tasks.find((t) => t.status === "running") || null;
+}
+
+/** Resolve a bot by id or name (exact, then a single unambiguous partial). */
+export function findBotByName(bots: Bot[] | null | undefined, name: string): Bot | null {
+  const raw = String(name || "").trim();
+  const q = raw.toLowerCase();
+  if (!q || !Array.isArray(bots)) return null;
+  const exact = bots.find((b) => b.id === raw || b.name.trim().toLowerCase() === q);
+  if (exact) return exact;
+  const partial = bots.filter((b) => {
+    const n = b.name.trim().toLowerCase();
+    return n.length >= 2 && (n.includes(q) || q.includes(n));
+  });
+  return partial.length === 1 ? partial[0] : null;
 }
 
 /** The Bot whose worker agent owns this browser tab, if any. */
@@ -404,6 +654,20 @@ export function removeQueuedTask(bot: Bot, taskId: string): Bot {
   };
 }
 
+/** End every unfinished task. Stop means stop - nothing stays queued. */
+export function settleUnfinishedTasks(
+  bot: Bot,
+  { result = "Stopped." }: { result?: string } = {},
+): Bot {
+  let next = bot;
+  for (const task of bot.tasks) {
+    if (task.status === "queued" || task.status === "running") {
+      next = finishTask(next, task.id, { ok: false, result });
+    }
+  }
+  return next;
+}
+
 /* ── Persistence ─────────────────────────────────────────────────────────── */
 
 export const BOTS_STORAGE_KEY = "lykn_bots_v1";
@@ -432,19 +696,21 @@ export function parseBots(raw: string | null | undefined): Bot[] {
         ...(Array.isArray((b as Bot).connectionIds)
           ? { connectionIds: cleanConnectionIds((b as Bot).connectionIds) }
           : {}),
+        skills: cleanSkills((b as Bot).skills),
+        modelPolicy: cleanModelPolicy((b as Bot).modelPolicy),
         tasks: (Array.isArray(b.tasks) ? b.tasks : [])
-          // A task caught mid-run by a reload ends right there — no silent
-          // retry on the next dispatch, no half-remembered work. The chat row
-          // it belonged to catches up to this result when it re-attaches.
+          // A shut-off or reload ends unfinished work right there. A task that
+          // was still queued (dispatch had not claimed the desk yet) must not
+          // come back as a silent retry.
           .map((t) =>
-            t?.status === "running"
+            t?.status === "running" || t?.status === "queued"
               ? {
                   ...t,
                   status: "failed" as const,
                   finishedAt: t.finishedAt || new Date().toISOString(),
                   result:
                     String(t.result ?? "").trim() ||
-                    "Stopped — the app reloaded before this finished. Send it again if you still need it.",
+                    "Stopped. The app closed before this finished.",
                 }
               : t,
           )
@@ -463,7 +729,7 @@ export const BOT_TEMPLATES: Array<
   {
     name: "Scout",
     role: "Research Analyst",
-    face: "triangle",
+    face: "hex",
     eyes: "bar",
     color: "sky",
     persona:
@@ -490,7 +756,7 @@ export const BOT_TEMPLATES: Array<
   {
     name: "Drafter",
     role: "Writer",
-    face: "drop",
+    face: "cloud",
     eyes: "arc",
     color: "purple",
     persona:

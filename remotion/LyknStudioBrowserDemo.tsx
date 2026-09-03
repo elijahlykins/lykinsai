@@ -8,7 +8,7 @@ import {
 // ---------------------------------------------------------------------------
 // LYKN Studio Browser Demo — sequenced opener:
 //   1) Studio pulls up fullscreen on Home
-//   2) Open Browser → Use LYKN → Nike pricing agent → sheet
+//   2) Open Browser → Ask LYKN → Nike pricing agent → sheet
 // ---------------------------------------------------------------------------
 
 const OVERLAP = 24;

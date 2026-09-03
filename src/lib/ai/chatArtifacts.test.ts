@@ -190,4 +190,28 @@ describe("extractChatArtifacts", () => {
     expect(arts[0].kind).toBe("html");
     expect(arts[0].srcDoc).toContain("<h1>Hi</h1>");
   });
+
+  it("renders a written document from preview_html", () => {
+    const calls: ToolCallEvent[] = [
+      {
+        id: "tc-doc",
+        name: "lykn_write_document",
+        args: {},
+        status: "done",
+        startedAt: 1,
+        result: {
+          ok: true,
+          title: "Cover Letter",
+          filename: "Cover-Letter.html",
+          preview_html: "<!DOCTYPE html><html><head><title>Cover Letter</title></head><body><p>Dear team</p></body></html>",
+        },
+      },
+    ];
+    const arts = extractChatArtifacts(calls);
+    expect(arts).toHaveLength(1);
+    expect(arts[0].kind).toBe("html");
+    expect(arts[0].title).toBe("Cover Letter");
+    expect(arts[0].toolName).toBe("lykn_write_document");
+    expect(arts[0].srcDoc).toContain("Dear team");
+  });
 });

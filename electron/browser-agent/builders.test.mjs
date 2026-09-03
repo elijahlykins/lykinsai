@@ -373,6 +373,29 @@ test("a click that changes nothing on an ordinary page is still a failure", asyn
   assert.equal(out.next, "recover");
 });
 
+test("typing into the Docs filename is not a retype cue", async () => {
+  const elements = [{ ref: "e1", role: "textbox", label: "Rename", raw: { tag: "input" } }];
+  const page = {
+    url: "https://docs.google.com/document/d/x/edit",
+    title: "Untitled document",
+    elements,
+    visibleText: "Untitled document File Edit",
+    byRef: new Map(elements.map((e) => [e.ref, e])),
+  };
+  const out = await verifier.verifyOutcome({
+    model: { verify: async () => assert.fail("deterministic path expected") },
+    decision: { action: { type: "type", target: "e1", text: "LYKN - Spec" } },
+    actionResult: { ok: true },
+    before: page,
+    after: page,
+    diff: NO_CHANGE_DIFF,
+    extracted: { ok: true, label: "Rename", value: "Untitled document" },
+  });
+  assert.equal(out.success, true);
+  assert.equal(out.unverified, true);
+  assert.match(out.evidence, /filename/i);
+});
+
 test("typing into an editor that cannot report its contents is not a retype cue", async () => {
   const after = editorSnapshot("https://app.example.com/editor");
   const out = await verifier.verifyOutcome({
@@ -503,6 +526,10 @@ test("a product playbook reaches every one of its regional hosts", async () => {
 
   const canva = await memory.getWebsiteMemory("https://www.canva.com/design/DAF/edit");
   assert.match(canva, /Canva/i);
+
+  const docs = await memory.getWebsiteMemory("https://docs.google.com/document/d/abc/edit");
+  assert.match(docs, /Untitled document/i);
+  assert.match(docs, /paste_text/i);
 
   const unknown = await memory.getWebsiteMemory("https://nothing-known.example.com/x");
   assert.equal(unknown, "");

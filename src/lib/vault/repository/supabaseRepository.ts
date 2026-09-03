@@ -99,14 +99,19 @@ export function createSupabaseVaultRepository(userId: string): VaultRepository {
     },
 
     async getById(id) {
-      const { data, error } = await supabase.from(TABLE).select("*").eq("id", id).maybeSingle();
+      const { data, error } = await supabase
+        .from(TABLE)
+        .select("*")
+        .eq("id", id)
+        .eq("user_id", userId)
+        .maybeSingle();
       if (error) throw error;
       return (data as VaultItem) || null;
     },
 
     async getByIds(ids) {
       if (!ids?.length) return [];
-      const { data, error } = await supabase.from(TABLE).select("*").in("id", ids);
+      const { data, error } = await supabase.from(TABLE).select("*").in("id", ids).eq("user_id", userId);
       if (error) throw error;
       return (data as VaultItem[]) || [];
     },

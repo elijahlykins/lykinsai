@@ -115,6 +115,33 @@ export function isEditableArtifact(a: ChatArtifact | null | undefined): boolean 
   return false;
 }
 
+/** Chip shown on a sent prompt when this artifact's source rode the turn. */
+export function editTargetFromArtifact(
+  a: ChatArtifact | null | undefined,
+  chatId: string,
+): { kind: "app" | "artifact"; title: string; paths?: string[] } | null {
+  if (!a) return null;
+  const bid = String(chatId || "").trim();
+  const source = String(a.sourceChatId || "").trim();
+  if (bid && source && source !== bid) return null;
+  const isApp = !!(
+    (typeof a.installedAppId === "string" && a.installedAppId.trim()) ||
+    String(a.id || "").startsWith("installed-app:")
+  );
+  if (!isApp && !isEditableArtifact(a)) return null;
+  const paths = (Array.isArray(a.files) ? a.files : [])
+    .map((f) => String((f as { path?: string })?.path || "").trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  const title =
+    String(a.title || "").trim() || (isApp ? "this app" : "this build");
+  return {
+    kind: isApp ? "app" : "artifact",
+    title,
+    ...(paths.length ? { paths } : {}),
+  };
+}
+
 /** Strip an artifact down to the fields the server needs to rebuild it. */
 export function toArtifactEditContext(a: ChatArtifact): ArtifactEditContext {
   return {
@@ -147,6 +174,7 @@ const ARTIFACT_TOOLS = new Set([
   "lykn_render_video",
   "lykn_build_spreadsheet",
   "lykn_manage_file",
+  "lykn_write_document",
   "lykn_generate_chart",
   "lykn_generate_diagram",
   "lykn_generate_image",
@@ -552,6 +580,33 @@ function extractFromToolCall(call: ToolCallEvent): ChatArtifact[] {
     }
     case "lykn_manage_file":
       return extractFromManageFile(call.id, call.result);
+    case "lykn_write_document": {
+      const title = String(call.result.title || "Document").trim() || "Document";
+      const inlineHtml =
+        typeof call.result.preview_html === "string" && isHtmlString(call.result.preview_html)
+          ? call.result.preview_html
+          : "";
+      const fileUrl = typeof call.result.file_url === "string" ? call.result.file_url.trim() : "";
+      const filename =
+        typeof call.result.filename === "string" && call.result.filename.trim()
+          ? call.result.filename.trim()
+          : `${title}.html`;
+      if (!inlineHtml && !fileUrl) return [];
+      return [
+        {
+          id: `${call.id}:html`,
+          kind: "html",
+          title,
+          srcDoc: inlineHtml || undefined,
+          previewUrl: fileUrl || undefined,
+          downloadUrl: fileUrl || undefined,
+          filename,
+          format: "html",
+          toolName: "lykn_write_document",
+          downloads: fileUrl ? [{ format: "html", url: fileUrl, filename }] : undefined,
+        },
+      ];
+    }
     case "lykn_generate_chart": {
       const url = typeof call.result.chart_url === "string" ? call.result.chart_url : "";
       if (!url) return [];
@@ -696,6 +751,7 @@ const COALESCE_ARTIFACT_TOOLS = new Set([
   "lykn_build_template",
   "lykn_build_spreadsheet",
   "lykn_manage_file",
+  "lykn_write_document",
 ]);
 
 /** Collect previewable artifacts from completed tool calls on one assistant turn. */

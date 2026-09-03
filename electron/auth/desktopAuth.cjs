@@ -1,5 +1,13 @@
 "use strict";
 
+const {
+  saveDesktopSession,
+  loadDesktopSession,
+  clearDesktopSession,
+  sessionIdentity,
+} = require("./desktopSessionStore.cjs");
+const { untrustedSenderResult, trustedLyknIpcOpts } = require("../trustedIpcSender.cjs");
+
 function attachDesktopAuth(d) {
   if (d.__attached_attachDesktopAuth) return;
   d.__attached_attachDesktopAuth = true;
@@ -112,6 +120,25 @@ function attachDesktopAuth(d) {
   return false;
 })()`;
 
+  // Full session (access + refresh) so this machine can restore after a restart
+  // even if Chromium localStorage is empty for the current origin.
+  const READ_SUPABASE_SESSION_JS = `(function () {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('sb-') && k.endsWith('-auth-token')) {
+        const v = JSON.parse(localStorage.getItem(k) || 'null');
+        const sess = v && (v.currentSession || v);
+        const access = sess && sess.access_token;
+        const refresh = sess && sess.refresh_token;
+        const email = sess && sess.user && sess.user.email;
+        if (access && refresh) return { access_token: access, refresh_token: refresh, email: email || '' };
+      }
+    }
+  } catch (e) {}
+  return null;
+})()`;
+
 function isAuthNavigation(url) {
   try {
     const parsed = new URL(url);
@@ -201,8 +228,94 @@ function isReplayOfLastAuthHandoff(access_token, refresh_token) {
   );
 }
 
+function desktopSessionOpts() {
+  let userDataPath = "";
+  try {
+    userDataPath = app.getPath("userData");
+  } catch {
+    return null;
+  }
+  const safeStorage = d.electron.safeStorage;
+  if (!safeStorage || typeof safeStorage.encryptString !== "function") return null;
+  return {
+    userDataPath,
+    encryptString: (text) => safeStorage.encryptString(String(text)),
+    decryptString: (buf) => safeStorage.decryptString(buf),
+    isEncryptionAvailable: () => {
+      try {
+        return safeStorage.isEncryptionAvailable() === true;
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
+function persistDesktopSession(access_token, refresh_token, extra = {}) {
+  const opts = desktopSessionOpts();
+  if (!opts) {
+    console.warn("[auth] persist session skipped — no userData/safeStorage");
+    return false;
+  }
+  const ok = saveDesktopSession({ access_token, refresh_token, ...extra }, opts);
+  if (!ok) console.warn("[auth] persist session failed");
+  return ok;
+}
+
+async function rememberedDesktopSession() {
+  const fromDisk = desktopSessionOpts() ? loadDesktopSession(desktopSessionOpts()) : null;
+  if (fromDisk?.access_token && fromDisk?.refresh_token) return fromDisk;
+  const pending = d.pendingAuthTokens;
+  if (pending?.access_token && pending?.refresh_token) return pending;
+  const live = liveAuthWebContents();
+  if (!live || live.isDestroyed?.()) return null;
+  try {
+    const sess = await live.executeJavaScript(READ_SUPABASE_SESSION_JS, true);
+    if (sess?.access_token && sess?.refresh_token) {
+      persistDesktopSession(sess.access_token, sess.refresh_token, {
+        email: sess.email || "",
+      });
+      return sess;
+    }
+  } catch {
+    /* window still loading */
+  }
+  return null;
+}
+
+function hydrateDesktopSessionFromDisk() {
+  if (d.pendingAuthTokens?.access_token && d.pendingAuthTokens?.refresh_token) return false;
+  const session = desktopSessionOpts() ? loadDesktopSession(desktopSessionOpts()) : null;
+  if (!session?.access_token || !session?.refresh_token) {
+    console.log("[auth] no remembered session on disk");
+    return false;
+  }
+  d.pendingAuthTokens = {
+    access_token: session.access_token,
+    refresh_token: session.refresh_token,
+  };
+  cacheAuthToken(session.access_token);
+  console.log("[auth] restored remembered session", session.email || "(no email)");
+  return true;
+}
+
+function queuePersistFromWebContents(webContents) {
+  if (!webContents || webContents.isDestroyed?.()) return;
+  void webContents
+    .executeJavaScript(READ_SUPABASE_SESSION_JS, true)
+    .then((sess) => {
+      if (sess?.access_token && sess?.refresh_token) {
+        persistDesktopSession(sess.access_token, sess.refresh_token, {
+          email: sess.email || "",
+        });
+      }
+    })
+    .catch(() => {});
+}
+
 function deliverAuthTokensToRenderer(access_token, refresh_token) {
   d.pendingAuthTokens = { access_token, refresh_token };
+  persistDesktopSession(access_token, refresh_token);
   if (!app.isReady()) return;
   if (!d.mainWindow || d.mainWindow.isDestroyed()) {
     createMainWindow();
@@ -589,12 +702,14 @@ async function readTokenFromLiveAuth(webContents, { forceRefresh = false } = {})
   const token = await readTokenFromWebContents(webContents);
   if (token && !forceRefresh && !tokenIsStale(token)) {
     cacheAuthToken(token);
+    queuePersistFromWebContents(webContents);
     return token;
   }
   if (token || forceRefresh) {
     const refreshed = await refreshTokenViaWebContents(webContents);
     if (refreshed && !tokenIsStale(refreshed)) {
       cacheAuthToken(refreshed);
+      queuePersistFromWebContents(webContents);
       return refreshed;
     }
     // Refresh hook unavailable (app still booting) or refresh failed —
@@ -647,12 +762,14 @@ function readTokenViaHiddenWindow() {
           const refreshed = await refreshTokenViaWebContents(win.webContents);
           if (refreshed && !tokenIsStale(refreshed)) {
             cacheAuthToken(refreshed);
+            queuePersistFromWebContents(win.webContents);
             return refreshed;
           }
         }
         const token = await readTokenFromWebContents(win.webContents).catch(() => null);
         if (token && !tokenIsStale(token)) {
           cacheAuthToken(token);
+          queuePersistFromWebContents(win.webContents);
           return token;
         }
         await new Promise((r) => setTimeout(r, 400));
@@ -694,6 +811,57 @@ async function getAuthToken({ forceRefresh = false } = {}) {
   return readTokenViaHiddenWindow();
 }
 
+  const trustedAuthIpc = () => {
+    const base = trustedLyknIpcOpts({ app, path, appOrigin: APP_ORIGIN, appUrl: APP_URL });
+    return {
+      ...base,
+      trustedFileRoots: [...new Set([ELECTRON_DIR, ...(base.trustedFileRoots || [])])],
+    };
+  };
+
+  function isDesktopAuthSender(e) {
+    const sender = e?.sender;
+    if (!sender || sender.isDestroyed?.()) return false;
+    return [d.welcomeWindow, d.mainWindow, d.authKeeperWindow].some(
+      (win) => win && !win.isDestroyed() && sender === win.webContents,
+    );
+  }
+
+  ipcMain.handle("lykn:auth-remembered-session", async (e) => {
+    if (!isDesktopAuthSender(e) && untrustedSenderResult(e, trustedAuthIpc())) {
+      console.warn("[auth] remembered-session ignored from", e?.sender?.getURL?.() || "(no url)");
+      return { signedIn: false, email: null };
+    }
+    const identity = sessionIdentity(await rememberedDesktopSession());
+    if (identity.signedIn) {
+      console.log("[auth] remembered session", identity.email || "(no email)");
+    }
+    return identity;
+  });
+
+  ipcMain.handle("lykn:auth-persist-session", (e, payload = {}) => {
+    if (!isDesktopAuthSender(e) && untrustedSenderResult(e, trustedAuthIpc())) {
+      return { ok: false, error: "untrusted_sender" };
+    }
+    const ok = persistDesktopSession(payload.access_token, payload.refresh_token, {
+      email: payload.email || "",
+      user_id: payload.user_id || "",
+    });
+    return { ok };
+  });
+
+  ipcMain.handle("lykn:auth-clear-desktop-session", (e) => {
+    if (!isDesktopAuthSender(e) && untrustedSenderResult(e, trustedAuthIpc())) {
+      return { ok: false, error: "untrusted_sender" };
+    }
+    const opts = desktopSessionOpts();
+    if (opts) clearDesktopSession(opts);
+    d.pendingAuthTokens = null;
+    d.cachedAuthToken = null;
+    d.cachedAuthTokenExpMs = 0;
+    return { ok: true };
+  });
+
   app.on("open-url", (event, url) => {
     event.preventDefault();
     handleAuthDeepLink(url);
@@ -717,6 +885,7 @@ async function getAuthToken({ forceRefresh = false } = {}) {
   d.flushPendingAuthTokens = flushPendingAuthTokens;
   d.getAuthToken = getAuthToken;
   d.handleAuthDeepLink = handleAuthDeepLink;
+  d.hydrateDesktopSessionFromDisk = hydrateDesktopSessionFromDisk;
   d.isAuthNavigation = isAuthNavigation;
   d.isReplayOfLastAuthHandoff = isReplayOfLastAuthHandoff;
   d.jwtExpiryMs = jwtExpiryMs;

@@ -1,0 +1,32 @@
+{
+  "files.watcherExclude": {
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/node_modules/**": true,
+    "**/.worktrees/**": true,
+    "**/dist/**": true,
+    "**/out/**": true,
+    "**/release/**": true,
+    "**/models/**": true,
+    "**/models-cache/**": true
+  },
+  "search.exclude": {
+    "**/.worktrees": true,
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/out": true,
+    "**/release": true
+  },
+  "typescript.disableAutomaticTypeAcquisition": true,
+  "js/ts.implicitProjectConfig.checkJs": false,
+  "typescript.tsserver.watchOptions": {
+    "excludeDirectories": [
+      "**/node_modules",
+      "**/.git",
+      "**/.worktrees",
+      "**/dist",
+      "**/out",
+      "**/release"
+    ]
+  }
+}

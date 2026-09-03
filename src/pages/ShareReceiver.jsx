@@ -120,10 +120,10 @@ export default function ShareReceiver() {
           redirectTimerRef.current = window.setTimeout(() => nav("/vault", { replace: true }), 900);
         } else if (result.reason === "cap") {
           setStatus("error");
-          setMessage("Vault is full — upgrade to keep saving.");
+          setMessage("Vault is full. Upgrade to keep saving.");
         } else if (result.reason === "rate") {
           setStatus("error");
-          setMessage("You're saving too fast — try again in a moment.");
+          setMessage("You're saving too fast. Try again in a moment.");
         } else {
           setStatus("error");
           setMessage(result.message || "Could not save that link. Please try again.");

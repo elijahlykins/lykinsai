@@ -77,7 +77,7 @@
   /* Brand blue on light, the same rule the icon follows in the Home bar, the
      dock and the AI-response pill. Dark keeps inheriting the surrounding text,
      where the mark reads as the near-white icon instead. */
-  color: #1a4ee2;
+  color: #0968c4;
 }
 
 /* Inherit on dark, and on the surfaces that are dark in both themes

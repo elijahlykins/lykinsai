@@ -36,8 +36,6 @@ import {
   extractAnthropicUsage,
   extractGeminiUsage,
   extractGrokUsage,
-  getUserMonthlyUsage,
-  getUserLifetimeCredits,
   startSessionCleanup,
 } from './usageTracking.js';
 import {
@@ -46,11 +44,13 @@ import {
   classifyModel,
 } from './src/lib/modelTiers.js';
 import { PLAN_LIMITS, CREDIT_PACKS, creditPackById } from './src/lib/pricing-config.js';
+import { CHAT_USAGE_GATE_PATHS } from './server/ai/chatRouting/chatRoutingConfig.js';
 import {
   getCreditWallet,
-  grantTopupCredits,
   markTopupPayer,
 } from './lib/billing/creditWallet.js';
+import { getUsageBalance } from './lib/billing/usageBalance.js';
+import { logStripePriceConfig } from './lib/billing/stripePriceConfig.js';
 import { compressConversation as compressConversationForPrompt } from './src/lib/ai/conversationFormat.js';
 import { makeRssPoller } from './rss-service.js';
 import { registerCustomModelRoutes } from './custom-models-routes.js';
@@ -65,6 +65,7 @@ import { registerAssistRoutes } from './server/routes/assist.routes.js';
 import { registerCustomConnectionsRoutes } from './server/routes/connections.routes.js';
 import { registerCalendarConnectionRoutes } from './server/routes/calendarConnections.routes.js';
 import { registerCursorCredentialRoutes } from './server/routes/cursorCredentials.routes.js';
+import { registerConnectionServiceRoutes } from './server/routes/connectionService.routes.js';
 import { registerMcpRoutes } from './server/routes/mcp.routes.js';
 import { pollDueCalendarConnections } from './lib/calendar/calendarService.js';
 import {
@@ -78,6 +79,9 @@ import { registerFilesRoutes } from './server/routes/files.routes.js';
 import { registerStorageRoutes } from './server/routes/storage.routes.js';
 import { registerSynthesisRoutes, registerSynthesisMaintenanceRoutes } from './server/routes/synthesis.routes.js';
 import { registerUsageRoutes } from './server/routes/usage.routes.js';
+import { registerModelPlatformRoutes } from './server/routes/modelPlatform.routes.js';
+import { bindModelSettingsClient } from './lib/models/userModelSettings.js';
+import { syncOpenRouterCatalog } from './lib/inference/openRouterCatalog.js';
 import { registerWebtoolsRoutes } from './server/routes/webtools.routes.js';
 import { registerAiModelsRoute } from './server/ai/chatModels.routes.js';
 import { registerAiGuestStreamRoute } from './server/ai/chatGuest.routes.js';
@@ -321,14 +325,12 @@ import {
   hasSubscriptionAccess,
   hasAppAccessRow,
   hasEstablishedStripeCustomer,
-  freeCreditsStatus,
   requireAppAccess,
   billingMePayload,
   rejectIneligibleStudentCheckout,
   buildStripeCheckoutIdentity,
   handleStripeEvent,
   availableCreditPacks,
-  FREE_PLAN_CREDITS,
 } from './server/services/billingService.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -614,7 +616,7 @@ const stripe = process.env.STRIPE_SECRET_KEY
 // Products + Prices in the Stripe dashboard.
 const STRIPE_TRIAL_DAYS = Math.max(
   1,
-  Number(process.env.STRIPE_TRIAL_DAYS || 14) || 14,
+  Number(process.env.STRIPE_TRIAL_DAYS || 7) || 7,
 );
 
 /** Checkout copy shown on Stripe's hosted page (supports Markdown). */
@@ -639,6 +641,8 @@ const STRIPE_PRICE_MAP = {
     annual: process.env.STRIPE_PRICE_STUDENT_ANNUAL,
   },
   studio: {
+    // New Pro monthly checkouts. Must be a real $20/month Stripe Price id.
+    // Keep the old $25 id in STRIPE_PRICE_STUDIO_MONTHLY_LEGACY for migration.
     monthly: process.env.STRIPE_PRICE_STUDIO_MONTHLY,
     annual: process.env.STRIPE_PRICE_STUDIO_ANNUAL,
   },
@@ -656,7 +660,9 @@ const STRIPE_PRICE_MAP = {
   },
 };
 
-// One-time credit packs. Each pack in CREDIT_PACKS (pricing-config.js) names
+// Historical one-time credit packs. New purchases are retired; the map stays
+// so delayed Stripe webhooks can still grant a pack that already paid.
+// Each pack in CREDIT_PACKS (pricing-config.js) names
 // the env var holding its Stripe price id; a pack with no configured price is
 // simply not offered, so this ships safely before the Stripe products exist.
 // The prices must be ONE-TIME in Stripe — mode: 'payment' checkout rejects
@@ -665,9 +671,49 @@ const STRIPE_TOPUP_PRICE_MAP = Object.fromEntries(
   CREDIT_PACKS.map((pack) => [pack.id, String(process.env[pack.envVar] || '').trim()]),
 );
 
+logStripePriceConfig(process.env);
+
 
 // COMPED ACCOUNTS: ./server/services/billingService.js
 
+
+// ============================================
+// PERIMETER RATE LIMITING — surfaces the global /api/ limiter never sees
+// ============================================
+// The global limiter (declared in the RATE LIMITING section below) is mounted
+// at '/api/' AFTER these routes register, so every route in this bootstrap
+// region — plus everything mounted outside '/api/' (/f/:token, /oauth/*) —
+// would otherwise ship with NO rate limit at all. Each such surface gets a
+// dedicated IP-keyed limiter here so no endpoint is limiter-free. These are
+// declared this early because the webhook/client-error/health registrars run
+// before the main RATE LIMITING section exists.
+//
+// All use the express-rate-limit default key generator (client IP, IPv6-safe;
+// truthful behind Render's edge thanks to `trust proxy = 1`).
+const perimeterLimiter = (max, message, windowMs = 60 * 1000) => rateLimit({
+  windowMs,
+  max,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: message },
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'perimeterLimiter'),
+});
+
+// Stripe retries 429s with backoff, so a generous ceiling loses no events
+// while capping how fast an attacker can force HMAC verification work.
+const stripeWebhookLimiter = perimeterLimiter(120, 'Too many webhook deliveries');
+// Render polls every few seconds from one IP (~12-20/min); 120 leaves room
+// for uptime monitors without letting the DB-probing handler be hammered.
+const healthLimiter = perimeterLimiter(120, 'Too many health checks');
+// Crash reports are rare; even a render crash-loop stays under 20/min, and
+// this is the only public unauthenticated JSON sink — keep it tight.
+const clientErrorLimiter = perimeterLimiter(20, 'Too many error reports');
+// Artifact previews can embed several proxied files per page load.
+const fileProxyLimiter = perimeterLimiter(120, 'Too many download requests');
+// Manual code-edit re-renders from the artifact panel; humans click these.
+const artifactRebuildLimiter = perimeterLimiter(20, 'Too many rebuild requests — try again in a minute');
+// OAuth redirects/verifies are user-driven and rare per client.
+const oauthCallbackLimiter = perimeterLimiter(30, 'Too many OAuth callback requests');
 
 // ============================================
 // STRIPE WEBHOOK — must be mounted BEFORE express.json()
@@ -676,7 +722,7 @@ const STRIPE_TOPUP_PRICE_MAP = Object.fromEntries(
 // MUST stay above the branching JSON parser below — Stripe verifies the HMAC
 // signature against the raw request bytes. handleStripeEvent is the hoisted
 // billing event processor declared later in this file.
-registerStripeWebhook(app, { stripe, handleStripeEvent });
+registerStripeWebhook(app, { stripe, handleStripeEvent, webhookLimiter: stripeWebhookLimiter });
 
 // Global JSON body limit. Tightened from the legacy 5mb default to 1mb —
 // no TEXT-only route in the surface area legitimately needs more (the
@@ -708,6 +754,7 @@ const IMAGE_BEARING_AI_ROUTES = new Set([
   '/api/desktop/browser-plan',
   '/api/desktop/browser-plan-next',
   '/api/desktop/browser-report',
+  '/api/desktop/agent-model',
 ]);
 app.use((req, res, next) => {
   if (IMAGE_BEARING_AI_ROUTES.has(req.path)) {
@@ -729,13 +776,15 @@ function safeErr(err, fallback) {
 // ============================================
 // CLIENT ERROR REPORTING + HEALTH CHECK
 // ============================================
-// Limiter-exempt platform routes (Wave 7: preLimiterPlatform.routes.js),
+// Pre-global-limiter platform routes (Wave 7: preLimiterPlatform.routes.js),
 // registered at this exact position — after the branching JSON parser,
-// before the auth core below. /api/health receives a lazy getter because
-// the supabaseAdmin const is not initialized yet at this point in the
-// bootstrap (the handler resolves it per request, same as the inline code).
-registerClientErrorRoute(app);
-registerHealthRoute(app, { getSupabaseAdmin: () => supabaseAdmin });
+// before the auth core below. Both carry their own perimeter limiter (they
+// register before the global /api/ limiter mounts, so it never covers them).
+// /api/health receives a lazy getter because the supabaseAdmin const is not
+// initialized yet at this point in the bootstrap (the handler resolves it
+// per request, same as the inline code).
+registerClientErrorRoute(app, { clientErrorLimiter });
+registerHealthRoute(app, { getSupabaseAdmin: () => supabaseAdmin, healthLimiter });
 
 // ============================================
 // AUTH MIDDLEWARE — verify Supabase JWT
@@ -756,6 +805,12 @@ setSecurityLoggerSink(supabaseAdmin);
 bindChatRetrieval({ supabaseAdmin });
 bindChatContext({ supabaseAdmin });
 bindVoiceBriefing({ supabaseAdmin });
+bindModelSettingsClient(supabaseAdmin);
+if (process.env.OPENROUTER_API_KEY) {
+  void syncOpenRouterCatalog().catch((err) => {
+    console.warn('[models] OpenRouter catalog sync skipped:', err?.message || err);
+  });
+}
 bindVaultEnrichment({ supabaseAdmin });
 bindChatToolCtx({ supabaseAdmin });
 bindBillingService({
@@ -908,9 +963,14 @@ app.set('supabaseAdmin', supabaseAdmin);
 // ============================================
 // /f/:token and /api/artifacts/react/rebuild (Wave 7:
 // preLimiterPlatform.routes.js), registered at this exact position — after
-// the auth core, BEFORE the global /api/ limiter. The rebuild route is
-// rate-limit EXEMPT here (DEFERRED SECURITY FINDING, preserved as-is).
-registerFileProxyAndArtifactRoutes(app, { supabaseAdmin, requireAuth });
+// the auth core, BEFORE the global /api/ limiter. Both carry dedicated
+// perimeter limiters (closes the former rate-limit-exemption finding).
+registerFileProxyAndArtifactRoutes(app, {
+  supabaseAdmin,
+  requireAuth,
+  fileProxyLimiter,
+  artifactRebuildLimiter,
+});
 
 // ============================================
 // ADMIN GATE — restrict /api/admin/* to allowlisted email(s)
@@ -1164,58 +1224,60 @@ const guestAiGlobalLimiter = (req, res, next) => {
 
 app.use('/api/', globalLimiter);
 
-// Monthly LYKN Glass request caps — sourced from PLAN_LIMITS.glassRequests
-// (pricing-config.js). Max / unlimited plans short-circuit via Infinity.
+// The OAuth callback/verify pages (/oauth/calendar/google/callback,
+// /oauth/connections/*, /oauth/mcp/*) are deliberately mounted OUTSIDE
+// '/api/' so the global limiter above never matches them. This mount closes
+// that gap — every non-/api OAuth surface registered below passes through
+// the perimeter limiter declared alongside the webhook/health limiters.
+app.use('/oauth/', oauthCallbackLimiter);
+
+// Metered-usage gate — replaces the retired monthly glass-request quota.
+// There are no per-feature request caps anymore: included chat is free for
+// paid plans, everything else meters the dollar Usage Balance.
+//
+//   • Chat paths: paid plans pass (included chat); free-tier chat is metered
+//     but requireAppAccess has already verified a positive balance. Premium
+//     manual-model checks happen inside the chat route, where the requested
+//     model is known.
+//   • Non-chat compute (TTS, transcription, describe, …): metered for every
+//     plan — requires a positive Usage Balance, or leftover legacy credits
+//     until the migration converts them.
 async function checkAiUsageLimit(req, res, next) {
   try {
     const userId = req.user?.id;
     if (!userId) return next();
-    const { planId } = await resolveUserPlan(userId, req.user?.email);
-    const limit = PLAN_LIMITS[planId]?.glassRequests ?? PLAN_LIMITS.free.glassRequests ?? 50;
-    if (!Number.isFinite(limit)) return next();
+    // Local/dev without a service role has no billing backend; skip the gate.
+    if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return next();
 
-    const monthly = await getUserMonthlyUsage(userId);
-    // Fail closed if usage tracking is unavailable — otherwise a DB blip
-    // silently bypasses the monthly glass-request cap. Local/dev without a
-    // service-role key has no usage backend; skip the quota there.
-    if (!monthly) {
-      if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return next();
+    const isChatPath = CHAT_USAGE_GATE_PATHS.includes(String(req.path || ''));
+    if (isChatPath) {
+      markTopupPayer(userId, false);
+      return next();
+    }
+
+    const usage = await getUsageBalance(userId);
+    if ((usage?.available || 0) > 0) {
+      markTopupPayer(userId, false);
+      return next();
+    }
+    // The wallet read fails closed — a DB blip must not bypass billing.
+    const wallet = await getCreditWallet(userId);
+    if (wallet === null) {
       return res.status(503).json({
         error: 'usage_check_unavailable',
         message: 'Could not verify your usage right now. Please try again.',
       });
     }
-    // Count only the requests the user was charged for. log_count includes
-    // background rows (embedding reindex, profile refresh, chat naming) that
-    // cost 0 credits, and counting those burned a paid plan's allowance on
-    // housekeeping the user never asked for.
-    const used = monthly.billable_count ?? monthly.log_count ?? 0;
-    if (used >= limit) {
-      // Past the plan's monthly cap, purchased credits take over. The wallet
-      // read fails closed for the same reason the usage read does.
-      const wallet = await getCreditWallet(userId);
-      if (wallet === null) {
-        return res.status(503).json({
-          error: 'usage_check_unavailable',
-          message: 'Could not verify your usage right now. Please try again.',
-        });
-      }
-      if (wallet.balance > 0) {
-        markTopupPayer(userId, true);
-        return next();
-      }
-      markTopupPayer(userId, false);
-      return res.status(429).json({
-        error: 'ai_limit_reached',
-        message: `You've used all ${limit} AI requests this month. Upgrade your plan or add a top-up to continue.`,
-        used,
-        limit,
-        plan: planId,
-        topup_available: availableCreditPacks().length > 0,
-      });
+    if (wallet.balance > 0) {
+      markTopupPayer(userId, true);
+      return next();
     }
     markTopupPayer(userId, false);
-    next();
+    return res.status(402).json({
+      error: 'insufficient_usage_balance',
+      message: 'This action uses your usage balance. Top up to continue.',
+      add_funds: true,
+    });
   } catch (err) {
     console.error('⚠️ AI usage check failed, refusing request:', err.message);
     return res.status(503).json({
@@ -1286,6 +1348,8 @@ registerAiFeedbackRoute(app, { requireAuth, supabaseAdmin });
 registerCustomConnectionsRoutes(app, { requireAuth, supabaseAdmin, invalidateConnectedToolsCache });
 registerCalendarConnectionRoutes(app, { requireAuth, supabaseAdmin, PORT });
 registerCursorCredentialRoutes(app, { requireAuth, supabaseAdmin });
+// ── Managed connected accounts (Gmail via Composio) — LYKN Connection Service
+registerConnectionServiceRoutes(app, { requireAuth, supabaseAdmin, PORT });
 registerMcpRoutes(app, { requireAuth, supabaseAdmin, PORT });
 
 registerCustomModelRoutes(app, { requireAuth, supabaseAdmin });
@@ -1365,6 +1429,7 @@ registerAssistRoutes(app, {
 registerDesktopRoutes(app, {
   requireAuth,
   requireAppAccess,
+  requireMeteredUsage: checkAiUsageLimit,
   aiLimiter,
   supabaseAdmin,
   sha256,
@@ -1556,6 +1621,7 @@ registerProjectInviteRoutes(app, {
 // ── Usage Tracking API — extracted to server/routes/usage.routes.js (Wave 1)
 // 3 routes register here, in their original order.
 registerUsageRoutes(app, { requireAuth });
+registerModelPlatformRoutes(app, { requireAuth });
 
 // ── Admin dashboards — extracted to server/routes/admin.routes.js (Wave 2)
 // 9 routes register here, in their original order.
@@ -1581,8 +1647,6 @@ registerBillingRoutes(app, {
   hasSubscriptionAccess,
   hasAppAccessRow,
   hasEstablishedStripeCustomer,
-  freeCreditsStatus,
-  FREE_PLAN_CREDITS,
   resolveUserPlan,
   buildStripeCheckoutIdentity,
   rejectIneligibleStudentCheckout,

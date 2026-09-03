@@ -6,42 +6,66 @@ import {
   FAQ_ITEMS,
   BILLING_PERIODS,
   getDisplayPrice,
-  getAnnualSavings,
 } from "@/lib/pricing-config";
-import lyknLogo from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-BLUE-web.png";
 import LandingHeader from "@/components/landing/LandingHeader";
-import GlassBackdrop from "@/components/landing/GlassBackdrop";
+import { SiteFooter } from "@/pages/GlassLanding";
+import "./GlassLanding.css";
+import "@/components/landing/landingIcy.css";
 
-// The three checkout tiers (Student, Pro, Max). Free is the implicit default
-// every account starts on — it's covered by the FAQ and the "no card
-// required" subcopy rather than its own card. Teams is excluded here too.
+// Marketing cards: Free plus the three live paid tiers. Teams stays off this
+// page (coming soon, waitlist lives on the in-app billing screen).
 const DISPLAY_PLANS = PLANS.filter(
-  (p) => p.id === "student" || p.id === "studio" || p.id === "max",
+  (p) => p.id === "free" || p.id === "student" || p.id === "studio" || p.id === "max",
 );
 
-// Text that sits directly on the Glass backdrop (headlines, subcopy, footer
-// links) — GlassBackdrop blends it toward white as the blue glow passes.
-// Everything on the white plan/FAQ cards keeps its own color.
-const GRAD_TEXT_SELECTORS = [
-  ".lkn-pricing .lkn-section-headline",
-  ".lkn-pricing .lkn-pricing-cta-title",
-];
-const MIX_TEXT_SELECTORS = [
-  ".lkn-pricing .lkn-section-sub",
-  // Billing toggle: the inactive tab's words flip white as the orb passes.
-  // The active tab sits on its own solid white pill and pins its dark color
-  // with !important (see .lkn-pricing-toggle-btn.is-active), which beats the
-  // inline blend, so it stays readable no matter where the glow is.
-  ".lkn-pricing .lkn-pricing-toggle-btn",
-  ".lkn-pricing .lkn-footer-nav button",
-  ".lkn-pricing .lkn-footer-copy",
-];
+const MARKETING_FEATURES = {
+  free: [
+    "$10 of usage included at signup",
+    "LYKN model",
+    "Desktop and browser apps",
+    "LYKN Glass for desktop",
+    "Chat, images, and core tools",
+    "No credit card required",
+  ],
+  student: [
+    "Chat included",
+    "Monthly usage included",
+    "LYKN Memory",
+    "Custom Bots and personalization",
+    "All models, tools, and connections",
+    "Desktop, browser, and Glass",
+    "Available with a school email",
+  ],
+  studio: [
+    "Chat included",
+    "Monthly usage included",
+    "LYKN Memory",
+    "Custom Bots and personalization",
+    "All models, tools, and connections",
+    "Desktop, browser, and Glass",
+  ],
+  max: [
+    "Everything in Pro",
+    "5× the monthly usage of Pro",
+    "Highest limits across all tools",
+    "Desktop, browser, and Glass",
+    "Priority support",
+    "Early access to new capabilities",
+  ],
+};
 
-// Standalone marketing pricing page. Rides the same Glass backdrop as the
-// landing page (drifting blue orb + frosted panels) with the shared header
-// and footer, but lives at its own /pricing route instead of being a scroll
-// section of the main page. Plan and FAQ content come from the shared
-// pricing-config so it never drifts from the in-app billing screen.
+const PRICING_FAQ_IDS = new Set([
+  "usage-balance",
+  "free-plan",
+  "student-plan",
+  "included-chat",
+  "switch-or-cancel",
+]);
+const PRICING_FAQ_ITEMS = FAQ_ITEMS.filter((item) => PRICING_FAQ_IDS.has(item.id));
+
+// Standalone marketing pricing page. Neutral type with the shared header
+// and footer. Plan and FAQ content come from the shared pricing-config so
+// it never drifts from the in-app billing screen.
 export default function Pricing() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(BILLING_PERIODS.ANNUAL);
@@ -57,28 +81,13 @@ export default function Pricing() {
   const isAnnual = period === BILLING_PERIODS.ANNUAL;
 
   return (
-    <div className="lkn-land lkn-pricing">
+    <div className="glass-land lkn-pricing">
       <LandingHeader />
-
-      {/* Fixed page-wide backdrop: the drifting blue glow + frosted panels
-          shared with the Glass landing. The orb drops in from above the top
-          edge, then wanders on its own. */}
-      <GlassBackdrop
-        gradTextSelectors={GRAD_TEXT_SELECTORS}
-        mixTextSelectors={MIX_TEXT_SELECTORS}
-        wander
-        startAtTop
-      />
 
       <main className="lkn-pricing-main">
         {/* Heading + billing toggle */}
         <section className="lkn-pricing-intro">
-          <h1 className="lkn-section-headline">Simple, honest pricing</h1>
-          <p className="lkn-section-sub">
-            Every plan starts with a two-week free trial — cancel before it
-            ends and you won't be charged. Go Pro for unlimited memory and
-            every frontier model.
-          </p>
+          <h1 className="lkn-section-headline">Pricing</h1>
 
           <div className="lkn-pricing-toggle" role="tablist" aria-label="Billing period">
             <button
@@ -98,7 +107,6 @@ export default function Pricing() {
               onClick={() => setPeriod(BILLING_PERIODS.ANNUAL)}
             >
               Annual
-              <span className="lkn-pricing-toggle-save">Save ~32%</span>
             </button>
           </div>
         </section>
@@ -107,8 +115,8 @@ export default function Pricing() {
         <section className="lkn-pricing-plans" aria-label="Plans">
           {DISPLAY_PLANS.map((plan) => {
             const price = getDisplayPrice(plan, period);
-            const savings = getAnnualSavings(plan);
             const isFree = plan.monthlyPrice === 0 && !plan.comingSoon;
+            const features = MARKETING_FEATURES[plan.id] || plan.features.map((feature) => feature.text);
             return (
               <article
                 key={plan.id}
@@ -116,7 +124,6 @@ export default function Pricing() {
               >
                 {plan.badge ? <span className="lkn-plan-badge">{plan.badge}</span> : null}
                 <h2 className="lkn-plan-name">{plan.name}</h2>
-                <p className="lkn-plan-tagline">{plan.tagline}</p>
 
                 <div className="lkn-plan-price">
                   {plan.comingSoon ? (
@@ -137,10 +144,24 @@ export default function Pricing() {
                 ) : (
                   <p className="lkn-plan-price-note">
                     {isAnnual
-                      ? `Billed annually ($${plan.annualPrice}/yr)${savings > 0 ? ` · save $${savings}` : ""}`
+                      ? `$${plan.annualPrice} billed annually`
                       : "Billed monthly"}
                   </p>
                 )}
+
+                <p className="lkn-plan-includes">
+                  {plan.id === "max" ? "Includes:" : plan.id === "free" ? "Includes:" : "Everything in Free, plus:"}
+                </p>
+                <ul className="lkn-plan-features">
+                  {features.map((feature) => (
+                    <li key={feature}>
+                      <span className="lkn-plan-feat-ico" aria-hidden>
+                        <Check size={13} strokeWidth={3} />
+                      </span>
+                      <span>{feature}</span>
+                    </li>
+                  ))}
+                </ul>
 
                 {plan.comingSoon ? (
                   <button type="button" className="lkn-plan-cta lkn-plan-cta--ghost" disabled>
@@ -155,20 +176,6 @@ export default function Pricing() {
                     {plan.cta}
                   </button>
                 )}
-
-                <ul className="lkn-plan-features">
-                  {plan.features.map((f) => (
-                    <li key={f.text} className={f.accent ? "is-accent" : ""}>
-                      <span className="lkn-plan-feat-ico" aria-hidden>
-                        <Check size={13} strokeWidth={3} />
-                      </span>
-                      <span>
-                        {f.text}
-                        {f.note ? <span className="lkn-plan-feat-note"> · {f.note}</span> : null}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
               </article>
             );
           })}
@@ -178,7 +185,7 @@ export default function Pricing() {
         <section className="lkn-faq" aria-label="Frequently asked questions">
           <h2 className="lkn-section-headline lkn-faq-headline">Frequently asked questions</h2>
           <div className="lkn-faq-list">
-            {FAQ_ITEMS.map((item) => {
+            {PRICING_FAQ_ITEMS.map((item) => {
               const open = openFaq === item.id;
               return (
                 <div key={item.id} className={`lkn-faq-item ${open ? "is-open" : ""}`}>
@@ -192,7 +199,7 @@ export default function Pricing() {
                     <ChevronDown className="lkn-faq-chevron" size={18} />
                   </button>
                   <div className="lkn-faq-answer" hidden={!open}>
-                    <p>{item.answer}</p>
+                    <p>{item.answer.replaceAll("\u2014", "-")}</p>
                   </div>
                 </div>
               );
@@ -209,18 +216,7 @@ export default function Pricing() {
         </section>
       </main>
 
-      <footer className="lkn-footer">
-        <div className="lkn-footer-inner lkn-footer-simple">
-          <img src={lyknLogo} alt="LYKN" className="lkn-footer-logo" />
-          <nav className="lkn-footer-nav" aria-label="Footer">
-            <button type="button" onClick={() => navigate("/pricing")}>Pricing</button>
-            <button type="button" onClick={() => navigate("/privacy")}>Privacy</button>
-            <button type="button" onClick={() => navigate("/terms")}>Terms</button>
-            <button type="button" onClick={() => navigate("/cookies")}>Cookies</button>
-          </nav>
-          <p className="lkn-footer-copy">© {new Date().getFullYear()} LYKN</p>
-        </div>
-      </footer>
+      <SiteFooter />
     </div>
   );
 }

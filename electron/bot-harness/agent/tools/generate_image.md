@@ -13,11 +13,11 @@ a reply.
 
 Write the image brief:
 
-- subject and composition — what is in the frame and how it is arranged
+- subject and composition - what is in the frame and how it is arranged
 - style: photographic, illustrated, flat, 3D, a named aesthetic
 - palette, mood, and any text that must appear (keep text short; long text
   renders badly)
-- what the image is FOR, when known — a logo, a hero image, and a meme want
+- what the image is FOR, when known - a logo, a hero image, and a meme want
   very different framing
 
 Fold in every visual preference the user stated anywhere in the conversation.

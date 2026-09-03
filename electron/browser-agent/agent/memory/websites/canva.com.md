@@ -9,7 +9,7 @@ anything on the page area.
 
 - The home page has a search box for templates and size presets
   ("Instagram post", "Presentation", "Poster"). Searching for the format and
-  picking a template is far more reliable than starting from blank — a template
+  picking a template is far more reliable than starting from blank - a template
   arrives with text placeholders that only need replacing.
 - `canva.com/design/…/edit` is an open editor. The home page is `canva.com`.
 - Existing work is under "Projects" / "Recent designs". Duplicating a previous
@@ -24,7 +24,7 @@ anything on the page area.
   onto the page. Clicking an element in the panel sometimes drops it in the
   centre of the page, but dragging to a specific spot is what places it
   correctly.
-- The panel scrolls internally — scroll it with its own element as the target.
+- The panel scrolls internally - scroll it with its own element as the target.
 - Top bar holds document-level controls: the design name, Share, and the
   file/resize menus.
 
@@ -51,7 +51,7 @@ anything on the page area.
 
 - Nothing about the design shows up in a page scrape. After placing or editing
   anything, confirm with a screenshot rather than by looking for a DOM change.
-  Do not retype text because a field read back empty — it always reads empty.
+  Do not retype text because a field read back empty - it always reads empty.
 - Canva autosaves; "All changes saved" appears in the top bar.
 - Share > Download exports a file. Share > invite people delivers the design to
   others, which is an outbound action and follows the normal rules.

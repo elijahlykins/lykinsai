@@ -74,7 +74,7 @@ export default function ResetPassword() {
       } else if (msg.includes("at least")) {
         setError("Password must be at least 6 characters.");
       } else {
-        setError("Couldn't update your password. The reset link may have expired — request a new one.");
+        setError("Couldn't update your password. The reset link may have expired, request a new one.");
       }
     } finally {
       setSubmitting(false);
@@ -99,7 +99,7 @@ export default function ResetPassword() {
         </h1>
         <p className="text-sm text-slate-500 mb-6 leading-relaxed">
           This password-reset link is no longer valid. Request a new reset
-          from login — we’ll email you a 6-digit code instead.
+          from login, we'll email you a 6-digit code instead.
         </p>
         <Link
           to="/login"
@@ -121,7 +121,7 @@ export default function ResetPassword() {
         <p className="text-sm text-slate-500">
           {webOk
             ? "Taking you into LYKN…"
-            : "Open the LYKN desktop app to continue — you're signed in."}
+            : "Open the LYKN desktop app to continue, you're signed in."}
         </p>
         {!webOk && (
           <Link

@@ -63,7 +63,7 @@ What happens when `server.js` is imported (all verified against current HEAD):
 | import | `const app = express()` + perimeter settings (`trust proxy 1`, `x-powered-by` off) | runs |
 | import | `new Stripe(...)` client | constructed, no network I/O |
 | import | `createClient(...)` Supabase service client + `setSecurityLoggerSink` + `app.set('supabaseAdmin', ...)` | constructed, no network I/O |
-| import | 13 `express-rate-limit` limiter instances (in-memory counter stores; instance identity IS the counter) | constructed |
+| import | 19 `express-rate-limit` limiter instances (in-memory counter stores; instance identity IS the counter), incl. the 6 perimeter limiters for pre-limiter and non-`/api/` surfaces | constructed |
 | import | module-level mutable state: `localToolStreams`, voice session Maps, per-user prompt-section caches, plan caches, memCaches | allocated, empty |
 | import | 161 route registrations + 6 `app.use` mounts (incl. `registerCustomModelRoutes(app, ...)`) | runs — this is what the manifest captures |
 | import | `process.on('unhandledRejection')` net | installed |
@@ -81,7 +81,7 @@ Express matches in registration order. The load-bearing facts, each asserted by 
 
 1. `POST /api/stripe/webhook` uses `express.raw` and is the ONLY route registered before the global branching JSON parser. Moving it after the parser silently breaks Stripe signature verification.
 2. The branching JSON parser gives `IMAGE_BEARING_AI_ROUTES` a 12mb limit and everything else 1mb. A route-level parser cannot raise the limit later, so this set must stay in global middleware and in sync with the chat route paths.
-3. Exactly five routes are registered before `app.use('/api/', globalLimiter)` and are therefore limiter-exempt: webhook, client-error, health, `/f/:token`, artifacts rebuild. This is current production behavior — preserve it, including the (probably accidental) artifacts-rebuild exemption.
+3. Exactly five routes are registered before `app.use('/api/', globalLimiter)`, so the global limiter never covers them: webhook, client-error, health, `/f/:token`, artifacts rebuild. Each carries its own dedicated perimeter limiter (passed in from the bootstrap), and the `/oauth/*` callback pages — mounted outside `/api/` — are covered by a dedicated `app.use('/oauth/', ...)` limiter mount. No endpoint is rate-limit exempt.
 4. The global 4-arg error handler is the LAST layer. Routes registered after it would bypass error handling.
 5. Per-route chains keep `requireAuth → requireAppAccess → (limiters) → checkAiUsageLimit → multer` order; admin routes are `requireAuth → requireAdmin`.
 6. No wildcard/catch-all routes exist and there are currently ZERO param/static shadowing pairs (`orderHazards` in the manifest is empty — a future extraction that introduces one fails the manifest test).
@@ -90,7 +90,7 @@ Express matches in registration order. The load-bearing facts, each asserted by 
 
 Recorded only — fixing any of these is a behavior change reserved for a dedicated security phase:
 
-1. `POST /api/artifacts/react/rebuild` is registered before the global `/api/` rate limiter and is therefore rate-limit-exempt. Looks accidental (unlike the webhook/health exemptions) but is current production behavior.
+1. RESOLVED: `POST /api/artifacts/react/rebuild` was registered before the global `/api/` rate limiter and rate-limit-exempt. It now runs behind a dedicated perimeter limiter (IP-keyed, before `requireAuth`), as do the other four pre-limiter routes and the `/oauth/*` callbacks.
 2. The dedicated `express.json({ limit: '10kb' })` on `POST /api/client-error` is inert: the global 1mb parser has already consumed the body by the time it runs. The effective unauthenticated body ceiling on this route is 1mb, not the intended 10kb. Zod field caps still bound what reaches the logs.
 3. `requireAuth` silently bypasses auth in non-production when `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` are unset (dev fallback). Fail-closed in production is verified, but the dev bypass means test/dev configs must never leak toward production.
 4. The comped-account email allowlist (`COMPED_PRO_EMAILS` + hardcoded list) short-circuits billing enforcement; any extraction of billing must keep it server-side only.

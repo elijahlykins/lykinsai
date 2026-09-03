@@ -142,7 +142,21 @@ test("the opt-in gate parks the original instruction against the Task and asks o
   assert.equal(out.terminal, "waiting_for_user");
   assert.ok(out.question.includes("browser"));
   assert.deepEqual(out.questionOptions, ["Yes, use the browser", "No, just answer here"]);
-  assert.deepEqual(parked, [{ taskId: "task_gate", instruction: "look up the return policy" }]);
+  assert.deepEqual(parked, [
+    { taskId: "task_gate", instruction: "look up the return policy", plugin: null },
+  ]);
+});
+
+test("a Gmail ask offers the plugin before the browser", async () => {
+  const parked = [];
+  const gate = new BrowserOptInGate({ park: (p) => parked.push(p) });
+  const out = await gate.execute({
+    instruction: "check the inbox",
+    task: { id: "task_gmail", objective: "check my gmail" },
+  });
+  assert.match(out.question, /connect Gmail/i);
+  assert.deepEqual(out.questionOptions, ["Connect Gmail", "Use the browser", "Just answer here"]);
+  assert.equal(parked[0].plugin.name, "Gmail");
 });
 
 test("a declined gate refuses without parking a second ask", async () => {

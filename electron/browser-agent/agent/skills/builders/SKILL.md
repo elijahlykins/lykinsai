@@ -10,9 +10,9 @@ The thing you need to edit is usually not in the outer page. It is either in an
 embedded document (marked `[embedded: host]` in the element list) or drawn on a
 canvas. Before deciding anything, work out which:
 
-- **Embedded** — the elements are listed with `[embedded: ...]`. Interact with
+- **Embedded** - the elements are listed with `[embedded: ...]`. Interact with
   them exactly like any other element; they are already resolved for you.
-- **Drawn** — few named controls, and the visible text describes chrome
+- **Drawn** - few named controls, and the visible text describes chrome
   (toolbars, menus, panels) rather than content. Take a `screenshot` and work
   from what you can see, using `click_coord` and `drag`.
 
@@ -29,7 +29,7 @@ hardest to drive. Look for the simpler path before committing to the pretty one:
   by hand.
 - Duplicating an existing item and editing its text, instead of building from
   nothing. If the user referred to how they have done this before, find the
-  previous one and duplicate it — that inherits the format for free.
+  previous one and duplicate it - that inherits the format for free.
 - A template with placeholder text, where the work is replacing words rather
   than placing elements.
 
@@ -39,7 +39,7 @@ finishing and not.
 ## Adding content
 
 - To add a block, element or section, `drag` it from the palette into the
-  layout. Clicking a palette item usually does nothing at all — dragging is the
+  layout. Clicking a palette item usually does nothing at all - dragging is the
   gesture these products are built around.
 - Drop onto a specific place, not the middle of the canvas: the gap between two
   existing blocks, the empty placeholder, the named region.
@@ -75,5 +75,5 @@ screenshot before assuming the text is missing.
   evidence.
 - Distinguish saving from sending. Saving a draft, naming a design, and exiting
   the editor are all ordinary progress. Sending a campaign to a list, publishing
-  a page, or sharing with people is delivery — that follows the normal rules for
+  a page, or sharing with people is delivery - that follows the normal rules for
   outbound actions.

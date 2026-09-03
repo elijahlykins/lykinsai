@@ -7,58 +7,21 @@
  * result back to the server so the streaming turn can resume.
  */
 
-import { runLocalTool, subscribeLocalMode, type LocalToolResult } from "@/lib/localMode";
-import { requestLocalApproval } from "@/lib/ai/localToolApproval";
+import { runLocalTool, type LocalToolResult } from "@/lib/localMode";
+import { requestLocalApproval, type McpApprovalDetail } from "@/lib/ai/localToolApproval";
 import { supabase } from "@/lib/supabase";
 import { uploadFileToStorage } from "@/lib/vault/uploadFileToStorage";
 import { openStudioTab } from "@/lib/studioTabs";
 import { openLyknMediaPop } from "@/lib/lyknMediaPop";
 import { arrangeDesktop } from "@/components/macdesktop/desktopArrange";
-import { STUDIO_SHOW_BROWSER_EVENT } from "@/lib/lyknChat/openInStudioBrowser";
+import { askBot } from "@/lib/bots/askBot";
+import {
+  startBrowserAgentTask,
+  type LocalToolHostContext,
+} from "@/lib/ai/browserAgentLaunch";
 
-/**
- * Read-class tools don't change anything on disk, but browsing someone's
- * files is still sensitive — so the FIRST read in an app session asks the
- * user for permission. Approving covers further reads until the app reloads
- * or Local Mode is switched off; writes/commands keep asking per action.
- */
-const READ_TOOLS = new Set([
-  "local_list_dir",
-  "local_read_file",
-  "local_search_files",
-  "local_pull_file",
-  "local_synced_folders",
-  "local_running_apps",
-  "local_read_app",
-]);
+export { startBrowserAgentTask, type LocalToolHostContext };
 
-// The grant lives on globalThis so dev-time HMR module swaps don't silently
-// reset it mid-conversation (module-scoped state split-brains across copies).
-const gExec = globalThis as typeof globalThis & { __lyknLocalReadGranted?: boolean };
-const isReadGranted = () => gExec.__lyknLocalReadGranted === true;
-const setReadGranted = (v: boolean) => {
-  gExec.__lyknLocalReadGranted = v;
-};
-// Turning Local Mode off revokes the session grant — flipping it back on
-// starts fresh with a new permission prompt.
-subscribeLocalMode((enabled) => {
-  if (!enabled) setReadGranted(false);
-});
-
-function readActionSummary(name: string, args: Record<string, unknown>): string {
-  const p = typeof args.path === "string" && args.path.trim() ? args.path.trim() : "your files";
-  if (name === "local_list_dir") return `Look inside ${p}`;
-  if (name === "local_read_file") return `Read ${p}`;
-  if (name === "local_search_files") return `Search your files under ${p === "your files" ? "your home folder" : p}`;
-  if (name === "local_pull_file") return `Pull ${p} into this chat`;
-  if (name === "local_synced_folders") return "Check which folders are synced with LYKN";
-  if (name === "local_running_apps") return "See which apps are open on your Mac";
-  if (name === "local_read_app") {
-    const app = typeof args.app === "string" && args.app.trim() ? args.app.trim() : "the app you're using";
-    return `Read what's showing in ${app}`;
-  }
-  return `Access ${p}`;
-}
 
 export type AwaitingLocalToolCall = {
   id: string;
@@ -181,103 +144,17 @@ function organizeDesktopResult(result: LocalToolResult): LocalToolResult {
   return { ...result, icons: moved, note: `${result.note} ${moved} icons were lined up.` };
 }
 
-type AgentBridge = {
-  agentCreate?: (payload: { goal?: string }) => Promise<{ ok?: boolean; agentId?: string } | null>;
-  studioAgentSend?: (
-    text: string,
-    attachments: unknown[],
-    agentId: string,
-    opts?: Record<string, unknown>,
-  ) => Promise<unknown>;
-};
-
 /**
- * local_browser_agent — the model decided this turn's work belongs in the
- * browser. Create a browser agent (its own tab), start the task, and move the
- * user to the browser so they can watch. No classifier, no offer round-trip:
- * the model read the tool description and made the call.
+ * Run one Local Mode tool in the desktop renderer. Voice calls this directly
+ * (no chat stream id). Chat posts the same result back to the server.
  */
-async function startBrowserAgentTask(args: Record<string, unknown>): Promise<LocalToolResult> {
-  const task = typeof args.task === "string" ? args.task.trim() : "";
-  const url = typeof args.url === "string" ? args.url.trim() : "";
-  if (!task) return { ok: false, error: "No task was provided for the browser agent." };
-  const api = (globalThis as { lykn?: AgentBridge }).lykn;
-  if (!api || typeof api.studioAgentSend !== "function") {
-    return { ok: false, error: "The browser agent is only available in the desktop app." };
-  }
-  const goal = url ? `${task}\n\nStart at: ${url}` : task;
-  // Agents and tabs pair one-to-one, so give the task its own agent. An empty
-  // id falls back to the active agent — a shared tab beats refusing the task.
-  let agentId = "";
-  if (typeof api.agentCreate === "function") {
-    try {
-      const created = await api.agentCreate({ goal });
-      if (created?.ok && created.agentId) agentId = String(created.agentId);
-    } catch {
-      /* fall through to the active agent */
-    }
-  }
-  try {
-    // Resolves when the whole browser run finishes — must not be awaited, or
-    // this chat turn would block for the length of the browser task.
-    void api.studioAgentSend(goal, [], agentId, {}).catch(() => {});
-  } catch {
-    return { ok: false, error: "Couldn't start the browser agent." };
-  }
-  try {
-    window.dispatchEvent(new CustomEvent(STUDIO_SHOW_BROWSER_EVENT));
-  } catch {
-    /* the agent still runs; only the automatic reveal is lost */
-  }
-  return {
-    ok: true,
-    note:
-      "The browser agent is now running the task in its own tab, and the user has been " +
-      "moved to the browser to watch. Tell them it's underway there and they can take over " +
-      "the tab anytime. Do NOT describe steps as if you performed them yourself.",
-  };
-}
-
-/**
- * Run one local tool call and report the result to the server. Safe to call
- * fire-and-forget; never throws.
- */
-export async function executeAwaitingLocalTool(
-  tc: AwaitingLocalToolCall,
-  apiBase: string,
-): Promise<void> {
-  const streamId = tc.localStreamId || "";
-  const name = tc.name;
-  const args = (tc.args || {}) as Record<string, unknown>;
-  if (!streamId) return;
-
-  // The browser handoff never touches the filesystem — it runs entirely
-  // through the agent bridge, so it skips the local read/write machinery.
-  if (name === "local_browser_agent") {
-    const result = await startBrowserAgentTask(args);
-    await postResult(apiBase, streamId, tc.id, result);
-    return;
-  }
-
-  // First file access of the session — ask before touching anything.
-  if (READ_TOOLS.has(name) && !isReadGranted()) {
-    const approved = await requestLocalApproval({
-      tool: name,
-      summary: `${readActionSummary(name, args)} — allow LYKN to browse files for this session?`,
-      args,
-    });
-    if (!approved) {
-      await postResult(apiBase, streamId, tc.id, {
-        ok: false,
-        error:
-          "Local Mode IS enabled, but the user did not approve the file-access permission prompt " +
-          "(it may have been declined or missed). Do NOT say local access is unavailable — tell the " +
-          "user to try again and click Approve on the permission dialog when it appears.",
-      });
-      return;
-    }
-    setReadGranted(true);
-  }
+export async function runLocalToolNow(
+  name: string,
+  args: Record<string, unknown>,
+  host?: LocalToolHostContext,
+): Promise<LocalToolResult> {
+  if (name === "local_browser_agent") return startBrowserAgentTask(args, host);
+  if (name === "local_ask_bot") return askBot(args);
 
   let result: LocalToolResult = await runLocalTool(name, args);
 
@@ -296,9 +173,6 @@ export async function executeAwaitingLocalTool(
       args,
     });
     if (approved) {
-      // Authorize the re-run with the main-issued token from the needsApproval
-      // result — not a renderer-asserted boolean. Main validates it against
-      // this exact tool + args and consumes it (single-use).
       const approvalToken = typeof result.approvalToken === "string" ? result.approvalToken : "";
       result = await runLocalTool(name, args, { approvalToken });
     } else {
@@ -306,6 +180,46 @@ export async function executeAwaitingLocalTool(
     }
   }
 
-  await postResult(apiBase, streamId, tc.id, result);
   if (name === "local_open_path") openLocalPathResult(result);
+  return result;
+}
+
+/**
+ * Run one local tool call and report the result to the server. Safe to call
+ * fire-and-forget; never throws.
+ */
+export async function executeAwaitingLocalTool(
+  tc: AwaitingLocalToolCall,
+  apiBase: string,
+  host?: LocalToolHostContext,
+): Promise<void> {
+  const streamId = tc.localStreamId || "";
+  if (!streamId) return;
+  const result = await runLocalToolNow(tc.name, (tc.args || {}) as Record<string, unknown>, host);
+  await postResult(apiBase, streamId, tc.id, result);
+}
+
+/**
+ * A consequential connected-app action (send email, delete, share) paused
+ * server-side for live approval. Show the approval card — with the outgoing
+ * content written out — and post the verdict back so the turn can resume.
+ */
+export async function respondToMcpApproval(
+  tc: AwaitingLocalToolCall & { approval?: McpApprovalDetail },
+  apiBase: string,
+): Promise<void> {
+  const streamId = tc.localStreamId || "";
+  if (!streamId) return;
+  const request = tc.approval || {};
+  const account = request.accountIdentity ? ` (${request.accountIdentity})` : "";
+  const summary =
+    String(request.title || "").trim() ||
+    `Allow this action in ${request.connectionName || "your connected app"}${account}?`;
+  const approved = await requestLocalApproval({
+    tool: "mcp_approval",
+    summary,
+    args: (request.arguments as Record<string, unknown>) || {},
+    detail: request,
+  });
+  await postResult(apiBase, streamId, tc.id, { ok: true, approved });
 }

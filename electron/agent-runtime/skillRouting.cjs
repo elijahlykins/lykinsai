@@ -3,6 +3,7 @@
 const ownedBrowserAct = require("../ownedBrowserAct.cjs");
 const artifactBuildIntent = require("../../lib/artifactBuildIntent.cjs");
 const workDestination = require("../../lib/agentWorkDestination.cjs");
+const { looksLikeWrittenDocumentAsk } = require("../../lib/basicDocument.cjs");
 const {
   detectImageIntent,
   detectReferenceImageAsk,
@@ -151,11 +152,29 @@ function looksLikeDeliverableEdit(text) {
   ) {
     return true;
   }
-  if (
-    /\b(another version|try again|regenerate|different (version|look|style|layout|theme))\b/.test(
-      lower,
-    )
-  ) {
+  if (/\b(another version|different (version|look|style|layout|theme))\b/.test(lower)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * The user wants the last job done again, not a tweak of its leftover output.
+ * "Try again" / "do that again" / "research X again" must not become a
+ * report-edit just because a prior report is still sitting on the agent.
+ */
+function looksLikeRerunAsk(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  const lower = t.toLowerCase();
+  if (/^\s*(?:please\s+)?(?:try|do|run|check)\s+(?:it|that|this)?\s*again\b/i.test(t)) return true;
+  if (/^\s*(?:again|same(?:\s+thing|\s+task|\s+ask)?|one\s+more\s+time|once\s+more)[.!?]*\s*$/i.test(t)) {
+    return true;
+  }
+  if (/\b(?:re-?run|do\s+(?:it|that|this)\s+again|run\s+(?:it|that|this)\s+again|once\s+more|one\s+more\s+time)\b/i.test(lower)) {
+    return true;
+  }
+  if (/\bagain\b/.test(lower) && !looksLikeDeliverableEdit(t.replace(/\bagain\b/gi, " "))) {
     return true;
   }
   return false;
@@ -198,6 +217,7 @@ function looksLikeOpenDeliverableFollowUp(text) {
 }
 
 function shouldRouteDeliverableEdit(text, opts = {}) {
+  if (looksLikeRerunAsk(text)) return false;
   if (looksLikeDeliverableEdit(text)) return true;
   const hasOpen =
     !!opts.hasArtifact || !!opts.hasReport || !!opts.hasImage || !!opts.deliverableKind;
@@ -334,6 +354,9 @@ function classifyAgentSkill(text, opts = {}) {
     ))
   ) {
     return "research";
+  }
+  if (!namedWorkVenue && looksLikeWrittenDocumentAsk(t)) {
+    return "write-document";
   }
   // Asking ABOUT the current screen/tab ("what's on my screen?", "what am I
   // looking at?", "summarize this page") must answer from the live tab — never
@@ -604,6 +627,29 @@ function referencesCurrentScreen(text, { hasPriorDeliverable = false } = {}) {
 }
 
 /**
+ * Work a specialist (coding bot, research bot) uniquely owns. Main / LYKN
+ * should still do the rest itself.
+ */
+const SPECIALIST_WORK_RE =
+  /\b(?:implement|refactor|debug|rewrite|ship|deploy|open\s+a\s+pr|pull\s+request|write\s+(?:the\s+)?(?:code|tests?|pr)|fix\s+(?:the|this|that|a)?\s*(?:bug|issue|error|code)|codebase)\b/i;
+
+const INSPECT_ASK_RE =
+  /\b(?:what(?:'s|s|\s+is)\s+in(?:\s+(?:this|that|the|here|these))?(?:\s+folders?)?|what(?:'s|s|\s+is)\s+(?:this|that|the)\s+folder|what(?:'s|s|\s+is)\s+here|what(?:'s|s|\s+is)\s+inside|list\s+(?:the\s+)?(?:files?|contents?|folder)|just\s+list(?:\s+what(?:'s|s)\s+inside)?|summarize\s+(?:this|the|that)\s+folder|take\s+a\s+look\s+at\s+(?:this|the|that)\s+folder)\b/i;
+
+const BARE_THIS_ASK_RE = /^what(?:'s|s|\s+is)\s+(?:this|that|it)\??$/i;
+
+function looksLikeSpecialistWork(text) {
+  return SPECIALIST_WORK_RE.test(String(text || ""));
+}
+
+/** "What's in this folder?" - Main can answer from a listing it already has. */
+function looksLikeInspectAsk(text) {
+  const t = String(text || "").trim();
+  if (!t || looksLikeSpecialistWork(t)) return false;
+  return INSPECT_ASK_RE.test(t) || BARE_THIS_ASK_RE.test(t);
+}
+
+/**
  * Does the ask name the site the agent's tab is on? ("write me a report on
  * stripe" while the tab is dashboard.stripe.com). Matches hostname tokens
  * (4+ chars, minus www/tld noise) as whole words in the ask.
@@ -633,11 +679,14 @@ module.exports = {
   looksLikeArtifactConversion,
   normalizeAgentStepText,
   looksLikeDeliverableEdit,
+  looksLikeRerunAsk,
   looksLikeOpenDeliverableFollowUp,
   shouldRouteDeliverableEdit,
   askNeedsFindingFirst,
   classifyAgentSkill,
   titleFromGoal,
   referencesCurrentScreen,
+  looksLikeSpecialistWork,
+  looksLikeInspectAsk,
   askMentionsLiveSiteHost,
 };

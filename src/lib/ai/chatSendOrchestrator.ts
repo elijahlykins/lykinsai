@@ -26,6 +26,7 @@ import {
 } from "@/lib/ai/chatTranscription";
 import type { CachedYouTubeTranscript } from "@/lib/ai/chatTranscription";
 import {
+  attachmentsForPrompt,
   buildAttachmentContext,
   buildThreadHistory,
   buildConversationArray,
@@ -46,6 +47,7 @@ import type {
   PromptMessage,
   FocusedChatAttachment,
 } from "@/lib/lyknChat/chatTurnTypes";
+import type { BrowserSurfaceContext } from "@/lib/lyknChat/browserChatSend";
 
 /* ------------------------------------------------------------------ */
 /*  Re-exported contracts                                              */
@@ -177,6 +179,8 @@ export interface ChatSendParams {
   state: ChatSendStateCallbacks;
   streamRefs: ChatSendStreamRefs;
   typing: ChatSendTyping;
+  /** Ephemeral browser-tab context for this turn only. Never persisted. */
+  surfaceContext?: BrowserSurfaceContext;
 }
 
 /* ------------------------------------------------------------------ */
@@ -204,7 +208,8 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   // prompt. Best-effort + degrade-safe — never blocks on failure.
   await ocrImageAttachments(sentAttachments, signal, state.setChatStatusText);
 
-  const attachmentContext = buildAttachmentContext(sentAttachments);
+  const promptAttachments = attachmentsForPrompt(sentAttachments, p.chatMessages);
+  const attachmentContext = buildAttachmentContext(promptAttachments);
 
   p.aiThread.push({
     role: "user",
@@ -256,6 +261,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     attachmentContext,
     youtubeGrounding,
     youtubeTranscriptSource,
+    promptAttachments,
   });
 
   /* Phase 4: streaming (with one retry) or the invoke fallback */

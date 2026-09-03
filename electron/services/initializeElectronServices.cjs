@@ -19,7 +19,7 @@ function initializeElectronServices({ app, session, localStore, localSystem, mac
   require("../appBridge.cjs").configure({
     onFilesList: async (dirPath) => {
       const { enabled } = localSystem.readLocalMode(app.getPath("userData"));
-      if (!enabled) throw new Error("Local mode is off — enable it in the Vault first.");
+      if (!enabled) throw new Error("Local mode is off. Enable it in the Vault first.");
       const res = await localSystem.run(
         "local_list_dir",
         { path: dirPath || "~" },
@@ -30,7 +30,7 @@ function initializeElectronServices({ app, session, localStore, localSystem, mac
     },
     onFilesRead: async (filePath) => {
       const { enabled } = localSystem.readLocalMode(app.getPath("userData"));
-      if (!enabled) throw new Error("Local mode is off — enable it in the Vault first.");
+      if (!enabled) throw new Error("Local mode is off. Enable it in the Vault first.");
       const res = await localSystem.run(
         "local_read_file",
         { path: filePath },

@@ -67,20 +67,20 @@
 }
 
 /* ── Header ─────────────────────────────────────────────── */
-/* Floating glass rectangle, identical on every marketing page: the outer
-   band stays transparent and the inner bar is a contained, rounded frosted
-   panel that doesn't span the screen. */
+/* Floating wordmark + grey links, identical on every marketing page.
+   No glass bar - logo left, words centered, Download pill on the right. */
 .lkn-header {
+  --lkn-sky: #0968c4;
+  --lkn-sky-deep: #0754a3;
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   z-index: 50;
-  padding: 14px clamp(0.9rem, 3vw, 1.5rem) 0;
+  padding: calc(1.15rem + env(safe-area-inset-top, 0px))
+    clamp(1.35rem, 4.5vw, 3.5rem) 0;
   background: transparent;
   border-bottom: 1px solid transparent;
-  transition: background 220ms ease, border-color 220ms ease,
-    backdrop-filter 220ms ease;
   /* Pin font smoothing AND the font stack so the shared header renders
      identically on every landing page, regardless of what the page root
      sets. Without these the nav text metrics changed subtly when switching
@@ -98,25 +98,25 @@
 }
 
 .lkn-header-inner {
-  max-width: 1120px;
-  margin: 0 auto;
-  height: 56px;
-  padding: 0 clamp(1rem, 2.2vw, 1.6rem);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.75);
-  backdrop-filter: blur(20px) saturate(170%);
-  -webkit-backdrop-filter: blur(20px) saturate(170%);
-  box-shadow: 0 12px 32px -18px rgba(15, 23, 42, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.75);
-  display: flex;
+  max-width: none;
+  margin: 0;
+  height: 48px;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  border: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
 }
 
 .lkn-brand {
   display: inline-flex;
   align-items: center;
+  justify-self: start;
   background: none;
   border: none;
   padding: 0;
@@ -124,9 +124,13 @@
 }
 
 .lkn-brand-logo {
-  height: 40px;
-  width: auto;
   display: block;
+  height: 40px;
+  width: 6.65rem;
+  background: var(--lkn-sky);
+  -webkit-mask: var(--lkn-wordmark) left center / contain no-repeat;
+  mask: var(--lkn-wordmark) left center / contain no-repeat;
+  transition: background 180ms ease;
 }
 
 .lkn-nav {
@@ -140,26 +144,62 @@
   border: none;
   padding: 0;
   cursor: pointer;
-  font-size: 0.86rem;
+  font-size: 0.9rem;
   font-weight: 500;
-  color: rgba(255, 255, 255, 0.82);
+  letter-spacing: -0.01em;
+  color: #6b7280;
   text-decoration: none;
   transition: color 160ms ease;
 }
 
 .lkn-nav-link:hover {
-  color: #ffffff;
+  color: #4b5563;
 }
 
 .lkn-header.is-scrolled .lkn-nav-link {
-  color: rgba(15, 23, 42, 0.62);
+  color: #6b7280;
 }
 
 .lkn-header.is-scrolled .lkn-nav-link:hover {
-  color: #0a0c12;
+  color: #4b5563;
 }
 
-/* ── Product dropdown ───────────────────────────────────── */
+/* White chrome only on the chunk of the bar that sits on a dark surface.
+   Logo, middle links, and Download are toggled independently so a dark
+   stage under the center does not bleach the wordmark on the light left. */
+.lkn-header.is-brand-dark .lkn-brand-logo {
+  background: #ffffff;
+}
+.lkn-header.is-nav-dark .lkn-nav-link,
+.lkn-header.is-nav-dark.is-scrolled .lkn-nav-link {
+  color: #ffffff;
+}
+.lkn-header.is-nav-dark .lkn-nav-link:hover,
+.lkn-header.is-nav-dark.is-scrolled .lkn-nav-link:hover {
+  color: rgba(255, 255, 255, 0.78);
+}
+.lkn-header.is-end-dark .lkn-menu-btn,
+.lkn-header.is-end-dark.is-scrolled .lkn-menu-btn {
+  color: #ffffff;
+}
+.lkn-header.is-end-dark .lkn-menu-btn:hover,
+.lkn-header.is-end-dark.is-scrolled .lkn-menu-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+.lkn-header.is-end-dark .lkn-nav-auth .lkn-nav-signup,
+.lkn-header.is-end-dark.is-scrolled .lkn-nav-auth .lkn-nav-signup {
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #0968c4;
+}
+.lkn-header.is-end-dark .lkn-nav-auth .lkn-nav-signup:hover,
+.lkn-header.is-end-dark.is-scrolled .lkn-nav-auth .lkn-nav-signup:hover {
+  background: rgba(255, 255, 255, 0.88);
+  color: #0754a3;
+}
+
+/* ── Features dropdown ───────────────────────────────────── */
 .lkn-prod {
   position: relative;
   display: flex;
@@ -191,15 +231,15 @@
   top: calc(100% + 10px);
   left: 50%;
   transform: translateX(-50%);
-  width: 300px;
-  padding: 0.5rem;
+  width: min(560px, calc(100vw - 2rem));
+  padding: 0.55rem;
   border-radius: 18px;
   background: #ffffff;
   border: 1px solid rgba(15, 23, 42, 0.08);
   box-shadow: 0 24px 60px -24px rgba(15, 23, 42, 0.45);
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.15rem;
   animation: lkn-prod-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
   z-index: 60;
 }
@@ -237,7 +277,7 @@
 .lkn-prod-name {
   font-size: 0.84rem;
   font-weight: 600;
-  color: #0a0c12;
+  color: #6b7280;
   letter-spacing: -0.01em;
 }
 
@@ -247,68 +287,49 @@
   color: rgba(15, 23, 42, 0.55);
 }
 
+.lkn-header-end {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  justify-self: end;
+}
+
 .lkn-nav-auth {
   display: flex;
   align-items: center;
   gap: 0.5rem;
 }
 
-.lkn-nav-signup,
-.lkn-nav-signin {
+.lkn-nav-signup {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 5.25rem;
-  border-radius: 10px;
-  padding: 0.4rem 0.95rem;
+  min-width: 0;
+  padding: 0.48rem 1.2rem;
+  border-radius: 999px;
   cursor: pointer;
   font-size: 0.84rem;
   font-weight: 600;
-  transition: background 160ms ease, border-color 160ms ease;
-}
-
-.lkn-nav-signup {
-  background: rgba(255, 255, 255, 0.16);
-  border: 1px solid rgba(255, 255, 255, 0.5);
+  letter-spacing: -0.01em;
+  background: #0968c4;
+  border: 1px solid #0968c4;
   color: #ffffff;
-}
-
-.lkn-nav-signup:hover {
-  background: rgba(255, 255, 255, 0.26);
-  border-color: rgba(255, 255, 255, 0.7);
-}
-
-.lkn-nav-signin {
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.45);
-  color: #ffffff;
+  box-shadow: none;
+  isolation: isolate;
+  transition: background 160ms ease, transform 160ms ease;
 }
 
 .lkn-header.is-scrolled .lkn-nav-signup {
-  background: #2563eb;
-  border-color: #2563eb;
+  background: #0968c4;
+  border: 1px solid #0968c4;
   color: #ffffff;
 }
 
+.lkn-nav-signup:hover,
 .lkn-header.is-scrolled .lkn-nav-signup:hover {
-  background: #1d4ed8;
-  border-color: #1d4ed8;
-}
-
-.lkn-header.is-scrolled .lkn-nav-signin {
-  background: #ffffff;
-  border-color: rgba(15, 23, 42, 0.16);
-  color: #0f172a;
-}
-
-.lkn-nav-signin:hover {
-  background: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.7);
-}
-
-.lkn-header.is-scrolled .lkn-nav-signin:hover {
-  background: rgba(15, 23, 42, 0.04);
-  border-color: rgba(15, 23, 42, 0.28);
+  background: #0754a3;
+  color: #ffffff;
+  box-shadow: none;
 }
 
 /* Demo video lightbox — opened by the header's "Watch Demo" button. */
@@ -428,15 +449,16 @@
   border: none;
   border-radius: 12px;
   background: transparent;
-  color: #ffffff;
+  color: #6b7280;
   cursor: pointer;
-  transition: background 160ms ease;
+  transition: background 160ms ease, color 160ms ease;
 }
 .lkn-menu-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(15, 23, 42, 0.06);
+  color: #4b5563;
 }
 .lkn-header.is-scrolled .lkn-menu-btn {
-  color: #0f172a;
+  color: #6b7280;
 }
 .lkn-header.is-scrolled .lkn-menu-btn:hover {
   background: rgba(15, 23, 42, 0.06);
@@ -459,8 +481,8 @@
   -webkit-backdrop-filter: blur(24px) saturate(170%);
   box-shadow: 0 24px 60px -24px rgba(15, 23, 42, 0.45),
     inset 0 1px 0 rgba(255, 255, 255, 0.75);
-  max-height: calc(100vh - 96px);
-  max-height: calc(100dvh - 96px);
+  max-height: calc(100vh - 96px - env(safe-area-inset-top, 0px));
+  max-height: calc(100dvh - 96px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
   overflow-y: auto;
   flex-direction: column;
   gap: 1rem;
@@ -513,7 +535,7 @@
 .lkn-mobile-link-name {
   font-size: 0.95rem;
   font-weight: 600;
-  color: #0a0c12;
+  color: #6b7280;
   letter-spacing: -0.01em;
 }
 .lkn-mobile-link-desc {
@@ -530,32 +552,36 @@
   padding-top: 0.9rem;
   border-top: 1px solid rgba(15, 23, 42, 0.08);
 }
-.lkn-mobile-ctas .lkn-nav-signin,
 .lkn-mobile-ctas .lkn-nav-signup {
   width: 100%;
-  padding: 0.65rem 1rem;
+  padding: 0.7rem 1.15rem;
   font-size: 0.9rem;
-  border-radius: 12px;
+  border-radius: 999px;
 }
-.lkn-mobile-ctas .lkn-nav-signin {
-  background: #ffffff;
-  border-color: rgba(15, 23, 42, 0.16);
-  color: #0f172a;
-}
-.lkn-mobile-ctas .lkn-nav-signup {
-  background: #2563eb;
-  border-color: #2563eb;
+.lkn-header .lkn-mobile-ctas .lkn-nav-signup,
+.lkn-header.is-scrolled .lkn-mobile-ctas .lkn-nav-signup {
+  background: #0968c4;
+  border: 1px solid #0968c4;
   color: #ffffff;
 }
 
 @media (max-width: 860px) {
-  /* Phones/small tablets: the inline nav can't fit — swap it for the
-     hamburger + slide-down menu. */
-  .lkn-nav {
+  .lkn-header {
+    padding-left: 0.9rem;
+    padding-right: 0.9rem;
+  }
+  .lkn-header-inner {
+    display: flex;
+    justify-content: space-between;
+  }
+  .lkn-nav,
+  .lkn-nav-auth {
     display: none;
   }
   .lkn-menu-btn {
     display: inline-flex;
+    width: 44px;
+    height: 44px;
   }
   .lkn-mobile-menu {
     display: flex;
@@ -1336,7 +1362,7 @@
 }
 
 .lkn-vault-row-ico--red { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
-.lkn-vault-row-ico--blue { background: rgba(37, 99, 235, 0.12); color: #2563eb; }
+.lkn-vault-row-ico--blue { background: rgba(9, 104, 196, 0.12); color: #0968c4; }
 .lkn-vault-row-ico--green { background: rgba(16, 185, 129, 0.14); color: #059669; }
 
 .lkn-vault-row-name {
@@ -2913,135 +2939,148 @@
 }
 
 /* ── Standalone pricing page ────────────────────────────── */
-/* The pricing page rides the Glass backdrop (drifting blue orb + frosted
-   panels, rendered fixed at z-index 0 by GlassBackdrop): the page surface
-   goes transparent so the backdrop shows through, content lifts above it,
-   and the footer lets the glow parked at the page bottom read through. */
-.lkn-land.lkn-pricing {
-  background: transparent;
+/* Flat, restrained pricing panels with blue used only as a clear accent. */
+.glass-land.lkn-pricing {
+  background: radial-gradient(120% 90% at 50% 0%, #eef1f7 0%, #dde2ee 100%);
+  color: #111;
 }
-.lkn-pricing .lkn-pricing-main,
-.lkn-pricing .lkn-footer {
+
+.lkn-pricing .lkn-pricing-main {
   position: relative;
   z-index: 1;
 }
-.lkn-pricing .lkn-footer {
-  background: transparent;
-}
 
 .lkn-pricing-main {
-  max-width: 1180px;
+  max-width: 76rem;
   margin: 0 auto;
-  padding: clamp(6rem, 14vh, 9rem) clamp(1rem, 4vw, 2rem) clamp(3rem, 8vh, 5rem);
+  padding: clamp(6.5rem, 13vh, 8rem) clamp(1.25rem, 4vw, 2rem) clamp(3rem, 8vh, 5rem);
 }
 
 .lkn-pricing-intro {
   text-align: center;
-  margin: 0 auto clamp(2.5rem, 6vh, 4rem);
+  margin: 0 auto clamp(1.5rem, 4vh, 2.25rem);
+}
+
+.lkn-pricing .lkn-section-headline {
+  color: #111;
+  font-size: clamp(2rem, 4vw, 2.8rem);
+  font-weight: 500;
+  letter-spacing: -0.04em;
+}
+
+.lkn-pricing .lkn-section-sub {
+  color: #334155;
+  max-width: 38rem;
 }
 
 .lkn-pricing-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
-  margin-top: clamp(1.5rem, 4vh, 2.25rem);
-  padding: 0.3rem;
+  gap: 0.15rem;
+  margin-top: 0.9rem;
+  padding: 0.2rem;
   border-radius: 999px;
-  /* Frosted glass instead of a flat dark tint: over plain white it reads the
-     same, but when the blue orb drifts behind it the pill frosts up blue,
-     visibly reacting to the glow like the backdrop panels do. */
-  background: rgba(255, 255, 255, 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.55);
-  backdrop-filter: blur(14px) saturate(160%);
-  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: none;
 }
 
 .lkn-pricing-toggle-btn {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  padding: 0.5rem 1.1rem;
+  padding: 0.42rem 1rem;
   border-radius: 999px;
   border: none;
   background: transparent;
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: rgba(15, 23, 42, 0.55);
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: #686868;
   cursor: pointer;
   transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
 }
 
 .lkn-pricing-toggle-btn.is-active {
-  background: #ffffff;
-  /* !important so this beats the GlassBackdrop's inline color blend: the
-     active tab sits on its own opaque white pill and must stay dark even
-     when the orb is behind the toggle. */
-  color: #0a0c12 !important;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
+  background: #eef4fb;
+  color: #0968c4;
+  box-shadow: none;
 }
 
 .lkn-pricing-toggle-save {
   font-size: 0.68rem;
   font-weight: 700;
-  color: #059669;
-  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+  background: rgba(16, 185, 129, 0.14);
   padding: 0.12rem 0.45rem;
   border-radius: 999px;
+}
+
+.lkn-pricing-toggle-btn.is-active .lkn-pricing-toggle-save {
+  color: #ecfdf5;
+  background: rgba(255, 255, 255, 0.18);
 }
 
 /* ── Plan cards ─────────────────────────────────────────── */
 .lkn-pricing-plans {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: clamp(1rem, 2.2vw, 1.75rem);
-  align-items: start;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+  align-items: stretch;
 }
 
 .lkn-plan-card {
   position: relative;
   display: flex;
   flex-direction: column;
-  padding: clamp(1.5rem, 2.5vw, 2rem);
-  border-radius: 22px;
+  height: 100%;
+  min-height: 28rem;
+  padding: clamp(1.25rem, 2vw, 1.65rem);
+  border-radius: 5px;
   background: #ffffff;
   border: 1px solid rgba(15, 23, 42, 0.08);
-  box-shadow: 0 18px 44px -28px rgba(15, 23, 42, 0.4);
+  box-shadow: none;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.lkn-plan-card:hover {
+  transform: none;
+  background: #ffffff;
+  border-color: rgba(15, 23, 42, 0.14);
+  box-shadow: none;
 }
 
 .lkn-plan-card.is-highlighted {
-  border-color: rgba(37, 99, 235, 0.5);
-  box-shadow:
-    0 24px 60px -26px rgba(37, 99, 235, 0.45),
-    0 0 0 1px rgba(37, 99, 235, 0.25);
+  border-color: rgba(15, 23, 42, 0.08);
+  box-shadow: none;
 }
 
 .lkn-plan-badge {
   position: absolute;
-  top: 1.25rem;
+  top: 1.35rem;
   right: 1.25rem;
-  font-size: 0.66rem;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: #1d4ed8;
-  background: rgba(37, 99, 235, 0.1);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: #0968c4;
+  background: rgba(9, 104, 196, 0.09);
   padding: 0.22rem 0.6rem;
   border-radius: 999px;
 }
 
 .lkn-plan-name {
   margin: 0;
-  font-size: 1.3rem;
-  font-weight: 700;
+  font-size: 1.05rem;
+  font-weight: 600;
   letter-spacing: -0.02em;
-  color: #0a0c12;
+  color: #111;
 }
 
 .lkn-plan-tagline {
   margin: 0.5rem 0 0;
   font-size: 0.88rem;
   line-height: 1.45;
-  color: rgba(15, 23, 42, 0.58);
+  color: #64748b;
   min-height: 2.5rem;
 }
 
@@ -3049,68 +3088,83 @@
   display: flex;
   align-items: baseline;
   gap: 0.25rem;
-  margin-top: 1.25rem;
+  margin-top: 0.35rem;
 }
 
 .lkn-plan-price-amount {
-  font-size: clamp(2.1rem, 4vw, 2.6rem);
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  color: #0a0c12;
+  font-size: 1.05rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: #111;
 }
 
 .lkn-plan-price-unit {
-  font-size: 1rem;
-  font-weight: 600;
-  color: rgba(15, 23, 42, 0.5);
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: #666;
 }
 
 .lkn-plan-price-soon {
   font-size: clamp(1.4rem, 3vw, 1.8rem);
   font-weight: 700;
-  color: rgba(15, 23, 42, 0.45);
+  color: #94a3b8;
 }
 
 .lkn-plan-price-note {
-  margin: 0.4rem 0 0;
-  font-size: 0.78rem;
-  color: rgba(15, 23, 42, 0.5);
+  margin: 0.25rem 0 0;
+  font-size: 0.7rem;
+  color: #777;
+}
+
+.lkn-plan-includes {
+  margin: 2.4rem 0 0;
+  font-size: 0.73rem;
+  color: #666;
 }
 
 .lkn-plan-cta {
-  margin: 1.4rem 0 0;
-  padding: 0.7rem 1rem;
-  border-radius: 12px;
-  font-size: 0.92rem;
-  font-weight: 600;
+  align-self: flex-start;
+  margin: auto 0 0;
+  width: auto;
+  padding: 0.55rem 1rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 500;
   cursor: pointer;
-  transition: transform 140ms ease, background 160ms ease, box-shadow 160ms ease;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
   border: 1px solid transparent;
 }
 
 .lkn-plan-cta:hover {
-  transform: translateY(-1px);
+  transform: none;
 }
 
 .lkn-plan-cta--primary {
-  background: linear-gradient(165deg, #3b82f6 0%, #2563eb 60%, #1d4ed8 100%);
+  background: #0968c4;
   color: #ffffff;
-  box-shadow: 0 12px 28px -12px rgba(37, 99, 235, 0.6);
+  border-color: #0968c4;
+  box-shadow: none;
+}
+
+.lkn-plan-cta--primary:hover {
+  background: #0754a3;
 }
 
 .lkn-plan-cta--outline {
-  background: #ffffff;
-  border-color: rgba(15, 23, 42, 0.16);
-  color: #0a0c12;
+  background: #e4e4df;
+  border-color: #e4e4df;
+  color: #222;
 }
 
 .lkn-plan-cta--outline:hover {
-  border-color: rgba(15, 23, 42, 0.3);
+  border-color: rgba(9, 104, 196, 0.35);
+  background: rgba(9, 104, 196, 0.08);
+  color: #0968c4;
 }
 
 .lkn-plan-cta--ghost {
   background: rgba(15, 23, 42, 0.05);
-  color: rgba(15, 23, 42, 0.45);
+  color: #94a3b8;
   cursor: not-allowed;
 }
 
@@ -3120,76 +3174,76 @@
 
 .lkn-plan-features {
   list-style: none;
-  margin: 1.5rem 0 0;
-  padding: 1.5rem 0 0;
-  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  margin: 0.8rem 0 2rem;
+  padding: 0;
+  border-top: none;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.45rem;
 }
 
 .lkn-plan-features li {
   display: flex;
   align-items: flex-start;
-  gap: 0.6rem;
-  font-size: 0.88rem;
-  line-height: 1.4;
-  color: rgba(15, 23, 42, 0.72);
+  gap: 0.35rem;
+  font-size: 0.76rem;
+  line-height: 1.35;
+  color: #2f2f2f;
 }
 
 .lkn-plan-feat-ico {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.15rem;
-  height: 1.15rem;
-  border-radius: 999px;
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 0;
   flex: 0 0 auto;
-  margin-top: 0.1rem;
-  background: rgba(16, 185, 129, 0.14);
-  color: #059669;
+  margin-top: 0.08rem;
+  background: transparent;
+  color: #0968c4;
 }
 
 .lkn-plan-features li.is-accent .lkn-plan-feat-ico {
-  background: rgba(37, 99, 235, 0.14);
-  color: #2563eb;
+  background: transparent;
+  color: #0968c4;
 }
 
-/* Pro (highlighted) card: every checkmark is blue, accent or not. */
 .lkn-plan-card.is-highlighted .lkn-plan-feat-ico {
-  background: rgba(37, 99, 235, 0.14);
-  color: #2563eb;
+  background: transparent;
+  color: #0968c4;
 }
 
 .lkn-plan-feat-note {
-  color: rgba(15, 23, 42, 0.45);
+  color: #94a3b8;
   font-size: 0.8rem;
 }
 
 /* ── FAQ ────────────────────────────────────────────────── */
 .lkn-faq {
-  max-width: 820px;
-  margin: clamp(3.5rem, 9vh, 6rem) auto 0;
+  max-width: 680px;
+  margin: clamp(2.75rem, 7vh, 4.5rem) auto 0;
 }
 
 .lkn-faq-headline {
-  text-align: center;
-  margin-bottom: clamp(1.75rem, 4vh, 2.5rem);
+  text-align: left;
+  margin-bottom: 1rem;
+  font-size: clamp(1.35rem, 2.5vw, 1.7rem) !important;
+  font-weight: 500 !important;
 }
 
 .lkn-faq-list {
-  border: 1px solid rgba(15, 23, 42, 0.1);
-  border-radius: 14px;
-  background: #ffffff;
+  border: none;
+  border-top: 1px solid #deded9;
+  border-radius: 0;
+  background: transparent;
   overflow: hidden;
-  box-shadow: 0 12px 32px -22px rgba(15, 23, 42, 0.2);
+  box-shadow: none;
 }
 
-/* Connected list — items are divided only by a hairline, with no gaps or
-   per-item card borders. */
 .lkn-faq-item {
-  border-bottom: 1px solid rgba(15, 23, 42, 0.1);
-  background: #ffffff;
+  border-bottom: 1px solid #deded9;
+  background: transparent;
   transition: background 160ms ease;
 }
 
@@ -3198,7 +3252,7 @@
 }
 
 .lkn-faq-item.is-open {
-  background: #fafbfe;
+  background: transparent;
 }
 
 .lkn-faq-question {
@@ -3207,19 +3261,19 @@
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1.05rem 1.25rem;
+  padding: 0.82rem 0;
   background: transparent;
   border: none;
   text-align: left;
-  font-size: 0.98rem;
-  font-weight: 600;
-  color: #0a0c12;
+  font-size: 0.87rem;
+  font-weight: 500;
+  color: #111;
   cursor: pointer;
 }
 
 .lkn-faq-chevron {
   flex: 0 0 auto;
-  color: rgba(15, 23, 42, 0.45);
+  color: #94a3b8;
   transition: transform 200ms ease;
 }
 
@@ -3228,14 +3282,14 @@
 }
 
 .lkn-faq-answer {
-  padding: 0 1.25rem 1.15rem;
+  padding: 0 1.75rem 0.85rem 0;
 }
 
 .lkn-faq-answer p {
   margin: 0;
-  font-size: 0.92rem;
-  line-height: 1.6;
-  color: rgba(15, 23, 42, 0.62);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: #5f5f5f;
 }
 
 /* ── Pricing closing CTA ────────────────────────────────── */
@@ -3249,20 +3303,47 @@
   font-size: clamp(1.5rem, 3.5vw, 2.2rem);
   font-weight: 700;
   letter-spacing: -0.03em;
-  color: #0a0c12;
+  color: #111;
 }
 
 .lkn-pricing-cta .lkn-plan-cta {
   display: inline-block;
+  width: auto;
   padding: 0.8rem 1.75rem;
   font-size: 1rem;
 }
 
-@media (max-width: 860px) {
+/* Footer on this page: restore slate type so icy navy doesn't wash the
+   whole screen blue after the plans. */
+.lkn-pricing .gl-footer-tagline {
+  color: #64748b;
+}
+.lkn-pricing .gl-footer-col-title,
+.lkn-pricing .gl-footer-bottom {
+  color: #94a3b8;
+}
+.lkn-pricing .gl-footer-link {
+  color: #475569;
+}
+
+@media (max-width: 1100px) {
+  .lkn-pricing-plans {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
   .lkn-pricing-plans {
     grid-template-columns: 1fr;
     max-width: 30rem;
     margin: 0 auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lkn-plan-card,
+  .lkn-plan-card:hover {
+    transform: none;
   }
 }
 
@@ -3304,7 +3385,7 @@
   height: 2.5rem;
   border-radius: 0.8rem;
   background: rgba(59, 130, 246, 0.1);
-  color: #2563eb;
+  color: #0968c4;
   margin-bottom: 0.85rem;
 }
 

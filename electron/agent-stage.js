@@ -7,9 +7,9 @@ const urlSuggestEl = document.getElementById("url-suggest");
 const emptyEl = document.getElementById("empty");
 const toastEl = document.getElementById("toast");
 const useLyknBtn = document.getElementById("use-lykn");
-const incognitoBtn = document.getElementById("incognito");
 const syncBtn = document.getElementById("sync-btn");
 const syncMenu = document.getElementById("sync-menu");
+const chromeSyncUi = window.lyknChromeSyncContract || {};
 
 let state = {
   tabs: [],
@@ -402,17 +402,8 @@ function navigateFromOmnibox(raw) {
   void window.lyknAgentStage.navigate(value);
 }
 
-function applyTheme(incognito) {
-  const on = !!incognito;
-  document.documentElement.setAttribute("data-theme", on ? "incognito" : "light");
-  // Stamp is CSS-debossed (fill = page color); theme vars swap highlight/shadow.
-  if (incognitoBtn) {
-    incognitoBtn.classList.toggle("active", on);
-    incognitoBtn.setAttribute("aria-pressed", on ? "true" : "false");
-    incognitoBtn.title = on
-      ? "Exit incognito — back to shared signed-in browser"
-      : "Incognito (dark, private — won't keep site logins)";
-  }
+function applyTheme() {
+  document.documentElement.setAttribute("data-theme", "light");
 }
 
 // Any open dropdown lives inside this chrome document, which sits BEHIND the
@@ -432,6 +423,7 @@ function setSyncMenuOpen(open) {
     syncBtn.setAttribute("aria-expanded", syncMenuOpen ? "true" : "false");
   }
   if (syncMenuOpen) {
+    setSyncPhase("idle");
     void loadSyncProfiles();
   }
   updateMenuOverlay();
@@ -453,7 +445,11 @@ async function loadSyncProfiles() {
     const opts = [];
     for (const b of res.browsers || []) {
       for (const p of b.profiles || []) {
-        opts.push({ value: `${b.id}::${p.dir}`, label: `${b.name} — ${p.name}` });
+        const value =
+          typeof chromeSyncUi.encodeProfileValue === "function"
+            ? chromeSyncUi.encodeProfileValue(b.id, p.dir)
+            : `${b.id}::${p.dir}`;
+        opts.push({ value, label: `${b.name} - ${p.name}` });
       }
     }
     if (!opts.length) {
@@ -481,23 +477,20 @@ function syncStatusText(msg, kind) {
   if (kind) el.classList.add(kind);
 }
 
-const SYNC_WARN_TEXT = {
-  keychain_denied: "Keychain access was denied — logins weren't imported.",
-  automation_denied: "Allow LYKN to control your browser in System Settings › Privacy › Automation to import open tabs.",
-  db_read_failed: "Couldn't read the cookie database.",
-  cookie_read_failed: "Couldn't read logins.",
-  tab_read_failed: "Couldn't read open tabs (is the browser running?).",
-  history_read_failed: "Couldn't read your history.",
-  history_empty: "No history found to learn from.",
-  cookies_kept_existing_login:
-    "Some logins couldn't be read safely — your existing sign-ins were kept as they are.",
-};
-
 function humaniseSyncWarning(w) {
-  const key = String(w || "").split(":")[0].trim();
-  if (SYNC_WARN_TEXT[key]) return SYNC_WARN_TEXT[key];
-  if (key.startsWith("tab_cap_")) return "Reached the 20-tab limit — some tabs weren't opened.";
+  if (typeof chromeSyncUi.humaniseWarning === "function") {
+    return chromeSyncUi.humaniseWarning(w);
+  }
   return "";
+}
+
+function setSyncPhase(phase) {
+  if (syncBtn) syncBtn.setAttribute("data-sync-phase", phase);
+  const runBtn = document.getElementById("sync-run");
+  if (runBtn) {
+    runBtn.setAttribute("data-sync-phase", phase);
+    runBtn.setAttribute("aria-busy", phase === "syncing" ? "true" : "false");
+  }
 }
 
 async function runSync() {
@@ -506,27 +499,43 @@ async function runSync() {
   const wantLogins = !!document.getElementById("sync-logins")?.checked;
   const wantTabs = !!document.getElementById("sync-tabs")?.checked;
   const wantHistory = !!document.getElementById("sync-history")?.checked;
-  const val = select?.value || "";
-  const [browserId, profileDir] = val.split("::");
+  const parsed =
+    typeof chromeSyncUi.parseProfileValue === "function"
+      ? chromeSyncUi.parseProfileValue(select?.value || "")
+      : { browserId: "", profileDir: "" };
+  const browserId = parsed.browserId;
+  const profileDir = parsed.profileDir;
   if (!browserId) return;
   if (!wantLogins && !wantTabs && !wantHistory) {
     syncStatusText("Pick at least one thing to import.", "error");
     return;
   }
+  const opts =
+    typeof chromeSyncUi.runOptions === "function"
+      ? chromeSyncUi.runOptions({
+          browserId,
+          profileDir,
+          importCookies: wantLogins,
+          importTabs: wantTabs,
+          importHistory: wantHistory,
+        })
+      : {
+          browserId,
+          profileDir,
+          importCookies: wantLogins,
+          importTabs: wantTabs,
+          importHistory: wantHistory,
+        };
   if (runBtn) {
     runBtn.disabled = true;
     runBtn.textContent = "Syncing…";
   }
+  setSyncPhase("syncing");
   syncStatusText("Approve any macOS prompts to continue…");
   try {
-    const res = await window.lyknAgentStage.chromeSyncRun?.({
-      browserId,
-      profileDir,
-      importCookies: wantLogins,
-      importTabs: wantTabs,
-      importHistory: wantHistory,
-    });
+    const res = await window.lyknAgentStage.chromeSyncRun?.(opts);
     if (!res?.ok) {
+      setSyncPhase("error");
       syncStatusText("Sync failed. Please try again.", "error");
     } else {
       const parts = [];
@@ -536,12 +545,16 @@ async function runSync() {
       const warns = [...new Set((res.warnings || []).map(humaniseSyncWarning).filter(Boolean))];
       const done = parts.length ? "Imported " + parts.join(", ") + ". " : "";
       if (warns.length) {
+        setSyncPhase(parts.length ? "synced" : "error");
         syncStatusText(`${done}${warns.join(" ")}`, parts.length ? "ok" : "error");
       } else {
+        setSyncPhase("synced");
         syncStatusText(`${done}You're all set.`, "ok");
       }
     }
-  } catch {
+  } catch (err) {
+    chromeSyncUi.logSyncFailure?.("agent-stage", err);
+    setSyncPhase("error");
     syncStatusText("Sync failed. Please try again.", "error");
   } finally {
     if (runBtn) {
@@ -569,7 +582,7 @@ function renderTabs() {
         ? t.title || t.pageTitle || "Artifact"
         : t.pageTitle || hostLabel(t.url) || t.title || "Tab";
       const tip = isArtifact
-        ? `${t.title || "Artifact"}${t.url ? ` — ${t.url}` : ""}`
+        ? `${t.title || "Artifact"}${t.url ? ` - ${t.url}` : ""}`
         : t.url || t.title || "";
       const cls = `tab${active}${isArtifact ? " artifact" : ""}${isSub ? " subtab" : ""}`;
       const empty = isEmptyBrowserTab(t);
@@ -636,7 +649,7 @@ function applyState(p) {
   // bar of its own — the standalone stage window already has one.
   docked = !!p.docked;
   document.documentElement.classList.toggle("docked", docked);
-  applyTheme(state.incognito);
+  applyTheme();
   renderTabs();
   renderFavs();
   renderUseLykn();
@@ -692,7 +705,7 @@ function renderUseLykn() {
   const on = !!state.chatOpen;
   useLyknBtn.classList.toggle("active", on);
   useLyknBtn.setAttribute("aria-pressed", on ? "true" : "false");
-  useLyknBtn.title = on ? "Hide LYKN chat" : "Use LYKN";
+  useLyknBtn.title = on ? "Hide LYKN chat" : "Ask LYKN";
 }
 
 window.lyknAgentStage.onState((p) => applyState(p || {}));
@@ -972,12 +985,6 @@ if (downloadBtn) {
   });
 }
 
-if (incognitoBtn) {
-  incognitoBtn.addEventListener("click", () => {
-    void window.lyknAgentStage.toggleIncognito?.();
-  });
-}
-
 if (useLyknBtn) {
   useLyknBtn.addEventListener("click", () => {
     void window.lyknAgentStage.toggleAgentChat?.();
@@ -1010,6 +1017,6 @@ function reportChrome() {
   window.lyknAgentStage.resizeChrome(h || 82);
 }
 window.addEventListener("resize", reportChrome);
-applyTheme(false);
+applyTheme();
 renderTabs();
 requestAnimationFrame(reportChrome);

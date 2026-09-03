@@ -25,6 +25,11 @@ import {
   buildLandingOnboardingSystemPrompt,
 } from './chatGuidance.js';
 import { AI_TEMPORARY_FAILURE_TEXT, resolveAnthropicModel } from './modelInvoke.js';
+import {
+  extractOpenRouterUsage,
+  openRouterConfigured,
+  resolveInferenceTarget,
+} from '../../lib/inference/index.js';
 
 export function registerAiGuestStreamRoute(app, {
   guestAiGlobalLimiter,
@@ -90,7 +95,8 @@ export function registerAiGuestStreamRoute(app, {
   app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHourlyLimiter, guestAiDailyLimiter, async (req, res) => {
     // The actual chain is picked below once we know the mode + history,
     // but bail out early if no provider key is configured at all.
-    const anyProviderConfigured = GUEST_MODEL_CHAIN_DEFAULT.some((p) => process.env[p.envKey])
+    const anyProviderConfigured = openRouterConfigured()
+      || GUEST_MODEL_CHAIN_DEFAULT.some((p) => process.env[p.envKey])
       || GUEST_MODEL_CHAIN_ONBOARDING_FIRST.some((p) => process.env[p.envKey]);
     if (!anyProviderConfigured) {
       return res.status(503).json({ error: 'Guest chat is temporarily unavailable' });
@@ -225,6 +231,7 @@ export function registerAiGuestStreamRoute(app, {
     let ended = false;
     let emittedChars = 0;
     let winner = null; // { provider, model } once a provider successfully streams
+    let guestUsage = null;
     let usageLogged = false;
     const inputChars = systemPrompt.length + historyChars + prompt.length;
 
@@ -237,11 +244,15 @@ export function registerAiGuestStreamRoute(app, {
         actionType: 'guest_chat',
         model: winner.model,
         provider: winner.provider,
-        inputTokens: estimateTokens('x'.repeat(inputChars)),
-        outputTokens: estimateTokens('x'.repeat(emittedChars)),
+        inputTokens: guestUsage?.input_tokens || estimateTokens('x'.repeat(inputChars)),
+        outputTokens: guestUsage?.output_tokens || estimateTokens('x'.repeat(emittedChars)),
         metadata: {
           mode: mode || 'default',
           is_first_onboarding_turn: isFirstOnboardingTurn,
+          gateway: openRouterConfigured() ? 'openrouter' : 'direct',
+          upstream_cost_usd: Number.isFinite(Number(guestUsage?.cost_usd))
+            ? guestUsage.cost_usd
+            : undefined,
         },
       }).catch((e) => console.warn('[Usage] guest_chat log failed:', e?.message || e));
     };
@@ -571,6 +582,9 @@ export function registerAiGuestStreamRoute(app, {
     const tryOpenAI = async (model) => {
       // Chat Completions stream — well-documented SSE format that mirrors
       // Anthropic / Gemini's "data: {...}" + "data: [DONE]" pattern.
+      const inferTarget = resolveInferenceTarget(model);
+      const inferKey = process.env[inferTarget.keyVar];
+      if (!inferKey) return { started: false };
       const messages = [
         { role: 'system', content: systemPrompt },
         ...trimmedHistory.map((m) => ({
@@ -580,7 +594,7 @@ export function registerAiGuestStreamRoute(app, {
         { role: 'user', content: prompt },
       ];
       const body = {
-        model,
+        model: inferTarget.upstreamId || model,
         messages,
         stream: true,
         max_tokens: 2048,
@@ -590,18 +604,19 @@ export function registerAiGuestStreamRoute(app, {
       const connectTimer = setTimeout(() => { try { abort.abort(); } catch {} }, 12_000);
       let resp;
       try {
-        resp = await fetch('https://api.openai.com/v1/chat/completions', {
+        resp = await fetch(`${inferTarget.baseUrl || 'https://api.openai.com/v1'}/chat/completions`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Authorization': `Bearer ${inferKey}`,
             'Content-Type': 'application/json',
+            ...(inferTarget.extraHeaders || {}),
           },
           body: JSON.stringify(body),
           signal: abort.signal,
         });
       } catch (err) {
         clearTimeout(connectTimer);
-        console.error(`❌ Guest OpenAI (${model}) connect failed:`, err?.message || err);
+        console.error(`❌ Guest ${inferTarget.gateway} (${model}) connect failed:`, err?.message || err);
         return { started: false };
       }
       clearTimeout(connectTimer);
@@ -626,6 +641,7 @@ export function registerAiGuestStreamRoute(app, {
           try {
             const parsed = JSON.parse(payload);
             const text = parsed.choices?.[0]?.delta?.content;
+            if (parsed.usage) guestUsage = extractOpenRouterUsage(parsed);
             if (text) {
               if (!started) { started = true; resolve({ started: true }); }
               sendChunk(text);
@@ -673,16 +689,21 @@ export function registerAiGuestStreamRoute(app, {
     // Walk the chain in order. The first provider that successfully starts
     // emitting tokens "wins"; failures before any tokens are streamed are
     // silent (the user just sees the next provider's output).
+    const viaOpenRouter = openRouterConfigured();
     for (const cfg of availableProviders) {
       if (ended) return;
       let outcome;
-      if (cfg.provider === 'anthropic') outcome = await tryAnthropic(cfg.model);
+      if (viaOpenRouter) outcome = await tryOpenAI(cfg.model);
+      else if (cfg.provider === 'anthropic') outcome = await tryAnthropic(cfg.model);
       else if (cfg.provider === 'google') outcome = await tryGemini(cfg.model);
       else if (cfg.provider === 'openai') outcome = await tryOpenAI(cfg.model);
       else continue;
       if (outcome.started) {
-        winner = { provider: cfg.provider, model: cfg.model };
-        console.log(`✅ Guest stream served by ${cfg.provider} (${cfg.model})`);
+        winner = {
+          provider: viaOpenRouter ? 'openrouter' : cfg.provider,
+          model: cfg.model,
+        };
+        console.log(`✅ Guest stream served by ${winner.provider} (${cfg.model})`);
         return;
       }
       console.warn(`⚠️ Guest stream falling back from ${cfg.provider} (${cfg.model})`);

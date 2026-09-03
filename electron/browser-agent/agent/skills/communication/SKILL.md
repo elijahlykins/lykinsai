@@ -10,18 +10,18 @@ DMs, invitations, announcements.
 Procedure:
 
 1. Work in the tool the user named. If the request says "in Mailchimp", "in
-   HubSpot", "in Slack", the message is built THERE — an email-shaped task is
+   HubSpot", "in Slack", the message is built THERE - an email-shaped task is
    not automatically a Gmail task. Only fall back to the user's mail client
    when no other product was named.
 2. Identify recipient(s), the message's purpose, and any content the user
    specified verbatim. If the request named who to write but not what to say,
-   ask that once and write from the answer. Do not interview them — no
+   ask that once and write from the answer. Do not interview them - no
    follow-up about tone, subject, or when it should go out.
 3. When the request refers to a past message, template or "the usual format",
-   go find it — open the sent folder, the campaign archive, or the saved
+   go find it - open the sent folder, the campaign archive, or the saved
    template and read it before writing. Do not ask the user to describe it.
 4. Verify the recipient is correct (right person, right address) before
-   composing — check contact suggestions carefully; similar names are a
+   composing - check contact suggestions carefully; similar names are a
    common failure. If the request names no recipient, do not invent one:
    leave the field empty, finish the rest, and report who it still needs.
    Never pull a name from contacts, autocomplete, recent threads or memory
@@ -45,7 +45,7 @@ Campaign and marketing email tools (Mailchimp, Klaviyo, HubSpot, Brevo):
   to it, in this order:
   1. **Replicate / duplicate an existing campaign.** This is almost always right
      when the user says "like our other emails", "the same format", "following
-     our usual template" — it inherits the exact layout, branding and footer
+     our usual template" - it inherits the exact layout, branding and footer
      instead of approximating them. Find the most recent relevant campaign in the
      archive, read it so you match its voice and structure, then replicate it and
      replace the copy.
@@ -59,7 +59,7 @@ Campaign and marketing email tools (Mailchimp, Klaviyo, HubSpot, Brevo):
   content editor. A campaign is not complete without them.
 - Audience selection is a separate step from content, and a send control usually
   stays disabled until audience, subject and sender are all set. A disabled Send
-  means something is missing upstream — go find it rather than clicking again.
+  means something is missing upstream - go find it rather than clicking again.
 - Sending a campaign reaches an entire list at once and cannot be recalled.
   Unless the request explicitly asked to send it, finish the draft and stop.
 
@@ -69,10 +69,10 @@ Sharing a page or video with someone:
   Drive) have a people-share dialog ("Add people" + Send invite). Use it there.
 - Any other page (YouTube video, article, product) has no people-share: the
   strategy is to capture the page's URL (from the address bar or the share
-  dialog's copy-link field) and email it — open the user's mail client, compose
+  dialog's copy-link field) and email it - open the user's mail client, compose
   to the recipient, one short sentence introducing the link, then the link.
 - Do not get stuck in a share dialog that only offers Copy link / social
-  buttons — that is the signal to switch to the email-the-link strategy.
+  buttons - that is the signal to switch to the email-the-link strategy.
 - Sharing something LYKN built (an artifact, report, or app) sends BOTH the
   live link (when a hosted URL exists) and the actual file as an attachment,
   so the recipient can open it offline.
@@ -80,5 +80,5 @@ Sharing a page or video with someone:
 Cautions:
 
 - Never send partially-filled drafts.
-- Reply vs reply-all vs forward matters — choose deliberately.
+- Reply vs reply-all vs forward matters - choose deliberately.
 - Do not include private information the user did not ask to share.

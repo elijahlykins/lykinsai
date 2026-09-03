@@ -38,6 +38,7 @@ function attachAskPipeline(d) {
   const {
     shouldForceWebSearch: overlayShouldForceWebSearch,
   } = require("../../lib/webSearchIntent.cjs");
+  const overlayLocalClientTools = require("./overlayLocalClientTools.cjs");
   const safeFetchMain = (...a) => d.safeFetchMain(...a);
   const assertPublicHttpUrl = (...a) => d.assertPublicHttpUrl(...a);
   const openExternalSafe = (...a) => d.openExternalSafe(...a);
@@ -524,11 +525,10 @@ async function overlayVaultMarkersFromToolResult(toolName, result) {
               title: safeTitle,
             });
             if (code && String(code).trim()) {
-              d.lastOverlayReactArtifact = {
-                toolName: "lykn_build_react_artifact",
+              d.lastOverlayReactArtifact = overlayReactArtifactRecord({
                 title: safeTitle,
                 code: String(code),
-              };
+              });
             }
           } catch {
             /* non-React HTML still previews; Build starts fresh */
@@ -668,6 +668,43 @@ async function extractReactArtifactCodeFromResult(result) {
   }
 }
 
+function overlayReactArtifactRecord({ title, result, code }) {
+  const files = Array.isArray(result?.artifact_files)
+    ? result.artifact_files
+        .filter((f) => f && f.path)
+        .map((f) => ({ path: String(f.path), content: String(f.content ?? "") }))
+    : [];
+  const entry =
+    (typeof result?.entry === "string" && result.entry.trim()) ||
+    (files.some((f) => f.path === "App.jsx") ? "App.jsx" : files[0]?.path) ||
+    "";
+  let nextCode = String(
+    (typeof result?.artifact_code === "string" && result.artifact_code.trim()
+      ? result.artifact_code
+      : code) || "",
+  );
+  if (!nextCode.trim() && files.length) {
+    nextCode = String(files.find((f) => f.path === entry)?.content || files[0].content || "");
+  }
+  if (!nextCode.trim() && !files.length) return null;
+  const art = {
+    toolName: "lykn_build_react_artifact",
+    title: String(title || "Artifact").replace(/\s+/g, " ").trim() || "Artifact",
+    code: nextCode,
+  };
+  if (files.length) {
+    art.files = files;
+    art.entry = entry || "App.jsx";
+  }
+  return art;
+}
+
+function overlayReactArtifactHasSource(art) {
+  if (!art) return false;
+  if (typeof art.code === "string" && art.code.trim()) return true;
+  return Array.isArray(art.files) && art.files.length > 0;
+}
+
 function extractLyknProjectId(url) {
   const m = /\/projects\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(
     String(url || ""),
@@ -690,16 +727,16 @@ function humanizeStreamError(err, { forceImage = false } = {}) {
   // stalls during image gen looked like a dead network when the provider
   // was still working.
   if (
-    /trouble connecting|didn't work — try again|Couldn't create that image/i.test(msg)
+    /trouble connecting|didn't work[.\s].*try again|Couldn't create that image/i.test(msg)
   ) {
     return forceImage
-      ? "Couldn't create that image — try again in a moment."
-      : "That didn't work — try again in a moment.";
+      ? "Couldn't create that image. Try again in a moment."
+      : "That didn't work. Try again in a moment.";
   }
   if (/terminated|econnreset|socket hang up|broken pipe|reset by peer/i.test(msg)) {
     return forceImage
-      ? "Couldn't create that image — try again in a moment."
-      : "That didn't work — try again in a moment.";
+      ? "Couldn't create that image. Try again in a moment."
+      : "That didn't work. Try again in a moment.";
   }
   if (/aborted/i.test(msg)) return "Request was cancelled.";
   // Only reached after the automatic refresh-and-retry also failed, so the
@@ -707,19 +744,19 @@ function humanizeStreamError(err, { forceImage = false } = {}) {
   if (/\(401\)/.test(msg)) {
     return "Your LYKN session expired. Open the main LYKN window to sign back in, then try again.";
   }
-  // Monthly plan quota (checkAiUsageLimit) — keep the server's wording when
-  // present; otherwise fall back to a clear upgrade nudge.
-  if (/ai_limit_reached|used all .+ (AI )?requests this month/i.test(msg)) {
-    if (/used all .+ requests this month/i.test(msg)) return msg;
-    return "You've used all your LYKN AI requests this month. Upgrade your plan or add a top-up to continue.";
+  // Out of Usage Balance (requireAppAccess / checkAiUsageLimit) — keep the
+  // server's wording when present; otherwise a clear top-up/upgrade nudge.
+  if (/insufficient_usage_balance|out of usage/i.test(msg)) {
+    if (/out of usage/i.test(msg)) return msg;
+    return "You're out of usage. Top up your balance or upgrade to keep going.";
   }
   // Burst / provider / express-rate-limit 429 — not "you spammed us", just
   // temporarily unavailable. Don't retry-spam the same window.
   if (/\(429\)|rate limit|too many requests|temporarily unavailable/i.test(msg)) {
     return "LYKN is temporarily unavailable. Please wait a moment and try again.";
   }
-  if (forceImage) return "Couldn't create that image — try again in a moment.";
-  return msg || "That didn't work — try again in a moment.";
+  if (forceImage) return "Couldn't create that image. Try again in a moment.";
+  return msg || "That didn't work. Try again in a moment.";
 }
 
 async function errorFromAiResponse(res) {
@@ -729,13 +766,13 @@ async function errorFromAiResponse(res) {
   } catch {
     /* ignore parse errors */
   }
+  if (res.status === 402) {
+    return new Error(
+      body?.message || body?.error
+        || "You're out of usage. Top up your balance or upgrade to keep going.",
+    );
+  }
   if (res.status === 429) {
-    if (body?.error === "ai_limit_reached") {
-      return new Error(
-        body.message ||
-          "You've used all your LYKN AI requests this month. Upgrade your plan or add a top-up to continue.",
-      );
-    }
     return new Error("LYKN backend error (429).");
   }
   if (body?.message && typeof body.message === "string" && body.message.trim()) {
@@ -841,6 +878,40 @@ async function readOverlayStreamResponse(res, send, opts = {}) {
         } else if (j.tool_call && typeof j.tool_call === "object") {
           const tc = j.tool_call;
           maybeNotifyProjectsChangedFromTool(tc.name, tc.status, tc.result);
+          if (
+            tc.status === "awaiting_client" &&
+            typeof opts.handleLocalClientTool === "function"
+          ) {
+            if (tc.name) {
+              send("lykn:answer-status", { status: toolStatusLabel(tc.name) });
+            }
+            void opts.handleLocalClientTool(tc);
+          }
+          if (
+            tc.status === "done" &&
+            String(tc.name || "") === "lykn_open_app" &&
+            tc.result &&
+            tc.result.ok === true &&
+            tc.result.kind === "drive" &&
+            typeof tc.result.id === "string" &&
+            tc.result.id &&
+            tc.result.id !== "drive"
+          ) {
+            try {
+              if (typeof d.showStudioWindow === "function") d.showStudioWindow();
+              const win =
+                (typeof d.studioWindowRef === "function" && d.studioWindowRef()) ||
+                d.studioWindow ||
+                d.mainWindow;
+              if (win && !win.isDestroyed()) {
+                win.webContents.send("lykn:open-ai-drive-item", {
+                  noteId: tc.result.id,
+                  title: typeof tc.result.label === "string" ? tc.result.label : "",
+                  folder: typeof tc.result.folder === "string" ? tc.result.folder : "",
+                });
+              }
+            } catch (_) {}
+          }
           if (tc.status === "running") {
             send("lykn:answer-status", { status: toolStatusLabel(tc.name) });
           } else if (
@@ -903,19 +974,21 @@ async function readOverlayStreamResponse(res, send, opts = {}) {
             // Cache source for the next refine turn (surgical edits).
             // Await so Agent Mode can refine this artifact on the next turn.
             try {
-              const code = await extractReactArtifactCodeFromResult(tc.result);
-              if (code && code.trim()) {
-                d.lastOverlayReactArtifact = {
-                  toolName: "lykn_build_react_artifact",
-                  title,
-                  code,
-                };
+              const art = overlayReactArtifactRecord({
+                title,
+                result: tc.result,
+                code: await extractReactArtifactCodeFromResult(tc.result),
+              });
+              if (art) {
+                d.lastOverlayReactArtifact = art;
                 try {
                   opts.onAgentDeliverable?.({
                     kind: "artifact",
                     toolName: "lykn_build_react_artifact",
                     title,
-                    code,
+                    code: art.code,
+                    files: art.files,
+                    entry: art.entry,
                     url: fileUrl || "",
                   });
                 } catch (_) {}
@@ -1863,18 +1936,19 @@ async function streamScreenAnswer(event, {
     ...(() => {
       if (!buildMode) return {};
       const redesign = d.OVERLAY_REDESIGN_INTENT_RE.test(String(text || ""));
-      const cached =
-        d.lastOverlayReactArtifact &&
-        typeof d.lastOverlayReactArtifact.code === "string" &&
-        d.lastOverlayReactArtifact.code.trim()
-          ? d.lastOverlayReactArtifact
-          : null;
+      const cached = overlayReactArtifactHasSource(d.lastOverlayReactArtifact)
+        ? d.lastOverlayReactArtifact
+        : null;
       if (cached && !redesign) {
         return { activeArtifact: cached, useTools: true };
       }
       return { forceArtifact: true, artifactType: "webapp", useTools: true };
     })(),
     overlayAsk: true,
+    ...overlayLocalClientTools.overlayLocalModeBody(
+      localSystem,
+      app.getPath("userData"),
+    ),
     // Server uses this to strip chart/diagram/webapp builders when the turn
     // has live screen/page context and no explicit Create/Build ask.
     overlayScreenContext: !skipScreenContext,
@@ -1949,6 +2023,17 @@ async function streamScreenAnswer(event, {
         }
         const accumulated = await readOverlayStreamResponse(res, send, {
           allowVaultSurface: overlayUserWantsVaultSurface(text, history),
+          handleLocalClientTool: (tc) =>
+            overlayLocalClientTools.handleOverlayAwaitingClient(tc, {
+              localSystem,
+              localApprovals,
+              userDataPath: app.getPath("userData"),
+              dialog,
+              overlayWindow: d.overlayWindow,
+              apiBase: API_BASE,
+              token: bearerToken,
+              fetchImpl: (...a) => fetch(...a),
+            }),
         });
         if (superseded()) return;
         send("lykn:answer-done", { text: accumulated });

@@ -71,7 +71,7 @@ test('http bodies are clipped; full-read documents stay available up to the cap'
   assert.equal(http.truncated, true);
   assert.ok(http.body.length <= 8000);
 
-  const doc = boundToolResult('lykn_loadNeuron', {
+  const doc = boundToolResult('read_document', {
     ok: true,
     note: { title: 'Spec', content: 'full text here' },
   });

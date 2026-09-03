@@ -16,7 +16,7 @@ Procedure:
    notes.
 4. For bookings: compare options (time, price, cancellation policy) before
    selecting; fill all details up to the final confirmation.
-5. Confirming a booking or sending invitations is consequential — obtain
+5. Confirming a booking or sending invitations is consequential - obtain
    approval before the final step unless pre-approved.
 6. Verify the event or booking actually appears after creation.
 

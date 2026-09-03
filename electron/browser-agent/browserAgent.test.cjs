@@ -894,6 +894,28 @@ test("context router: progressive skill loading", () => {
 // surface-specific HOW knowledge and travels as a skill, never as a standing
 // operating rule.
 
+test("decision and planning system prompts contain no em dashes", () => {
+  const task = { goal: "anything at all", skills: [] };
+  const skills = ["builders", "shopping", "communication", "research", "scheduling", "data-entry"];
+  const system = contextRouter.buildDecisionSystem({ task, skills, allowedActions: null });
+  assert.equal(system.includes("\u2014"), false, "decision system prompt must not contain em dashes");
+  assert.equal(
+    contextRouter.buildPlanningSystem().includes("\u2014"),
+    false,
+    "planning system prompt must not contain em dashes",
+  );
+  assert.equal(
+    contextRouter.buildLearningSystem().includes("\u2014"),
+    false,
+    "learning system prompt must not contain em dashes",
+  );
+  assert.equal(
+    contextRouter.buildVerificationSystem().includes("\u2014"),
+    false,
+    "verification system prompt must not contain em dashes",
+  );
+});
+
 test("context router: every operating rule reaches every decision", () => {
   const task = { goal: "anything at all", skills: [] };
   const system = contextRouter.buildDecisionSystem({ task, allowedActions: null });

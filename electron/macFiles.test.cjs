@@ -149,20 +149,22 @@ test("refuses paths outside the synced folders", async () => {
   assert.equal(result.error, "not_synced");
 });
 
-test("allows anything when the whole Mac is shared", async () => {
+test("whole-home share allows the home folder and refuses the rest of the disk", async () => {
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), "lykn-outside-"));
   setLocalMode({ syncAll: true, syncedFolders: [] });
 
+  const homeList = await macFiles.list({ path: os.homedir() });
+  assert.equal(homeList.ok, true);
   const result = await macFiles.list({ path: outside });
-
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "not_synced");
 });
 
 test("refuses a folder whose own sync switch is off", async () => {
   const off = path.join(root, "Private");
   fs.mkdirSync(off);
   fs.writeFileSync(path.join(off, "diary.txt"), "x");
-  setLocalMode({ syncAll: true, syncedFolders: [], excludedFolders: [off] });
+  setLocalMode({ syncAll: true, syncedFolders: [root], excludedFolders: [off] });
 
   assert.equal((await macFiles.list({ path: off })).error, "not_synced");
   // The exclusion covers what's inside it, not its neighbours.

@@ -9,6 +9,12 @@
 // - revokeAppleToken is a stateless helper from lib/appleAuth.js; ESM
 //   module-cache identity makes a direct import equivalent.
 import { revokeAppleToken } from '../../lib/appleAuth.js';
+import { updateUserRowById, userOwnedTable } from '../../lib/security/userOwnedAccess.js';
+import {
+  USER_PREFERENCE_DEFAULTS,
+  mergePreferenceRow,
+  sanitisePreferencesPatch,
+} from '../../lib/account/preferencePatch.js';
 
 export function registerAccountRoutes(app, deps) {
   const {
@@ -28,67 +34,9 @@ export function registerAccountRoutes(app, deps) {
   // supabase.auth.updateUser({ data, password }) directly so we don't
   // have to proxy auth state.
 
-  // ---- Preferences shape -----------------------------------------------
-  // Centralised so GET and PATCH return the same field set and the
-  // PATCH validator can reject unknown keys. Keep in sync with
+  // Preferences shape lives in lib/account/preferencePatch.js so GET and
+  // PATCH share one field set. Keep that file in sync with
   // migration 060_user_preferences.sql.
-  const USER_PREFERENCE_DEFAULTS = Object.freeze({
-    memory_paused: false,
-    training_opt_out: false,
-    chat_retention_days: null,
-    email_product_updates: true,
-    night_shift_enabled: false,
-    night_shift_tier: 'brief',
-    metadata: {},
-  });
-
-  function sanitisePreferencesPatch(body) {
-    const out = {};
-    if (!body || typeof body !== 'object') return { ok: false, reason: 'body_required' };
-
-    if ('memory_paused' in body) {
-      if (typeof body.memory_paused !== 'boolean') return { ok: false, reason: 'memory_paused_must_be_boolean' };
-      out.memory_paused = body.memory_paused;
-    }
-    if ('training_opt_out' in body) {
-      if (typeof body.training_opt_out !== 'boolean') return { ok: false, reason: 'training_opt_out_must_be_boolean' };
-      out.training_opt_out = body.training_opt_out;
-    }
-    if ('email_product_updates' in body) {
-      if (typeof body.email_product_updates !== 'boolean') return { ok: false, reason: 'email_product_updates_must_be_boolean' };
-      out.email_product_updates = body.email_product_updates;
-    }
-    if ('night_shift_enabled' in body) {
-      if (typeof body.night_shift_enabled !== 'boolean') return { ok: false, reason: 'night_shift_enabled_must_be_boolean' };
-      out.night_shift_enabled = body.night_shift_enabled;
-    }
-    if ('night_shift_tier' in body) {
-      const tier = String(body.night_shift_tier || '').trim();
-      if (tier !== 'brief' && tier !== 'research' && tier !== 'delegate') {
-        return { ok: false, reason: 'night_shift_tier_invalid' };
-      }
-      out.night_shift_tier = tier;
-    }
-    if ('chat_retention_days' in body) {
-      const v = body.chat_retention_days;
-      if (v === null) {
-        out.chat_retention_days = null;
-      } else if (Number.isInteger(v) && v >= 1 && v <= 3650) {
-        out.chat_retention_days = v;
-      } else {
-        return { ok: false, reason: 'chat_retention_days_invalid' };
-      }
-    }
-    if ('metadata' in body) {
-      if (!body.metadata || typeof body.metadata !== 'object' || Array.isArray(body.metadata)) {
-        return { ok: false, reason: 'metadata_must_be_object' };
-      }
-      out.metadata = body.metadata;
-    }
-
-    if (Object.keys(out).length === 0) return { ok: false, reason: 'no_valid_fields' };
-    return { ok: true, patch: out };
-  }
 
   // GET /api/account/preferences — returns the current row, seeding
   // defaults on first read if the trigger hasn't fired (e.g. legacy
@@ -135,9 +83,21 @@ export function registerAccountRoutes(app, deps) {
       const parsed = sanitisePreferencesPatch(req.body);
       if (!parsed.ok) return res.status(400).json({ error: parsed.reason });
 
+      const { data: existing, error: readErr } = await supabaseAdmin
+        .from('lykn_user_preferences')
+        .select('*')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (readErr) throw readErr;
+
+      const row = {
+        user_id: userId,
+        ...mergePreferenceRow(existing, parsed.patch),
+      };
+
       const { data, error } = await supabaseAdmin
         .from('lykn_user_preferences')
-        .upsert({ user_id: userId, ...USER_PREFERENCE_DEFAULTS, ...parsed.patch }, { onConflict: 'user_id' })
+        .upsert(row, { onConflict: 'user_id' })
         .select('*')
         .single();
       if (error) throw error;
@@ -171,10 +131,8 @@ export function registerAccountRoutes(app, deps) {
       const projectIds = [...new Set((rows || []).map((r) => r.project_id).filter(Boolean))];
       let projectNameById = new Map();
       if (projectIds.length) {
-        const { data: projects, error: projErr } = await supabaseAdmin
-          .from('lykn_projects')
+        const { data: projects, error: projErr } = await userOwnedTable(supabaseAdmin, 'lykn_projects', userId)
           .select('id, name')
-          .eq('user_id', userId)
           .eq('status', 'active')
           .in('id', projectIds);
         if (projErr) throw projErr;
@@ -283,13 +241,14 @@ export function registerAccountRoutes(app, deps) {
       }
       if (!Object.keys(patch).length) return res.status(400).json({ error: 'no_valid_fields' });
 
-      const { data, error } = await supabaseAdmin
-        .from('lykn_steward_items')
-        .update(patch)
-        .eq('id', id)
-        .eq('user_id', userId)
-        .select('id, title, spec, status, approved_at, updated_at, result_summary, blocked_reason, execution_kind, repo, sub_model_id')
-        .maybeSingle();
+      const { data, error } = await updateUserRowById(
+        supabaseAdmin,
+        'lykn_steward_items',
+        userId,
+        id,
+        patch,
+        'id, title, spec, status, approved_at, updated_at, result_summary, blocked_reason, execution_kind, repo, sub_model_id',
+      );
       if (error) throw error;
       if (!data) return res.status(404).json({ error: 'not_found' });
       return res.json({ ok: true, item: data });

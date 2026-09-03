@@ -385,7 +385,7 @@ function ChatPreview({ appearance }) {
         className="leading-[1.35] text-black/85 dark:text-white/85"
         style={{ fontSize: aiSize.px }}
       >
-        Three things — a design review at 10, lunch with Ana at 12:30, and the
+        Three things: a design review at 10, lunch with Ana at 12:30, and the
         investor call you moved to 4.
       </p>
       <div
@@ -649,7 +649,7 @@ export default function AppearanceSettings({
               <HomeWidgetPicker value={homeWidgets} onToggle={onHomeWidgetToggle} />
               <p className="mt-2 text-[11px] leading-snug text-black/40 dark:text-white/35">
                 Hold a widget on the Home desktop to move it, resize it, or add
-                another — including one for any app on your Mac.
+                another, including one for any app on your Mac.
               </p>
             </section>
           </>
@@ -731,7 +731,7 @@ export default function AppearanceSettings({
                 onChange={(id) => update({ chatBarShape: id })}
               />
               <p className="text-[11px] leading-snug text-black/40 dark:text-white/35">
-                Worn by both chat bars — the composer on the chat page and the
+                Worn by both chat bars: the composer on the chat page and the
                 rounded bar on the Home desktop.
               </p>
             </div>
@@ -751,7 +751,7 @@ export default function AppearanceSettings({
                 onChange={(id) => update({ chatSendShape: id })}
               />
               <p className="text-[11px] leading-snug text-black/40 dark:text-white/35">
-                Default leaves each bar with the button it ships with — a block
+                Default leaves each bar with the button it ships with: a block
                 on the chat page, a circle on the Home desktop. Any other shape
                 makes the two match.
               </p>

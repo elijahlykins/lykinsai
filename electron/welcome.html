@@ -6,7 +6,7 @@
          connect autocomplete.clearbit.com → the "+ add your app" search. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'unsafe-inline'; media-src 'self'; img-src 'self' https: data:; script-src 'unsafe-inline'; connect-src https://autocomplete.clearbit.com"
+      content="default-src 'self'; style-src 'unsafe-inline'; media-src 'self'; img-src 'self' https: data:; script-src 'self' 'unsafe-inline'; connect-src https://autocomplete.clearbit.com"
     />
     <title>Welcome to LYKN</title>
     <style>
@@ -159,6 +159,7 @@
            min(1120px, 84vw) wide and centered — this is the leftover margin). */
         right: calc((100% - min(1120px, 84vw)) / 2);
         bottom: 7vh;
+        z-index: 5;
         display: inline-flex;
         align-items: center;
         gap: 10px;
@@ -983,6 +984,10 @@
       .profile-dd-menu button:hover,
       .profile-dd-menu button.sel {
         background: rgba(255, 255, 255, 0.1);
+      }
+      #logins-import {
+        z-index: 5;
+        pointer-events: auto;
       }
       #import-skip,
       #logins-skip,
@@ -2242,7 +2247,7 @@
           <div class="setup-copy">
             <h1>Fast, secure, and packed with<br />all your browser essentials</h1>
             <label class="opt">
-              <input type="checkbox" id="opt-browser" checked />
+              <input type="checkbox" id="opt-browser" />
               <span class="box">
                 <svg width="14" height="11" viewBox="0 0 14 11" fill="none">
                   <path d="M1 5.5 5 9.5 13 1.5" stroke="#0b0c10" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -2479,7 +2484,9 @@
           </div>
         </div>
         <button id="logins-skip">Skip</button>
-        <button class="cta" id="logins-import">Sync browser <span class="key">&#9166;</span></button>
+        <button class="cta" id="logins-import" type="button" data-sync-phase="idle">
+          <span class="cta-label">Sync browser</span> <span class="key">&#9166;</span>
+        </button>
       </div>
 
       <!-- Stage macsync: sync folders with the Mac -->
@@ -2488,7 +2495,7 @@
           <div class="setup-copy">
             <h1 style="margin-bottom: 20px">Sync LYKN with your Mac</h1>
             <p class="sub" style="margin-bottom: 24px">
-              Pick the folders LYKN can see. Files never leave your Mac &mdash;
+              Pick the folders LYKN can see. Files never leave your Mac,
               they open right inside LYKN, and LYKN AI can read them when you ask.
             </p>
             <div class="folder-grid" id="folder-grid"></div>
@@ -2527,7 +2534,7 @@
           <div class="setup-copy">
             <h1 style="margin-bottom: 20px">Bring your background with you</h1>
             <p class="sub" style="margin-bottom: 24px">
-              Set the backdrop LYKN opens with &mdash; use the wallpaper already
+              Set the backdrop LYKN opens with. Use the wallpaper already
               on your Mac, or pick any image on your machine.
             </p>
             <div class="bg-options">
@@ -2673,7 +2680,7 @@
               <div class="pv-bubble">What's on my calendar today?</div>
               <div class="pv-reply">
                 <span class="pv-avatar"></span>
-                <span class="pv-reply-text" id="pv-respond-text">Three things — a design review at 10, lunch with Ana at 12:30, and the investor call you moved to 4.</span>
+                <span class="pv-reply-text" id="pv-respond-text">Three things: a design review at 10, lunch with Ana at 12:30, and the investor call you moved to 4.</span>
               </div>
               <div class="pv-ask">Ask a question <span class="pv-send">&#8593;</span></div>
             </div>
@@ -2708,7 +2715,7 @@
                 <div class="pv-bubble">What's on my calendar today?</div>
                 <div class="pv-reply">
                   <span class="pv-avatar"></span>
-                  <span class="pv-reply-text">Three things — a design review at 10, lunch with Ana at 12:30, and the investor call you moved to 4.</span>
+                  <span class="pv-reply-text">Three things: a design review at 10, lunch with Ana at 12:30, and the investor call you moved to 4.</span>
                 </div>
               </div>
               <div class="pv-ask"><span class="pv-ask-text">Ask a question</span> <span class="pv-send">&#8593;</span></div>
@@ -2759,7 +2766,7 @@
                 <div class="pv-bubble">What's on my calendar today?</div>
                 <div class="pv-reply">
                   <span class="pv-avatar"></span>
-                  <span class="pv-reply-text">Three things — a design review at 10, lunch with Ana at 12:30, and the investor call you moved to 4.</span>
+                  <span class="pv-reply-text">Three things: a design review at 10, lunch with Ana at 12:30, and the investor call you moved to 4.</span>
                 </div>
               </div>
               <div class="pv-ask"><span class="pv-ask-text">Ask a question</span> <span class="pv-send" id="pv-chatbar-send">&#8593;</span></div>
@@ -2776,7 +2783,7 @@
             <h1 style="margin-bottom: 20px">Privacy in LYKN, you're in control</h1>
             <p class="sub" style="margin-bottom: 30px">
               You decide what LYKN can see and share. <b>Nothing you browse or
-              ask is shared to improve LYKN unless you opt in below</b>&mdash;and
+              ask is shared to improve LYKN unless you opt in below</b>, and
               you can change these choices anytime in Settings.
             </p>
             <label class="opt">
@@ -2842,6 +2849,7 @@
         </div>
       </div>
     </div>
+    <script src="chromeSyncContract.cjs"></script>
     <script>
       if (navigator.platform.startsWith("Win")) document.body.classList.add("win");
 
@@ -2864,17 +2872,6 @@
         },
         { once: true },
       );
-
-      // Reveal lands → click gate.
-      let armed = false;
-      const arm = () => {
-        if (armed) return;
-        armed = true;
-        setTimeout(() => document.body.classList.add("ready"), 400);
-      };
-      video.addEventListener("ended", arm);
-      // Safety net: if playback stalls, still hand the user the click gate.
-      setTimeout(arm, 8000);
 
       // ── stages ──
       const stages = {
@@ -2982,7 +2979,51 @@
           setTimeout(() => leave(), 150);
         }
       };
-      stages[1].addEventListener("pointerdown", () => setStage(3));
+
+      // Returning machines skip account setup after the hello animation.
+      // Stage/setStage must exist first: the video can already have ended
+      // (cached webm) by the time this script runs.
+      let armed = false;
+      let leftReveal = false;
+      const readRemembered = async ({ waitMs = 0 } = {}) => {
+        const deadline = Date.now() + waitMs;
+        for (;;) {
+          try {
+            const remembered = await window.lyknWelcome.rememberedSession();
+            if (remembered?.signedIn) return remembered;
+          } catch {
+            /* first launch, or the bridge isn't ready */
+          }
+          if (Date.now() >= deadline) return null;
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+      };
+      const leaveReveal = async ({ requireRemembered = false } = {}) => {
+        if (leftReveal || stage !== 1) return;
+        const remembered = await readRemembered({
+          waitMs: requireRemembered ? 4000 : 400,
+        });
+        if (requireRemembered && !remembered?.signedIn) return;
+        leftReveal = true;
+        setStage(remembered?.signedIn ? 13 : 3);
+      };
+      const arm = () => {
+        if (armed) return;
+        armed = true;
+        setTimeout(() => document.body.classList.add("ready"), 400);
+        void leaveReveal({ requireRemembered: true });
+      };
+      if (video.ended) arm();
+      else video.addEventListener("ended", arm);
+      setTimeout(arm, 8000);
+      stages[1].addEventListener("pointerdown", () => {
+        void leaveReveal({ requireRemembered: false });
+      });
+      void readRemembered({ waitMs: 4000 }).then((remembered) => {
+        if (!remembered?.signedIn) return;
+        const hint = document.getElementById("hint");
+        if (hint) hint.textContent = "";
+      });
 
       // ── stage 2: essentials — the closer. Apply the picks, then roll the
       // Welcome to LYKN finale. ──
@@ -3319,8 +3360,16 @@
       // ── stage 7: securely sync the selected browser ──
       document.getElementById("logins-skip").addEventListener("click", () => setStage("macsync"));
       const syncBrowserBtn = document.getElementById("logins-import");
+      const syncBrowserLabel = syncBrowserBtn?.querySelector(".cta-label");
       const syncStatus = document.getElementById("logins-status");
+      const chromeSyncUi = window.lyknChromeSyncContract || {};
       let browserSyncing = false;
+      const setWalkthroughSyncPhase = (phase, label) => {
+        if (!syncBrowserBtn) return;
+        syncBrowserBtn.setAttribute("data-sync-phase", phase);
+        syncBrowserBtn.setAttribute("aria-busy", phase === "syncing" ? "true" : "false");
+        if (syncBrowserLabel && label) syncBrowserLabel.textContent = label;
+      };
       document.getElementById("logins-import").addEventListener("click", async () => {
         if (browserSyncing) return;
         const selected = browserRow.querySelector("input:checked");
@@ -3329,33 +3378,48 @@
           return;
         }
         if (!selectedProfileDir) {
+          const browser = selectedBrowser();
+          if (browser?.profiles?.[0]) selectedProfileDir = browser.profiles[0].dir;
+        }
+        if (!selectedProfileDir) {
           syncStatus.textContent = "Choose a profile to sync.";
           return;
         }
+        const opts =
+          typeof chromeSyncUi.runOptions === "function"
+            ? chromeSyncUi.runOptions({
+                browserId: selected.value,
+                profileDir: selectedProfileDir,
+                importCookies: true,
+                importTabs: true,
+                importHistory: true,
+              })
+            : {
+                browserId: selected.value,
+                profileDir: selectedProfileDir,
+                importCookies: true,
+                importTabs: true,
+                importHistory: true,
+              };
         browserSyncing = true;
         syncBrowserBtn.disabled = true;
-        syncBrowserBtn.firstChild.textContent = "Syncing\u2026 ";
+        setWalkthroughSyncPhase("syncing", "Syncing\u2026");
         syncStatus.textContent = "Approve any macOS prompts to continue.";
         try {
           await window.lyknWelcome.setImportBrowser({
             id: selected.value,
             profileDir: selectedProfileDir,
           });
-          const result = await window.lyknWelcome.syncBrowser({
-            browserId: selected.value,
-            profileDir: selectedProfileDir,
-            importCookies: true,
-            importTabs: true,
-            importHistory: true,
-          });
+          const result = await window.lyknWelcome.syncBrowser(opts);
           if (!result?.ok) {
             throw new Error(result?.error || "Browser sync could not start.");
           }
-          const blockers = (result.warnings || []).filter((warning) =>
-            /^(keychain_denied|db_read_failed|cookie_read_failed|cookie_import_failed|automation_denied|applescript_failed|tab_read_failed|history_read_failed|unsupported_platform)/.test(
-              String(warning || ""),
-            ),
-          );
+          const blockers =
+            typeof chromeSyncUi.blockerWarnings === "function"
+              ? chromeSyncUi.blockerWarnings(result.warnings)
+              : (result.warnings || []).filter((warning) =>
+                  chromeSyncUi.isBlockerWarning?.(warning),
+                );
           if (blockers.length) {
             throw new Error("Browser sync needs your macOS approval. Approve the system prompt, then try again.");
           }
@@ -3366,12 +3430,13 @@
           syncStatus.textContent =
             `Synced ${imported} signed-in session${imported === 1 ? "" : "s"} and ` +
             `${tabs} tab${tabs === 1 ? "" : "s"}${context}.`;
-          syncBrowserBtn.firstChild.textContent = "Synced ";
+          setWalkthroughSyncPhase("synced", "Synced");
           setTimeout(() => setStage("macsync"), 700);
         } catch (error) {
+          chromeSyncUi.logSyncFailure?.("welcome", error);
           syncStatus.textContent =
             error?.message || "Browser sync could not finish. Approve the macOS prompt and try again.";
-          syncBrowserBtn.firstChild.textContent = "Try again ";
+          setWalkthroughSyncPhase("error", "Try again");
           syncBrowserBtn.disabled = false;
           browserSyncing = false;
         }
@@ -3403,7 +3468,7 @@
         const all = syncAllOpt.checked;
         folderGrid.classList.toggle("all-on", all);
         const picks = all
-          ? [{ name: "Home folder — everything synced" }]
+          ? [{ name: "Home folder, everything synced" }]
           : [...folderGrid.querySelectorAll(".folder-chip.picked")].map((c) => ({
               name: c.dataset.name,
             }));
@@ -3727,8 +3792,8 @@
         { id: "plum", name: "Plum", hsl: "284 48% 34%" },
       ];
       const RESPOND_SAMPLES = {
-        concise: "Three meetings — 10, 12:30, and 4.",
-        medium: "Three things — a design review at 10, lunch with Ana at 12:30, and the investor call you moved to 4.",
+        concise: "Three meetings: 10, 12:30, and 4.",
+        medium: "Three things: a design review at 10, lunch with Ana at 12:30, and the investor call you moved to 4.",
         detailed: "You've got three things on the calendar. Design review at 10, lunch with Ana at 12:30, and the investor call you moved to 4. I'll ping you 10 minutes before the first one.",
       };
       const TEXT_SIZES = [

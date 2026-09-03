@@ -14,6 +14,14 @@
 // Optimistic concurrency: updateDocument is compare-and-swap on `version`.
 // A writer holding a stale version gets { staleVersion: true } instead of
 // silently overwriting a concurrent write.
+// Ownership queries go through userOwnedAccess so a caller cannot look up
+// another user's document by id or path alone.
+
+import {
+  deleteUserRowById,
+  requireUserId,
+  userOwnedTable,
+} from '../../lib/security/userOwnedAccess.js';
 
 /**
  * @typedef {object} MemoryDocumentRow
@@ -62,10 +70,9 @@ export function createSupabaseMemoryStore(client) {
 
   return {
     async getDocument(userId, path, { includeArchived = false } = {}) {
-      let q = client
-        .from('lykn_memory_documents')
+      requireUserId(userId);
+      let q = userOwnedTable(client, 'lykn_memory_documents', userId)
         .select(DOCUMENT_COLUMNS)
-        .eq('user_id', userId)
         .eq('path', path);
       if (!includeArchived) q = q.eq('status', 'active');
       const { data, error } = await q.maybeSingle();
@@ -74,10 +81,8 @@ export function createSupabaseMemoryStore(client) {
     },
 
     async listActiveDocuments(userId) {
-      const { data, error } = await client
-        .from('lykn_memory_documents')
+      const { data, error } = await userOwnedTable(client, 'lykn_memory_documents', userId)
         .select(REGISTRY_COLUMNS)
-        .eq('user_id', userId)
         .eq('status', 'active')
         .order('updated_at', { ascending: false });
       if (error) throw new Error(`memory listActiveDocuments failed: ${error.message}`);
@@ -85,9 +90,8 @@ export function createSupabaseMemoryStore(client) {
     },
 
     async insertDocument(userId, doc) {
-      const { data, error } = await client
-        .from('lykn_memory_documents')
-        .insert({ ...doc, user_id: userId })
+      const { data, error } = await userOwnedTable(client, 'lykn_memory_documents', userId)
+        .insert(doc)
         .select(DOCUMENT_COLUMNS)
         .single();
       if (error) {
@@ -99,12 +103,11 @@ export function createSupabaseMemoryStore(client) {
 
     async updateDocument(userId, id, expectedVersion, fields) {
       // Compare-and-swap: the version predicate makes a stale write match
-      // zero rows instead of clobbering a newer document.
-      const { data, error } = await client
-        .from('lykn_memory_documents')
+      // zero rows instead of clobbering a newer document. user_id is required
+      // by userOwnedTable so a foreign id cannot be updated.
+      const { data, error } = await userOwnedTable(client, 'lykn_memory_documents', userId)
         .update({ ...fields, version: expectedVersion + 1, updated_at: new Date().toISOString() })
         .eq('id', id)
-        .eq('user_id', userId)
         .eq('version', expectedVersion)
         .select(DOCUMENT_COLUMNS);
       if (error) return { ok: false, error: error.message };
@@ -114,19 +117,16 @@ export function createSupabaseMemoryStore(client) {
     },
 
     async insertVersion(userId, versionRow) {
-      const { error } = await client
-        .from('lykn_memory_document_versions')
-        .insert({ ...versionRow, user_id: userId });
+      const { error } = await userOwnedTable(client, 'lykn_memory_document_versions', userId)
+        .insert(versionRow);
       if (error) return { ok: false, error: error.message };
       return { ok: true };
     },
 
     async listVersions(userId, documentId, { limit = 20, includeMarkdown = false } = {}) {
       const cols = includeMarkdown ? `${VERSION_COLUMNS}, markdown` : VERSION_COLUMNS;
-      const { data, error } = await client
-        .from('lykn_memory_document_versions')
+      const { data, error } = await userOwnedTable(client, 'lykn_memory_document_versions', userId)
         .select(cols)
-        .eq('user_id', userId)
         .eq('memory_document_id', documentId)
         .order('version', { ascending: false })
         .limit(Math.max(1, Math.min(100, limit)));
@@ -136,14 +136,9 @@ export function createSupabaseMemoryStore(client) {
 
     async hardDeleteDocument(userId, id) {
       // Versions cascade via FK (migration 124).
-      const { data, error } = await client
-        .from('lykn_memory_documents')
-        .delete()
-        .eq('id', id)
-        .eq('user_id', userId)
-        .select('id');
-      if (error) return { ok: false, deleted: false, error: error.message };
-      return { ok: true, deleted: Array.isArray(data) ? data.length > 0 : Boolean(data) };
+      const result = await deleteUserRowById(client, 'lykn_memory_documents', userId, id);
+      if (result.error) return { ok: false, deleted: false, error: result.error.message };
+      return { ok: true, deleted: result.deleted };
     },
   };
 }

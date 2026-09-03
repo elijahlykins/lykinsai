@@ -285,7 +285,10 @@ test("approval can resume the SAME Task", async () => {
 
 test("LocalExecutor passes the Task cancellation signal into its model fetch", async () => {
   const runtime = new TaskRuntime();
-  const task = localTask(runtime, { capabilities: ["files.read"] });
+  const task = localTask(runtime, {
+    capabilities: ["files.read"],
+    objective: "summarize the latest notes I have",
+  });
   let receivedSignal = null;
   const executor = new LocalExecutor({
     runLocalTask: ({ instruction, context }) =>
@@ -425,6 +428,24 @@ test("local events carry task and run identity and complete once", async () => {
   assert.equal(events.filter((event) => event.type === "task_completed").length, 1);
 });
 
+test("a named folder ask searches the Mac instead of waiting for a path", () => {
+  const search = tryDeterministicLocalAction(
+    "hey can you read my LYKN folder",
+    new Set(["local_search_files", "local_list_dir"]),
+  );
+  assert.deepEqual(search, {
+    tool: "local_search_files",
+    args: { path: "~", namePattern: "*LYKN*" },
+    thenList: true,
+  });
+
+  const known = tryDeterministicLocalAction(
+    "list my downloads folder",
+    new Set(["local_list_dir", "local_search_files"]),
+  );
+  assert.deepEqual(known, { tool: "local_list_dir", args: { path: "~/Downloads" } });
+});
+
 test("an explicit file read skips the planner loop", async () => {
   const action = tryDeterministicLocalAction("read ~/Documents/report.pdf", new Set(["local_read_file"]));
   assert.deepEqual(action, { tool: "local_read_file", args: { path: "~/Documents/report.pdf" } });
@@ -489,24 +510,18 @@ test("approved-root reads work and traversal outside the root is rejected", asyn
   assert.equal(escaped.ok, false);
 });
 
-test("a write is not auto-approved", async () => {
-  const userData = fs.mkdtempSync(path.join(os.tmpdir(), "lykn-local-write-"));
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "lykn-local-wroot-"));
+test("a download is not auto-approved", async () => {
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), "lykn-local-pull-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "lykn-local-proot-"));
+  fs.writeFileSync(path.join(root, "photo.png"), "fake-png");
   fs.writeFileSync(
     path.join(userData, "local-mode.json"),
     JSON.stringify({ enabled: true, syncAll: false, syncedFolders: [root], excludedFolders: [] }),
   );
   const pending = await localSystem.run(
-    "local_write_file",
-    { path: path.join(root, "new.txt"), content: "x" },
+    "local_pull_file",
+    { path: path.join(root, "photo.png") },
     { userDataPath: userData },
   );
   assert.equal(pending.needsApproval, true);
-  const done = await localSystem.run(
-    "local_write_file",
-    { path: path.join(root, "new.txt"), content: "x" },
-    { userDataPath: userData, approved: true },
-  );
-  assert.equal(done.ok, true);
-  assert.equal(fs.readFileSync(path.join(root, "new.txt"), "utf8"), "x");
 });

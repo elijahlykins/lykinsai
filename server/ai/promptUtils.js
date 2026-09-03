@@ -2,6 +2,7 @@
 // (`_memCaches`, Gemini context-cache store) so every importer shares identity.
 import crypto from 'crypto';
 import fetch from 'node-fetch';
+import { DYNAMIC_PROMPT_SECTION_MARKERS } from './contextPipeline/contextConfig.js';
 
 // ============================================
 // UTILITY — deterministic hash for AI caching
@@ -81,19 +82,27 @@ export function sanitizeStaleSurfaceLanguage(text) {
 // ============================================
 // UTILITY — split assembled prompt into system + user for provider caching
 // ============================================
-export const PROMPT_SECTION_MARKERS = [
-  '[USER_PREFERENCES]', '[INTENT]', '[CONVERSATION]', '[CONVERSATION_MEMORY',
-  '[WORKSPACE_CONTEXT]', '[REQUEST_CONTEXT]', '[FULL_CONTEXT]',
-  '[VAULT_URL_MATCHES]',
-  '[PROJECT_KNOWLEDGE]', '[WHAT_IM_ON]', '[WHO_I_AM]', '[WHAT_IVE_SAVED]', '[PROJECT_ID]', '[CONTEXT]',
-  '[ATTACHED_IMAGES]', '[LATEST_USER_MESSAGE]', '[USER]',
-];
+export const PROMPT_SECTION_MARKERS = DYNAMIC_PROMPT_SECTION_MARKERS;
+
+export function indexOfSectionMarker(text, marker) {
+  const raw = String(text || '');
+  const needle = String(marker || '');
+  if (!needle) return -1;
+  let from = 0;
+  while (from < raw.length) {
+    const idx = raw.indexOf(needle, from);
+    if (idx < 0) return -1;
+    if (idx === 0 || raw[idx - 1] === '\n') return idx;
+    from = idx + needle.length;
+  }
+  return -1;
+}
 
 export function splitPromptForProvider(fullPrompt) {
   if (!fullPrompt) return { system: '', user: fullPrompt || '' };
   let splitIdx = fullPrompt.length;
   for (const m of PROMPT_SECTION_MARKERS) {
-    const idx = fullPrompt.indexOf(m);
+    const idx = indexOfSectionMarker(fullPrompt, m);
     if (idx >= 0 && idx < splitIdx) splitIdx = idx;
   }
   if (splitIdx === 0 || splitIdx >= fullPrompt.length) {
@@ -268,6 +277,9 @@ export const OUTPUT_CAPS = {
   // the tool's MAX_CODE_LEN. clampForProvider still bounds this per provider
   // (grok/gemini 32k ceilings pass it through; openai/claude clamp lower).
   coded_artifact: 30000,
+  // Open-artifact / installed-app refine: patches (`edits` / `file_ops`) plus
+  // a short summary. 30k invited grok to re-stream the whole app and hang.
+  coded_artifact_edit: 8000,
   // Deep research reports are long markdown with stock/chart/sheet embeds.
   // 12k was truncating mid-fence so the client rendered raw embed JSON.
   // 24k + continue-on-length in chat-agent-loop finishes the Sources section.

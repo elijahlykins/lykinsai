@@ -1,8 +1,21 @@
+import BotAvatar from "@/components/bots/BotAvatar";
+import { classifyStatusLine, useThinkingStatus } from "@/hooks/useThinkingStatus";
+import { botSeed } from "@/lib/bots/botStore";
 import LyknOutlineSpinner from "./LyknOutlineSpinner";
 
+export type ThinkingBotFace = {
+  id?: string;
+  face: string;
+  eyes: string;
+  color: string;
+  seed?: number;
+};
+
 interface ThinkingIndicatorProps {
-  /** The status text to display (already resolved by useThinkingStatus). */
+  /** Live status. Generic "Thinking…" / "Building…" rotate; specific lines show as-is. */
   status: string;
+  /** When set, the live mark is this Bot doing its move — not the LYKN outline. */
+  bot?: ThinkingBotFace | null;
   /** Compact variant for tight surfaces like the canvas side rail. */
   compact?: boolean;
   /**
@@ -17,27 +30,47 @@ interface ThinkingIndicatorProps {
    */
   paused?: boolean;
   className?: string;
-  /** Earlier build thoughts ("Designing the hero") shown above the live line. */
+  /** Earlier build thoughts shown above the live line. Plan-echo and
+   *  generic think lines are never stacked here. */
   trail?: string[];
 }
 
+function priorThoughts(trail: string[] | undefined, live: string) {
+  return (trail || [])
+    .map((line) => String(line || "").trim())
+    .filter((line) => {
+      if (!line || line === live) return false;
+      const kind = classifyStatusLine(line);
+      return kind === "live-build";
+    })
+    .slice(-3);
+}
+
 /**
- * "Thinking" indicator: the LYKN icon outline drawing on/off in a loop
- * alongside a status label with a subtle monochrome shimmer. The phrase
- * swaps in place as it rotates (no fade/crossfade) so a long wait reads as
- * calm, alive motion.
+ * A live mark beside the working-through line. LYKN uses the outline spinner;
+ * a Bot turn uses that Bot's face. Both write the current thought next to
+ * the mark, with earlier thoughts faded above it.
  */
 export default function ThinkingIndicator({
   status,
+  bot = null,
   compact = false,
   tone = "brand",
   paused = false,
   className = "",
   trail,
 }: ThinkingIndicatorProps) {
-  const text = status && status.trim() ? status : "Thinking…";
+  const classification = classifyStatusLine(status);
+  const rotate =
+    !paused &&
+    (classification === "empty" ||
+      classification === "generic-think" ||
+      classification === "generic-build");
+  const rotated = useThinkingStatus(rotate, status, classification === "generic-build");
+  const text = (rotate ? rotated : status)?.trim() || "Thinking…";
   const gapClass = compact ? "gap-2" : "gap-3";
-  const prior = (trail || []).filter((line) => line && line !== text).slice(-3);
+  const prior = priorThoughts(trail, text);
+  const mark = compact ? 16 : 24;
 
   return (
     <div
@@ -45,13 +78,14 @@ export default function ThinkingIndicator({
         tone === "inherit" ? "lykn-mark-inherit" : ""
       } ${className}`}
       aria-live="polite"
+      aria-label={text}
     >
       {prior.length > 0 ? (
-        <ul className="space-y-0.5 pl-0.5" aria-label="What LYKN has been building">
+        <ul className="space-y-0.5 pl-0.5" aria-label="What has been worked through">
           {prior.map((line) => (
             <li
               key={line}
-              className={`leading-snug truncate ${
+              className={`leading-snug ${
                 compact ? "text-[11px]" : "text-[12px]"
               } ${
                 tone === "inherit"
@@ -64,9 +98,28 @@ export default function ThinkingIndicator({
           ))}
         </ul>
       ) : null}
-      <div className={`flex items-center ${gapClass}`}>
-        <LyknOutlineSpinner size={compact ? 16 : 24} paused={paused} />
-        <span className={paused ? "" : "lykn-chat-thinking-text"}>{text}</span>
+      <div className={`flex items-start ${gapClass}`}>
+        <span className="mt-0.5 shrink-0 translate-x-[3px] -translate-y-[2px]">
+          {bot ? (
+            <BotAvatar
+              face={bot.face}
+              eyes={bot.eyes}
+              color={bot.color}
+              size={mark}
+              mood={paused ? "waiting" : "working"}
+              seed={Number.isFinite(bot.seed) ? Number(bot.seed) : botSeed(bot.id)}
+            />
+          ) : (
+            <LyknOutlineSpinner size={mark} paused={paused} />
+          )}
+        </span>
+        <span
+          className={`min-w-0 break-words leading-snug ${
+            paused ? "" : "lykn-chat-thinking-text"
+          }`}
+        >
+          {text}
+        </span>
       </div>
     </div>
   );

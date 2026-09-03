@@ -102,6 +102,7 @@ function detectMount(layer) {
   };
   if (matches('/zz-mount-probe-zz')) return '/';
   if (matches('/api/zz-mount-probe-zz')) return '/api/';
+  if (matches('/oauth/zz-mount-probe-zz')) return '/oauth/';
   return '(unknown)';
 }
 

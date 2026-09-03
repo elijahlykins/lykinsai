@@ -1,0 +1,1043 @@
+/* Icy modern theme + new landing sections. Page type is navy; header is grey. */
+
+.lx-wordmark {
+  display: inline-block;
+  height: 0.72em;
+  height: 1cap;
+  width: auto;
+  margin: 0 0.08em 0 0.04em;
+  overflow: visible;
+  vertical-align: -0.05em;
+  pointer-events: none;
+  user-select: none;
+  flex: none;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.glass-land {
+  --gl-navy: #0968c4;
+  --gl-navy-deep: #072544;
+  --gl-sapphire: #0968c4;
+  --gl-ice: #e8eef6;
+  /* Matches the outer tone of the hero's radial backdrop so every section
+     below the hero card sits on the same cool gray. */
+  --gl-mist: #dde2ee;
+  background: var(--gl-mist);
+  color: var(--gl-navy);
+  overflow-x: clip;
+  overscroll-behavior-x: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+.glass-land .gl-start-title,
+.glass-land .gl-start-card-title,
+.glass-land .gl-start-card-sub,
+.glass-land .gl-start-list li,
+.glass-land .gl-footer-tagline,
+.glass-land .gl-footer-col-title,
+.glass-land .gl-footer-link,
+.glass-land .gl-footer-bottom {
+  color: var(--gl-navy);
+}
+
+.glass-land .gl-cap-title {
+  color: #111;
+}
+
+.glass-land .gl-cap-underline {
+  color: var(--gl-navy, #0968c4);
+  text-decoration-color: var(--gl-navy, #0968c4);
+}
+
+.glass-land .gl-start-card {
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: 0 24px 60px -28px rgba(11, 58, 110, 0.28);
+}
+
+.glass-land .gl-start-list svg {
+  color: var(--gl-navy);
+}
+
+.glass-land .gl-start-btn--solid {
+  color: #ffffff;
+  background: #0968c4;
+  border-color: #0968c4;
+  box-shadow: none;
+}
+
+.glass-land .gl-start-btn--solid:hover {
+  background: #0754a3;
+  box-shadow: none;
+}
+
+/* ── Simple explanation ─────────────────────────────────── */
+@property --lx-grow {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+.lx-explain {
+  position: relative;
+  z-index: 2;
+  isolation: isolate;
+  padding: clamp(4.5rem, 12vh, 8rem) clamp(1.4rem, 8vw, 7rem)
+    clamp(6.5rem, 18vh, 11rem);
+  background: transparent;
+  --lx-mx: 50%;
+  --lx-my: 50%;
+  --lx-grow: 0;
+  --lx-mr: 2.6rem;
+  transition: --lx-grow 380ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.lx-explain.is-on {
+  --lx-grow: 1;
+}
+
+.lx-explain-blob {
+  position: absolute;
+  left: var(--lx-mx);
+  top: var(--lx-my);
+  z-index: 0;
+  width: calc(var(--lx-mr) * 2);
+  height: calc(var(--lx-mr) * 2);
+  pointer-events: none;
+  border-radius: 50%;
+  background: var(--gl-navy, #0968c4);
+  transform: translate(-50%, -50%) scale(var(--lx-grow));
+}
+
+.lx-explain-inner {
+  position: relative;
+  z-index: 1;
+  max-width: 38rem;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(1.8rem, 4vh, 2.6rem);
+}
+
+.lx-explain-over {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  padding: inherit;
+  pointer-events: none;
+  color: #ffffff;
+  clip-path: circle(calc(var(--lx-mr) * var(--lx-grow)) at var(--lx-mx) var(--lx-my));
+}
+
+.lx-explain-over .lx-explain-p {
+  color: #ffffff;
+}
+
+.lx-explain-p {
+  margin: 0;
+  font-size: clamp(1.45rem, 3vw, 2.05rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.28;
+  color: var(--gl-navy, #0968c4);
+  opacity: 0;
+  will-change: opacity, transform, filter;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lx-explain-p {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+@media (hover: none), (pointer: coarse), (prefers-reduced-motion: reduce) {
+  .lx-explain-blob,
+  .lx-explain-over {
+    display: none;
+  }
+}
+
+/* ── Three-page slideshow ───────────────────────────────── */
+.ls-pin {
+  position: relative;
+  z-index: 1;
+  height: 300vh;
+  --ls-merge: 1;
+}
+
+.ls-sticky {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: transparent;
+}
+
+/* The merge fade lives on the whole slide so the wallpaper and the glass
+   pane dissolve together as the section scrolls into place. */
+.ls-slide {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  will-change: transform, opacity;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 calc(var(--ls-merge) * 20vh),
+    #000 calc(var(--ls-merge) * 48vh),
+    #000 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 calc(var(--ls-merge) * 20vh),
+    #000 calc(var(--ls-merge) * 48vh),
+    #000 100%
+  );
+}
+
+.ls-slide-wall {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Full-bleed glass pane over the entire wallpaper, same depth as the hero's
+   desktop-UI glass: identical tint, blur, and top hairline highlight. */
+.ls-slide-inner {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: clamp(2.5rem, 6vw, 6rem);
+  text-align: left;
+  padding: clamp(3rem, 8vw, 6rem) clamp(2rem, 8vw, 7rem);
+  background: rgba(8, 18, 36, 0.22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  backdrop-filter: blur(28px) saturate(1.45);
+  -webkit-backdrop-filter: blur(28px) saturate(1.45);
+}
+
+.ls-copy {
+  flex: 0 1 auto;
+  max-width: 40rem;
+}
+
+.ls-vis {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+}
+
+.ls-slide-inner > * {
+  opacity: var(--ls-copy, 1);
+}
+
+.ls-kicker {
+  margin: 0 0 0.8rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.35em;
+  font-size: 0.75rem;
+  font-weight: 650;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(248, 250, 252, 0.78);
+}
+
+.ls-title {
+  margin: 0;
+  font-size: clamp(2.4rem, 6vw, 4.4rem);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.02;
+  color: #f8fafc;
+}
+
+.ls-body {
+  margin: 1.2rem 0 0;
+  max-width: 34rem;
+  font-size: clamp(1.05rem, 2vw, 1.3rem);
+  line-height: 1.55;
+  font-weight: 550;
+  color: rgba(248, 250, 252, 0.86);
+}
+
+/* ── Slide visuals: product UI vignettes ────────────────── */
+.ls-vis-panel {
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  box-shadow:
+    0 30px 60px -36px rgba(2, 12, 32, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(20px) saturate(1.35);
+  -webkit-backdrop-filter: blur(20px) saturate(1.35);
+  color: #f8fafc;
+}
+
+/* Sync: mini Finder-ish window of the synced Desktop folder */
+.ls-vis-sync {
+  width: min(31rem, 40vw);
+  padding: 1.3rem 1.5rem 1.5rem;
+}
+
+.ls-vis-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.9rem;
+}
+
+.ls-vis-dots {
+  display: inline-flex;
+  gap: 0.32rem;
+}
+
+.ls-vis-dots i {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.ls-vis-titlebar-label {
+  font-size: 0.95rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: rgba(248, 250, 252, 0.85);
+}
+
+.ls-vis-folders {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.2rem 0.5rem;
+}
+
+.ls-vis-folder {
+  display: grid;
+  justify-items: center;
+  gap: 0.35rem;
+}
+
+.ls-vis-folder svg {
+  width: 3rem;
+  height: 3rem;
+  color: rgba(224, 242, 255, 0.92);
+}
+
+.ls-vis-folder em {
+  font-style: normal;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: rgba(248, 250, 252, 0.85);
+}
+
+.ls-vis-chip {
+  margin-top: 1.3rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 1rem;
+  border-radius: 14px;
+  background: rgba(8, 18, 36, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  font-size: 0.94rem;
+  font-weight: 600;
+}
+
+.ls-vis-chip svg {
+  width: 1.2rem;
+  height: 1.2rem;
+}
+
+.ls-vis-chip em {
+  margin-left: auto;
+  font-style: normal;
+  font-weight: 600;
+  font-size: 0.86rem;
+  color: rgba(167, 243, 208, 0.95);
+}
+
+/* Customize: home widgets + dock. The widgets come from the desktop preview
+   at their native size, so the whole cluster is scaled up together. */
+.ls-vis-customize {
+  display: grid;
+  justify-items: center;
+  gap: 1.3rem;
+  transform: scale(1.28);
+  transform-origin: center right;
+}
+
+.ls-vis-widgets {
+  display: flex;
+  gap: 0.9rem;
+  align-items: stretch;
+}
+
+.ls-vis-dock {
+  display: inline-flex;
+  gap: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  box-shadow:
+    0 18px 40px -26px rgba(2, 12, 32, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+}
+
+.ls-vis-dock > span {
+  display: grid;
+  place-items: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.18);
+  color: #f8fafc;
+}
+
+/* Agents: roster of working agents */
+.ls-vis-agents {
+  width: min(30rem, 39vw);
+  padding: 1.15rem;
+  display: grid;
+  gap: 0.8rem;
+}
+
+.ls-vis-agent {
+  display: flex;
+  align-items: center;
+  gap: 0.95rem;
+  padding: 0.95rem 1.1rem;
+  border-radius: 18px;
+  background: rgba(8, 18, 36, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+/* Open slot (no backing circle): the bot characters bring their own shape
+   and color, and their quirk moves need a little headroom. */
+.ls-vis-agent-mark {
+  display: grid;
+  place-items: center;
+  width: 3.3rem;
+  height: 3.3rem;
+}
+
+.ls-vis-agent-copy {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.ls-vis-agent-copy strong {
+  font-size: 1.1rem;
+  font-weight: 650;
+}
+
+.ls-vis-agent-copy em {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-style: normal;
+  font-size: 0.9rem;
+  font-weight: 550;
+  color: rgba(248, 250, 252, 0.72);
+}
+
+.ls-vis-agent-copy em svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.ls-vis-live {
+  margin-left: auto;
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.9);
+}
+
+.ls-vis-live.is-idle {
+  background: rgba(248, 250, 252, 0.45);
+  box-shadow: none;
+}
+
+@media (max-width: 860px) {
+  .ls-pin {
+    height: auto;
+  }
+  .ls-sticky {
+    position: relative;
+    height: auto;
+    display: flex;
+    flex-direction: column;
+    background: transparent;
+    gap: 0.75rem;
+    padding: 0.35rem 0.85rem 1.5rem;
+  }
+  .ls-slide {
+    position: relative;
+    height: auto;
+    min-height: 0;
+    opacity: 1 !important;
+    transform: none !important;
+    padding: 0;
+    border-radius: 22px;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+  .ls-slide-inner {
+    position: relative;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 1.15rem;
+    padding: 1.6rem 1.2rem 1.35rem;
+  }
+  .ls-copy {
+    max-width: none;
+  }
+  .ls-kicker {
+    margin-bottom: 0.5rem;
+  }
+  .ls-title {
+    font-size: clamp(1.7rem, 7vw, 2.2rem);
+  }
+  .ls-body {
+    margin-top: 0.7rem;
+    font-size: 1.02rem;
+    font-weight: 500;
+  }
+  .ls-vis {
+    display: grid;
+    width: 100%;
+    justify-items: stretch;
+  }
+  .ls-vis-sync,
+  .ls-vis-agents {
+    width: 100%;
+  }
+  .ls-vis-customize {
+    transform: scale(0.78);
+    transform-origin: top center;
+    margin-bottom: -1.5rem;
+  }
+  .ls-vis-folder svg {
+    width: 2.4rem;
+    height: 2.4rem;
+  }
+  .ls-vis-chip {
+    font-size: 0.82rem;
+    padding: 0.55rem 0.8rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ls-slide {
+    transform: none !important;
+  }
+}
+
+/* Models + Tools cards: two animated carousels right above the one-browser
+   section. The models ring rotates through the whole catalog (open and closed
+   weights alike); the tools ring rotates through the connected-app catalog. */
+.gl-mt {
+  position: relative;
+  z-index: 2;
+  padding: clamp(3.5rem, 9vh, 6rem) clamp(1.25rem, 6vw, 5rem)
+    clamp(4rem, 10vh, 6.5rem);
+}
+
+.gl-mt-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(1rem, 2.5vw, 1.75rem);
+  align-items: stretch;
+}
+
+.gl-mt-card {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(1rem, 2.2vh, 1.4rem);
+  padding: clamp(1.4rem, 2.6vw, 2rem);
+  border-radius: 22px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 24px 60px -32px rgba(11, 58, 110, 0.25);
+}
+
+.gl-mt-head h3 {
+  margin: 0 0 0.45rem;
+  font-size: 1.02rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #0f172a;
+}
+
+.gl-mt-head p {
+  margin: 0;
+  max-width: 26rem;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: #64748b;
+}
+
+.gl-mt-panel {
+  position: relative;
+  flex: 1;
+  min-height: 15rem;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 16px;
+  background: #f7f9fc;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+/* Models: horizontal ring of logo tiles, center tile lifted onto brand blue. */
+.gl-mt-models {
+  display: grid;
+  justify-items: center;
+  gap: 0.9rem;
+  width: 100%;
+}
+
+.gl-mt-carousel {
+  position: relative;
+  width: 100%;
+  height: 6.2rem;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 16%,
+    #000 84%,
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 16%,
+    #000 84%,
+    transparent
+  );
+}
+
+.gl-mt-tile {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: grid;
+  place-items: center;
+  width: 3.7rem;
+  height: 3.7rem;
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  box-shadow: 0 12px 26px -16px rgba(15, 23, 42, 0.4);
+  transition:
+    transform 700ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 700ms ease,
+    background 700ms ease,
+    border-color 700ms ease;
+}
+
+.gl-mt-tile img {
+  width: 54%;
+  height: 54%;
+  object-fit: contain;
+  transition: filter 700ms ease;
+}
+
+.gl-mt-tile.is-active {
+  background: var(--gl-navy, #0968c4);
+  border-color: var(--gl-navy, #0968c4);
+  box-shadow: 0 16px 32px -14px rgba(9, 104, 196, 0.55);
+}
+
+/* Force the active logo to a white silhouette so any vendor mark reads on blue. */
+.gl-mt-tile.is-active img {
+  filter: brightness(0) invert(1);
+}
+
+.gl-mt-tile-fallback {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.gl-mt-tile.is-active .gl-mt-tile-fallback {
+  color: #ffffff;
+}
+
+.gl-mt-model-name {
+  margin: 0;
+  min-height: 1.3em;
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: #334155;
+  text-align: center;
+}
+
+.gl-mt-name-swap {
+  display: block;
+  animation: gl-mt-name-in 500ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes gl-mt-name-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.3em);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Tools: vertical ring of app pills, center pill sharp beside a "+" hint. */
+.gl-mt-list {
+  position: relative;
+  width: 100%;
+  height: 13.5rem;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 16%,
+    #000 84%,
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 16%,
+    #000 84%,
+    transparent
+  );
+}
+
+.gl-mt-plus {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(calc(-50% - 8.6rem), -50%);
+  display: grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  font-size: 1rem;
+  font-weight: 500;
+  color: #94a3b8;
+  z-index: 4;
+}
+
+.gl-mt-pill {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 13.5rem;
+  max-width: 84%;
+  padding: 0.55rem 0.9rem;
+  border-radius: 12px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  transition:
+    transform 700ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 700ms ease,
+    box-shadow 700ms ease,
+    border-color 700ms ease;
+}
+
+.gl-mt-pill img {
+  width: 1.35rem;
+  height: 1.35rem;
+  flex: none;
+  object-fit: contain;
+}
+
+.gl-mt-pill-fallback {
+  display: grid;
+  place-items: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  flex: none;
+  border-radius: 6px;
+  background: #eef2f7;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.gl-mt-pill em {
+  font-style: normal;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #334155;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gl-mt-pill.is-active {
+  border-color: rgba(15, 23, 42, 0.14);
+  box-shadow: 0 14px 30px -18px rgba(15, 23, 42, 0.4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gl-mt-tile,
+  .gl-mt-pill {
+    transition: none;
+  }
+  .gl-mt-name-swap {
+    animation: none;
+  }
+}
+
+/* Phone/tablet: denser rhythm, no sideways scroll, readable type on blue bands. */
+@media (max-width: 860px) {
+  .glass-land .gl-hero {
+    min-height: 0;
+    overflow: hidden;
+    padding: calc(4.6rem + env(safe-area-inset-top, 0px)) 1rem 1.4rem;
+  }
+  .glass-land .gl-hero-inner {
+    gap: 1.1rem;
+  }
+  .glass-land .gl-hero-copy {
+    padding: 0.15rem 0 0;
+  }
+  .glass-land .gl-hero-slide {
+    font-size: clamp(1.85rem, 8.4vw, 2.4rem);
+    min-height: calc(3 * 1.12em);
+    line-height: 1.12;
+  }
+  .glass-land .gl-hero-ctas {
+    margin-top: 1.15rem;
+  }
+  .glass-land .gl-hero-ctas .lkn-nav-signup {
+    min-height: 44px;
+    padding: 0.7rem 1.35rem;
+    font-size: 0.95rem;
+  }
+  .glass-land .gl-hero-visual {
+    margin-top: 0.35rem;
+    width: 100%;
+  }
+  .glass-land .gl-hero-stage,
+  .glass-land .gl-hero-glass {
+    border-radius: 16px;
+  }
+  .glass-land .gl-hero-desk-icon:nth-child(n + 5) {
+    display: none;
+  }
+  .glass-land .gl-hero-desk-dock {
+    transform: scale(0.72);
+  }
+
+  .lx-explain {
+    padding: 2.4rem 1.15rem 2.8rem;
+  }
+  .lx-explain-inner {
+    gap: 1.15rem;
+  }
+  .lx-explain-p {
+    font-size: clamp(1.22rem, 5.6vw, 1.5rem);
+    line-height: 1.32;
+  }
+
+  .glass-land .gl-cap {
+    padding: 2.1rem 1rem 1.6rem;
+  }
+  .glass-land .gl-cap-title {
+    font-size: clamp(1.7rem, 7.2vw, 2.15rem);
+  }
+  .glass-land .gl-cap-grid {
+    margin-top: 1.35rem;
+    gap: 0.7rem;
+  }
+  .glass-land .gl-cap-card,
+  .glass-land .gl-cap-card--wide {
+    height: 232px;
+    border-radius: 18px;
+  }
+  .glass-land .gl-cap-foot {
+    padding: 1.6rem 0.95rem 0.8rem;
+  }
+  .glass-land .gl-cap-explore {
+    min-height: 44px;
+    padding: 0 0.15rem;
+  }
+
+  .gl-mt {
+    padding: 2.2rem 1rem 2.4rem;
+  }
+  .gl-mt-inner {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.85rem;
+  }
+  .gl-mt-card {
+    padding: 1.2rem 1.05rem 1.15rem;
+    border-radius: 18px;
+  }
+  .gl-mt-panel {
+    min-height: 12.5rem;
+  }
+  .gl-mt-carousel {
+    height: 5.4rem;
+  }
+  .gl-mt-tile {
+    width: 3.2rem;
+    height: 3.2rem;
+  }
+  .gl-mt-list {
+    height: 11.5rem;
+  }
+  .gl-mt-plus {
+    display: none;
+  }
+
+  .glass-land .gl-any {
+    padding: 2.4rem 1rem 2.2rem;
+  }
+  .glass-land .gl-any-title {
+    font-size: clamp(1.7rem, 7vw, 2.2rem);
+  }
+  .glass-land .gl-any-sub {
+    min-height: 0;
+    margin-top: 0.8rem;
+    font-size: 0.98rem;
+  }
+  .glass-land .gl-any-actions {
+    margin-top: 1.15rem;
+  }
+  .glass-land .gl-any-btn {
+    min-height: 44px;
+    padding: 0.7rem 1.25rem;
+  }
+  .glass-land .gl-any-btn--primary {
+    background: #ffffff;
+    border-color: #ffffff;
+    color: #0968c4;
+  }
+  .glass-land .gl-any-btn--ghost {
+    background: transparent;
+    border-color: rgba(255, 255, 255, 0.45);
+    color: #ffffff;
+  }
+  .glass-land .gl-any-stats {
+    margin-top: 1.4rem;
+    gap: 1.1rem 1.5rem;
+  }
+  .glass-land .gl-any-chips {
+    justify-content: flex-start;
+  }
+  .glass-land .gl-any-shot,
+  .glass-land .gl-any-live {
+    border-radius: 14px;
+  }
+
+  .glass-land .gl-start {
+    padding: 2.4rem 1rem 2.6rem;
+  }
+  .glass-land .gl-start-title {
+    font-size: clamp(1.55rem, 6.6vw, 2rem);
+    color: #ffffff;
+  }
+  .glass-land .gl-start-grid {
+    margin-top: 1.25rem;
+  }
+  .glass-land .gl-start-card {
+    padding: 1.35rem 1.15rem 1.25rem;
+    border-radius: 18px;
+  }
+  .glass-land .gl-start-btn {
+    min-height: 44px;
+  }
+
+  .glass-land .gl-footer {
+    padding: 2rem 1.15rem calc(1.4rem + env(safe-area-inset-bottom, 0px));
+  }
+  .glass-land .gl-footer-inner {
+    gap: 1.75rem;
+  }
+  .glass-land .gl-footer-tagline {
+    max-width: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .glass-land .gl-hero-slide {
+    font-size: 1.72rem;
+  }
+  .glass-land .gl-hero-desk-widgets {
+    transform: scale(0.4);
+  }
+  .glass-land .gl-hero-desk-icons {
+    transform: scale(0.72);
+  }
+  .ls-sticky {
+    padding-left: 0.7rem;
+    padding-right: 0.7rem;
+  }
+  .ls-slide-inner {
+    padding: 1.35rem 1rem 1.15rem;
+  }
+  .ls-vis-folders {
+    gap: 0.7rem 0.3rem;
+  }
+  .gl-mt-carousel {
+    -webkit-mask-image: linear-gradient(
+      to right,
+      transparent,
+      #000 10%,
+      #000 90%,
+      transparent
+    );
+    mask-image: linear-gradient(
+      to right,
+      transparent,
+      #000 10%,
+      #000 90%,
+      transparent
+    );
+  }
+}

@@ -21,15 +21,31 @@ const browserAgent = require("./browser-agent/index.cjs");
 // progressively, verification per tool, one terminal delivery. Always reached
 // through TaskRuntime → BotExecutor; there is no host-level kill-switch path.
 const botHarness = require("./bot-harness/index.cjs");
+const { runAiDriveTool } = require("./bot-harness/aiDrive.cjs");
+const { parseAskTeammate, looksLikeTeammateHandoff } = require("./bot-harness/runtime/teammate.cjs");
+const { writeBasicDocument } = require("./basicDocumentWriter.cjs");
+const botDeliverables = require("./agent-runtime/botDeliverables.cjs");
 const { TaskRuntime } = require("./task-runtime/taskRuntime.cjs");
 const { isTerminalTaskStatus } = require("./task-runtime/task.cjs");
 const { WorkflowExecutor } = require("./teach/executor.cjs");
 const { resolveMcpConnectionIds } = require("./teach/workflow.cjs");
 const { BotExecutor } = require("./task-runtime/executors/botExecutor.cjs");
+const { BrowserExecutor } = require("./task-runtime/executors/browserExecutor.cjs");
+const { classifyOptInReply } = require("./task-runtime/executors/browserOptInChoice.cjs");
+const desktopMcp = require("./mcp/desktopMcpClient.cjs");
+const connectedAppsTool = require("./bot-harness/runtime/connectedAppsTool.cjs");
+const { looksLikeCreateRoutineAsk } = require("./bot-routines/nlRoutine.cjs");
 const {
-  BrowserExecutor,
-  BrowserOptInGate,
-} = require("./task-runtime/executors/browserExecutor.cjs");
+  looksLikeInboxWatch,
+  matchInboxConnections,
+  connectionIdentity,
+  watchedAccountFromInstructions,
+  pickInboxSearchTool,
+  extractMessages,
+  formatNewMail,
+  diffNewMessages,
+  nextSeenIds,
+} = require("./bot-routines/inboxWatch.cjs");
 const {
   LocalExecutor,
   toHarnessResult,
@@ -89,15 +105,19 @@ const {
   looksLikeArtifactConversion,
   normalizeAgentStepText,
   looksLikeDeliverableEdit,
+  looksLikeRerunAsk,
   looksLikeOpenDeliverableFollowUp,
   shouldRouteDeliverableEdit,
   askNeedsFindingFirst,
   classifyAgentSkill,
   titleFromGoal,
   referencesCurrentScreen,
+  looksLikeInspectAsk,
+  looksLikeSpecialistWork,
   askMentionsLiveSiteHost,
 } = require("./agent-runtime/skillRouting.cjs");
 const { createStreamChatHost } = require("./agent-runtime/streamChatHost.cjs");
+const { createBrowserQuestionHost } = require("./agent-runtime/browserQuestion.cjs");
 const { createBrowsePresentation } = require("./agent-runtime/browsePresentation.cjs");
 const { createGlassStatus } = require("./agent-runtime/glassStatus.cjs");
 const { createMailRouting } = require("./agent-runtime/mailRouting.cjs");
@@ -167,6 +187,9 @@ function createAgentRuntime(deps) {
     // reveals the tab by hand.
     setBotShotAgents = null,
     prepareBotShotSurface = null,
+    // Optional: open Settings → Connections so a Bot can hand the user a
+    // Gmail/Drive/Slack plugin instead of jumping into the browser.
+    openConnectionsSettings = null,
     // Optional observation-only sink used by explicit Teach Sessions. It sees
     // the same structured Task events sent to the renderer and may never
     // affect TaskRuntime state if recording or scrubbing fails.
@@ -495,7 +518,7 @@ function createAgentRuntime(deps) {
       // Prefer full content over Glass status line.
       const body = String(hist[i].content || "").trim();
       const glass = String(hist[i].glass || "").trim();
-      if (body.length > 120 && body !== glass && !/^Finished —/i.test(body)) {
+      if (body.length > 120 && body !== glass && !/^Finished[.\s—]/i.test(body)) {
         return body;
       }
     }
@@ -1013,6 +1036,35 @@ function createAgentRuntime(deps) {
   }
 
   /**
+   * A Bot asked a teammate. The renderer relays that. Do not park a question
+   * card on the raw [[ask Name]] marker - the user is not the one answering.
+   */
+  function parkTeammateHandoff(agent, question) {
+    const parsed = parseAskTeammate(question);
+    const name = parsed?.name || "a teammate";
+    const line = `Asking ${name}…`;
+    agent.status = "waiting";
+    agent.busy = true;
+    agent.waitingForSignIn = false;
+    agent.step = line;
+    agent.waitingReason = "teammate";
+    agent.waitingUserAction = line;
+    agent.waitingOptions = [];
+    agent.pendingQuestion = null;
+    // Keep the streamed report. The user is not the one answering this.
+    sendToAgentChannels(agent.id, "lykn:agent-status", { status: line });
+    emitProgress(agent.id, { status: "waiting", step: line, skill: agent.skill });
+    emitAgentWaiting(agent.id, {
+      waiting: true,
+      kind: "teammate",
+      label: line,
+      detail: "",
+    });
+    schedulePersist();
+    return String(agent.partialText || "").trim();
+  }
+
+  /**
    * Ask for a yes/no on one irreversible click, inline in the running task:
    * buttons in the response area, resolved without restarting anything. "Yes"
    * lets the agent make the click itself and carry on with whatever is left,
@@ -1058,6 +1110,7 @@ function createAgentRuntime(deps) {
       sendToAgentChannels(agent.id, "lykn:agent-choice", {
         choiceId,
         type: "browse-approval",
+        tool: "browser",
         message: msg,
         buttons,
       });
@@ -1792,6 +1845,10 @@ function createAgentRuntime(deps) {
       agentId: a.id,
       agent: publicAgent(a),
       history: historyForGlass(a.history),
+      askHistory: historyForGlass(a.askHistory || []),
+      askPartialText: String(a.askPartialText || ""),
+      askBusy: !!a.askBusy,
+      askStep: String(a.askStep || ""),
       // Don't dump streaming report markdown into Glass — status only.
       partialText: "",
       step: a.step || "",
@@ -1824,16 +1881,23 @@ function createAgentRuntime(deps) {
   function emitProgress(agentId, patch) {
     const a = agents.get(agentId);
     if (!a) return;
-    if (patch.status) a.status = patch.status;
-    if (patch.step != null) a.step = patch.step;
-    if (patch.url != null) a.url = patch.url;
-    if (patch.skill) a.skill = patch.skill;
-    a.updatedAt = new Date().toISOString();
+    // Browser-rail questions share the tab's agent but must not rewrite
+    // Bot / browse status, step, or the public agent list.
+    if (!patch.ask) {
+      if (patch.status) a.status = patch.status;
+      if (patch.step != null) a.step = patch.step;
+      if (patch.url != null) a.url = patch.url;
+      if (patch.skill) a.skill = patch.skill;
+      a.updatedAt = new Date().toISOString();
+    }
     sendToAgentChannels(agentId, "lykn:agent-progress", {
       ...publicAgent(a),
       ...(patch.message ? { message: patch.message } : {}),
+      ...(patch.ask
+        ? { ask: true, status: patch.status, step: patch.step, skill: patch.skill || "general" }
+        : {}),
     });
-    emitList();
+    if (!patch.ask) emitList();
   }
 
   /**
@@ -1927,6 +1991,7 @@ function createAgentRuntime(deps) {
         url: a.url,
         step: restedStep(a.status, a.step),
         history: Array.isArray(a.history) ? a.history.slice(-80) : [],
+        askHistory: Array.isArray(a.askHistory) ? a.askHistory.slice(-80) : [],
         createdAt: a.createdAt,
         updatedAt: a.updatedAt,
         lastDeliverableKind: a.lastDeliverableKind || "",
@@ -1975,6 +2040,11 @@ function createAgentRuntime(deps) {
           url: row.url || "",
           step: restedStep(row.status || "idle", row.step || ""),
           history: Array.isArray(row.history) ? row.history : [],
+          askHistory: Array.isArray(row.askHistory) ? row.askHistory : [],
+          askBusy: false,
+          askPartialText: "",
+          askStep: "",
+          askGeneration: 0,
           createdAt: row.createdAt || new Date().toISOString(),
           updatedAt: row.updatedAt || new Date().toISOString(),
           busy: false,
@@ -2054,6 +2124,23 @@ function createAgentRuntime(deps) {
    * never parsed back out of dispatch-brief text — so the persona survives
    * every turn instead of decaying after the first message.
    */
+  function sanitizeBotSkills(value) {
+    const list = Array.isArray(value) ? value : [];
+    const out = [];
+    const seen = new Set();
+    for (const raw of list) {
+      if (!raw || typeof raw !== "object") continue;
+      const id = String(raw.id || "").trim().slice(0, 80);
+      const name = String(raw.name || "").replace(/\s+/g, " ").trim().slice(0, 60);
+      const instructions = String(raw.instructions || "").trim().slice(0, 2000);
+      if (!id || !name || !instructions || seen.has(id)) continue;
+      seen.add(id);
+      out.push({ id, name, instructions });
+      if (out.length >= 12) break;
+    }
+    return out;
+  }
+
   function sanitizeBotProfile(raw) {
     if (!raw || typeof raw !== "object") return null;
     const id = String(raw.id || "").trim().slice(0, 120);
@@ -2078,10 +2165,25 @@ function createAgentRuntime(deps) {
               .slice(0, 20),
           }
         : {}),
+      skills: sanitizeBotSkills(raw.skills),
+      modelPolicy: sanitizeBotModelPolicy(raw.modelPolicy),
     };
   }
 
-  function createAgent({ title, goal, silent, role, activate, history, headless, bot } = {}) {
+  function sanitizeBotModelPolicy(raw) {
+    if (!raw || typeof raw !== "object") return { mode: "lykn" };
+    const mode = String(raw.mode || "lykn").trim();
+    if (mode !== "lykn" && mode !== "my_setup" && mode !== "route" && mode !== "model") {
+      return { mode: "lykn" };
+    }
+    return {
+      mode,
+      routeId: mode === "route" ? String(raw.routeId || "").trim().slice(0, 80) || null : null,
+      modelId: mode === "model" ? String(raw.modelId || "").trim().slice(0, 80) || null : null,
+    };
+  }
+
+  function createAgent({ title, goal, silent, role, activate, history, headless, bot, sourceChatId } = {}) {
     const wantMain = role === "main";
     if (wantMain) {
       const existing = getMainAgent();
@@ -2108,6 +2210,11 @@ function createAgentRuntime(deps) {
       url: "",
       step: "",
       history: [],
+      askHistory: [],
+      askBusy: false,
+      askPartialText: "",
+      askStep: "",
+      askGeneration: 0,
       createdAt: now,
       updatedAt: now,
       busy: false,
@@ -2148,6 +2255,7 @@ function createAgentRuntime(deps) {
           show: surface,
           focus: surface,
           label: agent.title || "Agent",
+          sourceChatId: String(sourceChatId || "").trim() || undefined,
         });
       } catch {
         /* tab creation is best-effort; sync will retry */
@@ -2179,12 +2287,16 @@ function createAgentRuntime(deps) {
     return { ok: true };
   }
 
-  /** Short greetings / casual chat Main can answer itself without spawning a worker. */
+  /** Short greetings / inspect asks Main can answer itself without spawning a worker. */
   function isTrivialMainChat(text, attachments) {
     const t = String(text || "").trim();
+    const hasAtt = !!(attachments && attachments.length);
     // Attachments alone are real work — never keep them on Main.
-    if (!t) return !(attachments && attachments.length);
-    if (attachments && attachments.length) return false;
+    if (!t) return !hasAtt;
+    if (looksLikeSpecialistWork(t)) return false;
+    // A dropped folder plus "what's in this" is a listing Main already has.
+    if (hasAtt && looksLikeInspectAsk(t)) return true;
+    if (hasAtt) return false;
     // Page / screen questions need the worker tab that owns the page.
     if (ownedBrowserAct.looksLikePageQuestionAsk?.(t)) return false;
     if (
@@ -2487,8 +2599,12 @@ function createAgentRuntime(deps) {
     try {
       for (const ag of agents.values()) {
         if (isMainAgent(ag)) continue; // Main uses worker browsers, not its own tab.
-        // Every worker agent keeps a tab (agents restored from disk get theirs
-        // recreated here) — tabs and agents always exist in pairs.
+        // Headless Bots are teammates, not tabs. Recreating their hidden shot
+        // surfaces here is what filled the Studio Browser with empty tabs
+        // after a close/reopen.
+        if (ag.headless) continue;
+        // Every visible worker agent keeps a tab (agents restored from disk
+        // get theirs recreated here) — tabs and agents always exist in pairs.
         ensureBrowserWindow?.(ag.id, {
           show: false,
           focus: false,
@@ -2590,11 +2706,12 @@ function createAgentRuntime(deps) {
     return { ok: true, activeAgentId };
   }
 
-  /** Retire every worker agent without recreating tabs. Used when the Studio
-   *  Browser window is closed (not minimized) so the next open is a fresh
-   *  session. Minimize leaves agents and their views in place. */
+  /** Retire visible browser workers without recreating tabs. Used when the
+   *  Studio Browser window is closed (not minimized) so the next open is a
+   *  fresh session. Headless Bots stay - they are teammates, not tabs.
+   *  Minimize leaves agents and their views in place. */
   function closeAllWorkers() {
-    const ids = workerAgents().map((a) => a.id);
+    const ids = workerAgents().filter((a) => !a.headless).map((a) => a.id);
     if (!ids.length) return { ok: true, closed: [] };
     for (const id of ids) {
       const a = agents.get(id);
@@ -2729,17 +2846,25 @@ function createAgentRuntime(deps) {
     return needsBrowser;
   }
 
-  // Skills a headless (Bot) agent can run — everything except the browser.
-  const HEADLESS_SKILLS = new Set(["general", "build", "image", "research", "report-edit", "local"]);
+  // Skills a headless (Bot) agent can run without coercing to chat.
+  // Browser is allowed separately once the Bot's own loop starts it.
+  const HEADLESS_SKILLS = new Set([
+    "general",
+    "build",
+    "image",
+    "research",
+    "report-edit",
+    "local",
+    "routine",
+  ]);
 
-  // ── Bot browser opt-in ──────────────────────────────────────────────────
+  // ── Bot browser run ─────────────────────────────────────────────────────
   //
-  // Bots CAN work the browser, but never jump into it uninvited: a browser-
-  // shaped ask parks as a question first ("want me to use the browser?"),
-  // and only a yes arms `agent.botBrowserRun` — which makes the whole
-  // pipeline (routing, planning, window reveal) treat this task like a
-  // normal browse agent. The arm holds while that task is parked mid-flight
-  // and drops on the next fresh ask, so every new browser errand asks again.
+  // Bots start the browser as soon as they pick that tool. `botBrowserRun`
+  // arms the live viewport (and makes routing/planning treat this task like
+  // a normal browse agent). The arm holds while the task is parked mid-flight
+  // and drops on the next fresh ask. A yes/no leftover from an already-parked
+  // opt-in still resumes through pendingBotBrowse.
 
   /**
    * The user's actual ask inside a Bot dispatch brief. Every dispatch wraps
@@ -2810,7 +2935,7 @@ function createAgentRuntime(deps) {
    * the Bot's own tools (image/build/research/local), or a real browser
    * errand. Runs only on nominated (tool-shaped) prompts, so casual chat
    * never waits on it. "" on failure — the caller's heuristic answer stands
-   * and, crucially, no "want me to use the browser?" question parks.
+   * and the turn stays in chat instead of opening the browser on a hunch.
    */
   async function routeBotTool(agent, text) {
     const ask = String(text || "").trim();
@@ -2929,6 +3054,25 @@ function createAgentRuntime(deps) {
     if (skill === "general" && ownedBrowserAct.looksLikeOwnAppContentAsk?.(q)) {
       skill = "browse";
     }
+    // "Do that again" after a finished report/browse/local run is a new task,
+    // not a leftover-deliverable edit and not a chat restatement.
+    if (skill === "general" && looksLikeRerunAsk(q)) {
+      const replay =
+        agent.lastDeliverableKind === "report"
+          ? "research"
+          : agent.lastDeliverableKind === "artifact"
+            ? "build"
+            : agent.lastDeliverableKind === "image"
+              ? "image"
+              : agent.lastDeliverableKind === "browse"
+                ? "browse"
+                : agent.lastDeliverableKind === "local"
+                  ? "local"
+                  : HEADLESS_SKILLS.has(agent.skill) && agent.skill !== "general"
+                    ? agent.skill
+                    : "";
+      if (replay) skill = replay;
+    }
     if (
       skill === "general" &&
       liveTabUrl &&
@@ -2971,6 +3115,12 @@ function createAgentRuntime(deps) {
     ) {
       skill = "local";
     }
+    // Bots own standing work as durable routines. A watch/alert ask, or
+    // any "set a routine / every weekday / monitor my email" phrasing, is
+    // create_routine — not a live in-process monitor and not a chat refusal.
+    if (actsHeadless && (looksLikeCreateRoutineAsk(q) || skill === "monitor")) {
+      skill = "routine";
+    }
     // Remote (SSH) work: an explicit ssh/user@host ask, or a saved Remote
     // Target mentioned by name, runs on that host through RemoteExecutor.
     // Beats local: "ssh into dev-server and check the logs" is remote work
@@ -3012,7 +3162,7 @@ function createAgentRuntime(deps) {
     if (agent.headless && !agent.botBrowserRun) {
       // "browser" is a bot-router verdict, not a legacy skill: the browser is
       // one of the Bot's tools, so the ask runs the Bot's own loop with that
-      // tool's doc preloaded — the loop parks the opt-in question itself.
+      // tool's doc preloaded — the loop starts the browse run itself.
       const botSkill =
         HEADLESS_SKILLS.has(skill) || skill === "browser" ? skill : "general";
       const fullAsk = String(stepMeta?.fullAsk || rawStep).trim() || rawStep;
@@ -3192,7 +3342,14 @@ function createAgentRuntime(deps) {
   const glassStatusHost = {};
   const mailRoutingHost = {};
   const { streamChat } = createStreamChatHost(streamChatHost);
+  const { runBrowserQuestion } = createBrowserQuestionHost({
+    streamChat,
+    sendToAgentChannels,
+    emitProgress,
+    schedulePersist,
+  });
   const {
+    joinStepDetails,
     sanitizeStepLabel,
     sanitizeStepDetail,
     tidyStepDetail,
@@ -3618,7 +3775,7 @@ function createAgentRuntime(deps) {
     const waitStatus = `Waiting for you: ${String(userAction)
       .replace(/\*\*/g, "")
       .slice(0, 72)}`;
-    const resumeStatus = `Signed in on ${host} — continuing…`;
+    const resumeStatus = `Signed in on ${host}, continuing…`;
 
     // Raise the stage so the user can find the tab quickly.
     try {
@@ -4218,6 +4375,7 @@ function createAgentRuntime(deps) {
       sendToAgentChannels(agent.id, "lykn:agent-choice", {
         choiceId,
         type: "local-approval",
+        tool: tool || "local_write_file",
         message: msg,
         buttons,
       });
@@ -4338,6 +4496,7 @@ function createAgentRuntime(deps) {
           // their capability envelope runs unattended; consequential actions
           // still pause through awaitLocalApproval below.
           standingAuthorization: task.approval?.policy === "standing_authorization",
+          forbidDeletes: intoBot,
           onProgress: (p) => {
             if (gen !== agent.generation) return;
             context.progress?.(p);
@@ -4367,8 +4526,8 @@ function createAgentRuntime(deps) {
   /**
    * Run a Local Mode task through TaskRuntime -> LocalExecutor and hand back
    * the user-facing string the rest of send() already understands. Waiting
-   * and approval pauses go through offerAgentQuestion so they cannot look
-   * like a completed turn.
+   * and question pauses go through offerAgentQuestion so they cannot look
+   * like a completed turn. Approvals stay on the Approve/Decline card.
    */
   async function runLocalTaskViaExecutor(agent, ask, gen) {
     agent.skill = "local";
@@ -4391,7 +4550,12 @@ function createAgentRuntime(deps) {
     if (status === "cancelled" || result?.status === "aborted") {
       return "";
     }
-    if (status === "waiting_for_user" || status === "waiting_for_approval") {
+    if (status === "waiting_for_approval" || result?.needsApproval) {
+      return String(
+        result?.question || result?.output || result?.localResult?.answer || agent.partialText || "",
+      ).trim();
+    }
+    if (status === "waiting_for_user") {
       return offerAgentQuestion(
         agent,
         result?.question || result?.output || result?.localResult?.answer || "I need your input to continue.",
@@ -4705,24 +4869,41 @@ function createAgentRuntime(deps) {
     build: "build_artifact",
     image: "generate_image",
     research: "research_report",
+    "write-document": "write_document",
     "report-edit": "edit_report",
     local: "local_computer",
+    // Standing/recurring work is a durable routine this bot will run later.
+    routine: "create_routine",
     // A browser-shaped ask still runs the Bot's own loop — the browser is one
     // of its tools, not a separate route. Preloading the doc means the common
-    // case decides once and parks the opt-in on round one.
+    // case decides once and starts the browse run on round one.
     browser: "browser",
   };
 
   /** What the user reads while the harness works — one line per phase. */
   const BOT_TOOL_ACTING_STATUS = {
     reply: "Writing my reply…",
+    write_document: "Writing it out…",
     research_report: "Researching…",
     edit_report: "Revising the report…",
     build_artifact: "Building it…",
     generate_image: "Creating the image…",
     local_computer: "Working on your Mac…",
+    create_routine: "Setting up the routine…",
     browser: "Getting the browser ready…",
   };
+
+  async function writeDocumentExecutor({ instruction } = {}) {
+    const result = await writeBasicDocument({ instruction });
+    const deliverable = botDeliverables.documentDeliverable(result);
+    return {
+      ok: result.ok !== false,
+      output: result.summary || result.error || "Wrote the document.",
+      summary: result.summary || result.error || "Wrote the document.",
+      terminal: true,
+      ...(deliverable ? { deliverable } : {}),
+    };
+  }
 
   function botHarnessStatusLine(p) {
     switch (p.phase) {
@@ -4741,7 +4922,7 @@ function createAgentRuntime(deps) {
       case "verifying":
         return "Checking the work…";
       case "recovering":
-        return "That didn't land — adjusting…";
+        return "That didn't land. Adjusting…";
       default:
         return "";
     }
@@ -4790,22 +4971,42 @@ function createAgentRuntime(deps) {
             appName: "LYKN",
           }
         : null;
-      const result = routineBridge.createFromInstruction(String(instruction || ""), {
-        bot,
-        botId: bot.id,
-        browserContext,
-      });
+      let createOpts = { bot, botId: bot.id, browserContext };
+      const ask = String(instruction || "");
+      if (looksLikeInboxWatch(ask)) {
+        try {
+          const matches = matchInboxConnections(
+            await desktopMcp.listConnections({ apiBase, getAuthToken }),
+          );
+          if (matches.length === 1) {
+            createOpts.connectionIds = [matches[0].id];
+            createOpts.inboxIdentity = connectionIdentity(matches[0]);
+            createOpts.inboxConnection = matches[0];
+          }
+        } catch {
+          /* No plugin is fine — the routine can watch Gmail in the browser. */
+        }
+      }
+      const result = routineBridge.createFromInstruction(ask, createOpts);
       if (!result?.ok) {
         return { ok: false, output: "", summary: `Could not create the routine: ${result?.error || "unknown error"}` };
       }
       const r = result.routine;
+      const watching = createOpts.inboxConnection
+        ? `Watching: ${connectionIdentity(createOpts.inboxConnection)}.`
+        : looksLikeInboxWatch(ask)
+          ? "It will check Gmail in the browser. Connect Gmail in Settings if you want the plugin path later."
+          : "";
       const summary = [
         `Routine created: "${r.name}".`,
+        watching,
         `Runs: ${r.triggerLabel || "manually"}.`,
         `Allowed to: ${(r.capabilities || []).join(", ") || "reply only"}.`,
         `Notifications: ${r.notificationPolicy}.`,
         "The user can pause, run, or delete it from this bot's page.",
-      ].join(" ");
+      ]
+        .filter(Boolean)
+        .join(" ");
       return { ok: true, output: summary, summary };
     };
   }
@@ -4877,29 +5078,57 @@ function createAgentRuntime(deps) {
       });
       return toHarnessResult(out);
     };
-    const browserOptInGate = new BrowserOptInGate({
-      isDeclined: () =>
-        !!(
-          agent.botBrowseDeclinedAt &&
-          Date.now() - agent.botBrowseDeclinedAt < PENDING_QUESTION_MS
-        ),
-      park: ({ taskId, instruction }) => {
-        agent.pendingBotBrowse = {
-          taskId,
-          ask: instruction,
-          at: Date.now(),
-        };
-      },
-    });
+    const browserChild = async ({ instruction, signal, task, progress }) => {
+      if (signal?.aborted) return { ok: false, output: "", summary: "cancelled" };
+      agent.botBrowserRun = true;
+      syncBotShotLoop();
+      ensureBrowserWindow?.(agent.id, { show: false, focus: false });
+      const wc = getBrowserWebContents?.(agent.id);
+      if (!wc || wc.isDestroyed?.()) {
+        return { ok: false, output: "", summary: "The browser tab is not available." };
+      }
+      const kickoff =
+        "On it. I'm in the browser now. You can watch me in the little window above the chat bar, or click it to open the full tab.";
+      if (!String(agent.partialText || "").trim()) {
+        agent.partialText = kickoff;
+        sendToAgentChannels(agent.id, "lykn:agent-delta", { text: kickoff });
+      }
+      const out = await browserExecutor.execute(task || canonicalTask, {
+        signal,
+        progress,
+        browse: {
+          agent,
+          gen,
+          wc,
+          browseGoal: String(instruction || canonicalTask.objective),
+          convHistory: historyForPlanner(agent),
+          sendPolicy: "auto",
+          userAsk: String(instruction || ""),
+        },
+      });
+      return toHarnessResult(out);
+    };
+    const connectedAppsChild = async ({ instruction, signal }) =>
+      connectedAppsTool.createConnectedAppsTool({ mcpClient: desktopMcp, apiBase, getAuthToken }).execute({
+        instruction,
+        signal,
+        requestApproval: ({ question }) => awaitBrowseApproval(agent, { question }),
+      });
     const executors = {
       reply: streamTool("general"),
-      research_report: streamTool("research"),
-      edit_report: streamTool("report-edit"),
-      build_artifact: streamTool("build"),
-      generate_image: streamTool("image"),
+      write_document: writeDocumentExecutor,
+      // Report and build results become persistent chat cards, and the
+      // report is remembered on the agent so a same-task build_artifact
+      // call converts THAT content instead of re-researching.
+      research_report: botDeliverables.reportExecutor(agent, streamTool("research")),
+      edit_report: botDeliverables.reportExecutor(agent, streamTool("report-edit")),
+      build_artifact: botDeliverables.buildExecutor(agent, streamTool("build")),
+      generate_image: botDeliverables.imageExecutor(agent, streamTool("image")),
       local_computer: localChild,
+      ai_drive: async ({ instruction }) => runAiDriveTool({ instruction }),
       create_routine: makeCreateRoutineExecutor(agent),
-      browser: (args) => browserOptInGate.execute({ ...args, task: canonicalTask }),
+      connected_apps: connectedAppsChild,
+      browser: browserChild,
     };
 
     agent.lastBotModelUsage = modelUsage;
@@ -4933,18 +5162,115 @@ function createAgentRuntime(deps) {
     };
 
     if (gen !== agent.generation) return "";
-    if (
-      execution.task?.status === "waiting_for_user" ||
-      execution.task?.status === "waiting_for_approval"
-    ) {
-      return offerAgentQuestion(agent, res.question || res.answer, res.questionOptions || [], {
-        // The parked browser question resumes through pendingBotBrowse, not
-        // through a re-sent ask — an empty resume ask keeps the two paths
-        // from double-running the errand.
-        ask: res.parked ? "" : ask,
+    if (execution.task?.status === "waiting_for_approval" || res.needsApproval) {
+      return String(res.question || res.answer || agent.partialText || "").trim();
+    }
+    if (execution.task?.status === "waiting_for_user") {
+      const question = String(res.question || res.answer || "").trim();
+      if (res.waitingKind === "teammate_handoff" || looksLikeTeammateHandoff(question)) {
+        return parkTeammateHandoff(agent, question);
+      }
+      return offerAgentQuestion(agent, question, res.questionOptions || [], {
+        // A leftover opt-in parks on pendingBotBrowse and must not also
+        // fold into pendingQuestion. Approvals use the Approve/Decline card.
+        ask: agent.pendingBotBrowse ? "" : ask,
       });
     }
     return res.answer || res.output || "Done.";
+  }
+
+  async function runInboxWatchOccurrence({ agent, routine, canonicalTask, triggerContext }) {
+    const identity = watchedAccountFromInstructions(routine.instructions);
+    let connectionId = String(routine.connectionIds?.[0] || "").trim();
+    if (!connectionId) {
+      let connections = [];
+      try {
+        connections = await desktopMcp.listConnections({ apiBase, getAuthToken });
+      } catch {
+        connections = [];
+      }
+      const matches = matchInboxConnections(connections);
+      if (matches.length === 1) {
+        connectionId = matches[0].id;
+        try {
+          routineBridge?.updateRoutine?.(routine.id, { connectionIds: [connectionId] });
+        } catch {
+          /* persist is best-effort */
+        }
+      }
+    }
+    if (!connectionId) {
+      return { useBrowser: true };
+    }
+
+    try {
+      const detail = await desktopMcp.connectionDetail({
+        apiBase,
+        getAuthToken,
+        connectionId,
+      });
+      const tool = pickInboxSearchTool(detail?.tools || []);
+      if (!tool?.name) {
+        return { useBrowser: true };
+      }
+      const account = connectionIdentity(detail?.connection) || identity || "the connected inbox";
+      const executed = await desktopMcp.callTool({
+        apiBase,
+        getAuthToken,
+        connectionId,
+        toolName: tool.name,
+        args: { query: "in:inbox", maxResults: 10 },
+        task: {
+          id: canonicalTask.id,
+          runId: canonicalTask.runId,
+          objective: canonicalTask.objective,
+          capabilities: canonicalTask.capabilities,
+          origin: canonicalTask.origin,
+          association: {
+            ...(canonicalTask.association || {}),
+            connectionIds: [connectionId],
+          },
+          approval: {
+            policy: "preserve_executor_security_gates",
+            state: "not_requested",
+          },
+        },
+      });
+      if (executed?.ok === false) {
+        return { useBrowser: true };
+      }
+      const current = extractMessages(executed);
+      const prev = routineBridge?.getMonitorState?.(routine.id) || {};
+      const seenIds = Array.isArray(prev.inboxSeenIds) ? prev.inboxSeenIds : [];
+      const baseline = seenIds.length === 0;
+      const fresh = baseline ? [] : diffNewMessages(current, seenIds);
+      routineBridge?.setMonitorState?.(routine.id, {
+        inboxSeenIds: nextSeenIds(current, seenIds),
+        lastObservedAt: Date.now(),
+        status: "watching",
+      });
+      const output = baseline
+        ? `Watching ${account}. I’ll ping you when new mail arrives.`
+        : fresh.length
+          ? formatNewMail(fresh, account)
+          : `No new mail in ${account}.`;
+      await taskRuntime.execute(canonicalTask.id, async () => ({
+        ok: true,
+        status: "completed",
+        output,
+        executor: "mcp",
+      }));
+      return {
+        taskId: canonicalTask.id,
+        status: "completed",
+        output,
+        error: "",
+        changed: fresh.length > 0,
+        usage: { calls: 0, inputTokens: 0, outputTokens: 0, byStage: {} },
+      };
+    } catch {
+      return { useBrowser: true };
+    }
   }
 
   /**
@@ -4957,8 +5283,8 @@ function createAgentRuntime(deps) {
    *   - the run is headless: it never steals an agent mid-conversation (a
    *     busy paired agent means a dedicated worker is created for this run
    *     and closed after), never raises windows, never writes chat rows;
-   *   - the browser tool answers with an honest refusal instead of parking an
-   *     opt-in question nobody is present to answer (deferred, documented);
+   *   - the browser tool starts the browse immediately (same as chat), with
+   *     no opt-in question nobody is present to answer;
    *   - waiting_for_user / waiting_for_approval END the occurrence as a
    *     "waiting" outcome — the notification service tells the user, and the
    *     conversation continues in the bot's chat when they arrive.
@@ -5036,6 +5362,15 @@ function createAgentRuntime(deps) {
     emitList();
 
     try {
+      if (looksLikeInboxWatch(routine.instructions)) {
+        const inbox = await runInboxWatchOccurrence({
+          agent,
+          routine,
+          canonicalTask,
+          triggerContext,
+        });
+        if (!inbox?.useBrowser) return inbox;
+      }
       const modelUsage = { taskId: canonicalTask.id, calls: 0, inputTokens: 0, outputTokens: 0, upstreamMs: 0, byStage: {} };
       const model = browserAgent.createAgentModel({
         apiBase,
@@ -5089,19 +5424,43 @@ function createAgentRuntime(deps) {
       // this run. A missing executor reads as "not available in this run" to
       // the harness — the envelope is enforced in code, not in prompt text.
       const caps = new Set(Array.isArray(canonicalTask.capabilities) ? canonicalTask.capabilities : []);
+      const inboxWatch = looksLikeInboxWatch(routine.instructions);
       const hasLocal =
         caps.has("local_computer") || [...caps].some((c) => c.startsWith("files.") || c.startsWith("local."));
-      const hasBrowser = caps.has("browser") || [...caps].some((c) => String(c).startsWith("browser."));
+      const hasBrowser =
+        caps.has("browser") ||
+        [...caps].some((c) => String(c).startsWith("browser.")) ||
+        inboxWatch;
       const executors = {
         reply: streamTool("general"),
-        ...(caps.has("research_report") ? { research_report: streamTool("research") } : {}),
-        ...(caps.has("research_report") ? { edit_report: streamTool("report-edit") } : {}),
-        ...(caps.has("build_artifact") ? { build_artifact: streamTool("build") } : {}),
-        ...(caps.has("generate_image") ? { generate_image: streamTool("image") } : {}),
+        ...(caps.has("write_document") ? { write_document: writeDocumentExecutor } : {}),
+        ...(caps.has("research_report")
+          ? { research_report: botDeliverables.reportExecutor(agent, streamTool("research")) }
+          : {}),
+        ...(caps.has("research_report")
+          ? { edit_report: botDeliverables.reportExecutor(agent, streamTool("report-edit")) }
+          : {}),
+        ...(caps.has("build_artifact")
+          ? { build_artifact: botDeliverables.buildExecutor(agent, streamTool("build")) }
+          : {}),
+        ...(caps.has("generate_image")
+          ? { generate_image: botDeliverables.imageExecutor(agent, streamTool("image")) }
+          : {}),
         ...(hasLocal ? { local_computer: localChild } : {}),
+        ai_drive: async ({ instruction }) => runAiDriveTool({ instruction }),
+        // Headless run: no requestApproval, so consequential app calls stop
+        // at the approval gate; reads work.
+        ...(caps.has("connected_apps") || inboxWatch
+          ? {
+              connected_apps: async ({ instruction, signal }) =>
+                connectedAppsTool
+                  .createConnectedAppsTool({ mcpClient: desktopMcp, apiBase, getAuthToken })
+                  .execute({ instruction, signal }),
+            }
+          : {}),
         ...(hasBrowser ? { browser: browserChild } : {}),
       };
-      const primaryTool = hasBrowser && routine.trigger?.type === "browser"
+      const primaryTool = hasBrowser && (routine.trigger?.type === "browser" || inboxWatch)
         ? "browser"
         : hasLocal && routine.trigger?.type !== "schedule"
           ? "local_computer"
@@ -5225,24 +5584,92 @@ function createAgentRuntime(deps) {
       .join("\n");
   }
 
+  function botOwnerId(agent) {
+    return String(agent?.botProfile?.id || "").trim();
+  }
+
+  function browserWebContents(agentId) {
+    const id = String(agentId || "").trim();
+    if (!id) return null;
+    try {
+      const wc = getBrowserWebContents?.(id);
+      return wc && !wc.isDestroyed?.() ? wc : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function findBotAgent(ownerId, { idleOnly = false } = {}) {
+    const id = String(ownerId || "").trim();
+    if (!id) return null;
+    return (
+      [...agents.values()].find((candidate) => {
+        if (!candidate?.headless || botOwnerId(candidate) !== id) return false;
+        return idleOnly ? !candidate.activeTaskId : true;
+      }) || null
+    );
+  }
+
+  function createHeadlessBotAgent(bot) {
+    const snapshot = bot && typeof bot === "object" ? bot : {};
+    const created = createAgent({
+      silent: true,
+      headless: true,
+      activate: false,
+      bot: snapshot,
+      title: snapshot.name || "Bot",
+      goal: snapshot.description || snapshot.objective || snapshot.name || "Workflow",
+    });
+    const agent = created?.ok ? agents.get(created.agentId) : null;
+    if (!agent) throw new Error(created?.error || "teaching_agent_unavailable");
+    return agent;
+  }
+
+  function ensureAgentWindow(agent, { reveal = false } = {}) {
+    if (!agent?.id) return null;
+    const wc = browserWebContents(agent.id);
+    if (reveal) {
+      // Teaching is an explicit demonstration: reveal even for headless Bots,
+      // matching lykn:agent-show-browser (raw show, outside the headless gate).
+      try {
+        showBrowserWindowRaw?.(agent.id, {
+          focus: true,
+          label: agent.title || agent.botProfile?.name || "Bot",
+        });
+      } catch {
+        /* demonstration reveal is best-effort */
+      }
+    }
+    return wc;
+  }
+
   function ensureTeachingBrowser({ agentId, botId, bot } = {}) {
     const requested = String(agentId || "").trim();
     if (requested) {
-      const existingWebContents = getAgentBrowserWebContents(requested);
-      if (existingWebContents) return existingWebContents;
+      const existing = agents.get(requested);
+      const wc = existing
+        ? ensureAgentWindow(existing, { reveal: true })
+        : browserWebContents(requested);
+      if (wc) {
+        if (!existing) {
+          try {
+            showBrowserWindowRaw?.(requested, { focus: true });
+          } catch {
+            /* demonstration reveal is best-effort */
+          }
+        }
+        return wc;
+      }
     }
     const ownerId = String(botId || bot?.id || "").trim();
-    if (!ownerId) return getActiveAgentBrowserWebContents();
-    let agent = [...agents.values()].find(
-      (candidate) => candidate.headless && candidate.botId === ownerId,
-    );
-    if (!agent) {
-      agent = createHeadlessBotAgent(
-        bot || { id: ownerId, name: "Bot", description: "", persona: {} },
-        { autoOpen: true },
-      );
+    if (!ownerId) {
+      const activeId = String(getActiveBrowseAgentId?.() || "").trim();
+      return activeId ? browserWebContents(activeId) : null;
     }
-    return ensureAgentWindow(agent);
+    const agent =
+      findBotAgent(ownerId) ||
+      createHeadlessBotAgent(bot || { id: ownerId, name: "Bot", description: "", persona: {} });
+    return ensureAgentWindow(agent, { reveal: true });
   }
 
   /**
@@ -5280,13 +5707,8 @@ function createAgentRuntime(deps) {
         connectionId: mcpAccess.unavailable[0],
       };
     }
-    const existing = [...agents.values()].find(
-      (candidate) =>
-        candidate.headless &&
-        candidate.botId === String(workflow.botId) &&
-        !candidate.activeTaskId,
-    );
-    const agent = existing || createHeadlessBotAgent(snapshot, { autoOpen: true });
+    const existing = findBotAgent(workflow.botId, { idleOnly: true });
+    const agent = existing || createHeadlessBotAgent(snapshot);
     const createdForRun = !existing;
     agent.abort = new AbortController();
     agent.generation += 1;
@@ -5577,7 +5999,7 @@ function createAgentRuntime(deps) {
       if (ownership.noteInput("user")) {
         emitProgress(agent.id, {
           status: "waiting",
-          step: "You've taken the browser — I've paused.",
+          step: "You've taken the browser. I've paused.",
           url: wc.getURL?.() || agent.url,
           skill: "browse",
         });
@@ -5769,7 +6191,7 @@ function createAgentRuntime(deps) {
       agent.partialText = "";
       agent.url = waited.url || wc.getURL?.() || agent.url;
       const resumeStatus =
-        waited.change === "signed_in" ? "Signed in — continuing…" : "Thanks — picking it back up…";
+        waited.change === "signed_in" ? "Signed in, continuing…" : "Thanks, picking it back up…";
       agent.step = resumeStatus;
       emitProgress(agent.id, {
         status: "running",
@@ -5842,11 +6264,11 @@ function createAgentRuntime(deps) {
           }
         } else if (p.phase === "thinking") {
           // Placeholder for the round being decided. Transient — the action it
-          // turns into takes its place rather than stacking under it.
+          // turns into takes its place rather than stacking under it. The plan
+          // stays in the folded detail so the visible line is just Thinking…
           const planStep = String(p.planStep || "").replace(/\s+/g, " ").trim();
-          const status = planStep ? `Thinking — ${planStep.slice(0, 52)}` : "Thinking…";
-          emitStatus(status);
-          narrateBrowseProgress(agent, status, {
+          emitStatus("Thinking…");
+          narrateBrowseProgress(agent, "Thinking…", {
             url,
             transient: true,
             detail: planStep ? `Working out the next move for: ${planStep}` : "",
@@ -5870,13 +6292,11 @@ function createAgentRuntime(deps) {
           // waitForUser hand-off) surfaces to the user.
         } else if (p.phase === "acting") {
           const status = describeBrowseAction(p) || clipBrowseReason(p.reason);
-          const detail = [
+          const detail = joinStepDetails([
             tidyStepDetail(p.reason),
             p.expectedOutcome ? `Expecting ${sanitizeStepDetail(p.expectedOutcome)}` : "",
             p.batch ? `Running in one go: ${sanitizeStepDetail(p.batch)}` : "",
-          ]
-            .filter(Boolean)
-            .join(STEP_DETAIL_SEP);
+          ]);
           emitStatus(status);
           narrateBrowseProgress(agent, status, {
             url,
@@ -6051,7 +6471,7 @@ function createAgentRuntime(deps) {
           if (transient && attempt === 0 && !context.signal?.aborted && gen === agent.generation) {
             emitProgress(agent.id, {
               status: "running",
-              step: "The model service hiccuped — retrying…",
+              step: "The model service hiccuped. Retrying…",
               url: wc.getURL?.() || agent.url,
               skill: "browse",
             });
@@ -6128,7 +6548,7 @@ function createAgentRuntime(deps) {
         ok: false,
         error: "agent_model_unavailable",
         answer:
-          "I couldn't reach the browser agent right now — try again in a moment.",
+          "I couldn't reach the browser agent right now. Try again in a moment.",
         history: mapped?.history || [],
         url: mapped?.url || agent.url || "",
       };
@@ -6221,7 +6641,7 @@ function createAgentRuntime(deps) {
         if (opts.returnRaw) return result;
         return String(
           result.answer ||
-            "I couldn't reach the browser agent right now — try again in a moment.",
+            "I couldn't reach the browser agent right now. Try again in a moment.",
         );
       }
       if (!result.ok && result.error === "sign_in_required") {
@@ -6276,7 +6696,7 @@ function createAgentRuntime(deps) {
     // next-step line) and bury the one thing the user needed to read.
     if (result?.stuck && result?.needsHelp) {
       if (result?.needsApproval) {
-        agent.step = "Needs you — help with a step";
+        agent.step = "Needs you: help with a step";
         try {
           sendToAgentChannels(agent.id, "lykn:agent-status", { status: agent.step });
         } catch (_) {}
@@ -6300,7 +6720,7 @@ function createAgentRuntime(deps) {
         browserAgent.permissionAskIsConsequential(asked) &&
         !browserAgent.isRecipientQuestion?.(asked)
       ) {
-        agent.step = "Needs you — help with a step";
+        agent.step = "Needs you: help with a step";
         try {
           sendToAgentChannels(agent.id, "lykn:agent-status", { status: agent.step });
         } catch (_) {}
@@ -7346,7 +7766,7 @@ function createAgentRuntime(deps) {
                 ` in this agent's browser.\n\n` +
                 `${openUrl}` +
                 (videoIntent
-                  ? `\n\nPlaying here — say if you want a different video.`
+                  ? `\n\nPlaying here. Say if you want a different video.`
                   : `\n\nSay if you want a different result.`);
             return endBrowse( msg, {
               goal: text,
@@ -7500,7 +7920,7 @@ function createAgentRuntime(deps) {
         });
         if (!signedIn) {
           sendToAgentChannels(agent.id, "lykn:agent-status", {
-            status: "Not signed in — getting to the login screen…",
+            status: "Not signed in. Getting to the login screen…",
           });
           const parked = await advanceThenParkForUser(agent, wc, {
             steps: [workAsk || text],
@@ -7564,7 +7984,7 @@ function createAgentRuntime(deps) {
           if (changed) {
             emitProgress(agent.id, {
               status: "running",
-              step: "Page changed — checking…",
+              step: "Page changed. Checking…",
               url: agent.url,
             });
             const checkPrompt =
@@ -7705,7 +8125,7 @@ function createAgentRuntime(deps) {
       }
       // "No, I'll take it from here" — leave the prepared draft/share open.
       const msg =
-        "Okay — I'll leave it as is. It's open in the browser, so you can tweak it and send it yourself whenever you're ready.";
+        "Okay, I'll leave it as is. It's open in the browser, so you can tweak it and send it yourself whenever you're ready.";
       agent.busy = false;
       agent.status = "idle";
       agent.step = "Left it for you";
@@ -7725,7 +8145,7 @@ function createAgentRuntime(deps) {
 
     if (btn === "stop") {
       const soft = pending.softwareName || "that software";
-      const msg = `Okay — stopped. I won't drive **${soft}** from here.`;
+      const msg = `Okay, stopped. I won't drive **${soft}** from here.`;
       agent.busy = false;
       agent.status = "idle";
       agent.step = "Stopped";
@@ -7913,6 +8333,7 @@ function createAgentRuntime(deps) {
       fromSuggestion,
       bot,
       task: taskRequest,
+      questionsOnly,
     } = {},
   ) {
     let agent = resolveAgent(agentId);
@@ -7924,7 +8345,13 @@ function createAgentRuntime(deps) {
     }
     // Glass can hold a stale id after restart / close — recreate instead of not_found.
     if (!agent) {
-      const created = createAgent({ goal: String(text || "").trim(), silent: true });
+      const created = createAgent({
+        goal: String(text || "").trim(),
+        silent: true,
+        sourceChatId: String(
+          taskRequest && typeof taskRequest === "object" ? taskRequest.chatId : "",
+        ).trim() || undefined,
+      });
       if (!created?.ok || !created.agentId) {
         return { ok: false, error: created?.error || "not_found" };
       }
@@ -7947,6 +8374,12 @@ function createAgentRuntime(deps) {
     let q = String(text || "").trim();
     if (!q && !(attachments && attachments.length)) {
       return { ok: false, error: "empty" };
+    }
+
+    // Browser rail / AI Mode: questions about the page. Never a Bot task,
+    // never an abort of in-flight work, never the work history thread.
+    if (questionsOnly) {
+      return runBrowserQuestion(agent, { text: q, attachments });
     }
 
     // A Custom Bot turn enters one canonical Task before routing or execution.
@@ -8095,9 +8528,10 @@ function createAgentRuntime(deps) {
       }
     }
 
-    // Bots: reply while the "want me to use the browser?" question is up.
-    // Yes arms this task to run the real browse pipeline (window visible),
-    // no answers headless as before, anything else supersedes as a fresh ask.
+    // Bots: a leftover "want me to use the browser?" question (from before
+    // the bot started the browse immediately) still resumes here.
+    // Yes arms this task to run the real browse pipeline, no answers
+    // headless as before, anything else supersedes as a fresh ask.
     if (agent.headless && agent.pendingBotBrowse) {
       const pendingBrowse =
         Date.now() - (agent.pendingBotBrowse.at || 0) < PENDING_QUESTION_MS
@@ -8105,6 +8539,53 @@ function createAgentRuntime(deps) {
           : null;
       agent.pendingBotBrowse = null;
       if (pendingBrowse) {
+        // Plugin vs browser: "Connect Gmail" opens Connections and stops.
+        // Do not arm the browser and do not fall through into a lecture.
+        if (classifyOptInReply(q, pendingBrowse.plugin) === "connect") {
+          const service = pendingBrowse.plugin?.name || "that service";
+          try {
+            openConnectionsSettings?.({
+              search: pendingBrowse.plugin?.name || "",
+              catalogId: pendingBrowse.plugin?.catalogId || "",
+            });
+          } catch {
+            /* settings open is best-effort */
+          }
+          try {
+            if (pendingBrowse.taskId) {
+              taskRuntime.cancel(pendingBrowse.taskId, "chose_plugin_connection");
+            }
+          } catch {
+            /* task may already have settled */
+          }
+          const msg =
+            `I'll open Connections so you can add ${service}. Once it's connected, ask me again and I'll use the live ${service} — no browser needed.`;
+          agent.busy = false;
+          agent.status = "idle";
+          agent.step = `Connect ${service}`;
+          agent.waitingReason = "";
+          agent.waitingUserAction = "";
+          agent.waitingOptions = [];
+          agent.pendingQuestion = null;
+          agent.partialText = msg;
+          agent.updatedAt = new Date().toISOString();
+          agent.history.push({
+            role: "user",
+            content: q,
+            at: new Date().toISOString(),
+          });
+          agent.history.push({
+            role: "assistant",
+            content: msg,
+            at: new Date().toISOString(),
+          });
+          emitAgentWaiting(agent.id, { waiting: false });
+          sendToAgentChannels(agent.id, "lykn:agent-delta", { text: msg, final: true });
+          sendToAgentChannels(agent.id, "lykn:agent-done", { text: msg, final: true });
+          emitProgress(agent.id, { status: "idle", step: agent.step });
+          schedulePersist();
+          return { ok: true, agentId: agent.id, text: msg, skill: "general" };
+        }
         // The Task stays waiting_for_user through routing; the moment the
         // browse dispatches, TaskRuntime.execute moves this SAME Task to
         // running under the canonical BrowserExecutor — the parked ask is
@@ -8132,7 +8613,7 @@ function createAgentRuntime(deps) {
     }
     // An armed browser task stays armed only while it is parked mid-flight
     // (question, approval, sign-in, plan pause) or still running — a fresh
-    // ask starts headless again and asks before any new browser work.
+    // ask starts headless again and the harness decides the next tool.
     if (agent.headless && agent.botBrowserRun) {
       const parkedMidTask =
         agent.status === "waiting" ||
@@ -8455,7 +8936,7 @@ function createAgentRuntime(deps) {
         agent.lastIntent = intent;
         if (intent.understood) {
           sendToAgentChannels(agent.id, "lykn:agent-status", {
-            status: `Got it — ${intent.understood.slice(0, 80)}`,
+            status: `Got it: ${intent.understood.slice(0, 80)}`,
           });
         }
       }
@@ -8551,12 +9032,12 @@ function createAgentRuntime(deps) {
     // Plain chat runs instantly with no model call. `botTool` carries the
     // verdict into the step loop below, which re-resolves skills per step.
     //
-    // A "browser" verdict does NOT park the opt-in question here. The Bot and
-    // the browser agent are one and the same — the browser is one of the
-    // Bot's tools, so the verdict only preloads that tool's doc and the Bot's
-    // own harness decides in its loop: park the opt-in, answer from context,
-    // or take a different tool. (This used to park right here, which made
-    // bot browser work a second route that bypassed the Bot entirely.)
+    // A "browser" verdict does NOT start the browse here. The Bot and the
+    // browser agent are one and the same — the browser is one of the Bot's
+    // tools, so the verdict only preloads that tool's doc and the Bot's own
+    // harness starts the run in its loop. (This used to park an opt-in
+    // question here, which made bot browser work a second route that
+    // bypassed the Bot entirely.)
     let botTool = "";
     if (actsHeadless && !forceBuild && !agent.skipBotBrowseAskOnce && skill !== "report-edit") {
       // A fresh routed ask starts clean: a browser decline only binds the
@@ -8568,14 +9049,24 @@ function createAgentRuntime(deps) {
       const nominated =
         !!agent.botSkillBeforeCoerce || skill !== "general" || botAskWantsBrowser(core);
       if (nominated && gen === agent.generation) {
-        const verdict = BOT_EXPLICIT_BROWSER_RE.test(core)
-          ? "browser"
-          : await routeBotTool(agent, core);
+        const verdict =
+          looksLikeCreateRoutineAsk(core) || skill === "routine"
+            ? "routine"
+            : BOT_EXPLICIT_BROWSER_RE.test(core)
+              ? "browser"
+              : await routeBotTool(agent, core);
         if (gen !== agent.generation) return { ok: false, error: "superseded" };
         if (verdict === "browser") botTool = "browser";
         else if (verdict === "local") botTool = localModeEnabled() ? "local" : "general";
-        else if (verdict === "chat") botTool = "general";
-        else if (verdict && HEADLESS_SKILLS.has(verdict)) botTool = verdict;
+        else if (verdict === "routine") botTool = "routine";
+        else if (verdict === "chat") {
+          // Chat may correct a loose browser-heuristic nomination ("check this
+          // idea"). It must not strip a concrete tool skill — that is how a
+          // repeat research/local ask became a restated report instead of a
+          // new harness run.
+          const heuristicTool = HEADLESS_SKILLS.has(skill) && skill !== "general";
+          botTool = heuristicTool ? skill : "general";
+        } else if (verdict && HEADLESS_SKILLS.has(verdict)) botTool = verdict;
         if (botTool) skill = botTool;
         // No verdict (offline/slow): the heuristic skill stands and nothing
         // parks — a Bot that can't be sure answers in chat like before.
@@ -8629,14 +9120,14 @@ function createAgentRuntime(deps) {
       // Deliverable turns: acknowledge in the response area BEFORE the work
       // starts, so the user isn't staring at a bare spinner. Headless (Bot)
       // deliverables land in chat, so the "subtab" promises don't apply.
-      // A browser-verdict turn usually ends in the opt-in question, so no
-      // "working on it" promise — the question is the turn's real opener.
+      // A browser-verdict turn starts the browse from the harness; the
+      // child emits the live viewport kickoff once the tab is actually up.
       const kickoff = actsHeadless
         ? skill === "general" || skill === "browser"
           ? ""
-          : "On it — working on that now."
+          : "On it. Working on that now."
         : agent.headless && agent.botBrowserRun
-          ? "On it — I'm in the browser now. You can watch me in the little window above the chat bar, or click it to open the full tab."
+          ? "On it. I'm in the browser now. You can watch me in the little window above the chat bar, or click it to open the full tab."
           : deliverableKickoffText(skill);
       if (kickoff) {
         agent.partialText = kickoff;
@@ -8746,7 +9237,7 @@ function createAgentRuntime(deps) {
               )
             ) {
               sendToAgentChannels(agent.id, "lykn:agent-status", {
-                status: `✓ Done — ${stepText.slice(0, 48)}`,
+                status: `✓ Done: ${stepText.slice(0, 48)}`,
               });
               stepAnswers.push(`Step done — already complete: ${stepText}`);
               continue;
@@ -8965,7 +9456,7 @@ function createAgentRuntime(deps) {
                 );
                 if (!gaps.length && remainingDone) {
                   sendToAgentChannels(agent.id, "lykn:agent-status", {
-                    status: "✓ All tasks done — wrapping up",
+                    status: "✓ All tasks done, wrapping up",
                   });
                   break;
                 }
@@ -9711,6 +10202,7 @@ function createAgentRuntime(deps) {
     stopAgent,
     closeAgent,
     closeAllWorkers,
+    isHeadless: isHeadlessAgent,
     resetMainChat,
     setAgentMode,
     send,
@@ -9727,8 +10219,8 @@ function createAgentRuntime(deps) {
     clearBrowserSurface,
     showStepDeliverable,
     emitList,
-    // Recreate the tab for every worker agent (used when the Studio browser
-    // docks, so restored agents never sit in the rail without a tab).
+    // Recreate the tab for every visible worker agent (used when the Studio
+    // browser docks). Headless Bots stay off the tab strip.
     ensureAgentTabs: () => syncAgentBrowserTabs({ focusId: activeAgentId }),
     isAgentModeOn: () => agentModeOn,
     isMainAgent,
@@ -9785,6 +10277,7 @@ module.exports = {
   looksLikePasteReportIntoSheets,
   looksLikeCreateInGoogleSheetsAsk,
   looksLikeDeliverableEdit,
+  looksLikeRerunAsk,
   looksLikeOpenDeliverableFollowUp,
   MAX_AGENTS,
 };

@@ -14,7 +14,9 @@ import {
 import {
   filterOpenAiToolsForVoiceDisclosure,
   resolveVoiceTurnDisclosure,
+  VOICE_TOOLS_BY_CAPABILITY,
 } from './voiceToolResolver.js';
+import { FIRST_PARTY_CAPABILITY_FAMILIES } from './firstPartyCapabilities.js';
 import {
   GENERIC_CHAT_TOOL_GUIDANCE,
   GENERIC_VOICE_TOOL_GUIDANCE,
@@ -48,6 +50,33 @@ function fakeMcpCatalog() {
   return tools;
 }
 
+test('every capability family has a Voice mapping', () => {
+  for (const family of FIRST_PARTY_CAPABILITY_FAMILIES) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(VOICE_TOOLS_BY_CAPABILITY, family),
+      `Voice missing family ${family}`,
+    );
+  }
+});
+
+test('client Voice tool names stay in lockstep with the registry', () => {
+  const src = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../src/lib/voice/voiceToolNames.ts'),
+    'utf8',
+  );
+  for (const name of LYKN_VOICE_TOOL_NAMES) {
+    assert.match(src, new RegExp(`"${name}"`), `client list missing ${name}`);
+  }
+  const overlay = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../electron/overlay-ui/voice.js'),
+    'utf8',
+  );
+  for (const name of LYKN_VOICE_TOOL_NAMES) {
+    if (name === 'ask_bot' || name === 'browser_agent' || name === 'update_voice_instructions') continue;
+    assert.match(overlay, new RegExp(`"${name}"`), `overlay list missing ${name}`);
+  }
+});
+
 test('every Voice def is classified and retired aliases are not live', () => {
   for (const name of LYKN_VOICE_TOOL_NAMES) {
     assert.ok(VOICE_TOOL_ALIAS_CLASS[name], `unclassified Voice tool ${name}`);
@@ -76,12 +105,18 @@ test('calendar voice discloses the calendar family, not the full registry', () =
   assert.ok(d.inspect.approxTokens < 4000);
 });
 
-test('vault voice discloses the vault family', () => {
+test('vault voice pulls things up with open_app, never the old vault search', () => {
   const d = disclose('Search my Vault for the contract.');
   assert.ok(d.capabilities.includes('vault.read'));
-  assert.ok(d.firstPartyToolNames.includes('search_vault'));
-  assert.ok(d.firstPartyToolNames.includes('read_document'));
+  assert.ok(d.firstPartyToolNames.includes('open_app'));
+  assert.equal(d.firstPartyToolNames.includes('search_vault'), false);
+  assert.equal(d.firstPartyToolNames.includes('read_document'), false);
+  assert.equal(d.firstPartyToolNames.includes('display_document'), false);
   assert.equal(d.firstPartyToolNames.includes('list_events'), false);
+
+  const pullUp = disclose('pull up the dashboard I made');
+  assert.ok(pullUp.firstPartyToolNames.includes('open_app'));
+  assert.equal(pullUp.firstPartyToolNames.includes('search_vault'), false);
 });
 
 test('weather voice uses web search, not vault', () => {
@@ -113,6 +148,31 @@ test('custom REST list_apps is not an MCP fallback', () => {
   const custom = disclose('what connected apps do I have');
   assert.ok(custom.firstPartyToolNames.includes('list_apps'));
   assert.ok(custom.firstPartyToolNames.includes('call_app'));
+});
+
+test('desktop voice discloses browser_agent and ask_bot for those asks', () => {
+  const browse = disclose('run a browser agent and go to the Perplexity Computer website', {
+    localMode: true,
+  });
+  assert.ok(browse.capabilities.includes('browser.agent'));
+  assert.ok(browse.firstPartyToolNames.includes('browser_agent'));
+  assert.equal(browse.firstPartyToolNames.includes('ask_bot'), false);
+
+  const send = disclose('send Scout to start work in the browser', {
+    localMode: true,
+    lyknBots: [{ id: 'bot_scout', name: 'Scout', role: 'Research' }],
+  });
+  assert.ok(send.capabilities.includes('bots.ask'));
+  assert.ok(send.firstPartyToolNames.includes('ask_bot'));
+});
+
+test('hello on desktop voice still discloses no bot or browser tools', () => {
+  const d = disclose('hello', {
+    localMode: true,
+    lyknBots: [{ id: 'bot_scout', name: 'Scout', role: 'Research' }],
+  });
+  assert.equal(d.firstPartyToolNames.includes('ask_bot'), false);
+  assert.equal(d.firstPartyToolNames.includes('browser_agent'), false);
 });
 
 test('full Voice registry is not dumped on a calendar turn', () => {
@@ -169,11 +229,39 @@ test('capability guidance appears only when relevant and stale tools are absent'
 test('static Chat tool guidance is far smaller than the old 6K menu', () => {
   const generic = measureGuidanceText(GENERIC_CHAT_TOOL_GUIDANCE);
   const vaultTurn = measureGuidanceText(buildSlimChatToolGuidance(
-    ['lykn_loadNeuron', 'lykn_loadNeurons'],
+    ['lykn_open_app'],
     ['vault.read'],
   ));
   assert.ok(generic.approxTokens < 500, `generic ${generic.approxTokens}`);
   assert.ok(vaultTurn.approxTokens < 700, `vault guidance ${vaultTurn.approxTokens}`);
+});
+
+test('voice discloses the same Chat skills when asked', () => {
+  const letter = disclose('write me a letter to my landlord');
+  assert.ok(letter.capabilities.includes('documents.write'));
+  assert.ok(letter.firstPartyToolNames.includes('write_document'));
+  assert.equal(letter.firstPartyToolNames.includes('build_react_artifact'), false);
+
+  const image = disclose('generate an image of a red bicycle');
+  assert.ok(image.firstPartyToolNames.includes('generate_image'));
+  assert.equal(image.firstPartyToolNames.includes('write_document'), false);
+
+  const math = disclose('calculate 17.5 percent of 2400');
+  assert.ok(math.firstPartyToolNames.includes('calculate'));
+
+  const open = disclose('open my calendar');
+  assert.ok(open.firstPartyToolNames.includes('open_app'));
+
+  const local = disclose('run npm test in the terminal', { localMode: true });
+  assert.ok(local.firstPartyToolNames.includes('local_run_command'));
+
+  const project = disclose('find my project');
+  assert.ok(project.firstPartyToolNames.includes('list_projects'));
+  assert.ok(project.firstPartyToolNames.includes('resolve_project'));
+  assert.equal(project.firstPartyToolNames.includes('delete_project'), false);
+
+  const hello = disclose('hello');
+  assert.ok(hello.firstPartyToolNames.length <= 2);
 });
 
 test('Voice session replaces tools each turn instead of accumulating', () => {
@@ -198,5 +286,10 @@ test('deleted runtime tools cannot execute from Chat', async () => {
   assert.match(apps.payload.error, /tool_not_whitelisted_for_chat/);
 
   assert.equal(CHAT_TOOL_NAMES.includes('lykn_searchVault'), false);
+  assert.equal(CHAT_TOOL_NAMES.includes('lykn_loadNeuron'), false);
+  assert.equal(CHAT_TOOL_NAMES.includes('lykn_loadNeurons'), false);
+  assert.equal(CHAT_TOOL_NAMES.includes('lykn_getProjectNeurons'), false);
+  assert.equal(CHAT_TOOL_NAMES.includes('lykn_addProjectNeurons'), false);
+  assert.equal(CHAT_TOOL_NAMES.includes('lykn_removeProjectNeurons'), false);
   assert.equal(CHAT_TOOL_NAMES.includes('lykn_proposeBelief'), false);
 });

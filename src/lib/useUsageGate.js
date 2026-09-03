@@ -16,7 +16,6 @@ export function useUsageGate() {
   const { planId, isGuest, loading: planLoading } = useUserPlan();
   const currentPlan = planId;
   const [vaultCount, setVaultCount] = useState(0);
-  const [aiRequestCount, setAiRequestCount] = useState(0);
   const [upgradeModal, setUpgradeModal] = useState(null);
   const vaultCountRef = useRef(0);
   const planRef = useRef(currentPlan);
@@ -38,38 +37,9 @@ export function useUsageGate() {
     return c;
   }, [user?.id]);
 
-  const refreshAiCount = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/usage/me`);
-      if (!res.ok) return 0;
-      const data = await res.json();
-      // billable_count matches what the server's cap counts; log_count also
-      // includes free background work and would trip this gate early.
-      const c = data.billable_count ?? data.log_count ?? 0;
-      setAiRequestCount(c);
-      return c;
-    } catch {
-      return 0;
-    }
-  }, []);
-
   useEffect(() => {
     refreshVaultCount();
-    refreshAiCount();
-  }, [refreshVaultCount, refreshAiCount]);
-
-  useEffect(() => {
-    const handler = () => {
-      setUpgradeModal({
-        type: "ai",
-        title: "AI request limit reached",
-        description:
-          "You've used all your AI requests this month. Upgrade your plan or add a top-up to continue.",
-      });
-    };
-    window.addEventListener("lykn:ai-limit-reached", handler);
-    return () => window.removeEventListener("lykn:ai-limit-reached", handler);
-  }, []);
+  }, [refreshVaultCount]);
 
   // Listen for the canvas-store block-limit event so any component mounting
   // the hook (Canvas, LyknChat, etc) can surface the upgrade modal.
@@ -166,31 +136,6 @@ export function useUsageGate() {
     return true;
   }, [user?.id, isGuest, planLoading]);
 
-  const checkAiLimit = useCallback(async () => {
-    const limit = limitsRef.current.requests;
-    if (!isFinite(limit)) return true;
-
-    let used = aiRequestCount;
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/usage/me`);
-      if (res.ok) {
-        const data = await res.json();
-        used = data.billable_count ?? data.log_count ?? 0;
-        setAiRequestCount(used);
-      }
-    } catch {}
-
-    if (used >= limit) {
-      setUpgradeModal({
-        type: "ai",
-        title: "AI request limit reached",
-        description: `You've used all ${limit} AI requests this month. Upgrade your plan or add a top-up to continue with full model access.`,
-      });
-      return false;
-    }
-    return true;
-  }, [aiRequestCount]);
-
   // Optional pre-check for callers that already know the current block count.
   // Returns true when adding one more block is allowed, false otherwise, and
   // pops the modal so the caller can bail out cleanly.
@@ -210,22 +155,14 @@ export function useUsageGate() {
     setVaultCount((c) => c + 1);
   }, []);
 
-  const incrementAiCount = useCallback(() => {
-    setAiRequestCount((c) => c + 1);
-  }, []);
-
   return {
     currentPlan,
     vaultCount,
-    aiRequestCount,
     limits,
     checkVaultLimit,
-    checkAiLimit,
     checkBlockLimit,
     incrementVaultCount,
-    incrementAiCount,
     refreshVaultCount,
-    refreshAiCount,
     upgradeModal,
     dismissUpgradeModal,
   };

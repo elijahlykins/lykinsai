@@ -14,11 +14,27 @@
  * every action.
  */
 
+/** Server-built approval payload for a connected-app (MCP) action — carries
+ *  the redacted tool arguments so the card can show WHAT will be sent. */
+export type McpApprovalDetail = {
+  title?: string;
+  connectionName?: string | null;
+  accountIdentity?: string | null;
+  accountLabel?: string | null;
+  semanticAction?: string;
+  consequence?: string | null;
+  toolName?: string | null;
+  arguments?: Record<string, unknown>;
+  actions?: Array<{ id: string; label: string }>;
+};
+
 export type LocalApprovalRequest = {
   id: string;
   tool: string;
   summary: string;
   args: Record<string, unknown>;
+  /** Present for connected-app approvals; renders the content preview card. */
+  detail?: McpApprovalDetail;
 };
 
 type Listener = (req: LocalApprovalRequest) => void;

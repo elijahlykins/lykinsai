@@ -1,5 +1,5 @@
 /**
- * Planner — converts a user goal into an editable high-level plan and revises
+ * Planner - converts a user goal into an editable high-level plan and revises
  * it when the environment makes the original plan obsolete.
  */
 
@@ -17,7 +17,7 @@ async function planTask({ model, task, snapshot = null, userMemory = "", website
       : "",
     userMemory ? `REMEMBERED ABOUT THE USER:\n${userMemory.slice(0, 1200)}` : "",
     // What we already know about this product shapes the plan far more than it
-    // shapes any single click — "templates are under Create > Email" is a step,
+    // shapes any single click - "templates are under Create > Email" is a step,
     // not a tactic. The planner was the one stage never shown it.
     websiteMemory ? `ALREADY KNOWN ABOUT THIS SITE:\n${websiteMemory.slice(0, 1500)}` : "",
     `AVAILABLE SKILLS: ${instructions.listSkills().join(", ") || "(none)"}`,
@@ -61,7 +61,7 @@ function knownSkills(...lists) {
 
 /**
  * @param {Array<string>|null} [constraints] the constraints the ACTOR says still
- *   apply. null means it said nothing. An empty array means none of them do —
+ *   apply. null means it said nothing. An empty array means none of them do -
  *   which is the only way a constraint can ever be retired, and used to be
  *   indistinguishable from silence.
  */
@@ -72,7 +72,7 @@ async function replanTask({ model, task, snapshot, reason = "", constraints = nu
     `RECENT ACTIONS:\n${taskState.formatHistoryForModel(task)}`,
     `WHY THE CURRENT PLAN NO LONGER FITS:\n${reason || "(unknown)"}`,
     Array.isArray(constraints)
-      ? `THE AGENT REPORTS THESE CONSTRAINTS STILL APPLY: ${constraints.join("; ") || "(none — the rest have been overtaken by what it found on the page)"}`
+      ? `THE AGENT REPORTS THESE CONSTRAINTS STILL APPLY: ${constraints.join("; ") || "(none - the rest have been overtaken by what it found on the page)"}`
       : "",
     snapshot ? `CURRENT PAGE:\n${formatSnapshotForModel(snapshot, { maxElements: 30, maxTextChars: 1500 })}` : "",
     "Produce a REVISED plan for the remaining work only. Keep knownFacts consistent with what was already learned.",
@@ -89,7 +89,7 @@ async function replanTask({ model, task, snapshot, reason = "", constraints = nu
   if (result.plan.length) {
     // Precedence: what the actor said on the page, then what the replanner
     // said, then what we already had. Each level can return an empty array to
-    // mean "none of them still apply" — the old code read empty as silence, so
+    // mean "none of them still apply" - the old code read empty as silence, so
     // a constraint recorded at plan time could never be retired for the life
     // of the task, which disabled replanning as an escape from a bad one.
     const revised = Array.isArray(constraints)
@@ -102,7 +102,7 @@ async function replanTask({ model, task, snapshot, reason = "", constraints = nu
       constraints: revised,
       knownFacts: result.knownFacts,
       skills: knownSkills(result.skills),
-      // setPlan keeps the existing brief when these come back empty — a route
+      // setPlan keeps the existing brief when these come back empty - a route
       // change mid-task does not change what "done" means.
       successCondition: result.successCondition,
       doNot: result.doNot,

@@ -12,6 +12,7 @@
 //   rely on ESM module-cache identity.
 import { searchWeb } from '../../lib/exterior/webSearch.js';
 import { generateChatImage } from '../../lib/exterior/generateImage.js';
+import { authorizeImageUsage } from '../../lib/billing/usageBalance.js';
 import {
   getOrCreateSession,
   logAiUsage,
@@ -65,9 +66,21 @@ export function registerAssistRoutes(app, deps) {
         supabaseAdmin,
         deliverBytes: wantsBytes,
         logUsage: (info) => logAiUsage({ ...info, metadata: { ...info?.metadata, surface: 'studio_imagine' } }),
+        authorizeUsage: ({ actionType }) => authorizeImageUsage(req.user?.id, req.userPlanId, actionType),
       });
       if (!result.ok) {
         const err = String(result.error || 'image_generation_failed');
+        if (err === 'insufficient_usage_balance') {
+          return res.status(402).json({
+            ok: false,
+            error: err,
+            code: 'insufficient_usage_balance',
+            message: result.message || 'Add funds to continue with this action.',
+            usage_balance_usd: result.usage_balance_usd,
+            required_usd: result.required_usd,
+            add_funds: true,
+          });
+        }
         const status = err === 'unauthenticated' ? 401 : /quota|limit/i.test(err) ? 429 : 502;
         return res.status(status).json({ ok: false, error: err });
       }
@@ -80,9 +93,6 @@ export function registerAssistRoutes(app, deps) {
         prompt: result.prompt,
         caption: result.caption || null,
         provider: result.provider,
-        monthlyUsed: result.monthly_used,
-        monthlyLimit: result.monthly_limit,
-        monthlyRemaining: result.monthly_remaining,
       });
     } catch (e) {
       console.error('❌ imagine-image:', e?.message || e);

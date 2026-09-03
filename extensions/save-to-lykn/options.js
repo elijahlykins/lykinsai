@@ -64,7 +64,7 @@ testBridgeBtn.addEventListener("click", async () => {
     } else {
       statusEl.classList.add("error");
       statusEl.textContent =
-        resp?.error || "Could not reach LYKN desktop — is the app running?";
+        resp?.error || "Could not reach LYKN desktop. Is the app running?";
     }
     setTimeout(() => (statusEl.textContent = ""), 3000);
   });

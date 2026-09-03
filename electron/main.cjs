@@ -29,6 +29,7 @@ const {
   nativeTheme,
   protocol,
   net: electronNet,
+  safeStorage,
 } = require("electron");
 
 const {
@@ -245,6 +246,11 @@ const TOOL_STATUS_LABELS = {
   build_template: "Building…",
   build_spreadsheet: "Building…",
   render_video: "Rendering your video…",
+  local_list_dir: "Looking through that folder…",
+  local_read_file: "Reading the file…",
+  local_search_files: "Searching your files…",
+  local_synced_folders: "Checking synced folders…",
+  local_run_command: "Running that on your Mac…",
 };
 
 // The agent loop emits chat-tool names like "lykn_web_search" /
@@ -269,13 +275,14 @@ const OVERLAY_PROJECT_WRITE_TOOLS = new Set([
   "lykn_updateProject",
   "lykn_deleteProject",
   "lykn_mergeProjects",
-  "lykn_addProjectNeurons",
-  "lykn_removeProjectNeurons",
   "lykn_uploadToProject",
   "create_project",
   "set_active_project",
   "add_to_project",
   "update_project_state",
+  "update_project",
+  "delete_project",
+  "merge_projects",
 ]);
 
 function notifyMainProjectsChanged(detail = {}) {
@@ -783,7 +790,7 @@ let panelCardOpen = false;
 
 // Overlay session seeds for vault pull-ups → Build / Image edit.
 // Declared above the vault marker helpers that write them.
-let lastOverlayReactArtifact = null; // { toolName, title, code }
+let lastOverlayReactArtifact = null; // { toolName, title, code, files?, entry? }
 let lastOverlayVaultImage = null; // { url, title }
 // Last page fingerprint for Glass asks — when the screen/URL changes mid-chat,
 // keep the screenshot even on text-rich pages so we don't go blind.
@@ -821,7 +828,7 @@ let lastOverlayPageFingerprint = "";
 
 
 /**
- * Build Glass view-mode markers from lykn_loadNeuron / lykn_loadNeurons.
+ * Build Glass view-mode markers from a vault item the overlay already has.
  * Vault images → md-img, HTML → lykn_artifact iframe, else Open card.
  * Also seeds lastOverlayReactArtifact when an editable React source is found.
  */
@@ -1320,7 +1327,7 @@ const d = {
     app, BrowserWindow, WebContentsView, shell, globalShortcut, Menu, ipcMain,
     desktopCapturer, screen, systemPreferences, dialog, nativeImage, clipboard,
     Tray, session, Notification, powerMonitor, nativeTheme, protocol,
-    net: electronNet,
+    net: electronNet, safeStorage,
   },
   node: {
     path,
@@ -1362,7 +1369,6 @@ function bindShellContext() {
   attachMainStudio(d);
   attachTray(d);
   attachOverlaySettings(d);
-  attachLiveWatch(d);
   attachOverlaySessions(d);
   attachBrowserAutomation(d);
   attachAskPipeline(d);
@@ -1452,6 +1458,8 @@ function bindShellContext() {
   Object.defineProperty(d, "lastOverlayPageUrl", { enumerable: true, get: () => lastOverlayPageUrl, set: (v) => { lastOverlayPageUrl = v; } });
   Object.defineProperty(d, "lastOverlayPageTitle", { enumerable: true, get: () => lastOverlayPageTitle, set: (v) => { lastOverlayPageTitle = v; } });
   Object.defineProperty(d, "welcomeSignupSecret", { enumerable: true, get: () => welcomeSignupSecret, set: (v) => { welcomeSignupSecret = v; } });
+  // liveWatchState must be bound before attach: stopLiveWatch writes it on boot.
+  attachLiveWatch(d);
   d.toolStatusLabel = toolStatusLabel;
   d.notifyMainProjectsChanged = notifyMainProjectsChanged;
   d.maybeNotifyProjectsChangedFromTool = maybeNotifyProjectsChangedFromTool;
@@ -1495,7 +1503,7 @@ function registerArtifactProtocol() {
         const key = new URL(request.url).hostname.replace(/\/$/, "");
         const html = d.artifactHtmlCache.get(key);
         if (!html) {
-          return new Response("Artifact preview expired — pull it in again.", {
+          return new Response("Artifact preview expired. Pull it in again.", {
             status: 404,
             headers: { "Content-Type": "text/plain; charset=utf-8" },
           });
@@ -1555,6 +1563,9 @@ function createExecutionRuntimes() {
 }
 
 function createElectronWindows() {
+  // Restore the last signed-in account on this machine before any window
+  // loads, so Studio and welcome can skip a second sign-in.
+  d.hydrateDesktopSessionFromDisk();
   // When macOS starts LYKN at login, stay silent in the background: no main
   // window, just the armed ⌘+L hotkey. The dock icon / ⌘+L bring the UI up.
   // Boot a hidden auth keeper so Glass can refresh the stored session without
@@ -1640,7 +1651,11 @@ function shutdownServices() {
 }
 
 app.whenReady().then(() => {
-  createCoreServices();
+  try {
+    createCoreServices();
+  } catch (err) {
+    console.warn("[main] core services failed:", err?.message || err);
+  }
   registerArtifactProtocol();
   applyShellChrome();
 

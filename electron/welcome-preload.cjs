@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld("lyknWelcome", {
    * @param {number} stage
    */
   stageChanged: (stage) => ipcRenderer.send("lykn:welcome-stage", stage),
+  /** Signed-in account already stored on this machine, if any. */
+  rememberedSession: () => ipcRenderer.invoke("lykn:auth-remembered-session"),
   /** Start the email/password account setup flow. */
   signUp: (email, password) =>
     ipcRenderer.invoke("lykn:welcome-signup", { email: String(email || ""), password: String(password || "") }),

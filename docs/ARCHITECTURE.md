@@ -4,7 +4,8 @@ Audit date: 2026-08-25. Describes the system **as it exists**, plus the dependen
 rules we want to preserve. Companion docs: `LEGACY_CODE.md` (suspicious code),
 `REFACTOR_LOG.md` (structural change history),
 `docs/architecture/memory-vault-connections.md` (Memory vs Vault vs Connections),
-`docs/architecture/universal-mcp.md` (LYKN as MCP client).
+`docs/architecture/universal-mcp.md` (LYKN as MCP client),
+`docs/SECURITY.md` (identity, data flow, desktop permissions, deletion).
 
 ## The four runtime surfaces
 
@@ -15,7 +16,7 @@ LYKN is not one app — it is four cooperating programs that share this repo:
 | **Web frontend** | `index.html` → `src/main.jsx` → `src/App.jsx` | Browser (and inside Electron's main window) | Vercel (`vercel.json`, SPA from `dist/`) |
 | **Desktop shell** | `electron/main.cjs` (`package.json` `main`) | User's Mac/PC | electron-builder (`electron-builder.json`) |
 | **API backend** | `server.js` | Render web service (`render.yaml`) | Render |
-| **Scheduled jobs** | `jobs/run*.js` | Render cron services | Render (4 crons, 03:00–04:30 UTC) |
+| **Scheduled jobs** | `jobs/run*.js` | Render cron services | Render (2 crons, 04:00–04:30 UTC) |
 
 Supporting, non-runtime areas: `remotion/` (marketing video renders),
 `ios/` + `capacitor.config.ts` (iOS wrapper around lykn.io), `extensions/save-to-lykn`

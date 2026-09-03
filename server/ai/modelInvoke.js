@@ -5,6 +5,13 @@ import {
   isTogetherInferenceModel,
 } from '../../lib/lora/togetherLora.js';
 import { splitPromptForProvider, pickOutputCap, clampForProvider } from './promptUtils.js';
+import { estimateTokens, extractOpenAIUsage } from '../../usageTracking.js';
+import { openaiReasoningPayload } from './chatRouting/resolveReasoningEffort.js';
+import { buildPromptCacheKey } from './contextPipeline/promptCacheKey.js';
+import {
+  extractOpenRouterUsage,
+  resolveInferenceTarget,
+} from '../../lib/inference/index.js';
 
 export function internalHeaders(req) {
   const h = { 'Content-Type': 'application/json' };
@@ -258,8 +265,8 @@ export function getFallbackModels(failedModel) {
 // alternative on their behalf.
 // Soft copy — never "trouble connecting". That phrasing fired on stalls
 // (image gen / long builds) that were not real network failures.
-export const AI_TEMPORARY_FAILURE_TEXT = "That didn't work — try again in a moment.";
-export const IMAGE_GEN_FAILURE_TEXT = "Couldn't create that image — try again in a moment.";
+export const AI_TEMPORARY_FAILURE_TEXT = "That didn't work. Try again in a moment.";
+export const IMAGE_GEN_FAILURE_TEXT = "Couldn't create that image. Try again in a moment.";
 
 export function extractPureUserMessage(text, prompt) {
   const raw = String(text || '').trim();
@@ -284,22 +291,22 @@ export const resolveAnthropicModel = (model) => {
   const value = String(model || '').trim();
   const aliasMap = {
     // Preferred "latest" aliases -> concrete Anthropic model IDs
-    'claude-3-7-sonnet-latest': 'claude-sonnet-4-6',
-    'claude-3-5-sonnet-latest': 'claude-sonnet-4-6',
+    'claude-3-7-sonnet-latest': 'claude-sonnet-5',
+    'claude-3-5-sonnet-latest': 'claude-sonnet-5',
     'claude-3-5-haiku-latest': 'claude-haiku-4-5-20251001',
     'claude-3-haiku': 'claude-haiku-4-5-20251001',
     'claude-3-haiku-20240307': 'claude-haiku-4-5-20251001',
     'claude-3-5-haiku-20241022': 'claude-haiku-4-5-20251001',
+    'claude-haiku-4-5': 'claude-haiku-4-5-20251001',
 
-    // Legacy IDs -> current supported IDs
-    'claude-3-5-sonnet-20240620': 'claude-sonnet-4-6',
-    'claude-3-5-sonnet-20241022': 'claude-sonnet-4-6',
-    'claude-3-7-sonnet-20250219': 'claude-sonnet-4-6',
-    'claude-3-opus-20240229': 'claude-opus-4-8',
-    'claude-3-sonnet-20240229': 'claude-sonnet-4-6',
-    'claude-opus-4-6': 'claude-opus-4-8',
+    // Retired IDs -> current supported IDs. Still-served 4.5 / 4.6 / 4.7
+    // Opus and Sonnet ids pass through unchanged.
+    'claude-3-5-sonnet-20240620': 'claude-sonnet-5',
+    'claude-3-5-sonnet-20241022': 'claude-sonnet-5',
+    'claude-3-7-sonnet-20250219': 'claude-sonnet-5',
+    'claude-3-opus-20240229': 'claude-opus-5',
+    'claude-3-sonnet-20240229': 'claude-sonnet-5',
     'claude-opus-4-6-code': 'claude-opus-4-8',
-    'claude-opus-4-7': 'claude-opus-4-8',
   };
   return aliasMap[value] || value;
 };
@@ -332,10 +339,18 @@ export const parseOpenAIResponsesText = (data) => {
 export const OPENAI_RESPONSES_ONLY = new Set(['o3', 'o3-pro', 'o4-mini']);
 
 export const invokeOpenAIModel = async (model, promptInput, imageUrls = [], opts = {}) => {
+  const target = opts.inferenceTarget || resolveInferenceTarget(model);
+  const viaOpenRouter = target.gateway === 'openrouter';
+  const apiKey = process.env[target.keyVar];
+  if (!apiKey) {
+    throw new Error(`${target.keyVar || 'API key'} not configured`);
+  }
   const headers = {
-    'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+    'Authorization': `Bearer ${apiKey}`,
     'Content-Type': 'application/json',
+    ...(target.extraHeaders || {}),
   };
+  const upstreamModel = target.upstreamId || model;
 
   const { system: sysPrompt, user: userPrompt } = typeof promptInput === 'string'
     ? splitPromptForProvider(promptInput)
@@ -348,13 +363,18 @@ export const invokeOpenAIModel = async (model, promptInput, imageUrls = [], opts
     intent: opts.intent,
     override: opts.maxTokens,
   }), model);
-  const cacheKey = `lykn-${String(opts.userId || 'anon').slice(0, 32)}`;
+  const cacheKey = buildPromptCacheKey({
+    userId: opts.userId,
+    modelId: model,
+    personalizationVersion: opts.personalizationVersion || 'none',
+  });
 
   // Responses API only for models that need it (o-series, no vision).
-  // For every other model — including the entire gpt-* family — go straight
-  // to chat completions, which avoids the historical "Responses fails
-  // silently → fall back to Chat → pay twice" pattern.
-  if (OPENAI_RESPONSES_ONLY.has(model) && !hasImages) {
+  // OpenRouter serves those through chat completions, so skip Responses
+  // there. For every other direct OpenAI model, go straight to chat
+  // completions to avoid the historical "Responses fails silently → fall
+  // back to Chat → pay twice" pattern.
+  if (!viaOpenRouter && OPENAI_RESPONSES_ONLY.has(model) && !hasImages) {
     const responsesBody = {
       model,
       input: userPrompt,
@@ -387,24 +407,26 @@ export const invokeOpenAIModel = async (model, promptInput, imageUrls = [], opts
     : userPrompt;
   messages.push({ role: 'user', content: userContent });
 
-  const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+  const openaiRes = await fetch(`${target.baseUrl || 'https://api.openai.com/v1'}/chat/completions`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
-      model,
+      model: upstreamModel,
       messages,
       max_completion_tokens: cap,
-      prompt_cache_key: cacheKey,
+      ...(viaOpenRouter ? {} : { prompt_cache_key: cacheKey }),
+      ...openaiReasoningPayload(model, opts.reasoningEffort || 'none'),
     }),
   });
 
   if (!openaiRes.ok) {
     const errorData = await openaiRes.json().catch(() => ({}));
-    throw new Error(`OpenAI (${openaiRes.status}): ${errorData.error?.message || openaiRes.statusText}`);
+    const label = viaOpenRouter ? 'OpenRouter' : 'OpenAI';
+    throw new Error(`${label} (${openaiRes.status}): ${errorData.error?.message || openaiRes.statusText}`);
   }
   const data = await openaiRes.json();
   const text = data.choices?.[0]?.message?.content?.trim() || '';
-  const usage = extractOpenAIUsage(data);
+  const usage = viaOpenRouter ? extractOpenRouterUsage(data) : extractOpenAIUsage(data);
   return { text, usage };
 };
 

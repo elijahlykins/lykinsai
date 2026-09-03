@@ -39,6 +39,15 @@ describe("resolveArtifactSendPlan — normal Ask", () => {
     assert.equal(plan.effectiveComposerMode, "none");
     assert.equal(plan.createToolName, "");
   });
+
+  it("typed commission in Chat does not silently arm Create", () => {
+    const plan = resolveArtifactSendPlan(
+      baseInput({ text: "build me a todo app", sendMode: "none" }),
+    );
+    assert.equal(plan.createArmed, false);
+    assert.equal(plan.effectiveComposerMode, "none");
+    assert.equal(plan.createToolName, "");
+  });
 });
 
 describe("resolveArtifactSendPlan — Build", () => {
@@ -156,6 +165,72 @@ describe("resolveArtifactSendPlan — sticky instructions", () => {
       }),
     );
     assert.equal(commission.effectiveComposerMode, "image");
+  });
+});
+
+describe("resolveArtifactSendPlan — \"make the app …\" refines, never rebuilds", () => {
+  it("Build armed + open build: 'make the app darker' refines in place", () => {
+    const plan = resolveArtifactSendPlan(
+      baseInput({
+        text: "make the app darker",
+        sendMode: "create:webapp",
+        editArtifact: openWebapp,
+      }),
+    );
+    assert.equal(plan.typedNewDeliverableAsk, false);
+    assert.equal(plan.buildModeFresh, false);
+    assert.equal(plan.refiningOpenArtifact, true);
+  });
+
+  it("Build armed + open build: 'make the game have a settings page' refines", () => {
+    const plan = resolveArtifactSendPlan(
+      baseInput({
+        text: "make the game have a settings page",
+        sendMode: "create:webapp",
+        editArtifact: openWebapp,
+      }),
+    );
+    assert.equal(plan.buildModeFresh, false);
+    assert.equal(plan.refiningOpenArtifact, true);
+  });
+
+  it("installed-app edit: 'create a quiz page in the app' stays an edit of THAT app", () => {
+    const plan = resolveArtifactSendPlan(
+      baseInput({
+        text: "create a quiz page in the app",
+        sendMode: "create:webapp",
+        editArtifact: { ...openWebapp, installedAppId: "app-9" },
+        linkedAppId: "app-9",
+      }),
+    );
+    assert.equal(plan.typedNewDeliverableAsk, false);
+    assert.equal(plan.buildModeFresh, false);
+    assert.equal(plan.refiningOpenArtifact, true);
+  });
+
+  it("installed-app edit in Chat mode: 'make the app darker' still edits, not a new build", () => {
+    const plan = resolveArtifactSendPlan(
+      baseInput({
+        text: "make the app darker",
+        editArtifact: { ...openWebapp, installedAppId: "app-9" },
+        linkedAppId: "app-9",
+      }),
+    );
+    assert.equal(plan.refiningOpenArtifact, true);
+    assert.equal(plan.discussOpenArtifact, false);
+  });
+
+  it("installed-app edit: explicit 'build me another app' still starts fresh", () => {
+    const plan = resolveArtifactSendPlan(
+      baseInput({
+        text: "build me another app for tracking workouts",
+        sendMode: "create:webapp",
+        editArtifact: { ...openWebapp, installedAppId: "app-9" },
+        linkedAppId: "app-9",
+      }),
+    );
+    assert.equal(plan.buildModeFresh, true);
+    assert.equal(plan.refiningOpenArtifact, false);
   });
 });
 

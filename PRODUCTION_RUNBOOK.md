@@ -1,4 +1,9 @@
-# LYKN Connectors — Production Runbook
+# LYKN Legacy Connector Runbook
+
+> Deprecated.
+> Do not use the provider callbacks or migration list in this file for a new deployment.
+> Managed production connections now use Composio and the routes documented in [`docs/PRODUCTION_LAUNCH.md`](docs/PRODUCTION_LAUNCH.md).
+> This file is retained only as historical context for legacy connector records.
 
 This is the **single batch setup** to take every connector we built live on
 your Vercel + Render deployment. Do all of this in one sitting and they

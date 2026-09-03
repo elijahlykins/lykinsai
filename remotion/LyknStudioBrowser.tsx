@@ -11,7 +11,7 @@ import { StudioGlassStage } from "./LyknStudioOpen";
 import { ICON_PATH, ICON_VIEWBOX } from "./brand";
 
 // ---------------------------------------------------------------------------
-// LYKN Studio Browser — open Browser, Use LYKN, run a real agent task:
+// LYKN Studio Browser — open Browser, Ask LYKN, run a real agent task:
 // open Google Sheets and create a monthly budget. Light Mac browser chrome
 // + dark glass agent rail.
 // ---------------------------------------------------------------------------
@@ -929,7 +929,7 @@ const BrowserCard: React.FC<{
           </span>
         </div>
 
-        {/* Use LYKN — stays on the far right of the browser chrome */}
+        {/* Ask LYKN — stays on the far right of the browser chrome */}
         <div
           style={{
             height: 30,
@@ -949,7 +949,7 @@ const BrowserCard: React.FC<{
             marginLeft: "auto",
           }}
         >
-          Use
+          Ask
           <LyknMark size={18} color="#fff" />
         </div>
       </div>

@@ -94,9 +94,49 @@ function ImageBody({ url, name }: { url: string; name: string }) {
  * same policy as every other artifact preview — an untrusted host gets no frame
  * at all rather than a laxer one.
  */
+const SRCDOC_SANDBOX =
+  "allow-scripts allow-popups allow-forms allow-modals allow-presentation";
+
 function HtmlBody({ url, name }: { url: string; name: string }) {
   const preview = safeHtmlPreviewUrl(url);
-  if (!preview) {
+  const [srcDoc, setSrcDoc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (safeHtmlPreviewUrl(url) || !url) {
+      setSrcDoc(null);
+      setFailed(!url);
+      return undefined;
+    }
+    let cancelled = false;
+    setSrcDoc(null);
+    setFailed(false);
+    fetch(url)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(String(response.status));
+        const html = await response.text();
+        if (!cancelled) setSrcDoc(html);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+
+  if (preview) {
+    return (
+      <iframe
+        src={preview.url}
+        title={name}
+        sandbox={preview.sandbox}
+        referrerPolicy="no-referrer"
+        className="h-full w-full border-0 bg-white"
+      />
+    );
+  }
+  if (failed) {
     return (
       <Centered>
         <FileQuestion className="h-10 w-10 opacity-40" strokeWidth={1.2} />
@@ -104,11 +144,12 @@ function HtmlBody({ url, name }: { url: string; name: string }) {
       </Centered>
     );
   }
+  if (!srcDoc) return <Centered>Opening…</Centered>;
   return (
     <iframe
-      src={preview.url}
+      srcDoc={srcDoc}
       title={name}
-      sandbox={preview.sandbox}
+      sandbox={SRCDOC_SANDBOX}
       referrerPolicy="no-referrer"
       className="h-full w-full border-0 bg-white"
     />

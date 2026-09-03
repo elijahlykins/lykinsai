@@ -24,6 +24,7 @@
 
 import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
+import { studioSettingsPath } from "@/lib/settingsDeepLink";
 
 const LAST_UPDATED = "August 26, 2026";
 
@@ -117,8 +118,10 @@ export function PrivacyBody() {
           </Bullet>
           <Bullet>
             Local Mode is off until you turn it on. When it is on, LYKN can
-            read files in the folders you sync, and it asks you before writing
-            a file or running a command.
+            read and write files in the folders you approve, and can run
+            terminal commands in those folders. Enabling Local Mode does not
+            share your whole home folder unless you choose that. Consequential
+            commands (delete-like, download, clone) ask first.
           </Bullet>
           <Bullet>
             We never sell your data. We do not show ads. We do not train any
@@ -130,14 +133,23 @@ export function PrivacyBody() {
             consent before issuing any access token.
           </Bullet>
           <Bullet>
-            You can export everything and delete your account from{" "}
+            You can delete your account from{" "}
             <Link
-              to="/settings"
+              to={studioSettingsPath("account")}
               className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
             >
-              Settings
-            </Link>{" "}
-            at any time. Deletion is a hard delete, not a soft flag.
+              Settings → Account
+            </Link>
+            . LYKN does not currently offer an in-app export of your cloud
+            data. For a copy of what we hold, email{" "}
+            <a
+              href="mailto:privacy@lykn.io"
+              className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
+            >
+              privacy@lykn.io
+            </a>
+            . Deletion is a hard delete of LYKN-held account data, not a soft
+            flag.
           </Bullet>
         </ul>
       </Section>
@@ -288,8 +300,8 @@ export function PrivacyBody() {
         </h3>
         <p>
           Sparse server-side logs of API calls (which endpoint, response time,
-          status code, your user ID), AI usage records used to meter credits
-          and plan limits, MCP tool invocation counts and tool names (so the
+          status code, your user ID), AI usage records used to meter your
+          Usage Balance, MCP tool invocation counts and tool names (so the
           Connections page can show tool usage), and OAuth client metadata
           for connected AI tools (client name, scopes, last-used timestamp).
           The iOS app additionally forwards Apple MetricKit diagnostics (crash
@@ -365,8 +377,8 @@ export function PrivacyBody() {
             receipts). No marketing email without separate opt-in.
           </Bullet>
           <Bullet>
-            Meter credits and plan limits, and detect and prevent abuse, spam,
-            and quota overruns.
+            Meter your Usage Balance and plan inclusions, and detect and
+            prevent abuse and spam.
           </Bullet>
           <Bullet>Process subscriptions, trials, and plan limits via Stripe.</Bullet>
         </ul>
@@ -551,7 +563,7 @@ export function PrivacyBody() {
           Account data and LYKN content live in our database for as long
           as your account is active. When you delete your account from{" "}
           <Link
-            to="/settings"
+            to={studioSettingsPath("account")}
             className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
           >
             Settings
@@ -595,20 +607,29 @@ export function PrivacyBody() {
         </p>
         <ul className="space-y-2 mt-3">
           <Bullet>
-            <strong>Access:</strong> see everything we hold about you, via the
-            in-app product surfaces and the export endpoint.
+            <strong>Access:</strong> see your LYKN content in the product
+            (chat, Memory, Vault, Settings). There is no self-serve export
+            API today; email privacy@lykn.io for a data request.
           </Bullet>
           <Bullet>
-            <strong>Portability:</strong> export your LYKN content as JSON
-            from Settings.
+            <strong>Portability:</strong> email{" "}
+            <a
+              href="mailto:privacy@lykn.io"
+              className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
+            >
+              privacy@lykn.io
+            </a>{" "}
+            to request a copy of your LYKN-held data. Settings can import
+            ChatGPT or Claude zip exports; it does not export LYKN data as
+            JSON.
           </Bullet>
           <Bullet>
             <strong>Correction:</strong> edit Markdown Memory and Vault items
             through the available product controls.
           </Bullet>
           <Bullet>
-            <strong>Deletion:</strong> delete your account from Settings. We'll
-            also honor email requests to{" "}
+            <strong>Deletion:</strong> delete your account from Settings →
+            Account. We'll also honor email requests to{" "}
             <a
               href="mailto:privacy@lykn.io"
               className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"

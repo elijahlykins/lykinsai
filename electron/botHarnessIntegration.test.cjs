@@ -68,7 +68,7 @@ test.before(async () => {
 });
 test.after(() => server?.close());
 
-function newRuntime() {
+function newRuntime(overrides = {}) {
   const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), "lykn-bot-harness-"));
   return createAgentRuntime({
     userDataPath,
@@ -88,6 +88,7 @@ function newRuntime() {
     destroyOwnedArtifactTabs: () => {},
     focusOverlayComposer: () => {},
     notifyAgentFinished: () => {},
+    ...overrides,
   });
 }
 
@@ -103,7 +104,7 @@ function newBot(runtime) {
   return res.agentId;
 }
 
-test("a routed research task runs the harness: persona in system, doc preloaded, delivery closes", async (t) => {
+test("a routed research task runs the harness: persona in system, doc preloaded, report becomes a document card", async (t) => {
   decideBodies = [];
   decideScript = [
     {
@@ -112,19 +113,28 @@ test("a routed research task runs the harness: persona in system, doc preloaded,
       instruction: "deep report on espresso machines under $500",
       narration: "Digging into the machines now.",
     },
-    { kind: "deliver", answer: "Report's ready — three machines stood out, full findings attached." },
+    {
+      kind: "deliver",
+      answer: "Report's done — three machines stood out. It's in the document above.",
+    },
   ];
   t.after(() => {
     decideScript = [];
   });
-  const runtime = newRuntime();
+  const taskEvents = [];
+  const runtime = newRuntime({
+    emit: (channel, payload) => {
+      if (channel === "lykn:task-event") taskEvents.push(payload);
+    },
+  });
   const id = newBot(runtime);
   const out = await runtime.send(id, {
     text: "[You are Scout, my researcher.]\n\nresearch the best espresso machines under $500 and give me a report",
   });
   assert.ok(out?.ok);
-  assert.match(String(out.text || ""), /three machines stood out/);
-  assert.ok(decideBodies.length >= 2, "harness decide calls reached the model");
+  // The deliver close is the reply; the report itself rides the task as a card.
+  assert.match(String(out.text || ""), /three machines stood out/i);
+  assert.equal(decideBodies.length, 2, "report round, then the deliver close");
   const system = String(decideBodies[0].system || "");
   // The persona lives in the decide system prompt — every turn, not just the first brief.
   assert.match(system, /Your name is Scout, and you work as their Research Analyst/);
@@ -132,13 +142,19 @@ test("a routed research task runs the harness: persona in system, doc preloaded,
   assert.match(system, /# Tool Index/);
   // Routing's verdict preloaded the tool's full doc into round one.
   assert.match(String(decideBodies[0].user || ""), /# Tool: research_report/);
+  // The completion event carries the report as a standalone HTML document —
+  // that is what the chat renders as the persistent card.
+  const completed = taskEvents.find((e) => e?.type === "task_completed");
+  assert.ok(completed, "task_completed event reached the renderer channel");
+  assert.equal(completed.detail.deliverables?.length, 1);
+  assert.equal(completed.detail.deliverables[0].kind, "html");
+  assert.match(completed.detail.deliverables[0].html, /Sourced findings about espresso machines/);
 });
 
 test("bot identity passed on send() refreshes an agent that predates the profile", async (t) => {
   decideBodies = [];
   decideScript = [
     { kind: "use_tool", tool: "research_report", instruction: "report", narration: "…" },
-    { kind: "deliver", answer: "Done — report delivered." },
   ];
   t.after(() => {
     decideScript = [];

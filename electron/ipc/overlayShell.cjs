@@ -272,6 +272,7 @@ function registerOverlayShellIpc(d) {
     });
     ipcMain.handle("lykn:studio-fullscreen-get", () => ({
       fullscreen: studioFullscreenActive(),
+      topInset: typeof d.studioTopInset === "function" ? d.studioTopInset() : 0,
     }));
     // Yellow dot — native or in-page: exit fullscreen if needed, then minimize.
     ipcMain.on("lykn:studio-minimize", () => {

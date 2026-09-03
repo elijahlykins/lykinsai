@@ -37,6 +37,30 @@
 
 /** @type {CostOptimization[]} */
 export const COST_OPTIMIZATIONS = [
+  {
+    id: "context-pipeline-cache",
+    shippedAt: "2026-08-28",
+    tier: 1,
+    category: "caching",
+    title: "Stable chat prefix + model-specific cached pricing",
+    description:
+      "Keep identity, prefs, and inventory in a byte-stable system prefix, move volatile time/search/history after the cache split, and price cached input from each model's catalog rate instead of a universal 50% assumption.",
+    files: [
+      "server/ai/contextPipeline/",
+      "server/ai/chatStream.routes.js",
+      "server/ai/chatInvoke.routes.js",
+      "usageTracking.js",
+    ],
+    surfaces: ["chat_stream", "chat_invoke"],
+    expectedSavings: {
+      type: "percent",
+      range: [8, 20],
+      scope: "uncached input tokens on consecutive Pro/Max chat turns",
+      note: "Projected from prefix stability and catalog cache rates. Not measured from live provider traffic.",
+    },
+    provider: "openai",
+    risk: "Older reference turns are kept only when the current message overlaps them. Very long chats still drop unused history.",
+  },
   // ─── Tier 1 — invisible wins (shipped 2026-05-06) ───────────────────────
   {
     id: "gemini-context-caching",
@@ -344,16 +368,39 @@ export const COST_OPTIMIZATIONS = [
     },
     provider: "google",
   },
+  {
+    id: "auto-chat-routing-mix",
+    shippedAt: "2026-08-27",
+    tier: 2,
+    category: "model_swap",
+    title: "Auto chat routing (Luna / Terra / Sol)",
+    description:
+      "LYKN Auto no longer pins every turn to Terra. A quality-biased router sends obvious cheap turns to Luna, normal chat to Terra, and hard reasoning to Sol, with Pro/Max normal chat included at no usage charge. Compute tools stay billed.",
+    files: [
+      "server/ai/chatRouting/index.js",
+      "server/ai/chatStream.routes.js",
+      "server/ai/chatInvoke.routes.js",
+      "usageTracking.js",
+    ],
+    surfaces: ["chat_stream", "chat_invoke"],
+    expectedSavings: {
+      type: "percent",
+      range: [20, 45],
+      scope: "Auto-routed chat input+output vs always-Terra",
+      note: "Depends on the live fast/standard/advanced mix. Quality bias keeps uncertain turns on Terra.",
+    },
+    provider: "openai",
+  },
 ];
 
 // ─── helpers used by the dashboard ──────────────────────────────────────────
 
 export const TIER_LABELS = {
-  1: "Tier 1 — invisible wins",
-  2: "Tier 2 — smart routing",
-  3: "Tier 3 — per-user safety caps",
-  4: "Tier 4 — architecture",
-  5: "Tier 5 — strategic",
+  1: "Tier 1: invisible wins",
+  2: "Tier 2: smart routing",
+  3: "Tier 3: per-user safety caps",
+  4: "Tier 4: architecture",
+  5: "Tier 5: strategic",
 };
 
 export const CATEGORY_META = {
@@ -384,7 +431,7 @@ export function groupOptimizationsByTier(entries = COST_OPTIMIZATIONS) {
 
 // Format a savings object into a short string used on the badge.
 export function formatSavingsBadge(s) {
-  if (!s) return "—";
+  if (!s) return "-";
   if (s.type === "percent" && Array.isArray(s.range)) {
     return `${s.range[0]}–${s.range[1]}% ↓`;
   }

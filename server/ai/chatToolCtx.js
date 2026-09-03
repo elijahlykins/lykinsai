@@ -36,7 +36,5 @@ export const PROJECT_WRITE_TOOLS = new Set([
   'lykn_updateProject',
   'lykn_deleteProject',
   'lykn_mergeProjects',
-  'lykn_addProjectNeurons',
-  'lykn_removeProjectNeurons',
   'lykn_uploadToProject',
 ]);

@@ -394,15 +394,25 @@ export default function DriveListing({
       >
             {sorted.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-1.5 px-6 text-center text-sm text-black/40 dark:text-white/40">
-                {query || selectedTags.length > 0 ? (
+                {loading ? (
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                ) : query || selectedTags.length > 0 ? (
                   <p>Nothing matches that.</p>
                 ) : (
                   <>
-                    <p>{folder?.id === "images" ? "No generated images yet." : "Nothing here yet."}</p>
+                    <p>
+                      {folder?.id === "images"
+                        ? "No generated images yet."
+                        : folder?.id === "docs"
+                          ? "No documents yet."
+                          : "Nothing here yet."}
+                    </p>
                     <p className="text-[0.75rem]">
                       {folder?.id === "images"
                         ? "Images you make in chat land here once you save them."
-                        : "Artifacts you save from chat land here."}
+                        : folder?.id === "docs"
+                          ? "Letters, memos, and write-outs land here."
+                          : "Artifacts you save from chat land here."}
                     </p>
                   </>
                 )}

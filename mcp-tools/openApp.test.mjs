@@ -187,6 +187,7 @@ test("AI Drive and its two folders open by the words people use for them", async
     ["ai drive", "/vault?pane=drive"],
     ["my drive", "/vault?pane=drive"],
     ["what you built", "/vault?pane=drive"],
+    ["docs", "/vault?pane=drive&folder=docs"],
     ["artifacts", "/vault?pane=drive&folder=artifacts"],
     ["image gen", "/vault?pane=drive&folder=images"],
     ["generated images", "/vault?pane=drive&folder=images"],
@@ -196,6 +197,15 @@ test("AI Drive and its two folders open by the words people use for them", async
     assert.equal(r.kind, "drive");
     assert.equal(r.src, src, `"${asked}" opened ${r.src}`);
   }
+});
+
+test("that image opens the newest generated picture, not the Finder", async () => {
+  const r = await open("that image");
+  assert.equal(r.ok, true);
+  assert.equal(r.kind, "drive");
+  assert.equal(r.id, "note-33");
+  assert.equal(r.folder, "images");
+  assert.match(r.message, /view mode/);
 });
 
 test("something LYKN built opens on its own, not just the drive it lives in", async () => {

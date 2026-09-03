@@ -13,7 +13,21 @@ const {
   parseClockTime,
   resolveRoutineSpec,
   compileRoutineCapabilities,
+  looksLikeCreateRoutineAsk,
 } = require("./nlRoutine.cjs");
+
+test("set-a-routine and inbox-watch phrasing is a create_routine ask", () => {
+  assert.equal(
+    looksLikeCreateRoutineAsk("can you set a routine to monitor my email every minute"),
+    true,
+  );
+  assert.equal(looksLikeCreateRoutineAsk("set a routine to check pricing every weekday"), true);
+  assert.equal(looksLikeCreateRoutineAsk("watch my email and ping me when I get a new email"), true);
+  assert.equal(looksLikeCreateRoutineAsk("every 5 minutes check the queue"), true);
+  assert.equal(looksLikeCreateRoutineAsk("tell me about my email"), false);
+  assert.equal(looksLikeCreateRoutineAsk("what's a good way to organize my week?"), false);
+  assert.equal(looksLikeCreateRoutineAsk("draft an email to Sam"), false);
+});
 
 test("clock phrases resolve to HH:MM", () => {
   assert.equal(parseClockTime("8"), "8:00");
