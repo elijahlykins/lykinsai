@@ -6,12 +6,12 @@
 #   1. gitleaks            — full-history secret scan (second gate after the
 #                            local pre-commit hook installed by Agent 05).
 #   2. dependency-audit    — `npm audit --json` filtered against the
-#                            Accepted-Risk list (xlsx, quill, react-quill —
+#                            Accepted-Risk list (pptxgenjs / image-size —
 #                            see SECURITY_REPORT_05.md). Fails the build on
 #                            any NEW HIGH/CRITICAL that isn't on that list,
-#                            so a freshly-disclosed CVE in xlsx / quill /
-#                            react-quill still surfaces (we just don't fail
-#                            on the already-accepted advisories).
+#                            so a freshly-disclosed CVE in an accepted package
+#                            still surfaces (we just don't fail on the
+#                            already-accepted advisories).
 #   3. anon-permission-probe — hits every admin RPC, internal write fn, and
 #                            dropped reporting view with the public anon JWT
 #                            and asserts each one is denied. Regression gate
@@ -99,11 +99,11 @@ jobs:
           node -e '
             const fs = require("fs");
             const r = JSON.parse(fs.readFileSync("audit-results.json", "utf8"));
-            // Accepted-risk packages — Agent 05 documented these as
-            // intentional deferrals with mitigation in place. New CVEs in
-            // these packages still surface in the JSON artifact uploaded
-            // below; we just dont fail CI on the already-accepted ones.
-            const ACCEPTED = ["xlsx", "quill", "react-quill"];
+            // Accepted-risk packages — documented in SECURITY_REPORT_05.md with
+            // mitigation. New CVEs in these packages still surface in the JSON
+            // artifact uploaded below; we just dont fail CI on the already-
+            // accepted ones.
+            const ACCEPTED = ["pptxgenjs", "image-size"];
             const vulns = r.vulnerabilities || {};
             const failures = [];
             for (const [name, v] of Object.entries(vulns)) {
