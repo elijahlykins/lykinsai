@@ -117,6 +117,7 @@
     ],
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
+    "x64ArchFiles": "**/node_modules/@esbuild/darwin-*/**",
     "notarize": false,
     "entitlements": "electron/resources/entitlements.mac.plist",
     "entitlementsInherit": "electron/resources/entitlements.mac.plist",
