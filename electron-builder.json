@@ -8,6 +8,7 @@
     "buildResources": "electron/resources"
   },
   "files": [
+    "!.worktrees/**",
     "electron/**/*",
     "lib/browserScreen.cjs",
     "lib/webSearchIntent.cjs",
@@ -117,7 +118,7 @@
     ],
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
-    "x64ArchFiles": "**/node_modules/@esbuild/darwin-*/**",
+    "x64ArchFiles": "**/node_modules/{esbuild,@esbuild/darwin-*,@img/sharp-*,onnxruntime-node}/**",
     "notarize": false,
     "entitlements": "electron/resources/entitlements.mac.plist",
     "entitlementsInherit": "electron/resources/entitlements.mac.plist",
