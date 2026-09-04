@@ -1,0 +1,48 @@
+#!/bin/bash
+# One-shot recovery watcher for the stuck 2026-09-03 notarization queue.
+#
+# Apple held our first Developer ID submissions for "in-depth analysis"
+# (team-wide; typically clears within hours to ~2 days). This script polls
+# the oldest stuck submission until it reaches a terminal state, then:
+#   - Accepted -> reruns the full desktop release (fresh submissions will
+#     process quickly once the team-level hold clears)
+#   - Invalid  -> dumps the notarization log and exits non-zero
+#
+# Requires APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID / GH_TOKEN
+# in the environment (the caller exports them from .env).
+
+set -u
+
+SUBMISSION_ID="${1:?usage: watch-notarization-and-release.sh <submission-id>}"
+REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+POLL_SECONDS=600
+
+cd "$REPO_DIR"
+
+while true; do
+  STATUS=$(xcrun notarytool info "$SUBMISSION_ID" \
+    --apple-id "$APPLE_ID" \
+    --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+    --team-id "$APPLE_TEAM_ID" \
+    --output-format json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null)
+
+  echo "[watch] $(date '+%H:%M:%S') submission $SUBMISSION_ID status: ${STATUS:-unreadable}"
+
+  case "$STATUS" in
+    Accepted)
+      echo "[watch] Apple accepted — relaunching full release"
+      npm run electron:release
+      exit $?
+      ;;
+    Invalid|Rejected)
+      echo "[watch] Apple returned $STATUS — fetching notarization log"
+      xcrun notarytool log "$SUBMISSION_ID" \
+        --apple-id "$APPLE_ID" \
+        --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+        --team-id "$APPLE_TEAM_ID"
+      exit 1
+      ;;
+  esac
+
+  sleep "$POLL_SECONDS"
+done
