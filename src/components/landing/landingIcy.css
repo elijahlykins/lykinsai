@@ -520,6 +520,10 @@
     border-radius: 22px;
     -webkit-mask-image: none;
     mask-image: none;
+    /* The scroll-driven crossfade sets --ls-copy inline to fade each slide's
+       copy out. Stacked one after another on phones, the cards must stay
+       fully visible while scrolling. */
+    --ls-copy: 1 !important;
   }
   .ls-slide-inner {
     position: relative;

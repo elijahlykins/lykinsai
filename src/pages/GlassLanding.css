@@ -886,10 +886,14 @@
     /* The CTA no longer sits under the words, so drop them lower to keep
        the hero balanced. */
     margin-top: 2.25rem;
+    text-align: center;
+  }
+  .gl-hero-slide {
+    align-items: center;
   }
   .gl-hero-visual {
     order: 1;
-    margin-top: 1.25rem;
+    margin-top: 2.75rem;
   }
   .gl-hero-ctas {
     order: 2;
