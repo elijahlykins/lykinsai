@@ -883,7 +883,7 @@
     padding: 0.15rem 0 0;
   }
   .glass-land .gl-hero-slide {
-    font-size: clamp(1.85rem, 8.4vw, 2.4rem);
+    font-size: clamp(2.5rem, 11vw, 3.4rem);
     min-height: calc(3 * 1.12em);
     line-height: 1.12;
   }
@@ -1038,7 +1038,7 @@
 
 @media (max-width: 480px) {
   .glass-land .gl-hero-slide {
-    font-size: 1.72rem;
+    font-size: clamp(2.3rem, 11.5vw, 2.7rem);
   }
   .ls-sticky {
     padding-left: 0.7rem;
