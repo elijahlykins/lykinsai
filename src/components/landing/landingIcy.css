@@ -921,13 +921,29 @@
   .glass-land .gl-cap-title {
     font-size: clamp(1.7rem, 7.2vw, 2.15rem);
   }
+  /* Phones swipe the capability cards sideways instead of stacking them:
+     a scroll-snap carousel bleeding to the screen edge, with a sliver of
+     the next card peeking in as the swipe affordance. */
   .glass-land .gl-cap-grid {
-    margin-top: 1.35rem;
+    display: flex;
+    margin: 1.35rem -1rem 0;
+    padding: 0 1rem;
     gap: 0.7rem;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scroll-padding-left: 1rem;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .glass-land .gl-cap-grid::-webkit-scrollbar {
+    display: none;
   }
   .glass-land .gl-cap-card,
   .glass-land .gl-cap-card--wide {
-    height: 232px;
+    flex: 0 0 84%;
+    min-width: 0;
+    scroll-snap-align: start;
+    height: 320px;
     border-radius: 18px;
   }
   .glass-land .gl-cap-foot {
