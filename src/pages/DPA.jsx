@@ -308,7 +308,6 @@ export function DPABody() {
               region="US"
             />
             <SubRow p="xAI" purpose="Model inference (Grok tiers)" region="US" />
-            <SubRow p="Together AI" purpose="Optional. Custom and open-weight model hosting and fine-tuning" region="US" />
             <SubRow p="ElevenLabs" purpose="Optional. Voice mode audio processing" region="US" />
             <SubRow p="Serper" purpose="Web and news search queries" region="US" />
             <SubRow p="Apple" purpose="Optional. Sign in with Apple and iCloud Calendar sync" region="US" />

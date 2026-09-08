@@ -311,7 +311,26 @@ export const VOICE_CHAT_SKILL_DEFS = [
   ),
 ];
 
-const SKIP_LOCAL = new Set(['local_ask_bot', 'local_browser_agent']);
+const SKIP_LOCAL = new Set([
+  'local_ask_bot',
+  'local_browser_agent',
+  // Build workspace tools are a Studio Build (chat) surface: real software
+  // builds with dev servers and long installs have no spoken-turn shape.
+  'local_build_workspace',
+  'local_start_process',
+  'local_process_status',
+  'local_stop_process',
+  'local_install_app',
+  // Desktop control is a watch-the-screen loop (screenshots the model must
+  // SEE, per-action approval); a spoken turn can neither show nor pace it.
+  'local_desktop_look',
+  'local_desktop_act',
+  // Connecting a new MCP server means approval cards and often pasting API
+  // keys — neither has a spoken-turn shape. Voice uses servers already
+  // connected (search/call above stay adapted).
+  'local_mcp_catalog',
+  'local_mcp_connect',
+]);
 
 export const VOICE_LOCAL_SKILL_DEFS = LOCAL_CHAT_TOOLS
   .filter((t) => !SKIP_LOCAL.has(t.name))
@@ -353,6 +372,8 @@ export const VOICE_SKILL_ALIAS_CLASS = Object.freeze({
   build_react_artifact: { class: 'CANONICAL_ALIAS', canonical: 'lykn_build_react_artifact', note: 'Spoken Create; result opens on screen.' },
   render_video: { class: 'CANONICAL_ALIAS', canonical: 'lykn_render_video', note: 'Voice-shaped schema over the Chat handler.' },
   manage_file: { class: 'CANONICAL_ALIAS', canonical: 'lykn_manage_file', note: 'Voice-shaped schema over the Chat handler.' },
+  local_mcp_search_tools: { class: 'REQUIRED_VOICE_ADAPTER', canonical: 'local_mcp_search_tools', note: 'Client-only desktop MCP registry; same name as Chat.' },
+  local_mcp_call_tool: { class: 'REQUIRED_VOICE_ADAPTER', canonical: 'local_mcp_call_tool', note: 'Client-only desktop MCP registry; same name as Chat.' },
   local_list_dir: { class: 'REQUIRED_VOICE_ADAPTER', canonical: 'local_list_dir', note: 'Client-only Local Mode; same name as Chat.' },
   local_read_file: { class: 'REQUIRED_VOICE_ADAPTER', canonical: 'local_read_file', note: 'Client-only Local Mode; same name as Chat.' },
   local_search_files: { class: 'REQUIRED_VOICE_ADAPTER', canonical: 'local_search_files', note: 'Client-only Local Mode; same name as Chat.' },

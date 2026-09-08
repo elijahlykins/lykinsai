@@ -1,8 +1,10 @@
 // Send/stream stage of the chat send pipeline: fetch the SSE stream (with
 // paywall + downgrade handling), consume it (text deltas, tool_call events,
-// sources, served-model), and drive the client-side typewriter. Extracted
-// VERBATIM from chatSendOrchestrator.ts (C3B decomposition, see
-// docs/REFACTOR_LOG.md) minus the dead canvas block-write branches.
+// sources, served-model), and buffer the reply. The client-side typewriter
+// runs once after the turn is finished so the thinking animation can loop
+// without being torn down on every token. Extracted VERBATIM from
+// chatSendOrchestrator.ts (C3B decomposition, see docs/REFACTOR_LOG.md)
+// minus the dead canvas block-write branches.
 //
 // Client-side stream state has ONE owner: the per-send `streamRefs` cursor
 // the engine mints for each send. This module is the only writer during a
@@ -35,6 +37,11 @@ import { openAiDriveItem } from "@/lib/vault/openAiDriveItem";
 import { openInstalledApp } from "@/lib/apps/installApp";
 import type { ChatNeuronAttachment } from "@/lib/lyknChat/chatTurnTypes";
 import type { ChatSendParams } from "@/lib/ai/chatSendOrchestrator";
+import { streamTypewriterStep, STREAM_TYPEWRITER_TICK_MS } from "@/lib/ai/streamTypewriter";
+import {
+  extractSourcesFromWebToolResult,
+  mergeCitationSources,
+} from "@/lib/ai/webCitationSources";
 
 // node_id prefixes lykn_loadNeuron uses to discriminate which store the
 // neuron lives in. Mirrors the same set the tool handler accepts and is
@@ -240,6 +247,21 @@ export async function runChatStream(
               continue;
             }
             if (parsed.status) { state.setChatStatusText(String(parsed.status)); continue; }
+            if (parsed.artifact_progress) {
+              // Partial artifact source, mid-build. Purely additive: if the
+              // page didn't wire a handler, the frame is dropped and the
+              // finished artifact still lands through the tool result.
+              const ap = parsed.artifact_progress as {
+                tool?: string; title?: string; code?: string; chars?: number;
+              };
+              streamRefs.onArtifactProgress?.({
+                tool: String(ap.tool || ""),
+                title: String(ap.title || ""),
+                code: String(ap.code || ""),
+                chars: Number(ap.chars) || String(ap.code || "").length,
+              });
+              continue;
+            }
             if (Array.isArray(parsed.sources)) {
               // Deep-research source list — patch onto the in-flight message
               // immediately so the Studio research rail fills in while the
@@ -248,9 +270,9 @@ export async function runChatStream(
                 .filter((s) => s && typeof s.url === "string" && s.url)
                 .map((s) => ({ title: String(s.title || "Source"), url: String(s.url) }));
               if (list.length) {
-                streamedSources = list;
+                streamedSources = mergeCitationSources(streamedSources, list);
                 state.setChatMessages((prev) =>
-                  prev.map((m) => (m.id === promptId ? { ...m, sources: list } : m)),
+                  prev.map((m) => (m.id === promptId ? { ...m, sources: streamedSources } : m)),
                 );
               }
               continue;
@@ -369,6 +391,12 @@ export async function runChatStream(
                   });
                 }
               }
+              if (tc.status === "done") {
+                const extra = extractSourcesFromWebToolResult(tc.name, tc.result);
+                if (extra.length) {
+                  streamedSources = mergeCitationSources(streamedSources, extra);
+                }
+              }
               state.setChatMessages((prev) =>
                 prev.map((m) => {
                   if (m.id !== promptId) return m;
@@ -385,6 +413,9 @@ export async function runChatStream(
                   const neuronsNext = additions.length
                     ? [...existingNeurons, ...additions]
                     : existingNeurons;
+                  const sourcesNext = streamedSources.length
+                    ? streamedSources
+                    : m.sources;
                   if (idx === -1) {
                     return {
                       ...m,
@@ -404,6 +435,7 @@ export async function runChatStream(
                         },
                       ],
                       aiNeurons: neuronsNext,
+                      sources: sourcesNext,
                     };
                   }
                   const merged = [...existing];
@@ -420,7 +452,7 @@ export async function runChatStream(
                         ? merged[idx].finishedAt
                         : now,
                   };
-                  return { ...m, toolCalls: merged, aiNeurons: neuronsNext };
+                  return { ...m, toolCalls: merged, aiNeurons: neuronsNext, sources: sourcesNext };
                 }),
               );
               // Give the user a soft status line while tools run so the
@@ -562,52 +594,11 @@ export async function runChatStream(
               const visibleText = stripStreamingActionJson(
                 stripTrailingSourcesBlockIfHasLinks(accumulatedForView).replace(/\s*\[TAG_NOTES:[^\]]*\]/g, "")
               ).trimEnd();
+              // Buffer the live target only. Painting (and the thinking
+              // spinner unmount that came with the first character) waits
+              // until the turn is finished so the typewriter is one pass.
               streamRefs.streamTargetTextRef.current = visibleText;
-              // The typing animation only ADVANCES `streamDisplayedLenRef`,
-              // so if a leaked envelope flashed characters into the bubble
-              // and was then stripped (visibleText shrank), the chat message
-              // would keep showing the stale leaked prefix until `accumulated`
-              // grew long enough for the animation to overwrite it. Snap
-              // displayedLen back to the new (shorter) target length and push
-              // the corrected partial so the leak vanishes immediately.
-              if (streamRefs.streamDisplayedLenRef.current > visibleText.length) {
-                streamRefs.streamDisplayedLenRef.current = visibleText.length;
-                const pid = streamRefs.streamPromptIdRef.current;
-                if (pid) {
-                  state.setChatMessages((prev) =>
-                    prev.map((m) => (m.id === pid ? { ...m, aiResponse: visibleText } : m)),
-                  );
-                }
-              }
-              if (!streamRefs.streamTypingRafRef.current) {
-                const typeTick = () => {
-                  const target = streamRefs.streamTargetTextRef.current;
-                  const cur = streamRefs.streamDisplayedLenRef.current;
-                  if (cur < target.length) {
-                    const behind = target.length - cur;
-                    const step = Math.max(2, Math.min(6, Math.ceil(behind / 6)));
-                    streamRefs.streamDisplayedLenRef.current = Math.min(cur + step, target.length);
-                    const partial = target.substring(0, streamRefs.streamDisplayedLenRef.current);
-                    const pid = streamRefs.streamPromptIdRef.current;
-                    if (pid) {
-                      state.setChatMessages((prev) =>
-                        prev.map((m) => (m.id === pid ? { ...m, aiResponse: partial } : m)),
-                      );
-                    }
-                    if (!streamRefs.chatUserScrolledUpRef.current) {
-                      const el = streamRefs.chatScrollRef.current;
-                      if (el) {
-                        streamRefs.chatProgrammaticScrollRef.current = true;
-                        el.scrollTop = el.scrollHeight;
-                      }
-                    }
-                    streamRefs.streamTypingRafRef.current = window.setTimeout(typeTick, 18);
-                  } else {
-                    streamRefs.streamTypingRafRef.current = null;
-                  }
-                };
-                streamRefs.streamTypingRafRef.current = window.setTimeout(typeTick, 18);
-              }
+              streamRefs.streamPromptIdRef.current = promptId;
             }
           } catch {}
         }
@@ -632,19 +623,8 @@ export async function runChatStream(
         }
         sseBuffer = "";
       }
-      // CRITICAL: update the typing animation's target to the full drained
-      // accumulated text. Without this, `streamTargetTextRef` would still
-      // hold the PRE-drain visible text (last in-stream chunk only). The
-      // typing animation runs at ~2-6 chars / 18ms, so for any reply long
-      // enough that the animation hasn't caught up at stream-end (which is
-      // every reply), the animation keeps firing AFTER post-process commits
-      // the full text — and each tick overwrites the committed message
-      // with `target.substring(0, displayedLen)`. Animation stops when it
-      // catches up to the stale target, leaving the user staring at a
-      // truncated reply (the visible bug: "server finished, UI cut off").
-      // Updating the target here lets the animation finish typing the
-      // ENTIRE final reply, then stop cleanly so the post-process commit
-      // sticks.
+      // Keep the Stop-button target on the drained text so a mid-wait
+      // abort still has the full accumulated reply to snap in.
       try {
         const finalAccumulatedForView = stripToolSyntaxFromStream(
           stripModelTruncationNoteFromStream(
@@ -677,4 +657,82 @@ export async function runChatStream(
     accumulated = AI_TEMPORARY_FAILURE_TEXT;
   }
   return { accumulated, servedModel, generatedImageUrl, streamedSources };
+}
+
+/**
+ * Type a finished reply in one continuous pass. Call this after the stream
+ * (and post-process) so the thinking animation can loop for the whole wait
+ * instead of starting and stopping with each token burst.
+ */
+export function typeStreamReply(
+  p: Pick<ChatSendParams, "state" | "streamRefs" | "abortController">,
+  promptId: string,
+  text: string,
+): Promise<void> {
+  const full = String(text || "");
+  const { state, streamRefs, abortController } = p;
+  if (!full) return Promise.resolve();
+  streamRefs.streamPromptIdRef.current = promptId;
+  streamRefs.streamTargetTextRef.current = full;
+  streamRefs.streamDisplayedLenRef.current = 0;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      abortController.signal.removeEventListener("abort", onAbort);
+      if (streamRefs.streamTypingRafRef.current) {
+        clearTimeout(streamRefs.streamTypingRafRef.current);
+        streamRefs.streamTypingRafRef.current = null;
+      }
+      resolve();
+    };
+    const snap = () => {
+      const pid = streamRefs.streamPromptIdRef.current;
+      const target = streamRefs.streamTargetTextRef.current;
+      streamRefs.streamDisplayedLenRef.current = target.length;
+      if (pid) {
+        state.setChatMessages((prev) =>
+          prev.map((m) => (m.id === pid ? { ...m, aiResponse: target } : m)),
+        );
+      }
+      finish();
+    };
+    const onAbort = () => snap();
+    if (abortController.signal.aborted) {
+      snap();
+      return;
+    }
+    abortController.signal.addEventListener("abort", onAbort);
+
+    const typeTick = () => {
+      if (settled) return;
+      const target = streamRefs.streamTargetTextRef.current;
+      const cur = streamRefs.streamDisplayedLenRef.current;
+      if (cur < target.length) {
+        const behind = target.length - cur;
+        const step = streamTypewriterStep(behind);
+        streamRefs.streamDisplayedLenRef.current = Math.min(cur + step, target.length);
+        const partial = target.substring(0, streamRefs.streamDisplayedLenRef.current);
+        const pid = streamRefs.streamPromptIdRef.current;
+        if (pid) {
+          state.setChatMessages((prev) =>
+            prev.map((m) => (m.id === pid ? { ...m, aiResponse: partial } : m)),
+          );
+        }
+        if (!streamRefs.chatUserScrolledUpRef.current) {
+          const el = streamRefs.chatScrollRef.current;
+          if (el) {
+            streamRefs.chatProgrammaticScrollRef.current = true;
+            el.scrollTop = el.scrollHeight;
+          }
+        }
+        streamRefs.streamTypingRafRef.current = window.setTimeout(typeTick, STREAM_TYPEWRITER_TICK_MS);
+        return;
+      }
+      finish();
+    };
+    streamRefs.streamTypingRafRef.current = window.setTimeout(typeTick, STREAM_TYPEWRITER_TICK_MS);
+  });
 }

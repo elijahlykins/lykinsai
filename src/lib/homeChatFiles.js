@@ -108,10 +108,35 @@ let queuedChatFiles = [];
 
 const CHAT_FILES_QUEUED_EVENT = "lykn-home-chat-files-queued";
 
+export const HOME_CHAT_BAR_SELECTOR = ".lykn-home-chat-bar";
+export const HOME_CHAT_HOST_SELECTOR = ".lykn-home-chat-host";
+
+/**
+ * True when "Ask LYKN" chips belong on the desktop rounded bar — including
+ * the moment that bar is covered by a zoomed file/image/doc window.
+ *
+ * The in-page composer inside `.lykn-home-chat-host` is CSS-hidden on Home.
+ * Claiming the take-once file queue there parks the attachment on a bar the
+ * user cannot see, then a later send still includes it. Leave the queue for
+ * the Home bar (it claims on the event, and again when it remounts).
+ *
+ * @param {{ querySelector?: (selector: string) => unknown } | null} [doc]
+ */
+export function homeChatBarOwnsQueuedFiles(doc = typeof document !== "undefined" ? document : null) {
+  if (!doc || typeof doc.querySelector !== "function") return false;
+  return !!(
+    doc.querySelector(HOME_CHAT_BAR_SELECTOR) ||
+    doc.querySelector(HOME_CHAT_HOST_SELECTOR)
+  );
+}
+
 /**
  * The same "Ask LYKN about this" handoff for a file with no path on disk — one
  * LYKN generated, or one that lives in the vault. The bytes are already in hand
  * by the time we get here, so they queue as Files rather than as paths to read.
+ *
+ * Same cover-and-claim rule as paths: a zoomed preview may hide the bar,
+ * but Home still owns the queue until that bar can show the chip.
  */
 export function attachFilesToHomeChat(files) {
   const list = Array.from(files || []).filter(Boolean);
@@ -344,13 +369,31 @@ export async function snapshotMacFolders(paths) {
         const listing = await api.list({ path });
         if (listing?.ok) {
           const entries = listing.entries || [];
-          const lines = entries.slice(0, 120).map((e) => {
+          const lines = [];
+          const top = entries.slice(0, 80);
+          for (const e of top) {
             const folder = e.type === "dir" && !e.package;
-            return `  - ${e.name}${folder ? "/" : ""}`;
-          });
+            lines.push(`  - ${e.name}${folder ? "/" : ""}`);
+            if (!folder || typeof api.list !== "function" || lines.length >= 220) continue;
+            try {
+              const inner = await api.list({ path: e.path });
+              if (!inner?.ok) continue;
+              const kids = inner.entries || [];
+              for (const child of kids.slice(0, 8)) {
+                const nested = child.type === "dir" && !child.package;
+                lines.push(`      - ${child.name}${nested ? "/" : ""}`);
+              }
+              if (kids.length > 8) lines.push("      - …");
+            } catch {
+              /* inner list failed — keep the parent name */
+            }
+          }
           const extra =
-            entries.length > 120 ? `\n  - …and ${entries.length - 120} more` : "";
-          body += `\n${entries.length} item${entries.length === 1 ? "" : "s"}:\n${lines.join("\n")}${extra}`;
+            entries.length > 80 ? `\n  - …and ${entries.length - 80} more` : "";
+          body +=
+            `\n${entries.length} item${entries.length === 1 ? "" : "s"} (nested folders peeked):\n` +
+            `${lines.join("\n")}${extra}\n` +
+            `This snapshot is shallow. Call local_search_files / local_list_dir on this Path to go inside nested folders.`;
         } else {
           body += `\n(Listing failed. Call local_list_dir with this exact path.)`;
         }

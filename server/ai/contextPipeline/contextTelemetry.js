@@ -28,6 +28,7 @@ export function classifyPromptSections({
   const personalization = [
     extractMarkedBlock(sys, '[USER_PREFERENCES]'),
     extractMarkedBlock(sys, '[ASSISTANT_IDENTITY]'),
+    extractMarkedBlock(sys, '[ASSISTANT_MODEL]'),
   ].filter(Boolean).join('\n');
 
   const tokens = {

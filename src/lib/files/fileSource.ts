@@ -231,11 +231,13 @@ export async function resolveFile(source: FileSource): Promise<ResolvedFile> {
     .split(";")[0]
     .trim();
 
-  const media =
+  let media =
     source.media ||
     (videoId ? "youtube" : null) ||
     (att ? mediaFromAttachment(att) : null) ||
     mediaKindFor({ name, url, mime });
+  // A CAD/mesh drop has no image preview, but the ingest brief is readable.
+  if (text && (media === "unsupported" || !media)) media = "text";
 
   return {
     name,

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { trailFamilyKey } from "@/lib/lyknChat/thinkingActivity";
 
 // Fast, lively rotation so a long wait never feels frozen. Early phases tick
 // quickly (Manus-style), then settle a little as the work drags on.
@@ -104,6 +105,20 @@ export function isGenericBuildStatus(status) {
   return GENERIC_BUILD_RE.test(String(status || "").trim());
 }
 
+/** Canned think/build phrases from the rotator — never pin these as timeline steps. */
+export function isRotationPhrase(status) {
+  const t = String(status || "").trim();
+  if (!t) return false;
+  return THINK_PHASES.some((p) => p.text === t) || BUILD_PHASES.some((p) => p.text === t);
+}
+
+/** Status worth pinning on the thinking timeline (any mode). */
+export function isTrailWorthyStatus(status) {
+  if (isRotationPhrase(status)) return false;
+  const kind = classifyStatusLine(status);
+  return kind === "specific" || kind === "live-build";
+}
+
 /**
  * Returns a cycling status string that progresses through descriptive phases
  * while `active` is true. Resets when `active` flips to false.
@@ -193,11 +208,13 @@ export function useThinkingStatus(active, override, preferBuild = false) {
 }
 
 /**
- * Accumulates distinct section-level build lines while a turn is in flight
- * so the placeholder can show what LYKN already did, not just the current
- * phrase. Generic rotation ("Designing the build…") is skipped.
+ * Accumulates distinct activity lines while a turn is in flight so the
+ * thinking timeline can show what already happened, not just the live
+ * phrase. Generic rotation ("Thinking…", "Designing the build…") is skipped.
+ * Progress ticks for the same action ("Reading sources (2/5)…") replace the
+ * last row instead of stacking.
  */
-export function useBuildThoughtTrail(status, active) {
+export function useThinkingTrail(status, active) {
   const [trail, setTrail] = useState([]);
   const lastRef = useRef("");
 
@@ -208,16 +225,26 @@ export function useBuildThoughtTrail(status, active) {
       return;
     }
     const t = String(status || "").trim();
-    if (!t || t === lastRef.current) return;
-    if (GENERIC_THINK_RE.test(t) || GENERIC_BUILD_RE.test(t)) return;
-    if (!LIVE_BUILD_STATUS_RE.test(t)) return;
+    if (!t) return;
+    if (!isTrailWorthyStatus(t)) return;
+    const family = trailFamilyKey(t);
+    const lastFamily = trailFamilyKey(lastRef.current);
+    if (t === lastRef.current) return;
     lastRef.current = t;
     setTrail((prev) => {
       if (prev[prev.length - 1] === t) return prev;
+      if (family && family === lastFamily && prev.length) {
+        return [...prev.slice(0, -1), t];
+      }
       const next = [...prev, t];
-      return next.length > 8 ? next.slice(-8) : next;
+      return next.length > 10 ? next.slice(-10) : next;
     });
   }, [status, active]);
 
   return trail;
+}
+
+/** @deprecated Use useThinkingTrail — same accumulator, all modes. */
+export function useBuildThoughtTrail(status, active) {
+  return useThinkingTrail(status, active);
 }

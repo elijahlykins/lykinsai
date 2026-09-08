@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Download, ExternalLink, LayoutPanelTop, Loader2, Maximize2, Minimize2 } from "lucide-react";
 import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
-import { useBuildThoughtTrail, useThinkingStatus } from "@/hooks/useThinkingStatus";
+import { useThinkingStatus, useThinkingTrail } from "@/hooks/useThinkingStatus";
 import { safeAttachmentUrl } from "@/lib/safeExternalUrl";
 import ArtifactHtmlPreview from "@/components/lyknChat/ArtifactHtmlPreview";
 import { openArtifactInStudioBrowser, studioOpenChatOpts } from "@/lib/lyknChat/openInStudioBrowser";
@@ -111,8 +111,8 @@ export function ArtifactBuildingPlaceholder({
 }) {
   const fallback = useThinkingStatus(true, "Building…");
   const status = (statusProp && statusProp.trim()) || fallback;
-  const localTrail = useBuildThoughtTrail(status, !trailProp);
-  const trail = trailProp || localTrail;
+  const localTrail = useThinkingTrail(status, trailProp == null);
+  const trail = trailProp ?? localTrail;
   return (
     <div
       className={`rounded-2xl border border-black/10 dark:border-white/12 bg-white/70 dark:bg-white/[0.04] backdrop-blur-sm px-4 py-3 shadow-none ${className}`}

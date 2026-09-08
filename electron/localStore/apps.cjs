@@ -23,8 +23,14 @@ const now = () => new Date().toISOString();
 
 /** One value the bridge will accept. Generous for documents, far below "fill the disk". */
 const MAX_VALUE_BYTES = 1_000_000;
-/** A single source file. Matches the artifact builder's own per-project ceiling. */
-const MAX_FILE_BYTES = 400_000;
+/**
+ * A single project file. JSX-source apps stay far below this (the artifact
+ * builder caps its own projects at 400 KB), but a static app installed from a
+ * production bundle carries real chunks and base64-encoded assets — a stock
+ * React vendor chunk alone runs several hundred KB. The Build-workspace
+ * installer enforces the whole-project ceiling; this is the per-file guard.
+ */
+const MAX_FILE_BYTES = 4_000_000;
 /** Snapshots kept per app before the oldest is dropped. */
 const MAX_VERSIONS = 20;
 
@@ -288,7 +294,14 @@ function hardDeleteApp(id) {
 // Files
 // ---------------------------------------------------------------------------
 
-function writeFile(appId, filePath, content) {
+// 'base64' marks a binary asset encoded for the TEXT column; anything else
+// (null included) is plain text, which is what every row predating the
+// encoding column is.
+function normalizeEncoding(value) {
+  return value === "base64" ? "base64" : null;
+}
+
+function writeFile(appId, filePath, content, encoding = null) {
   const id = String(appId);
   const path = normalizeFilePath(filePath);
   const text = String(content ?? "");
@@ -298,10 +311,10 @@ function writeFile(appId, filePath, content) {
 
   db.get()
     .prepare(
-      `INSERT INTO app_files (app_id, path, content, updated_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(app_id, path) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at`,
+      `INSERT INTO app_files (app_id, path, content, encoding, updated_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(app_id, path) DO UPDATE SET content = excluded.content, encoding = excluded.encoding, updated_at = excluded.updated_at`,
     )
-    .run(id, path, text, now());
+    .run(id, path, text, normalizeEncoding(encoding), now());
 
   return { ok: true, path };
 }
@@ -312,6 +325,7 @@ function putFiles(appId, files = []) {
   const list = (Array.isArray(files) ? files : []).map((f) => ({
     path: normalizeFilePath(f?.path),
     content: String(f?.content ?? ""),
+    encoding: normalizeEncoding(f?.encoding),
   }));
 
   for (const f of list) {
@@ -323,10 +337,10 @@ function putFiles(appId, files = []) {
   return db.transaction((handle) => {
     handle.prepare("DELETE FROM app_files WHERE app_id = ?").run(id);
     const stmt = handle.prepare(
-      "INSERT INTO app_files (app_id, path, content, updated_at) VALUES (?, ?, ?, ?)",
+      "INSERT INTO app_files (app_id, path, content, encoding, updated_at) VALUES (?, ?, ?, ?, ?)",
     );
     const stamp = now();
-    for (const f of list) stmt.run(id, f.path, f.content, stamp);
+    for (const f of list) stmt.run(id, f.path, f.content, f.encoding, stamp);
     return { ok: true, count: list.length };
   });
 }
@@ -345,10 +359,31 @@ function readFile(appId, filePath) {
   return row ? String(row.content) : null;
 }
 
+/**
+ * A file with its encoding — what the protocol needs to serve static-app
+ * assets, where 'base64' content must go out as decoded bytes. `readFile`
+ * keeps its string-only contract for the text-world callers.
+ */
+function readFileEntry(appId, filePath) {
+  let path;
+  try {
+    path = normalizeFilePath(filePath);
+  } catch {
+    return null;
+  }
+  const row = db
+    .get()
+    .prepare("SELECT content, encoding FROM app_files WHERE app_id = ? AND path = ?")
+    .get(String(appId), path);
+  return row
+    ? { content: String(row.content), encoding: normalizeEncoding(row.encoding) }
+    : null;
+}
+
 function listFiles(appId) {
   return db
     .get()
-    .prepare("SELECT path, content, updated_at FROM app_files WHERE app_id = ? ORDER BY path")
+    .prepare("SELECT path, content, encoding, updated_at FROM app_files WHERE app_id = ? ORDER BY path")
     .all(String(appId));
 }
 
@@ -372,8 +407,10 @@ function snapshotVersion(appId, note = null) {
     const app = handle.prepare("SELECT version FROM apps WHERE id = ?").get(id);
     if (!app) throw new Error(`unknown app: ${id}`);
 
+    // Encoding travels with the snapshot: a rolled-back static app must get
+    // its binary assets back as binary, not as garbled text.
     const files = handle
-      .prepare("SELECT path, content FROM app_files WHERE app_id = ? ORDER BY path")
+      .prepare("SELECT path, content, encoding FROM app_files WHERE app_id = ? ORDER BY path")
       .all(id);
     const version = Number(app.version) || 1;
 
@@ -635,6 +672,7 @@ module.exports = {
   writeFile,
   putFiles,
   readFile,
+  readFileEntry,
   listFiles,
   deleteFile,
 

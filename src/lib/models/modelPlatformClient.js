@@ -109,28 +109,6 @@ export async function fetchUsageSummary() {
   return readJson(res);
 }
 
-/**
- * Included-vs-metered chat billing per model id, from the server's canonical
- * registry. Shape: { baseline_model, states: { [modelId]: 'included'|'metered' } }.
- */
-export async function fetchModelBillingStates() {
-  const res = await fetch(`${API_BASE_URL}/api/models/billing-states`, {
-    headers: await authHeaders(),
-  });
-  return readJson(res);
-}
-
-/**
- * Last-30-days daily spend for the billing chart. Category totals only
- * (chat / images / agents / other) in customer dollars.
- */
-export async function fetchUsageDaily(days = 30) {
-  const res = await fetch(`${API_BASE_URL}/api/usage/daily?days=${days}`, {
-    headers: await authHeaders(),
-  });
-  return readJson(res);
-}
-
 export async function fetchUsageEvents(limit = 30) {
   const res = await fetch(`${API_BASE_URL}/api/usage/events?limit=${limit}`, {
     headers: await authHeaders(),

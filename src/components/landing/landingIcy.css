@@ -13,6 +13,14 @@
   flex: none;
 }
 
+.lx-wordmark--tight {
+  margin-right: 0;
+}
+
+.lx-wordmark-punct {
+  margin-left: 0.02em;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -603,6 +611,31 @@
   color: #0f172a;
 }
 
+/* Heading row with the model-class tags (Open / Closed / Diffusion)
+   sitting right beside the "Models" title. */
+.gl-mt-head-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin: 0 0 0.45rem;
+}
+.gl-mt-head-row h3 {
+  margin: 0;
+}
+.gl-mt-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+.gl-mt-tag {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+
 .gl-mt-head p {
   margin: 0;
   max-width: 26rem;
@@ -866,12 +899,6 @@
   .glass-land .gl-hero-glass {
     border-radius: 16px;
   }
-  .glass-land .gl-hero-desk-icon:nth-child(n + 5) {
-    display: none;
-  }
-  .glass-land .gl-hero-desk-dock {
-    transform: scale(0.72);
-  }
 
   .lx-explain {
     padding: 2.4rem 1.15rem 2.8rem;
@@ -1007,12 +1034,6 @@
 @media (max-width: 480px) {
   .glass-land .gl-hero-slide {
     font-size: 1.72rem;
-  }
-  .glass-land .gl-hero-desk-widgets {
-    transform: scale(0.4);
-  }
-  .glass-land .gl-hero-desk-icons {
-    transform: scale(0.72);
   }
   .ls-sticky {
     padding-left: 0.7rem;

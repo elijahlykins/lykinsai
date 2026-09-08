@@ -13,6 +13,7 @@ import {
   FileSpreadsheet,
   FileText,
   Globe,
+  Hammer,
   Image as ImageIcon,
   Link2,
   MessageSquare,
@@ -85,11 +86,15 @@ export function driveEntryFor(card) {
   const isFolder = card.kind === "source-folder" || card.kind === "drive-folder";
   const kind = isFolder
     ? { icon: null, label: "Folder" }
-    : card.kind === "quick-note"
-      ? { icon: StickyNote, label: card.label || "Note" }
-      : card.kind === "chat-preview"
-        ? { icon: MessageSquare, label: "Chat" }
-        : attachmentKind(card);
+    : card.kind === "build-project"
+      // A Build-workspace project directory. Opening it goes to Finder — the
+      // drive can't preview a folder of source files, but it can take you there.
+      ? { icon: Hammer, label: "Project" }
+      : card.kind === "quick-note"
+        ? { icon: StickyNote, label: card.label || "Note" }
+        : card.kind === "chat-preview"
+          ? { icon: MessageSquare, label: "Chat" }
+          : attachmentKind(card);
 
   return {
     id: card.id,

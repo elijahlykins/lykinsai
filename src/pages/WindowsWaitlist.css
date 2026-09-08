@@ -1,0 +1,136 @@
+/* Waitlist bar on /windows. Poster chrome (logo, buttons, mist) lives in
+   DownloadLykn.css. */
+
+.dlp-form {
+  position: relative;
+  margin-top: clamp(1.8rem, 4.5vh, 2.6rem);
+  width: min(100%, 40rem);
+  animation: dlp-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 140ms both;
+}
+
+.dlp-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  padding: 0.35rem 0.35rem 0.35rem 1.15rem;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  border-radius: 999px;
+  box-shadow:
+    0 24px 60px -28px rgba(11, 58, 110, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  animation: dlp-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 140ms both;
+}
+
+.dlp-bar--done {
+  justify-content: center;
+  margin-top: clamp(1.8rem, 4.5vh, 2.6rem);
+  padding: 0.95rem 1.4rem;
+  font-size: 1.02rem;
+  font-weight: 600;
+  color: var(--gl-navy, #0968c4);
+}
+
+.dlp-bar-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.55rem 0.2rem;
+  font: inherit;
+  font-size: 0.98rem;
+  font-weight: 500;
+  color: var(--gl-navy, #0968c4);
+  background: transparent;
+  border: 0;
+  outline: none;
+}
+
+.dlp-bar-input::placeholder {
+  color: rgba(11, 58, 110, 0.48);
+}
+
+.dlp-bar-join {
+  flex: none;
+  padding: 0.7rem 1.25rem;
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #ffffff;
+  background: #0968c4;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.dlp-bar-join:hover {
+  background: #0754a3;
+}
+
+.dlp-bar-input:disabled,
+.dlp-bar-join:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.dlp-form-error {
+  margin: 0.7rem 0 0;
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: #b42318;
+}
+
+.dlp-count {
+  margin: 0.9rem 0 clamp(1.6rem, 4vh, 2.2rem);
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: rgba(11, 58, 110, 0.62);
+  animation: dlp-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 200ms both;
+}
+
+.dlp-copy > .dlp-btn {
+  animation: dlp-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 240ms both;
+}
+
+.dlp-hp {
+  position: absolute;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+.dlp-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 560px) {
+  .dlp-bar {
+    flex-wrap: wrap;
+    padding: 0.45rem;
+  }
+  .dlp-bar-input {
+    flex: 1 1 100%;
+    padding: 0.45rem 0.7rem 0.15rem;
+    text-align: center;
+  }
+  .dlp-bar-join {
+    flex: 1 1 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dlp-form,
+  .dlp-bar,
+  .dlp-count,
+  .dlp-copy > .dlp-btn {
+    animation: none;
+  }
+}

@@ -82,6 +82,8 @@ export const VOICE_CLIENT_TOOL_NAMES = [
   "local_open_app",
   "local_open_path",
   "local_organize_desktop",
+  "local_mcp_search_tools",
+  "local_mcp_call_tool",
 ] as const;
 
 export const VOICE_TOOL_STATUS_COPY: Record<string, string> = {
@@ -157,6 +159,8 @@ export const VOICE_TOOL_STATUS_COPY: Record<string, string> = {
   local_open_app: "Opening the app…",
   local_open_path: "Opening it…",
   local_organize_desktop: "Tidying your desktop…",
+  local_mcp_search_tools: "Checking your desktop apps…",
+  local_mcp_call_tool: "Working in the app…",
   list_apps: "Checking your connected apps…",
   call_app: "Talking to the app…",
 };

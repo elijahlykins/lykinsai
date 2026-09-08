@@ -1,11 +1,13 @@
 /**
- * Local Vault — the settings surface for moving the vault onto this Mac.
+ * Local Vault — the settings surface for the on-device vault.
  *
- * Three things happen here, in the order a user has to do them: copy the cloud
- * vault down, let the search index catch up, then switch the app over. The
- * order matters, so the switch stays disabled until there is something local
- * to switch to — flipping it on an empty store would show an empty vault and
- * look exactly like data loss.
+ * Local is the DEFAULT on desktop (see vault/repository/index.ts): fresh
+ * installs never see this pane's migration half. It exists for accounts that
+ * predate the local default and still have items in the cloud vault: copy the
+ * cloud vault down, let the search index catch up, then switch over. Enabling
+ * with an empty local store warns instead of blocking — a hard block would
+ * strand fresh users (zero items anywhere) on the cloud with no way back,
+ * since copying an empty cloud vault down never fills the store.
  *
  * The import itself is read-only against Supabase. Nothing here deletes
  * anything in the cloud, and the copy can be run again without duplicating
@@ -268,24 +270,21 @@ export default function LocalVaultSettings() {
     });
 
   const onToggle = (next) => {
-    // Turning it on with nothing local would present an empty vault, which is
-    // indistinguishable from having lost everything.
-    if (next && !(stats?.items > 0)) {
-      toast({
-        title: "Nothing here yet",
-        description: "Copy your vault down first, then switch over.",
-        variant: "destructive",
-      });
-      return;
-    }
+    // Enabling with nothing local shows an empty vault — alarming if items
+    // exist in the cloud, harmless if the account is fresh. Warn either way,
+    // but let it through: blocking would strand fresh users on the cloud
+    // (copying an empty cloud vault down never fills the store).
+    const enablingEmpty = next && !(stats?.items > 0);
     setLocalVaultEnabled(next);
     resetVaultRepository();
     setEnabled(next);
     toast({
       title: next ? "Vault is now local" : "Vault is back on the cloud",
-      description: next
-        ? "Reload any open vault windows to see it."
-        : "Your local copy is untouched and still on this Mac.",
+      description: enablingEmpty
+        ? "Nothing is on this Mac yet — if you have items in your cloud vault, copy them down below."
+        : next
+          ? "Reload any open vault windows to see it."
+          : "Your local copy is untouched and still on this Mac.",
     });
   };
 

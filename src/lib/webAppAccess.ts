@@ -68,6 +68,7 @@ export const WEB_PUBLIC_PATHS = new Set([
   "/landing",
   "/glass",
   "/download",
+  "/windows",
   "/pricing",
   "/privacy",
   "/terms",

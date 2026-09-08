@@ -3,7 +3,9 @@
 // client is constructed in the composition root and bound.
 import { PLAN_LIMITS, CREDIT_PACKS, CREDIT_PACKS_FOR_SALE, creditPackById } from '../../src/lib/pricing-config.js';
 import { getCreditWallet, markTopupPayer } from '../../lib/billing/creditWallet.js';
-import { ensureSignupGrant, fundUsageBalance, getUsageBalance } from '../../lib/billing/usageBalance.js';
+import { grantUnlimitedUsage } from '../../lib/billing/internalAccounts.js';
+import { fundUsageBalance, getUsageBalance } from '../../lib/billing/usageBalance.js';
+import { applySignupGrant } from '../../lib/billing/applySignupGrant.js';
 import { grantPlanUsageFromInvoice } from '../../lib/billing/planFunding.js';
 import { classifyCheckoutPaymentSession, grantUsageFundingFromCheckoutSession, isUsageFundingSession } from '../../lib/billing/usageFunding.js';
 import { logBillingEvent } from '../../lib/billing/billingEvents.js';
@@ -39,6 +41,10 @@ export function availableCreditPacks() {
 // Stripe webhooks can't override this — even if the row says `free`, comp
 // users still resolve to studio.
 //
+// Metered Usage (images, video, premium models, autonomous) still bills
+// unless the email is also on UNLIMITED_USAGE_EMAILS in
+// lib/billing/internalAccounts.js (admin@lykn.io is on both).
+//
 // Add overrides via `COMPED_PRO_EMAILS` env (comma-separated) without a
 // redeploy; the hardcoded list is the source of truth for known team members.
 export const COMPED_PRO_PLAN_ID = 'studio';
@@ -49,6 +55,7 @@ export const COMPED_PRO_EMAILS = new Set(
     'nyuballer18@gmail.com',
     'easton.redford13@gmail.com',
     'rowan@lykn.io',
+    'admin@lykn.io',
     'dlexeffect@gmail.com',
     ...String(process.env.COMPED_PRO_EMAILS || '')
       .split(',')
@@ -66,10 +73,10 @@ export function isCompedProEmail(email) {
 // STRIPE BILLING — customer + checkout + portal + webhook handler
 // ============================================
 
-// Student (`student`), Pro (`studio`), and Max (`max`) are offered at
-// checkout. Legacy price ids for studio_pro / studio_max still map via
-// STRIPE_PRICE_MAP for existing subs.
-export const PLAN_IDS = new Set(['student', 'studio', 'max']);
+// Student (`student`), Pro (`studio`), Pro+ (`pro_plus`), and Max (`max`)
+// are offered at checkout. Legacy price ids for studio_pro / studio_max
+// still map via STRIPE_PRICE_MAP for existing subs.
+export const PLAN_IDS = new Set(['student', 'studio', 'pro_plus', 'max']);
 export const BILLING_PERIODS = new Set(['monthly', 'annual']);
 
 // Plan-tier write rules live in syncSubscriptionToBilling: while a
@@ -298,7 +305,7 @@ const APP_ACCESS_GRACE_MS = 10 * 60 * 1000;
 const appAccessGrace = new Map(); // userId → expiresAt (last-known-good)
 
 // ── Signup usage grant ───────────────────────────────────────────────────────
-// Every account receives $10 of promotional usage exactly once (ledger-level
+// Every account receives $20 of promotional usage exactly once (ledger-level
 // idempotency in lib/billing). The old FREE_PLAN_CREDITS soft allowance is
 // retired: the free tier runs on the same dollar Usage Balance as everything
 // else.
@@ -306,6 +313,7 @@ const appAccessGrace = new Map(); // userId → expiresAt (last-known-good)
 export async function requireAppAccess(req, res, next) {
   const uid = req.user?.id;
   try {
+    if (grantUnlimitedUsage({ userId: uid, email: req.user?.email })) return next();
     if (isCompedProEmail(req.user?.email)) return next();
     if (!supabaseAdmin) throw new Error('billing_backend_unavailable');
     // Query inline (not loadBillingRow, which swallows errors and returns null)
@@ -319,15 +327,15 @@ export async function requireAppAccess(req, res, next) {
     if (error) throw new Error(error.message || 'billing_query_failed');
     if (hasAppAccessRow(data || null)) {
       if (uid) appAccessGrace.set(uid, Date.now() + APP_ACCESS_GRACE_MS);
-      // The plan covers included chat; metered actions authorize per action
-      // against the Usage Balance, never against legacy credits.
+      // Subscribers authorize each metered action (chat included) against
+      // the Usage Balance, never against legacy credits.
       markTopupPayer(uid, false);
       return next();
     }
 
-    // Free account: make sure the one-time $10 signup grant exists (idempotent,
+    // Free account: make sure the one-time $20 signup grant exists (idempotent,
     // so this is a no-op after the first call), then gate on usable balance.
-    await ensureSignupGrant(uid).catch((err) => {
+    await applySignupGrant({ userId: uid, supabaseAdmin }).catch((err) => {
       console.warn('⚠️ ensureSignupGrant failed:', err?.message || err);
     });
     const usage = await getUsageBalance(uid);

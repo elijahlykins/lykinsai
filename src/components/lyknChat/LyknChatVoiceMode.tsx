@@ -4,6 +4,7 @@ import { isElevenLabsVoice } from "@/lib/voice/voiceConfig";
 import LyknChatVoiceModeEleven from "./LyknChatVoiceModeEleven";
 import VoiceModePopup from "./VoiceModePopup";
 import VoiceTechOrb from "./VoiceTechOrb";
+import VoiceActivityStatus from "./VoiceActivityStatus";
 
 interface LyknChatVoiceModeProps {
   open: boolean;
@@ -50,7 +51,7 @@ export default function LyknChatVoiceMode(props: LyknChatVoiceModeProps) {
 }
 
 function LyknChatVoiceModeOpenAI({ open, onClose, chatId, voice, buildInstructions, onUserTranscript, onAssistantReply, onDisplayDocument }: LyknChatVoiceModeProps) {
-  const { state, micLevel, errorText, interrupt, retry } =
+  const { state, micLevel, errorText, activityLive, activityTrail, interrupt, retry } =
     useRealtimeVoice({ active: open, chatId, voice, buildInstructions, onUserTranscript, onAssistantReply, onDisplayDocument });
 
   return (
@@ -63,16 +64,17 @@ function LyknChatVoiceModeOpenAI({ open, onClose, chatId, voice, buildInstructio
         title={state === "speaking" ? "Tap to interrupt" : undefined}
         aria-label="Voice orb"
       >
-        <VoiceTechOrb state={state} micLevel={micLevel} size={148} />
+        <VoiceTechOrb state={activityLive ? "thinking" : state} micLevel={micLevel} size={148} />
       </button>
 
       {/* Status only — live transcript/reply are intentionally hidden here
           (they read as confusing/glitchy mid-turn). The full conversation
           is persisted to the chat thread instead. */}
       <div className="mt-1 flex flex-col items-center gap-1.5 text-center px-2">
-        <span className="text-foreground/75 text-sm font-medium">
-          {state === "error" ? (errorText || STATUS_COPY.error) : STATUS_COPY[state]}
+        <span className={`text-foreground/75 text-sm font-medium ${activityLive || state === "thinking" || state === "connecting" ? "lykn-chat-thinking-text" : ""}`}>
+          {state === "error" ? (errorText || STATUS_COPY.error) : (activityLive ? STATUS_COPY.thinking : STATUS_COPY[state])}
         </span>
+        <VoiceActivityStatus live={activityLive} trail={activityTrail} />
         {state === "error" && (
           <button
             type="button"

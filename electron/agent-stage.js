@@ -581,19 +581,16 @@ function renderTabs() {
       const label = isArtifact
         ? t.title || t.pageTitle || "Artifact"
         : t.pageTitle || hostLabel(t.url) || t.title || "Tab";
-      const tip = isArtifact
-        ? `${t.title || "Artifact"}${t.url ? ` - ${t.url}` : ""}`
-        : t.url || t.title || "";
       const cls = `tab${active}${isArtifact ? " artifact" : ""}${isSub ? " subtab" : ""}`;
       const empty = isEmptyBrowserTab(t);
       const fav = !isArtifact && !empty ? faviconUrlFor(t.url, t.favicon) : "";
       const ico = fav
         ? `<img class="tab-favicon" src="${escapeHtml(fav)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-fallback="1" />`
         : `<span class="tab-favicon tab-favicon-fallback${empty ? " lykn" : ""}" aria-hidden="true">${empty ? LYKN_ICON_SVG : GLOBE_SVG}</span>`;
-      return `<button type="button" class="${cls}" data-id="${escapeHtml(t.id)}" title="${escapeHtml(tip)}">
+      return `<button type="button" class="${cls}" data-id="${escapeHtml(t.id)}">
         ${ico}
         <span class="tab-label">${escapeHtml(label)}</span>
-        <span class="tab-x" data-close="${escapeHtml(t.id)}" title="Close tab" aria-label="Close tab">
+        <span class="tab-x" data-close="${escapeHtml(t.id)}" aria-label="Close tab">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
         </span>
       </button>`;
@@ -601,7 +598,7 @@ function renderTabs() {
     .join("");
   tabsEl.innerHTML =
     tabsHtml +
-    `<button type="button" class="tab-new" id="new-tab" title="New agent chat" aria-label="New agent chat">+</button>`;
+    `<button type="button" class="tab-new" id="new-tab" aria-label="New agent chat">+</button>`;
   if (openingTabId) {
     // Apply this directly to the final rendered button. State updates rebuild
     // the strip, so putting the class in the template caused the animation to
@@ -674,7 +671,7 @@ function renderFavs() {
           ? `<img src="${escapeHtml(fav)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-fallback="1" />`
           : `<span class="fav-fallback" aria-hidden="true">${GLOBE_SVG}</span>`;
         const label = it.label || hostLabel(it.url) || "Site";
-        return `<button type="button" class="fav" data-idx="${i}" title="${escapeHtml(it.title || it.url || label)}">
+        return `<button type="button" class="fav" data-idx="${i}">
             ${ico}
             <span class="fav-label">${escapeHtml(label)}</span>
           </button>`;

@@ -8,16 +8,19 @@
 // server-visible contracts — keep them exactly as-is.
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { isLocalModeAvailable, refreshLocalMode } from "@/lib/localMode";
+import { getDesktopMcpAppsSummary, isDesktopMcpAvailable } from "@/lib/mcp/desktopMcpBridge";
 import { getMemoryForPrompt } from "@/lib/conversationMemory";
 import { loadActiveCustomModelId } from "@/lib/modelBuilder/activeCustomModelStorage";
 import { CUSTOM_MODELS_ENABLED } from "@/lib/customModelsEnabled";
-import { listAiDrive } from "@/lib/vault/aiDriveContents";
+import { listAiDrive, type AiDriveListing } from "@/lib/vault/aiDriveContents";
+import { messageWantsDeviceInventory } from "@/lib/ai/deviceInventoryIntent";
 import { listInstalledApps } from "@/lib/apps/installApp";
 import { macAppNames } from "@/lib/macApps";
 import { getBots } from "@/lib/bots/botsClient";
 import type { ChatSendParams } from "@/lib/ai/chatSendOrchestrator";
 import type { FocusedChatAttachment } from "@/lib/lyknChat/chatTurnTypes";
 import { collectThreadFolderAttachments, folderPathFromAttachment } from "@/lib/ai/chatTurnPreparation";
+import { attachedAppsFromComposer } from "@/lib/chat/slashAppQuery";
 import { browserPageContextForRequest } from "@/lib/lyknChat/browserSurfaceContext";
 import { readLocalModelSetup } from "@/lib/models/modelSetupStore";
 
@@ -32,6 +35,14 @@ function resolveLocalTimezone(): string | null {
     return null;
   }
 }
+
+const EMPTY_DRIVE: AiDriveListing = {
+  items: [],
+  artifacts: 0,
+  docs: 0,
+  images: 0,
+  complete: true,
+};
 
 export async function buildChatRequestBody(args: {
   p: ChatSendParams;
@@ -121,40 +132,40 @@ export async function buildChatRequestBody(args: {
     /^(?:hi|hello|hey|yo|sup|thanks|thank you|ok|okay|sure|yes|no|yep|nope|got it|cool|nice|great|bye)[\s!.?…]*$/i.test(
       cappedText.trim(),
     );
-  const memoryText = skipMemoryPrefetch
-    ? ""
-    : await getMemoryForPrompt(
-        identity.userId,
-        identity.routeChatId || identity.chatId || null,
-        cappedText,
-      );
-  // Files live in the Vault Finder: [AI DRIVE] is sent below, Mac folders
-  // via local_* when Local Mode is on. The old vault_items / connected-apps
-  // dump is not injected.
+  const browserAsk = p.surfaceContext?.surface === "browser";
+  const inventoryHaystack = [
+    cappedText,
+    ...conversationArray.slice(-4).map((m) => m.content),
+  ].join("\n");
+  const wantsInventory = !browserAsk && messageWantsDeviceInventory(inventoryHaystack);
 
   const customModelId = CUSTOM_MODELS_ENABLED
     ? identity.customModelId ?? (identity.userId ? loadActiveCustomModelId() : null)
     : null;
-  // Local Mode must be read from main over IPC at send time: the module-level
-  // cache starts false and primes asynchronously, so the first send after a
-  // window load would silently drop the flag if we trusted the cache alone.
-  const localModeOn = isLocalModeAvailable() ? await refreshLocalMode() : false;
-  // Apps the user built in LYKN live in the local store on their machine, so
-  // the server only knows they exist because we say so. Names and ids only —
-  // enough for lykn_open_app to match "open my workout tracker" to a real app.
-  const installedApps = (await listInstalledApps())
-    .slice(0, 60)
-    .map((app) => ({ id: app.id, name: app.name }));
-  // The applications on this Mac. Whether "pull up Spotify" should open the app
-  // or the website depends on whether this person has it, which only their
-  // machine knows — so the answer comes from here rather than a guess.
-  const macApps = (await macAppNames()).slice(0, 200);
-  // AI Drive — the artifacts and images LYKN has made for them. Those are
-  // things they built too, and "open the dashboard I made" only resolves if
-  // the model has been told the dashboard is in there. The totals ride along
-  // separately: only the newest are named, and a model that sees a short list
-  // and no count will report the list as the count.
-  const aiDrive = await listAiDrive(identity.userId);
+  // Memory, Local Mode, and device inventory used to await in series. Local
+  // Mode still needs a live IPC read (the cache starts false). Drive / Mac
+  // apps / installed apps only go out on open/launch/file-ish turns so a
+  // cold Drive page does not sit in front of first token.
+  const [memoryText, localModeOn, installedApps, macApps, aiDrive, desktopMcpApps] = await Promise.all([
+    skipMemoryPrefetch
+      ? Promise.resolve("")
+      : getMemoryForPrompt(
+          identity.userId,
+          identity.routeChatId || identity.chatId || null,
+          cappedText,
+        ),
+    isLocalModeAvailable() ? refreshLocalMode() : Promise.resolve(false),
+    wantsInventory
+      ? listInstalledApps().then((apps) =>
+          apps.slice(0, 60).map((app) => ({ id: app.id, name: app.name })),
+        )
+      : Promise.resolve([] as Array<{ id: string; name: string }>),
+    wantsInventory ? macAppNames().then((names) => names.slice(0, 200)) : Promise.resolve([] as string[]),
+    wantsInventory ? listAiDrive(identity.userId) : Promise.resolve(EMPTY_DRIVE),
+    // Desktop MCP servers (Blender, Ableton, …) connected on this machine.
+    // Cached bridge read — the server arms local_mcp_* tools when non-empty.
+    browserAsk ? Promise.resolve([]) : getDesktopMcpAppsSummary().catch(() => []),
+  ]);
   // Desktop teammates live in the renderer store. Names and roles only -
   // enough for local_ask_bot to match "ask Cody" to a real bot.
   const lyknBots = getBots()
@@ -165,7 +176,6 @@ export async function buildChatRequestBody(args: {
       ...(bot.role ? { role: bot.role } : {}),
     }))
     .filter((bot) => bot.id && bot.name);
-  const browserAsk = p.surfaceContext?.surface === "browser";
   const requestBody: Record<string, unknown> = {
     model: identity.selectedModel,
     ...(customModelId ? { customModelId } : {}),
@@ -205,6 +215,9 @@ export async function buildChatRequestBody(args: {
         }
       : {}),
     ...(p.composerMode === "image" ? { forceImage: true } : {}),
+    ...(p.imageModel && p.composerMode === "image"
+      ? { imageModel: String(p.imageModel).trim().slice(0, 120) }
+      : {}),
     // "+" → Create submenu: build a rich artifact (deck, study guide, chart…).
     ...(typeof p.composerMode === "string" && p.composerMode.startsWith("create:")
       ? { forceArtifact: true, artifactType: p.composerMode.slice("create:".length) }
@@ -221,6 +234,19 @@ export async function buildChatRequestBody(args: {
     // Local Mode — when the user flipped the Vault switch AND we're in the
     // desktop shell, offer file/terminal tools that execute on their machine.
     ...(localModeOn && !browserAsk ? { localMode: true } : {}),
+    // Desktop MCP — servers running on this machine (Blender, Ableton, …).
+    // Independent of Local Mode: connecting the server was its own consent.
+    ...(desktopMcpApps.length ? { desktopMcpApps } : {}),
+    // Bridge presence, separate from connections: lets the server arm the
+    // catalog/connect tools at ZERO connections ("connect to blender" on a
+    // fresh install). Each connect still gets its own approval card.
+    ...(isDesktopMcpAvailable() && !browserAsk ? { desktopMcpAvailable: true } : {}),
+    // Build workspace — Studio Build in the desktop shell arms the on-disk
+    // build tools (~/LYKN/Builds). Independent of the Local Mode switch: with
+    // Local Mode off, Electron confines every call to the workspace root.
+    ...(p.buildWorkspace === true && isLocalModeAvailable() && !browserAsk
+      ? { buildWorkspace: true }
+      : {}),
     // The user's IANA timezone (browser-resolved) so the server can give the
     // model the user's LOCAL "now" + offset. Without this, scheduling tools
     // (createEvent/createReminder) land events at the wrong time because the
@@ -229,7 +255,14 @@ export async function buildChatRequestBody(args: {
     ...(attachedImageUrls.length ? { imageUrls: attachedImageUrls } : {}),
     ...(turnAttachments.length ? { attachments: turnAttachments } : {}),
     ...(() => {
-      const folders = collectThreadFolderAttachments(p.chatMessages, promptAttachments)
+      const attachedApps = attachedAppsFromComposer(promptAttachments);
+      return attachedApps.length ? { attachedApps } : {};
+    })(),
+    ...(() => {
+      // Only folders on THIS send (or a related follow-up the client already
+      // gated into promptAttachments). Do not re-arm every later turn from
+      // the whole thread.
+      const folders = collectThreadFolderAttachments([], promptAttachments)
         .map((f) => ({
           name: f.name || f.vaultTitle || "folder",
           path: folderPathFromAttachment(f),

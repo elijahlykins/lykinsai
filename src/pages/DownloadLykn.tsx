@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import lyknLogoMark from "@/assets/FINAL/LYKN-LOGO-B-Open/SVG/LYKN-Logo-Primary-B-Open-BLACK.svg";
 import LandingHeader from "@/components/landing/LandingHeader";
 import "./GlassLanding.css";
@@ -156,6 +156,17 @@ export default function DownloadLykn() {
                   Download for Mac
                 </a>
               </>
+            ) : showWinComingSoon ? (
+              <>
+                <Link className="dlp-btn" to="/windows">
+                  <WindowsGlyph />
+                  Join the Windows waitlist
+                </Link>
+                <a className="dlp-btn dlp-btn--secondary" href={MAC_DOWNLOAD_URL}>
+                  <AppleGlyph />
+                  Download for Mac
+                </a>
+              </>
             ) : (
               <>
                 <a className="dlp-btn" href={MAC_DOWNLOAD_URL}>
@@ -167,22 +178,21 @@ export default function DownloadLykn() {
                     <WindowsGlyph />
                     Download for Windows
                   </a>
-                ) : null}
+                ) : (
+                  <Link className="dlp-btn dlp-btn--secondary" to="/windows">
+                    <WindowsGlyph />
+                    Windows waitlist
+                  </Link>
+                )}
               </>
             )}
           </div>
 
           <p className="dlp-meta">
-            {primaryIsWin
+            {primaryIsWin || showWinComingSoon
               ? "Free to start · Windows 10 and later · 64-bit"
               : "Free to start · macOS 12 and later · Apple silicon & Intel"}
           </p>
-          {showWinComingSoon && (
-            <p className="dlp-meta" style={{ marginTop: 8 }}>
-              Windows desktop is coming soon. Use LYKN in your browser at
-              lykn.io for now.
-            </p>
-          )}
           {showDesktopNote && (
             <p className="dlp-meta" style={{ marginTop: 8 }}>
               {WINDOWS_DOWNLOAD_ENABLED

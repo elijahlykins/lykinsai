@@ -7,7 +7,9 @@
  * hears the mic and speaks back over the same connection.
  *
  * Grounding lives in the session `instructions`, assembled from the user's
- * LYKN context and passed through at session creation.
+ * LYKN context and passed through at session creation. server_vad creates the
+ * spoken reply from audio; tools attach in the background and only cancel that
+ * reply when the utterance actually needs an action tool.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -25,6 +27,8 @@ import {
 } from "@/lib/voice/voiceDesktopTools";
 import { micErrorMessage, requestMicStream } from "@/lib/voice/micAccess";
 import { claimVoiceReplyPersist } from "@/lib/lyknChat/voiceReplyPersist";
+import { voiceMicStreamConstraints } from "@/lib/voice/voicePickup";
+import { VOICE_TOOL_STATUS_COPY } from "@/lib/voice/voiceToolNames";
 
 export type RealtimeVoiceState =
   | "idle"
@@ -61,6 +65,8 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
   const [transcript, setTranscript] = useState("");
   const [reply, setReply] = useState("");
   const [errorText, setErrorText] = useState("");
+  const [activityLive, setActivityLive] = useState("");
+  const [activityTrail, setActivityTrail] = useState<string[]>([]);
 
   const stateRef = useRef<RealtimeVoiceState>("idle");
   const activeRef = useRef(false);
@@ -87,6 +93,7 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
   const voiceToolDefsRef = useRef<Map<string, Record<string, unknown>>>(new Map());
   const persistedReplyIdsRef = useRef<Set<string>>(new Set());
   const persistedThisResponseRef = useRef(false);
+  const recentVoiceTurnsRef = useRef<Array<{ role: string; content: string }>>([]);
 
   useEffect(() => { buildInstructionsRef.current = buildInstructions; }, [buildInstructions]);
   useEffect(() => { chatIdRef.current = chatId ?? null; }, [chatId]);
@@ -114,6 +121,12 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
   // Run a tool the realtime model asked for, then hand the result back over
   // the data channel and let the model continue speaking with it.
   const executeToolCall = useCallback(async (callId: string, name: string, argsJson: string) => {
+    const label = VOICE_TOOL_STATUS_COPY[name] || "Working on it…";
+    setVoiceState("thinking");
+    setActivityLive((prev) => {
+      if (prev && prev !== label) setActivityTrail((trail) => [...trail, prev].slice(-6));
+      return label;
+    });
     let output: unknown;
     // Self-tuning instructions persist to the user's LOCAL settings, so this
     // tool runs in the browser instead of the server dispatch endpoint.
@@ -169,16 +182,24 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
   const applyVoiceToolsAndRespond = useCallback(async (transcript: string) => {
     const dc = dcRef.current;
     if (!dc || dc.readyState !== "open") return;
+    const text = String(transcript || "").trim();
+    if (!text) return;
+    recentVoiceTurnsRef.current = [
+      ...recentVoiceTurnsRef.current,
+      { role: "user", content: text.slice(0, 400) },
+    ].slice(-6);
+    let interruptForTools = false;
     try {
       const headers = await authHeaders();
       const res = await fetch(`${API_BASE_URL}/api/ai/realtime/tools`, {
         method: "POST",
         headers,
         body: JSON.stringify({
-          message: transcript,
+          message: text,
+          conversation: recentVoiceTurnsRef.current,
           chatId: chatIdRef.current,
           desktop: isDesktopVoiceClient(),
-          localMode: await refreshLocalMode(),
+          localMode: (await refreshLocalMode()) || isDesktopVoiceClient(),
           lyknBots: snapshotLyknBots(),
         }),
       });
@@ -190,15 +211,20 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
         if (name) next.set(name, tool as Record<string, unknown>);
       }
       voiceToolDefsRef.current = next;
-      const tools = [...next.values()];
+      interruptForTools = Boolean(data?.interruptForTools);
       dc.send(JSON.stringify({
         type: "session.update",
-        session: { tools, tool_choice: "auto" },
+        session: { tools: [...next.values()], tool_choice: "auto" },
       }));
-    } catch { /* respond anyway so the user is never stuck */ }
-    try {
-      dc.send(JSON.stringify({ type: "response.create" }));
-    } catch { /* ignore */ }
+    } catch { /* VAD already started a reply for lean turns */ }
+    // Ordinary speech already has a response from server_vad. Only recreate
+    // when this utterance needs an action tool and the model has not started talking.
+    if (interruptForTools && stateRef.current === "thinking") {
+      try {
+        dc.send(JSON.stringify({ type: "response.cancel" }));
+        dc.send(JSON.stringify({ type: "response.create" }));
+      } catch { /* ignore */ }
+    }
   }, [authHeaders]);
 
   const stopMonitor = useCallback(() => {
@@ -244,8 +270,11 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
     dataRef.current = null;
     toolNamesRef.current.clear();
     voiceToolDefsRef.current.clear();
+    recentVoiceTurnsRef.current = [];
     setMicLevel(0);
     setVoiceState("idle");
+    setActivityLive("");
+    setActivityTrail([]);
   }, [setVoiceState, stopMonitor]);
 
   const handleEvent = useCallback((evt: {
@@ -262,6 +291,8 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
     switch (type) {
       case "input_audio_buffer.speech_started":
         // Barge-in / new turn: user is talking again.
+        setActivityLive("");
+        setActivityTrail([]);
         setVoiceState("listening");
         break;
       case "response.output_item.added":
@@ -291,8 +322,6 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
           setTranscript(t);
           if (t) { try { onUserTranscriptRef.current?.(t); } catch { /* ignore */ } }
           void applyVoiceToolsAndRespond(t);
-        } else {
-          void applyVoiceToolsAndRespond("");
         }
         break;
       case "response.created":
@@ -303,12 +332,16 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
         break;
       case "response.output_audio.delta":
       case "response.audio.delta":
-        if (stateRef.current !== "speaking") setVoiceState("speaking");
+        if (stateRef.current !== "speaking") {
+          setActivityLive("");
+          setVoiceState("speaking");
+        }
         break;
       case "response.output_audio_transcript.delta":
       case "response.audio_transcript.delta":
         replyRef.current += evt.delta || "";
         setReply(replyRef.current);
+        setActivityLive("");
         setVoiceState("speaking");
         break;
       case "response.output_audio_transcript.done":
@@ -359,7 +392,7 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
     // no point paying for a realtime session the user can't speak into.
     let micStream: MediaStream;
     try {
-      micStream = await requestMicStream({ audio: true });
+      micStream = await requestMicStream(voiceMicStreamConstraints());
     } catch (err: unknown) {
       setErrorText(micErrorMessage(err));
       setVoiceState("error");
@@ -467,6 +500,12 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
   }, [authHeaders, handleEvent, monitorFrame, setVoiceState, stopMonitor]);
 
   useEffect(() => {
+    if (mutedRef.current) return;
+    const hold = state === "thinking" || state === "speaking";
+    try { micStreamRef.current?.getAudioTracks?.().forEach((t) => { t.enabled = !hold; }); } catch { /* ignore */ }
+  }, [state]);
+
+  useEffect(() => {
     if (active) {
       activeRef.current = true;
       mutedRef.current = false;
@@ -508,5 +547,5 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
     void connect();
   }, [connect, teardown]);
 
-  return { state, micLevel, muted, transcript, reply, errorText, toggleMute, interrupt, retry };
+  return { state, micLevel, muted, transcript, reply, errorText, activityLive, activityTrail, toggleMute, interrupt, retry };
 }

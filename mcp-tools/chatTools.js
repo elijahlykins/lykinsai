@@ -25,6 +25,7 @@ import { LYKN_TOOLS_BY_NAME, errorContent } from './index.js';
 import { EXTERIOR_TOOLS_BY_NAME } from './exterior/index.js';
 import { slimChatToolsForSurgicalEdit } from './artifactEditSchema.js';
 import { isOpenRouterTarget } from '../lib/inference/resolveGateway.js';
+import { getModel } from '../lib/models/registry.js';
 import { delegateToSubModelTool } from './delegateToSubModel.js';
 import { listSubModelTasksTool } from './listSubModelTasks.js';
 import { getSubModelTaskTool } from './getSubModelTask.js';
@@ -184,7 +185,13 @@ export const CHAT_TOOL_NAMES = [
   'lykn_generate_diagram',
   'lykn_get_current_time',
   'lykn_run_python',
+  // Registered for schema lookup only: chat resolution strips it on every
+  // turn (image generation is Imagine-only). Build-workspace turns re-arm it
+  // for textures/sprites — see resolveFirstPartyTools + armBuildWorkspaceTools.
   'lykn_generate_image',
+  // Textured GLB from a prompt/reference image (Tripo/Meshy) — the organic-
+  // shape path that procedural Blender/three.js scripting cannot cover.
+  'lykn_generate_3d_model',
   // ── Model Builder capabilities ─────────────────────────────────────
   'lykn_manage_file',
   'lykn_parse_document',
@@ -193,6 +200,9 @@ export const CHAT_TOOL_NAMES = [
   // Claude-Artifacts-style React builds — documents, dashboards, tools,
   // games, prototypes rendered live from model-written React code.
   'lykn_build_react_artifact',
+  // Reads exact regions out of the open artifact — the companion to the
+  // structure-map view large artifacts get instead of inlined source.
+  'lykn_read_artifact_source',
   // Remotion renders: model-written frame-based compositions → real .mp4
   // (animated logos, image animations, motion graphics for landing pages).
   'lykn_render_video',
@@ -540,6 +550,11 @@ export function buildChatToolCtx(req, extras = {}) {
      */
     turnImageUrls: (Array.isArray(req.body?.imageUrls) ? req.body.imageUrls : []).slice(0, 8),
     /**
+     * Studio Imagine generator the user picked under the chat bar. Empty means
+     * the default GPT Image 2 → Gemini fallback chain.
+     */
+    imageModel: String(req.body?.imageModel || extras.imageModel || "").trim().slice(0, 120) || null,
+    /**
      * The apps the user has built in LYKN, as { id, name }. They live in the
      * local store on the user's machine, so the server only knows about them
      * because the desktop client sends them with the turn. lykn_open_app
@@ -711,7 +726,14 @@ export function providerForModel(model) {
 // Tool calling is supported on every provider we route through (modulo
 // some legacy aliases). Kept as a helper so callers don't need to know
 // the provider-id ↔ tool-support map.
+//
+// A model the registry knows answers for itself first: synced catalog rows
+// carry OpenRouter's own supported_parameters flag and curated entries
+// declare theirs, so a completion-only catalog model (no function calling)
+// is caught here and rerouted up front instead of erroring mid-turn.
 export function supportsTools(model) {
+  const def = getModel(model);
+  if (def?.capabilities) return Boolean(def.capabilities.tools);
   const p = providerForModel(model);
   return p === 'openai' || p === 'anthropic' || p === 'gemini' || p === 'grok' || p === 'openrouter';
 }

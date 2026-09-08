@@ -161,6 +161,55 @@
   width: min(27rem, 86%);
 }
 
+.cappg-faq {
+  max-width: 1240px;
+  margin: clamp(3rem, 8vh, 5.5rem) auto 0;
+}
+
+.cappg-faq-title {
+  margin: 0 0 1.15rem;
+  font-size: 0.75rem;
+  font-weight: 650;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--gl-navy, #0968c4);
+}
+
+.cappg-faq-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: clamp(1rem, 2.4vw, 1.5rem);
+}
+
+.cappg-faq-item {
+  padding: clamp(1.25rem, 2.4vw, 1.7rem);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 18px 40px -28px rgba(8, 16, 36, 0.22);
+}
+
+.cappg-faq-q {
+  margin: 0;
+  font-size: clamp(1.02rem, 1.4vw, 1.16rem);
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.35;
+  color: #111;
+}
+
+.cappg-faq-a {
+  margin: 0.7rem 0 0;
+  font-size: 0.98rem;
+  line-height: 1.6;
+  font-weight: 500;
+  color: #64748b;
+}
+
+.cappg-faq-a .lx-wordmark {
+  color: inherit;
+}
+
 @media (max-width: 960px) {
   .cappg-grid {
     grid-template-columns: 1fr;
@@ -171,5 +220,8 @@
   }
   .cappg-stage {
     height: clamp(280px, 52vw, 420px);
+  }
+  .cappg-faq-grid {
+    grid-template-columns: 1fr;
   }
 }

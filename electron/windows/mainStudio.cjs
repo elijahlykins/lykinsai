@@ -1,5 +1,7 @@
 "use strict";
 
+const { workAreaBoundsForDisplay } = require("./studioWorkArea.cjs");
+
 function attachMainStudio(d) {
   if (d.__attached_attachMainStudio) return;
   d.__attached_attachMainStudio = true;
@@ -79,13 +81,16 @@ function createMainWindow() {
   }
 
   const { workArea } = screen.getPrimaryDisplay();
-  const width = Math.min(1320, workArea.width - 64);
-  const height = Math.min(880, workArea.height - 64);
+  const fitted = workAreaBoundsForDisplay({
+    workArea,
+  });
+  const width = fitted?.width || Math.min(1320, workArea.width - 64);
+  const height = fitted?.height || Math.min(880, workArea.height - 64);
   d.mainWindow = new BrowserWindow({
     width,
     height,
-    x: Math.round(workArea.x + (workArea.width - width) / 2),
-    y: Math.round(workArea.y + (workArea.height - height) / 2),
+    x: fitted?.x ?? Math.round(workArea.x + (workArea.width - width) / 2),
+    y: fitted?.y ?? Math.round(workArea.y + (workArea.height - height) / 2),
     minWidth: 960,
     minHeight: 640,
     // Studio is the product shell: liquid-glass over native vibrancy.
@@ -180,7 +185,10 @@ function createMainWindow() {
 
   // Native fullscreen emits real enter/leave events — just relay them.
   d.mainWindow.on("enter-full-screen", broadcastStudioFullscreen);
-  d.mainWindow.on("leave-full-screen", broadcastStudioFullscreen);
+  d.mainWindow.on("leave-full-screen", () => {
+    fitStudioWindowToWorkArea(d.mainWindow);
+    broadcastStudioFullscreen();
+  });
   // Moving to another display (laptop ↔ external) changes the camera /
   // menu-bar strip the top chrome has to clear.
   d.mainWindow.on("resize", broadcastStudioFullscreen);
@@ -334,6 +342,26 @@ function studioWindowRef() {
   return null;
 }
 
+function fitStudioWindowToWorkArea(win = studioWindowRef()) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    if (typeof win.isSimpleFullScreen === "function" && win.isSimpleFullScreen()) return;
+  } catch (_) {}
+  let display;
+  try {
+    display = screen.getDisplayMatching(win.getBounds());
+  } catch (_) {
+    display = screen.getPrimaryDisplay();
+  }
+  const next = workAreaBoundsForDisplay(display);
+  if (!next) return;
+  try {
+    win.setBounds(next);
+  } catch (_) {
+    /* ignore */
+  }
+}
+
 function studioFullscreenActive() {
   const win = studioWindowRef();
   if (!win) return false;
@@ -439,6 +467,7 @@ function updateDockVisibility() {
   d.broadcastStudioFullscreen = broadcastStudioFullscreen;
   d.createMainWindow = createMainWindow;
   d.createStudioWindow = createStudioWindow;
+  d.fitStudioWindowToWorkArea = fitStudioWindowToWorkArea;
   d.hideStudioWindow = hideStudioWindow;
   d.showStudioWindow = showStudioWindow;
   d.studioFullscreenActive = studioFullscreenActive;

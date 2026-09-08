@@ -16,6 +16,8 @@ export {
 export {
   classifyChatComplexity,
   extractComplexityFeatures,
+  holdFastToPhatic,
+  isPhaticChatTurn,
 } from './classifyChatComplexity.js';
 
 export {
@@ -33,8 +35,6 @@ export {
 
 export {
   assertChatTurnBillable,
-  planAllowsUnlimitedNormalChat,
-  planHasUnlimitedNormalChat,
   resolveBillableCredits,
   shouldSkipGlassRequestCap,
 } from './chatBilling.js';

@@ -710,7 +710,7 @@ export function parseBots(raw: string | null | undefined): Bot[] {
                   finishedAt: t.finishedAt || new Date().toISOString(),
                   result:
                     String(t.result ?? "").trim() ||
-                    "Stopped. The app closed before this finished.",
+                    "Paused. This Mac shut off before this finished.",
                 }
               : t,
           )

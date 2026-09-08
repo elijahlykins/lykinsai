@@ -43,23 +43,50 @@ import {
 } from './mcp-tools/chatTools.js';
 import { isSurgicalEditCtx } from './mcp-tools/artifactEditSchema.js';
 import { inferNewBuildActivities } from './lib/ai/buildNarration.js';
-import { boundToolResult } from './mcp-tools/toolResultBounds.js';
+import { boundToolResult, clipJsonToCap } from './mcp-tools/toolResultBounds.js';
 import {
   emptyOpenRouterUsage,
   extractOpenRouterUsage,
   mergeOpenRouterUsage,
 } from './lib/inference/openRouterGateway.js';
+import {
+  firstUserStatusLine,
+  makeWorkReplyGate,
+} from './lib/chatWorkReplyGate.js';
+// Stall detection + continuation nudges (workspace builds, desktop-MCP app
+// driving) live in their own policy module — pure classifiers and prompts.
+import {
+  agentStallReason,
+  workspaceNudgePrompt,
+  shouldNudgeWorkspaceContinue,
+} from './lib/agentStallPolicy.js';
 
 const MAX_HOPS = 6;
 /** Complex coding / multi-file artifact builds get a longer tool loop. */
 const MAX_HOPS_CODING = 28;
 /** Open-panel refine: short loop — one batched edit, not 6 sequential rebuilds. */
 const MAX_HOPS_EDIT = 8;
-const MAX_HOPS_HARD_CAP = 40;
+/** Chat-mode file investigation: search, read slices, keep going. */
+const MAX_HOPS_INVESTIGATE = 20;
+/**
+ * Build-workspace turns: a real software build on disk (scaffold, install,
+ * edit, run, test, fix) legitimately takes dozens of inspect/act/verify
+ * cycles. Each hop can batch several tool calls, so 60 hops covers projects
+ * that need hundreds of actions without letting a stuck loop run forever.
+ */
+const MAX_HOPS_WORKSPACE = 60;
+/**
+ * Desktop MCP turns (driving Blender, Ableton, … through local_mcp_call_tool):
+ * a COMPLETE creative build — "model a car" means body, wheels, glass,
+ * materials, lighting — is dozens of act→look→refine cycles, and the default
+ * 6-hop chat budget is exactly why those turns died half-done.
+ */
+const MAX_HOPS_DESKTOP_MCP = 40;
+const MAX_HOPS_HARD_CAP = 80;
 const MAX_TOOL_CALLS_PER_HOP = 5;
 const MAX_TOOL_CALLS_PER_HOP_CODING = 8;
 const MAX_TOOL_CALLS_PER_HOP_EDIT = 3;
-const TOOL_RESULT_CAP = 16000;
+const MAX_TOOL_CALLS_PER_HOP_INVESTIGATE = 8;
 
 /** Tools that produce a user-visible artifact card when they succeed. */
 const ARTIFACT_SHIP_TOOLS = new Set([
@@ -94,13 +121,19 @@ function resolveMaxHops(opts) {
   if (Number.isFinite(requested) && requested > 0) {
     return Math.min(Math.max(Math.floor(requested), 1), MAX_HOPS_HARD_CAP);
   }
+  if (opts?.workspaceMode) return MAX_HOPS_WORKSPACE;
+  if (opts?.desktopMcpMode) return MAX_HOPS_DESKTOP_MCP;
   if (opts?.editingArtifact) return MAX_HOPS_EDIT;
-  return opts?.codingMode ? MAX_HOPS_CODING : MAX_HOPS;
+  if (opts?.codingMode) return MAX_HOPS_CODING;
+  if (opts?.investigateMode) return MAX_HOPS_INVESTIGATE;
+  return MAX_HOPS;
 }
 
 function resolveMaxToolCallsPerHop(opts) {
+  if (opts?.workspaceMode) return MAX_TOOL_CALLS_PER_HOP_CODING;
   if (opts?.editingArtifact) return MAX_TOOL_CALLS_PER_HOP_EDIT;
   if (opts?.codingMode) return MAX_TOOL_CALLS_PER_HOP_CODING;
+  if (opts?.investigateMode) return MAX_TOOL_CALLS_PER_HOP_INVESTIGATE;
   return MAX_TOOL_CALLS_PER_HOP;
 }
 
@@ -157,6 +190,32 @@ function artifactShippedFromResults(results) {
 // doomed attempt costs ~40s of user-visible waiting), then bail with
 // `forced_tool_incomplete` so the server's provider fallback takes over.
 const MAX_TRUNCATED_STREAM_RETRIES = 1;
+
+/**
+ * Transient hop failures — provider connect errors, dropped SSE streams,
+ * 429/5xx — are retried in place with backoff instead of ending the turn.
+ * The conversation state already holds every completed tool result, so a
+ * retried hop simply re-asks the model; no tool ever re-runs. Born from a
+ * build-workspace turn that died mid-project with "the model connection
+ * dropped" after one flaky provider stream.
+ */
+const MAX_TRANSIENT_HOP_RETRIES = 3;
+const TRANSIENT_HOP_BACKOFF_MS = [1000, 2500, 5000];
+
+const TRANSIENT_HOP_ERROR_RE =
+  /fetch failed|network|econn|epipe|etimedout|socket hang up|ssl|tls|eai_again|und_err|terminated|premature|dns|overloaded|too many requests|rate.?limit|timed?\s?out|server error|bad gateway|service unavailable|internal error/i;
+
+/**
+ * Is this hop failure worth retrying on the same model? Transport-level
+ * drops and provider-side pressure recover on their own; schema errors,
+ * auth failures, and context overflows never do.
+ */
+export function isTransientHopError(message, status = 0) {
+  const code = Number(status) || 0;
+  if (code === 408 || code === 429 || code >= 500) return true;
+  if (code >= 400) return false;
+  return TRANSIENT_HOP_ERROR_RE.test(String(message || ''));
+}
 // Deep-research reports (markdown + stock/chart/sheet fences) often hit a
 // provider's per-call output ceiling mid-embed. Continue the same turn a
 // few times so the report finishes with closed fences + Sources instead of
@@ -207,6 +266,33 @@ function isLengthStopReason(reason) {
 }
 
 /**
+ * Claude thinking-family models served through OpenRouter. These think by
+ * default, and OpenRouter streams that thinking as `delta.reasoning`, which
+ * this loop does not render. Left unpinned, the thinking budget scales with
+ * max_tokens — observed live: a build turn spent 185s and ~20k tokens
+ * entirely inside reasoning, hit the output cap mid-thought, and ended with
+ * zero text and zero tool calls ("I ran the tools but didn't produce a
+ * written reply"). Matches the upstream id (e.g. "anthropic/claude-fable-5.1").
+ *
+ * Control is EFFORT levels, not a token budget and never `enabled: false`:
+ * the fable endpoint answers a token budget by ignoring it and answers
+ * `enabled: false` with a 400 ("Reasoning is mandatory for this endpoint
+ * and cannot be disabled"), which dropped the whole turn to the toolless
+ * legacy stream. Effort is the knob such endpoints actually honor — OpenRouter
+ * maps it to a fraction of max_tokens per provider ('low' ≈ 20%, 'medium'
+ * ≈ 50%), so the visible reply always keeps the larger share.
+ *
+ * Chat turns get 'medium' (one hop, depth pays off). Workspace/coding agent
+ * turns start at 'low': the loop runs MANY hops, and a minute of invisible
+ * planning before every tool call reads as a dead build — the user watches
+ * status animations while nothing ever starts. Each hop needs a quick
+ * decision ("write the file, run the build"), not an essay.
+ */
+const CLAUDE_THINKING_MODEL_RE = /claude-(fable|opus|sonnet)/i;
+const CLAUDE_REASONING_EFFORT_CHAT = 'medium';
+const CLAUDE_REASONING_EFFORT_AGENT = 'low';
+
+/**
  * After a text-only hop, decide whether to continue a deep-research report.
  * Returns true when the caller should push a continue user turn and keep looping.
  */
@@ -224,6 +310,41 @@ function shouldContinueIncompleteResearch({
   // provider reported length or a quiet stop mid-fence.
   return true;
 }
+
+
+// How many times an edit turn may be nudged back to actually ship its patch.
+const MAX_UNPATCHED_EDIT_NUDGES = 2;
+
+const UNPATCHED_EDIT_PROMPT =
+  'You have not applied the edit yet — you called no artifact tool this turn, so the ' +
+  'user sees NO change at all. Do it now: call the builder tool for the open artifact ' +
+  'with `edits` (and/or `file_ops`) covering every change the user asked for. ' +
+  'If you still need to see the exact current text of a region, call ' +
+  'lykn_read_artifact_source first — reads are free and do not count as your one ' +
+  'builder call. Do not reply with prose again until the patch is applied.';
+
+/**
+ * After a text-only hop on an EDIT turn, decide whether to push the model back
+ * to work instead of ending the turn.
+ *
+ * An edit turn that ends without an artifact tool call is a total failure from
+ * the user's side: they asked for a change, watched it think, and got a
+ * paragraph. It became reachable once large artifacts started arriving as a
+ * structure map — the model would spend its hop reading, narrate what it was
+ * about to do, and stop. The prompt tells it not to; this makes sure.
+ */
+function shouldRetryUnpatchedEdit({
+  editingArtifact,
+  artifactDelivered,
+  unpatchedEditNudges,
+  pendingToolCalls,
+}) {
+  if (!editingArtifact) return false;
+  if (artifactDelivered) return false;
+  if (pendingToolCalls) return false;
+  return unpatchedEditNudges < MAX_UNPATCHED_EDIT_NUDGES;
+}
+
 
 // ---------------------------------------------------------------------------
 // Brand casing — the product name is always LYKN (all caps) in user-facing
@@ -494,30 +615,75 @@ export function makeToolSyntaxStripper(onTextChunk, MAX_HOLD = 16384) {
 // full HTML used for an inline srcDoc preview, or the merged JSX after an
 // `edits` patch build). Stripping them keeps the model's tool-result context
 // lean and prevents the model from echoing raw markup back into the chat.
-const CLIENT_ONLY_RESULT_FIELDS = ['preview_html', 'artifact_code', 'artifact_files'];
+// `imageDataUrl` is stripped from the TEXT serialization for a better reason:
+// the pixels are delivered to the model as a real image part (see
+// toolResultImages) — a base64 string in JSON is noise the model cannot see.
+const CLIENT_ONLY_RESULT_FIELDS = ['preview_html', 'artifact_code', 'artifact_files', 'imageDataUrl'];
+
+// ---------------------------------------------------------------------------
+// Vision on tool results
+// ---------------------------------------------------------------------------
+// A tool that returns pixels (local_read_file on a PNG, a screen capture, a
+// Blender render) sets `imageDataUrl`. The model must SEE those pixels —
+// "render, look, refine" is the difference between graphics that work and
+// graphics that merely compile. Each provider loop attaches them in its own
+// image grammar right after the tool results. Caps keep a screenshot-happy
+// hop from flooding the context window.
+const MAX_TOOL_IMAGES_PER_HOP = 2;
+const MAX_TOOL_IMAGE_CHARS = 6_000_000; // ~4.5 MB of pixels, base64-encoded
+
+/** Data-URL images from a hop's tool results, capped. */
+function toolResultImages(results) {
+  const images = [];
+  for (const r of Array.isArray(results) ? results : []) {
+    const url = String(r?.payload?.imageDataUrl || '');
+    if (!url.startsWith('data:image/')) continue;
+    if (url.length > MAX_TOOL_IMAGE_CHARS) continue;
+    images.push({ tool: String(r?.name || 'tool'), url });
+    if (images.length >= MAX_TOOL_IMAGES_PER_HOP) break;
+  }
+  return images;
+}
+
+function toolImagesNote(images) {
+  const names = [...new Set(images.map((im) => im.tool))].join(', ');
+  return `[tool image] The attached image(s) are the actual pixels returned by ${names}. Look at them before continuing.`;
+}
+
+/** `data:image/png;base64,…` → Anthropic image block, or null. */
+function dataUrlToAnthropicImage(url) {
+  const m = /^data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/i.exec(String(url || ''));
+  if (!m || m[2].length > MAX_TOOL_IMAGE_CHARS) return null;
+  return { type: 'image', source: { type: 'base64', media_type: m[1].toLowerCase(), data: m[2] } };
+}
+
+/** `data:image/png;base64,…` → Gemini inlineData part, or null. */
+function dataUrlToGeminiPart(url) {
+  const m = /^data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/i.exec(String(url || ''));
+  if (!m || m[2].length > MAX_TOOL_IMAGE_CHARS) return null;
+  return { inlineData: { mimeType: m[1].toLowerCase(), data: m[2] } };
+}
+
+function stripClientOnlyFields(forModel) {
+  if (forModel && typeof forModel === 'object' && !Array.isArray(forModel)) {
+    let stripped = false;
+    const copy = {};
+    for (const [k, v] of Object.entries(forModel)) {
+      if (CLIENT_ONLY_RESULT_FIELDS.includes(k)) {
+        stripped = true;
+        continue;
+      }
+      copy[k] = v;
+    }
+    if (stripped) return copy;
+  }
+  return forModel;
+}
 
 function serialiseToolResult(payload, name) {
   try {
-    let forModel = boundToolResult(name, payload);
-    if (forModel && typeof forModel === 'object' && !Array.isArray(forModel)) {
-      let stripped = false;
-      const copy = {};
-      for (const [k, v] of Object.entries(forModel)) {
-        if (CLIENT_ONLY_RESULT_FIELDS.includes(k)) {
-          stripped = true;
-          continue;
-        }
-        copy[k] = v;
-      }
-      if (stripped) forModel = copy;
-    }
-    const json = JSON.stringify(forModel);
-    if (json.length <= TOOL_RESULT_CAP) return json;
-    return JSON.stringify({
-      ok: payload?.ok,
-      truncated: true,
-      preview: json.slice(0, TOOL_RESULT_CAP),
-    });
+    const forModel = stripClientOnlyFields(boundToolResult(name, payload));
+    return clipJsonToCap(forModel, payload, name);
   } catch {
     return String(payload || '');
   }
@@ -873,6 +1039,7 @@ async function runOpenAiCompatLoop({
   onTextChunk,
   onToolCall,
   onStatus,
+  onToolArgs,                   // (name, argsBuf) on every tool-argument delta — live build preview
   onActivity,                   // fires on every raw upstream chunk (stall-watchdog keepalive)
   providerLabel = 'openai',
   extraHeaders = {},
@@ -880,6 +1047,9 @@ async function runOpenAiCompatLoop({
   forceToolName,                // when set, force this tool on the first hop
   maxHops,
   codingMode,
+  investigateMode,
+  workspaceMode,
+  desktopMcpMode,
   continueIncompleteResearch = false,
 }) {
   if (!apiKey) {
@@ -892,8 +1062,8 @@ async function runOpenAiCompatLoop({
   if (!tools) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted', usage: emptyOpenRouterUsage() };
   }
-  const hopLimit = resolveMaxHops({ maxHops, codingMode, editingArtifact });
-  const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode, editingArtifact });
+  const hopLimit = resolveMaxHops({ maxHops, codingMode, editingArtifact, investigateMode, workspaceMode, desktopMcpMode });
+  const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode, editingArtifact, investigateMode, workspaceMode });
   const effectiveHopLimit = continueIncompleteResearch
     ? hopLimit + MAX_RESEARCH_CONTINUES
     : hopLimit;
@@ -905,7 +1075,22 @@ async function runOpenAiCompatLoop({
 
   const allToolCalls = [];
   const record = makeToolCallRecorder(onToolCall, allToolCalls);
-  const stripper = makeToolSyntaxStripper(onTextChunk);
+  // Hold every hop's prose until it settles. Otherwise "I'll check…" streams
+  // as the reply, then the real answer glues on with no space.
+  const holdHopReply = true;
+  const workReply = makeWorkReplyGate(
+    onTextChunk,
+    onStatus,
+    holdHopReply,
+  );
+  const stripper = makeToolSyntaxStripper(workReply.ingest);
+  const settleReply = (mode) => {
+    stripper.flush();
+    if (mode === "deliver") workReply.deliver();
+    else if (mode === "park") workReply.park();
+    else if (mode === "hold") { /* keep buffered hop prose for the next hop */ }
+    else workReply.discard();
+  };
   let hadText = false;
   // Once the FORCED tool has run successfully, lock tools off for the rest
   // of the turn. Without this, expensive builders (e.g. the React-artifact
@@ -917,17 +1102,41 @@ async function runOpenAiCompatLoop({
   // Edit turns: after the first successful artifact ship, lock tools off so
   // we don't emit 5 more "edited versions" as separate cards in one prompt.
   let artifactDelivered = false;
+  let unpatchedEditNudges = 0;
+  let workspaceNudges = 0;
   let truncatedRetries = 0;
   let researchContinues = 0;
+  let transientRetries = 0;
+  // Pause, tell the UI, and report whether the loop may continue (false when
+  // the caller aborted while we slept — retrying a dead socket helps no one).
+  const transientHopPause = async (where, msg) => {
+    transientRetries += 1;
+    console.warn(`[chat-agent-loop] transient ${where} failure (${String(msg).slice(0, 200)}) — retrying hop (${transientRetries}/${MAX_TRANSIENT_HOP_RETRIES})`);
+    try { onStatus?.('Reconnecting to the model…'); } catch { /* cosmetic */ }
+    const wait = TRANSIENT_HOP_BACKOFF_MS[Math.min(transientRetries - 1, TRANSIENT_HOP_BACKOFF_MS.length - 1)];
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    return !signal?.aborted;
+  };
+  // Claude-via-OpenRouter thinking control (see CLAUDE_THINKING_MODEL_RE).
+  // Dropped to the agent effort after a reasoning burnout.
+  const claudeThinkingTarget =
+    providerLabel === 'openrouter' && CLAUDE_THINKING_MODEL_RE.test(String(model));
+  let reasoningEffort = (workspaceMode || codingMode || desktopMcpMode)
+    ? CLAUDE_REASONING_EFFORT_AGENT
+    : CLAUDE_REASONING_EFFORT_CHAT;
+  let reasoningBurnoutRetried = false;
   let accumulatedAssistantText = '';
   let totalUsage = emptyOpenRouterUsage();
   const withUsage = (result) => ({ ...result, usage: totalUsage });
 
   for (let hop = 0; hop < effectiveHopLimit; hop++) {
     if (signal?.aborted) {
-      stripper.flush();
+      settleReply('discard');
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: 'aborted' };
     }
+    // Snapshot for the mid-stream retry path: a retried hop discards its
+    // partial text, so `hadText` must roll back with it.
+    const hadTextAtHopStart = hadText;
 
     let res;
     try {
@@ -946,6 +1155,11 @@ async function runOpenAiCompatLoop({
           : (toolsLocked ? 'none' : 'auto'),
         parallel_tool_calls: forceThisHop || editingArtifact ? false : true,
         max_completion_tokens: maxOutputTokens,
+        // OpenRouter does not translate the OpenAI-only max_completion_tokens
+        // field; its standard cap is max_tokens. Without it the output cap
+        // never reached Anthropic at all — observed live as ~20k tokens of
+        // billed output against a 12k cap.
+        ...(providerLabel === 'openrouter' ? { max_tokens: maxOutputTokens } : {}),
         stream: true,
         ...(promptCacheKey && providerLabel === 'openai' ? { prompt_cache_key: promptCacheKey } : {}),
         // gpt-5.6-* reasoning models reject function tools on
@@ -955,6 +1169,10 @@ async function runOpenAiCompatLoop({
         // to the Responses API. Match the family on the id even when the
         // call goes through OpenRouter (`openai/gpt-5.6-terra`).
         ...( /gpt-5\.6/.test(String(model)) ? { reasoning_effort: 'none' } : {}),
+        // Claude thinking models: pin the effort so thinking can never
+        // swallow the whole output cap (dropped to 'low' on a burnout retry;
+        // disabling is rejected by mandatory-reasoning endpoints).
+        ...(claudeThinkingTarget ? { reasoning: { effort: reasoningEffort } } : {}),
       };
       res = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
@@ -967,15 +1185,22 @@ async function runOpenAiCompatLoop({
         signal,
       });
     } catch (err) {
-      stripper.flush();
-      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
+      const msg = err?.message || String(err);
+      if (!signal?.aborted && transientRetries < MAX_TRANSIENT_HOP_RETRIES && isTransientHopError(msg)) {
+        if (await transientHopPause('connect', msg)) { hop -= 1; continue; }
+      }
+      settleReply('discard');
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: msg };
     }
 
     if (!res.ok) {
       let errBody;
       try { errBody = await res.json(); } catch { errBody = null; }
       const msg = errBody?.error?.message || res.statusText || `${providerLabel} ${res.status}`;
-      stripper.flush();
+      if (!signal?.aborted && transientRetries < MAX_TRANSIENT_HOP_RETRIES && isTransientHopError(msg, res.status)) {
+        if (await transientHopPause(`http ${res.status}`, msg)) { hop -= 1; continue; }
+      }
+      settleReply('discard');
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: msg };
     }
 
@@ -1006,13 +1231,38 @@ async function runOpenAiCompatLoop({
             if (tc.function?.name) acc.name = tc.function.name;
             if (typeof tc.function?.arguments === 'string') acc.argsBuf += tc.function.arguments;
             narrate(acc.name, acc.argsBuf);
+            // Live build preview: forward the partial source as it arrives.
+            // Throttling/parsing lives in the emitter, not the hot loop.
+            if (onToolArgs) {
+              try { onToolArgs(acc.name, acc.argsBuf); } catch { /* cosmetic */ }
+            }
           }
         }
         if (choice.finish_reason) finishReason = choice.finish_reason;
       }, onActivity);
     } catch (err) {
-      stripper.flush();
-      return withUsage({ ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) });
+      const msg = err?.message || String(err);
+      if (hopUsage) totalUsage = mergeOpenRouterUsage(totalUsage, hopUsage);
+      // A stream that dies mid-hop is retryable as long as none of this hop's
+      // text already reached the user live. Hop prose is held until the hop
+      // settles, so a dropped stream can always retry without duplicating
+      // on screen.
+      const replyGated = holdHopReply;
+      if (
+        !signal?.aborted &&
+        transientRetries < MAX_TRANSIENT_HOP_RETRIES &&
+        isTransientHopError(msg) &&
+        (replyGated || !hopText)
+      ) {
+        // Drop this hop's partial output; the retried hop regenerates it.
+        // Tool results already in `messages` are untouched — nothing re-runs.
+        stripper.flush();
+        workReply.discard();
+        hadText = hadTextAtHopStart;
+        if (await transientHopPause('stream', msg)) { hop -= 1; continue; }
+      }
+      settleReply('discard');
+      return withUsage({ ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: msg });
     }
     if (hopUsage) totalUsage = mergeOpenRouterUsage(totalUsage, hopUsage);
 
@@ -1031,9 +1281,10 @@ async function runOpenAiCompatLoop({
         truncatedRetries++;
         console.warn(`[chat-agent-loop] ${providerLabel} stream ended with no finish_reason and no forced tool call — retrying hop (${truncatedRetries}/${MAX_TRUNCATED_STREAM_RETRIES})`);
         hop--;
+        settleReply('discard');
         continue;
       }
-      stripper.flush();
+      settleReply('discard');
       return {
         ok: false,
         hadText,
@@ -1043,13 +1294,38 @@ async function runOpenAiCompatLoop({
       };
     }
 
+    // Reasoning burnout: the hop hit the length cap having produced NOTHING
+    // visible — no text, no tool call. All output went into hidden reasoning
+    // (the effort pin above should prevent this, but the provider default can
+    // shift under us). Retry the hop once at minimum effort; if it was
+    // already there, return the empty result so the caller's model-fallback
+    // chain re-runs the turn elsewhere instead of looping here.
+    if (
+      claudeThinkingTarget &&
+      !reasoningBurnoutRetried &&
+      reasoningEffort !== CLAUDE_REASONING_EFFORT_AGENT &&
+      isLengthStopReason(finishReason) &&
+      !hopText &&
+      pendingCalls.size === 0
+    ) {
+      reasoningBurnoutRetried = true;
+      reasoningEffort = CLAUDE_REASONING_EFFORT_AGENT;
+      console.warn(
+        `[chat-agent-loop] ${providerLabel} hop hit the length cap with no text and no tool calls ` +
+          `(reasoning burnout on ${model}) — retrying the hop at effort '${reasoningEffort}'`,
+      );
+      try { onStatus?.('Thinking…'); } catch { /* swallow */ }
+      hop--;
+      settleReply('discard');
+      continue;
+    }
+
     // Trust the accumulated tool_call deltas over finish_reason: when
     // tool_choice FORCES a function, OpenAI ends the stream with
     // finish_reason "stop" (not "tool_calls") even though a complete tool
     // call was emitted — gating on finish_reason alone silently dropped
     // every forced call (image gen came back "tools=0, hadText=false").
     if (pendingCalls.size === 0) {
-      stripper.flush();
       if (
         shouldContinueIncompleteResearch({
           continueIncompleteResearch,
@@ -1064,10 +1340,61 @@ async function runOpenAiCompatLoop({
             `(finish=${finishReason || 'none'}, continues=${researchContinues}/${MAX_RESEARCH_CONTINUES}) — continuing`,
         );
         try { onStatus?.('Finishing the report…'); } catch { /* swallow */ }
+        settleReply('hold');
         if (hopText) messages.push({ role: 'assistant', content: hopText });
         messages.push({ role: 'user', content: RESEARCH_CONTINUE_PROMPT });
         continue;
       }
+      if (
+        shouldRetryUnpatchedEdit({
+          editingArtifact,
+          artifactDelivered,
+          unpatchedEditNudges,
+          pendingToolCalls: false,
+        })
+      ) {
+        unpatchedEditNudges++;
+        console.warn(
+          `[chat-agent-loop] ${providerLabel} edit turn ended with no artifact call ` +
+            `(nudge ${unpatchedEditNudges}/${MAX_UNPATCHED_EDIT_NUDGES}) — asking for the patch`,
+        );
+        try { onStatus?.('Applying the changes…'); } catch { /* swallow */ }
+        settleReply('park');
+        if (hopText) messages.push({ role: 'assistant', content: hopText });
+        messages.push({ role: 'user', content: UNPATCHED_EDIT_PROMPT });
+        continue;
+      }
+      if (
+        shouldNudgeWorkspaceContinue({
+          workspaceMode,
+          desktopMcpMode,
+          workspaceNudges,
+          toolCalls: allToolCalls,
+          pendingToolCalls: false,
+          finalText: hopText,
+        })
+      ) {
+        workspaceNudges++;
+        const stallReason = agentStallReason({
+          workspaceMode,
+          desktopMcpMode,
+          toolCalls: allToolCalls,
+          finalText: hopText,
+        });
+        console.warn(
+          `[chat-agent-loop] ${providerLabel} agent turn stalled (${stallReason}, ` +
+            `nudge ${workspaceNudges}) — pushing on`,
+        );
+        const nudgeStatus = stallReason === 'unverified' || stallReason === 'mid-task'
+          ? 'Continuing the work…'
+          : 'Validating the build…';
+        try { onStatus?.(nudgeStatus); } catch { /* swallow */ }
+        settleReply('park');
+        if (hopText) messages.push({ role: 'assistant', content: hopText });
+        messages.push({ role: 'user', content: workspaceNudgePrompt(stallReason) });
+        continue;
+      }
+      settleReply('deliver');
       return withUsage({
         ok: true,
         hadText,
@@ -1076,6 +1403,8 @@ async function runOpenAiCompatLoop({
         errorMessage: null,
       });
     }
+
+    settleReply('park');
 
     // Build the assistant turn EXACTLY as OpenAI / Grok expect it.
     const assistantCalls = [];
@@ -1088,7 +1417,7 @@ async function runOpenAiCompatLoop({
       });
     }
     if (assistantCalls.length === 0) {
-      stripper.flush();
+      settleReply('discard');
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: 'malformed tool_call deltas' };
     }
 
@@ -1124,12 +1453,23 @@ async function runOpenAiCompatLoop({
         forcedToolDone = true;
       }
     }
+    // Pixels from this hop's tools, as a real image message the model can see.
+    const hopImages = toolResultImages(results);
+    if (hopImages.length) {
+      messages.push({
+        role: 'user',
+        content: [
+          { type: 'text', text: toolImagesNote(hopImages) },
+          ...hopImages.map((im) => ({ type: 'image_url', image_url: { url: im.url } })),
+        ],
+      });
+    }
     if (editingArtifact && artifactShippedFromResults(results)) {
       artifactDelivered = true;
     }
   }
 
-  stripper.flush();
+  settleReply('discard');
   return withUsage({
     ok: false,
     hadText,
@@ -1171,11 +1511,15 @@ async function runAnthropicLoop({
   onTextChunk,
   onToolCall,
   onStatus,
+  onToolArgs,                   // (name, argsBuf) on every tool-argument delta — live build preview
   onActivity,                   // fires on every raw upstream chunk (stall-watchdog keepalive)
   chatToolNames,
   forceToolName,                // when set, force this tool on the first hop
   maxHops,
   codingMode,
+  investigateMode,
+  workspaceMode,
+  desktopMcpMode,
   continueIncompleteResearch = false,
 }) {
   if (!apiKey) {
@@ -1188,8 +1532,8 @@ async function runAnthropicLoop({
   if (!tools) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
   }
-  const hopLimit = resolveMaxHops({ maxHops, codingMode, editingArtifact });
-  const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode, editingArtifact });
+  const hopLimit = resolveMaxHops({ maxHops, codingMode, editingArtifact, investigateMode, workspaceMode, desktopMcpMode });
+  const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode, editingArtifact, investigateMode, workspaceMode });
   const effectiveHopLimit = continueIncompleteResearch
     ? hopLimit + MAX_RESEARCH_CONTINUES
     : hopLimit;
@@ -1202,21 +1546,50 @@ async function runAnthropicLoop({
 
   const allToolCalls = [];
   const record = makeToolCallRecorder(onToolCall, allToolCalls);
-  const stripper = makeToolSyntaxStripper(onTextChunk);
+  // Hold every hop's prose until it settles. Otherwise "I'll check…" streams
+  // as the reply, then the real answer glues on with no space.
+  const holdHopReply = true;
+  const workReply = makeWorkReplyGate(
+    onTextChunk,
+    onStatus,
+    holdHopReply,
+  );
+  const stripper = makeToolSyntaxStripper(workReply.ingest);
+  const settleReply = (mode) => {
+    stripper.flush();
+    if (mode === "deliver") workReply.deliver();
+    else if (mode === "park") workReply.park();
+    else if (mode === "hold") { /* keep buffered hop prose for the next hop */ }
+    else workReply.discard();
+  };
   let hadText = false;
   // Same redo-guard as the OpenAI loop: after the forced tool succeeds,
   // tool_choice 'none' forces the final text reply instead of letting the
   // model rebuild the (potentially huge) artifact again.
   let forcedToolDone = false;
   let artifactDelivered = false;
+  let unpatchedEditNudges = 0;
+  let workspaceNudges = 0;
   let researchContinues = 0;
   let accumulatedAssistantText = '';
+  let transientRetries = 0;
+  // Same in-place hop retry as the OpenAI loop: transport drops and 429/5xx
+  // re-ask the model with the conversation intact; no tool ever re-runs.
+  const transientHopPause = async (where, msg) => {
+    transientRetries += 1;
+    console.warn(`[chat-agent-loop] transient ${where} failure (${String(msg).slice(0, 200)}) — retrying hop (${transientRetries}/${MAX_TRANSIENT_HOP_RETRIES})`);
+    try { onStatus?.('Reconnecting to the model…'); } catch { /* cosmetic */ }
+    const wait = TRANSIENT_HOP_BACKOFF_MS[Math.min(transientRetries - 1, TRANSIENT_HOP_BACKOFF_MS.length - 1)];
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    return !signal?.aborted;
+  };
 
   for (let hop = 0; hop < effectiveHopLimit; hop++) {
     if (signal?.aborted) {
-      stripper.flush();
+      settleReply('discard');
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: 'aborted' };
     }
+    const hadTextAtHopStart = hadText;
 
     let res;
     try {
@@ -1251,15 +1624,22 @@ async function runAnthropicLoop({
         signal,
       });
     } catch (err) {
-      stripper.flush();
-      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
+      const msg = err?.message || String(err);
+      if (!signal?.aborted && transientRetries < MAX_TRANSIENT_HOP_RETRIES && isTransientHopError(msg)) {
+        if (await transientHopPause('connect', msg)) { hop -= 1; continue; }
+      }
+      settleReply('discard');
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: msg };
     }
 
     if (!res.ok) {
       let errBody;
       try { errBody = await res.json(); } catch { errBody = null; }
       const msg = errBody?.error?.message || res.statusText || `anthropic ${res.status}`;
-      stripper.flush();
+      if (!signal?.aborted && transientRetries < MAX_TRANSIENT_HOP_RETRIES && isTransientHopError(msg, res.status)) {
+        if (await transientHopPause(`http ${res.status}`, msg)) { hop -= 1; continue; }
+      }
+      settleReply('discard');
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: msg };
     }
 
@@ -1311,7 +1691,12 @@ async function runAnthropicLoop({
             stripper.ingest(d.text);
           } else if (d.type === 'input_json_delta' && typeof d.partial_json === 'string') {
             blk._argsBuf = (blk._argsBuf || '') + d.partial_json;
-            if (blk.type === 'tool_use') narrate(blk.name, blk._argsBuf);
+            if (blk.type === 'tool_use') {
+              narrate(blk.name, blk._argsBuf);
+              if (onToolArgs) {
+                try { onToolArgs(blk.name, blk._argsBuf); } catch { /* cosmetic */ }
+              }
+            }
           }
           return;
         }
@@ -1327,8 +1712,22 @@ async function runAnthropicLoop({
         }
       }, onActivity);
     } catch (err) {
-      stripper.flush();
-      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
+      const msg = err?.message || String(err);
+      const replyGated = holdHopReply;
+      const hopStreamedText = contentBlocks.some((b) => b?.type === 'text' && b.text);
+      if (
+        !signal?.aborted &&
+        transientRetries < MAX_TRANSIENT_HOP_RETRIES &&
+        isTransientHopError(msg) &&
+        (replyGated || !hopStreamedText)
+      ) {
+        stripper.flush();
+        workReply.discard();
+        hadText = hadTextAtHopStart;
+        if (await transientHopPause('stream', msg)) { hop -= 1; continue; }
+      }
+      settleReply('discard');
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: msg };
     }
 
     // Materialise the assistant turn for the messages array, finalising
@@ -1352,7 +1751,6 @@ async function runAnthropicLoop({
     if (hopText) accumulatedAssistantText += hopText;
 
     if (stopReason !== 'tool_use' || toolCallsThisHop.length === 0) {
-      stripper.flush();
       if (
         shouldContinueIncompleteResearch({
           continueIncompleteResearch,
@@ -1367,11 +1765,64 @@ async function runAnthropicLoop({
             `(stop=${stopReason || 'none'}, continues=${researchContinues}/${MAX_RESEARCH_CONTINUES}) — continuing`,
         );
         try { onStatus?.('Finishing the report…'); } catch { /* swallow */ }
+        settleReply('hold');
         if (assistantContent.length) messages.push({ role: 'assistant', content: assistantContent });
         else if (hopText) messages.push({ role: 'assistant', content: hopText });
         messages.push({ role: 'user', content: RESEARCH_CONTINUE_PROMPT });
         continue;
       }
+      if (
+        shouldRetryUnpatchedEdit({
+          editingArtifact,
+          artifactDelivered,
+          unpatchedEditNudges,
+          pendingToolCalls: false,
+        })
+      ) {
+        unpatchedEditNudges++;
+        console.warn(
+          `[chat-agent-loop] anthropic edit turn ended with no artifact call ` +
+            `(nudge ${unpatchedEditNudges}/${MAX_UNPATCHED_EDIT_NUDGES}) — asking for the patch`,
+        );
+        try { onStatus?.('Applying the changes…'); } catch { /* swallow */ }
+        settleReply('park');
+        if (assistantContent.length) messages.push({ role: 'assistant', content: assistantContent });
+        else if (hopText) messages.push({ role: 'assistant', content: hopText });
+        messages.push({ role: 'user', content: UNPATCHED_EDIT_PROMPT });
+        continue;
+      }
+      if (
+        shouldNudgeWorkspaceContinue({
+          workspaceMode,
+          desktopMcpMode,
+          workspaceNudges,
+          toolCalls: allToolCalls,
+          pendingToolCalls: false,
+          finalText: hopText,
+        })
+      ) {
+        workspaceNudges++;
+        const stallReason = agentStallReason({
+          workspaceMode,
+          desktopMcpMode,
+          toolCalls: allToolCalls,
+          finalText: hopText,
+        });
+        console.warn(
+          `[chat-agent-loop] anthropic agent turn stalled (${stallReason}, ` +
+            `nudge ${workspaceNudges}) — pushing on`,
+        );
+        const nudgeStatus = stallReason === 'unverified' || stallReason === 'mid-task'
+          ? 'Continuing the work…'
+          : 'Validating the build…';
+        try { onStatus?.(nudgeStatus); } catch { /* swallow */ }
+        settleReply('park');
+        if (assistantContent.length) messages.push({ role: 'assistant', content: assistantContent });
+        else if (hopText) messages.push({ role: 'assistant', content: hopText });
+        messages.push({ role: 'user', content: workspaceNudgePrompt(stallReason) });
+        continue;
+      }
+      settleReply('deliver');
       return {
         ok: true,
         hadText,
@@ -1380,6 +1831,8 @@ async function runAnthropicLoop({
         errorMessage: null,
       };
     }
+
+    settleReply('park');
 
     messages.push({ role: 'assistant', content: assistantContent });
 
@@ -1404,17 +1857,27 @@ async function runAnthropicLoop({
     // Anthropic expects tool_result blocks wrapped as a SINGLE user
     // turn whose content is the array of tool_result blocks (one per
     // tool_use id from the assistant turn). Order doesn't matter as
-    // long as every id is matched.
-    const resultBlocks = results.map((r) => ({
-      type: 'tool_result',
-      tool_use_id: r.id,
-      content: serialiseToolResult(r.payload, r.name),
-      is_error: Boolean(r.isError),
-    }));
+    // long as every id is matched. A result carrying pixels embeds them
+    // as a native image block so the model actually sees them.
+    let anthropicHopImages = 0;
+    const resultBlocks = results.map((r) => {
+      const text = serialiseToolResult(r.payload, r.name);
+      const img =
+        anthropicHopImages < MAX_TOOL_IMAGES_PER_HOP
+          ? dataUrlToAnthropicImage(r?.payload?.imageDataUrl)
+          : null;
+      if (img) anthropicHopImages += 1;
+      return {
+        type: 'tool_result',
+        tool_use_id: r.id,
+        content: img ? [{ type: 'text', text }, img] : text,
+        is_error: Boolean(r.isError),
+      };
+    });
     messages.push({ role: 'user', content: resultBlocks });
   }
 
-  stripper.flush();
+  settleReply('discard');
   return {
     ok: false,
     hadText,
@@ -1459,11 +1922,15 @@ async function runGeminiLoop({
   onTextChunk,
   onToolCall,
   onStatus,
+  onToolArgs,                   // (name, argsBuf) on every tool-argument delta — live build preview
   onActivity,                   // fires on every raw upstream chunk (stall-watchdog keepalive)
   chatToolNames,
   forceToolName,                // when set, force this tool on the first hop
   maxHops,
   codingMode,
+  investigateMode,
+  workspaceMode,
+  desktopMcpMode,
   continueIncompleteResearch = false,
 }) {
   if (!apiKey) {
@@ -1476,8 +1943,8 @@ async function runGeminiLoop({
   if (!tools) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
   }
-  const hopLimit = resolveMaxHops({ maxHops, codingMode, editingArtifact });
-  const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode, editingArtifact });
+  const hopLimit = resolveMaxHops({ maxHops, codingMode, editingArtifact, investigateMode, workspaceMode, desktopMcpMode });
+  const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode, editingArtifact, investigateMode, workspaceMode });
   const effectiveHopLimit = continueIncompleteResearch
     ? hopLimit + MAX_RESEARCH_CONTINUES
     : hopLimit;
@@ -1499,21 +1966,50 @@ async function runGeminiLoop({
 
   const allToolCalls = [];
   const record = makeToolCallRecorder(onToolCall, allToolCalls);
-  const stripper = makeToolSyntaxStripper(onTextChunk);
+  // Hold every hop's prose until it settles. Otherwise "I'll check…" streams
+  // as the reply, then the real answer glues on with no space.
+  const holdHopReply = true;
+  const workReply = makeWorkReplyGate(
+    onTextChunk,
+    onStatus,
+    holdHopReply,
+  );
+  const stripper = makeToolSyntaxStripper(workReply.ingest);
+  const settleReply = (mode) => {
+    stripper.flush();
+    if (mode === "deliver") workReply.deliver();
+    else if (mode === "park") workReply.park();
+    else if (mode === "hold") { /* keep buffered hop prose for the next hop */ }
+    else workReply.discard();
+  };
   let hadText = false;
   // Same redo-guard as the OpenAI loop: after the forced tool succeeds,
   // functionCallingConfig NONE forces the final text reply instead of
   // letting the model rebuild the (potentially huge) artifact again.
   let forcedToolDone = false;
   let artifactDelivered = false;
+  let unpatchedEditNudges = 0;
+  let workspaceNudges = 0;
   let researchContinues = 0;
   let accumulatedAssistantText = '';
+  let transientRetries = 0;
+  // Same in-place hop retry as the OpenAI loop: transport drops and 429/5xx
+  // re-ask the model with the conversation intact; no tool ever re-runs.
+  const transientHopPause = async (where, msg) => {
+    transientRetries += 1;
+    console.warn(`[chat-agent-loop] transient ${where} failure (${String(msg).slice(0, 200)}) — retrying hop (${transientRetries}/${MAX_TRANSIENT_HOP_RETRIES})`);
+    try { onStatus?.('Reconnecting to the model…'); } catch { /* cosmetic */ }
+    const wait = TRANSIENT_HOP_BACKOFF_MS[Math.min(transientRetries - 1, TRANSIENT_HOP_BACKOFF_MS.length - 1)];
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    return !signal?.aborted;
+  };
 
   for (let hop = 0; hop < effectiveHopLimit; hop++) {
     if (signal?.aborted) {
-      stripper.flush();
+      settleReply('discard');
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: 'aborted' };
     }
+    const hadTextAtHopStart = hadText;
 
     let res;
     try {
@@ -1543,15 +2039,22 @@ async function runGeminiLoop({
         signal,
       });
     } catch (err) {
-      stripper.flush();
-      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
+      const msg = err?.message || String(err);
+      if (!signal?.aborted && transientRetries < MAX_TRANSIENT_HOP_RETRIES && isTransientHopError(msg)) {
+        if (await transientHopPause('connect', msg)) { hop -= 1; continue; }
+      }
+      settleReply('discard');
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: msg };
     }
 
     if (!res.ok) {
       let errBody;
       try { errBody = await res.json(); } catch { errBody = null; }
       const msg = errBody?.error?.message || res.statusText || `gemini ${res.status}`;
-      stripper.flush();
+      if (!signal?.aborted && transientRetries < MAX_TRANSIENT_HOP_RETRIES && isTransientHopError(msg, res.status)) {
+        if (await transientHopPause(`http ${res.status}`, msg)) { hop -= 1; continue; }
+      }
+      settleReply('discard');
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: msg };
     }
 
@@ -1609,14 +2112,26 @@ async function runGeminiLoop({
         }
       }, onActivity);
     } catch (err) {
-      stripper.flush();
-      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
+      const msg = err?.message || String(err);
+      const replyGated = holdHopReply;
+      if (
+        !signal?.aborted &&
+        transientRetries < MAX_TRANSIENT_HOP_RETRIES &&
+        isTransientHopError(msg) &&
+        (replyGated || !hopText)
+      ) {
+        stripper.flush();
+        workReply.discard();
+        hadText = hadTextAtHopStart;
+        if (await transientHopPause('stream', msg)) { hop -= 1; continue; }
+      }
+      settleReply('discard');
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: msg };
     }
 
     if (hopText) accumulatedAssistantText += hopText;
 
     if (toolCallsThisHop.length === 0) {
-      stripper.flush();
       if (
         shouldContinueIncompleteResearch({
           continueIncompleteResearch,
@@ -1631,10 +2146,61 @@ async function runGeminiLoop({
             `(finish=${finishReason || 'none'}, continues=${researchContinues}/${MAX_RESEARCH_CONTINUES}) — continuing`,
         );
         try { onStatus?.('Finishing the report…'); } catch { /* swallow */ }
+        settleReply('hold');
         if (assistantParts.length) contents.push({ role: 'model', parts: assistantParts });
         contents.push({ role: 'user', parts: [{ text: RESEARCH_CONTINUE_PROMPT }] });
         continue;
       }
+      if (
+        shouldRetryUnpatchedEdit({
+          editingArtifact,
+          artifactDelivered,
+          unpatchedEditNudges,
+          pendingToolCalls: false,
+        })
+      ) {
+        unpatchedEditNudges++;
+        console.warn(
+          `[chat-agent-loop] gemini edit turn ended with no artifact call ` +
+            `(nudge ${unpatchedEditNudges}/${MAX_UNPATCHED_EDIT_NUDGES}) — asking for the patch`,
+        );
+        try { onStatus?.('Applying the changes…'); } catch { /* swallow */ }
+        settleReply('park');
+        if (assistantParts.length) contents.push({ role: 'model', parts: assistantParts });
+        contents.push({ role: 'user', parts: [{ text: UNPATCHED_EDIT_PROMPT }] });
+        continue;
+      }
+      if (
+        shouldNudgeWorkspaceContinue({
+          workspaceMode,
+          desktopMcpMode,
+          workspaceNudges,
+          toolCalls: allToolCalls,
+          pendingToolCalls: false,
+          finalText: hopText,
+        })
+      ) {
+        workspaceNudges++;
+        const stallReason = agentStallReason({
+          workspaceMode,
+          desktopMcpMode,
+          toolCalls: allToolCalls,
+          finalText: hopText,
+        });
+        console.warn(
+          `[chat-agent-loop] gemini agent turn stalled (${stallReason}, ` +
+            `nudge ${workspaceNudges}) — pushing on`,
+        );
+        const nudgeStatus = stallReason === 'unverified' || stallReason === 'mid-task'
+          ? 'Continuing the work…'
+          : 'Validating the build…';
+        try { onStatus?.(nudgeStatus); } catch { /* swallow */ }
+        settleReply('park');
+        if (assistantParts.length) contents.push({ role: 'model', parts: assistantParts });
+        contents.push({ role: 'user', parts: [{ text: workspaceNudgePrompt(stallReason) }] });
+        continue;
+      }
+      settleReply('deliver');
       return {
         ok: true,
         hadText,
@@ -1643,6 +2209,8 @@ async function runGeminiLoop({
         errorMessage: null,
       };
     }
+
+    settleReply('park');
 
     // Push the assistant turn EXACTLY as Gemini produced it (text +
     // functionCall parts, in order).
@@ -1677,14 +2245,22 @@ async function runGeminiLoop({
         name: r.name,
         response: {
           ok: !r.isError,
-          payload: boundToolResult(r.name, r.payload),
+          payload: stripClientOnlyFields(boundToolResult(r.name, r.payload)),
         },
       },
     }));
     contents.push({ role: 'user', parts: responseParts });
+    // Pixels from this hop's tools, in a follow-up user turn as inlineData.
+    const geminiHopImages = toolResultImages(results);
+    if (geminiHopImages.length) {
+      const parts = geminiHopImages.map((im) => dataUrlToGeminiPart(im.url)).filter(Boolean);
+      if (parts.length) {
+        contents.push({ role: 'user', parts: [{ text: toolImagesNote(geminiHopImages) }, ...parts] });
+      }
+    }
   }
 
-  stripper.flush();
+  settleReply('discard');
   return {
     ok: false,
     hadText,
@@ -1758,6 +2334,20 @@ export async function runAgentLoop(opts) {
 
   return result;
 }
+
+export {
+  resolveMaxHops,
+  resolveMaxToolCallsPerHop,
+  toolResultImages,
+  dataUrlToAnthropicImage,
+  dataUrlToGeminiPart,
+  stripClientOnlyFields,
+  firstUserStatusLine,
+  makeWorkReplyGate,
+  CLAUDE_THINKING_MODEL_RE,
+  CLAUDE_REASONING_EFFORT_CHAT,
+  CLAUDE_REASONING_EFFORT_AGENT,
+};
 
 // Back-compat export — early version of /api/ai/stream used this name.
 // Keep so an in-flight branch doesn't break if it imports it.

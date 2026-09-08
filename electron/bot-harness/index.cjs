@@ -27,6 +27,7 @@ const { normalizeAnswerOptions } = require("../browser-agent/runtime/model.cjs")
 const contextRouter = require("./runtime/contextRouter.cjs");
 const registry = require("./runtime/toolRegistry.cjs");
 const taskState = require("./runtime/taskState.cjs");
+const { createTurnTimings } = require("./runtime/turnTimings.cjs");
 
 const DEFAULT_MAX_ROUNDS = 12;
 const MAX_RECOVERIES = 2;
@@ -67,6 +68,17 @@ function teammateConsultPending(state) {
  * close quoting one heading stays under the length gate; only a genuine
  * re-write of the report trips both conditions.
  */
+/**
+ * "Done.", "All set!", "I've completed that." — a close that adds nothing to a
+ * write-up the user has already read, so it is dropped rather than appended.
+ */
+function looksLikeGenericClose(text) {
+  const t = String(text || "").trim();
+  if (!t) return true;
+  if (t.length > 120) return false;
+  return /^(?:done|all set|finished|complete[d]?|that'?s (?:it|done)|i(?:'ve| have) (?:done|completed|finished)\b[^.]*)[.!]?$/i.test(t);
+}
+
 function looksLikeFullReport(text) {
   const t = String(text || "");
   if (t.length < 1200) return false;
@@ -104,6 +116,7 @@ function normalizeDecision(raw) {
  * @param {Record<string, Function>} opts.executors - per-tool `async ({instruction, signal}) => { ok, output, summary?, terminal?, question?, questionOptions? }`
  * @param {Array<{role:string, content:string}>} [opts.conversationHistory]
  * @param {string} [opts.attachmentsNote]
+ * @param {Array<{id?:string,name?:string}|string>} [opts.connectedApps]
  * @param {boolean} [opts.localMode]
  * @param {string} [opts.primaryTool] - routing's verdict; its doc is pre-loaded so the common single-tool task decides once and runs
  * @param {Function} [opts.onProgress]
@@ -120,6 +133,9 @@ async function runBotTask({
   executors = {},
   conversationHistory = [],
   attachmentsNote = "",
+  /** Apps the user already has connected, so the model can prefer them over
+   *  the browser instead of guessing. `[{ id, name }]` or bare names. */
+  connectedApps = [],
   localMode = false,
   primaryTool = "",
   onProgress = () => {},
@@ -142,6 +158,8 @@ async function runBotTask({
   });
   const system = contextRouter.buildDecisionSystem({ bot, localMode });
   const aborted = () => signal?.aborted === true;
+  const timings = createTurnTimings({ taskId: String(task?.id || "") });
+
   const finish = (status, answer, extra = {}) => ({
     ok: status !== "error",
     status,
@@ -150,10 +168,18 @@ async function runBotTask({
     // Even a failed or parked finish keeps the verified work: a report that
     // ran before the round budget died still reaches the user as a card.
     deliverables: state.deliverables,
+    // Wall-clock breakdown of the turn. The caller pairs this with its token
+    // and upstream accounting to separate provider latency from our own.
+    timings: timings.summary(),
     ...extra,
   });
 
   let extraNote = "";
+  // Output from a tool whose own text is what the user reads (the browser).
+  // Kept so a later deliver closes over it instead of overwriting it with a
+  // teaser — the reason that tool used to end the task outright.
+  let preservedAnswer = "";
+  let preservedAnswerTool = "";
 
   for (state.round = 1; state.round <= maxRounds; state.round += 1) {
     if (aborted()) return finish("aborted", "Task aborted.");
@@ -162,27 +188,40 @@ async function runBotTask({
       state,
       conversationHistory,
       attachmentsNote,
+      connectedApps,
       extraNote,
     });
     extraNote = "";
 
+    // Announce before the call, not after it. The decide round is a single
+    // non-streaming POST, so emitting the phase afterwards left the user
+    // watching an idle animation for the whole of it.
+    onProgress({ phase: "deciding", round: state.round });
     const decision = normalizeDecision(
-      await model.structured("decide", {
-        system,
-        user,
-        schema: contextRouter.BOT_DECISION_SCHEMA,
-        // The deliver answer is written inside this same decision JSON.
-        // Informational reports (inbox, listings, comparisons) need room
-        // for a real markdown write-up, not a 1-4 sentence teaser.
-        maxTokens: 4000,
-        signal,
-      }),
+      await timings.span("decide", `r${state.round}`, () =>
+        model.structured("decide", {
+          system,
+          user,
+          // A next-step decision is a tool name, an instruction and a
+          // narration. The 4,000-token budget belongs to the deliver call,
+          // which is now its own round — see BOT_DELIVER_SCHEMA.
+          schema: contextRouter.BOT_STEP_SCHEMA,
+          maxTokens: contextRouter.STEP_MAX_TOKENS,
+          signal,
+        }),
+      ),
     );
     if (aborted()) return finish("aborted", "Task aborted.");
     // Legacy direct callers may still accept a first-round planning brief.
     // Behind BotExecutor, canonical Task constraints make this a no-op.
     taskState.setTaskBrief(state, decision);
-    if (decision.narration) onProgress({ phase: "thinking", narration: decision.narration });
+    if (decision.narration) {
+      // The narration is the first thing the user reads: that is
+      // time-to-first-output, the number that decides whether a turn
+      // "feels" slow independent of how long it actually takes.
+      timings.markFirstOutput();
+      onProgress({ phase: "thinking", narration: decision.narration });
+    }
 
     if (decision.kind === "deliver") {
       // Empty-handed delivery gets one pushback: the record shows nothing
@@ -203,7 +242,33 @@ async function runBotTask({
           : "NOTE: You are delivering but no tool has run this task. If the goal needs work, do the work first. Deliver now only if the task genuinely requires no tool (or must be declined), and say why in the answer.";
         continue;
       }
-      let answer = decision.answer || "Done.";
+      // The step schema carries no `answer` — writing the final message is its
+      // own call with its own budget. Only the round that actually delivers
+      // pays for it, instead of every round reserving room just in case.
+      onProgress({ phase: "delivering" });
+      let answer = "";
+      try {
+        const written = await timings.span("deliver", () =>
+          model.structured("deliver", {
+            system,
+            user: contextRouter.buildDeliverUser({
+              state,
+              conversationHistory,
+              attachmentsNote,
+              connectedApps,
+            }),
+            schema: contextRouter.BOT_DELIVER_SCHEMA,
+            maxTokens: contextRouter.DELIVER_MAX_TOKENS,
+            signal,
+          }),
+        );
+        answer = String(written?.answer || "").trim();
+      } catch (e) {
+        // The work is done; failing the task because the closing sentence
+        // could not be written would throw away everything that ran.
+        answer = "";
+      }
+      if (!answer) answer = String(decision.answer || "").trim() || "Done.";
       // A deliver that re-writes a report the user already has as a document
       // card is the "second report" bug: in chat the close replaces the
       // streamed text, so a full re-write reads as a brand-new report being
@@ -215,6 +280,16 @@ async function runBotTask({
         answer = reportCard.title
           ? `Your report "${reportCard.title}" is ready - it's in the document above.`
           : "Your report is ready - it's in the document above.";
+      }
+      // The browser already showed its write-up. A deliver that is shorter
+      // than what they read would replace it with a teaser, so keep the real
+      // text and let the close ride behind it.
+      if (preservedAnswer && answer.trim().length < preservedAnswer.length) {
+        const close = answer.trim();
+        answer =
+          close && !looksLikeGenericClose(close)
+            ? `${preservedAnswer}\n\n${close}`
+            : preservedAnswer;
       }
       onProgress({ phase: "delivered", answer });
       return finish("completed", answer);
@@ -287,7 +362,9 @@ async function runBotTask({
 
     let result;
     try {
-      result = await executor({ instruction: decision.instruction, signal });
+      result = await timings.span("tool", tool.name, () =>
+        executor({ instruction: decision.instruction, signal, goal: state.goal }),
+      );
     } catch (e) {
       result = { ok: false, output: "", summary: `error: ${e?.message || e}` };
     }
@@ -336,11 +413,50 @@ async function runBotTask({
 
     // Verify substantive outputs against the goal. The browser and local
     // tools verify themselves; reply's text already reached the user.
-    if (tool.verify && typeof model.verify === "function") {
+    //
+    // A tool that hands back a DELIVERABLE has already produced the thing and
+    // the user can usually see it — the report card, the image, the built
+    // artifact are all on screen by now. Asking a model for a second opinion
+    // on something already in front of them is a full round-trip the user
+    // waits through for no decision. So a structured success with a
+    // deliverable skips verification; anything ambiguous still gets checked.
+    // A two-phase tool's discovery round is a STEP, not an attempt at the
+    // goal. connected_apps has to search the catalog before it can call
+    // anything, and verifying that search against "check my email" always
+    // failed — so a bot spent its whole recovery budget on searches and
+    // delivered "I couldn't complete a fresh inbox check" without ever
+    // calling a tool it could see listed.
+    if (result.needsFollowUp === true) {
+      taskState.recordNote(
+        state,
+        `\`${tool.name}\` returned discovery results - the actual call still has to be made`,
+      );
+      extraNote =
+        `\`${tool.name}\` gave you what is available, not the answer. Call it again now with the ` +
+        `specific target from that output. Do NOT deliver, do not switch tools, and do not tell ` +
+        `the user it could not be done - nothing has actually been attempted yet.`;
+      continue;
+    }
+
+    // Self-evident: the run produced the thing, so a second opinion on it is
+    // a round-trip the user waits through for no decision. Either it handed
+    // back a deliverable the user can already see, or the tool itself knows
+    // it fetched real data (`verified`) rather than a description of how to.
+    const selfEvident =
+      result.ok === true &&
+      (result.verified === true ||
+        (!!result.deliverable && typeof result.deliverable === "object"));
+    if (selfEvident && tool.verify) {
+      taskState.recordNote(
+        state,
+        `\`${tool.name}\` returned a finished deliverable - accepted without a separate verification round`,
+      );
+    }
+    if (tool.verify && !selfEvident && typeof model.verify === "function") {
       onProgress({ phase: "verifying", tool: tool.name });
       let v = null;
       try {
-        v = await model.verify({
+        v = await timings.span("verify", tool.name, () => model.verify({
           system: contextRouter.buildVerificationSystem(),
           user: contextRouter.buildVerificationUser({
             goal: state.goal,
@@ -350,7 +466,7 @@ async function runBotTask({
             output,
           }),
           signal,
-        });
+        }));
       } catch {
         v = null; // verification must never kill a run - the record shows the raw output
       }
@@ -381,6 +497,19 @@ async function runBotTask({
     // tool, so a verify-retry rewrite yields one card, not two.
     if (result.deliverable && typeof result.deliverable === "object") {
       taskState.recordDeliverable(state, { tool: tool.name, deliverable: result.deliverable });
+    }
+
+    // Tools whose own output is the user-facing write-up (the browser's
+    // finish answer). The user has already read it, so a later deliver must
+    // close rather than re-summarise — but the task can still continue to its
+    // remaining parts, which ending here used to make impossible.
+    if (tool.preserveAnswer && String(output || "").trim()) {
+      preservedAnswer = String(output).trim();
+      preservedAnswerTool = tool.name;
+      extraNote =
+        `The \`${tool.name}\` write-up above already reached the user in full — do NOT repeat or ` +
+        `re-summarise it. If the task has remaining parts, do them now. If it is finished, ` +
+        `deliver a one-line close that points at what they just read.`;
     }
 
     // A successful terminal tool is the delivery. A verify-retry that

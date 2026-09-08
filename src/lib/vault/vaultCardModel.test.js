@@ -272,6 +272,42 @@ test("studio surface (AI Drive) shows both drive folders even when empty", () =>
   );
 });
 
+test("the Builds folder only exists where the desktop bridge does", () => {
+  // Web: no bridge, no folder — it could never fill there.
+  const web = visible([], { studioSurface: true });
+  assert.ok(!web.some((c) => c.folderId === "builds"));
+
+  // Desktop with no projects yet: the folder shows, empty like the others.
+  const empty = visible([], { studioSurface: true, buildProjects: [] });
+  const builds = empty.find((c) => c.folderId === "builds");
+  assert.ok(builds);
+  assert.equal(builds.kind, "drive-folder");
+  assert.equal(builds.title, "Builds");
+  assert.equal(builds.count, 0);
+});
+
+test("build projects appear as project cards inside the Builds folder", () => {
+  const projects = [
+    { name: "notion-workspace", path: "/Users/x/LYKN/Builds/notion-workspace", modifiedAt: 1757000000000 },
+    { name: "snake-game", path: "/Users/x/LYKN/Builds/snake-game", modifiedAt: 1756000000000 },
+  ];
+  const tiles = visible([], { studioSurface: true, buildProjects: projects });
+  assert.equal(tiles.find((c) => c.folderId === "builds")?.count, 2);
+
+  const shown = visible([], {
+    studioSurface: true,
+    openDriveFolder: "builds",
+    buildProjects: projects,
+  });
+  assert.deepEqual(
+    shown.map((c) => [c.kind, c.title, c.path]),
+    [
+      ["build-project", "notion-workspace", "/Users/x/LYKN/Builds/notion-workspace"],
+      ["build-project", "snake-game", "/Users/x/LYKN/Builds/snake-game"],
+    ],
+  );
+});
+
 test("AI-generated images file into the drive, not the vault page", () => {
   const n = note({
     id: "ai1",

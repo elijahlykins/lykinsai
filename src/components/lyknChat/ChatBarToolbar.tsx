@@ -158,7 +158,7 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
   const [modelMenuOpen, setModelMenuOpen] = React.useState(false);
   const [sourceMenuOpen, setSourceMenuOpen] = React.useState(false);
   const [layoutMenuOpen, setLayoutMenuOpen] = React.useState(false);
-  const sendDisabled = (!chatInputHasText && !hasAttachments) || isChatLoading || isDictating || isTranscribing;
+  const sendDisabled = (!chatInputHasText && !hasAttachments) || isDictating || isTranscribing;
   const modelTriggerCls = compact
     ? "lykn-chat-neu-chat-toolbar-select-trigger h-8 !w-auto max-w-[7rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-[0.625rem] px-1 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>svg]:w-3 [&>svg]:h-3 [&>svg]:opacity-40 [&>svg]:shrink-0"
     : "lykn-chat-neu-chat-toolbar-select-trigger h-9 !w-auto max-w-[9rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-xs px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>svg]:w-3.5 [&>svg]:h-3.5 [&>svg]:opacity-40 [&>svg]:shrink-0";
@@ -372,22 +372,21 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
         >
           <Square className={`${compact ? "w-2.5 h-2.5" : "w-3 h-3"} text-red-600 dark:text-red-400`} fill="currentColor" />
         </button>
-      ) : (
-        <button
-          type="button"
-          onClick={handleDictateToggle}
-          className={`${iconBtn} lykn-chat-neu-chat-icon-plain flex items-center justify-center shrink-0 ${isDictating ? "ring-1 ring-blue-400/40 rounded-lg" : ""}`}
-          title={isDictating ? "Stop recording" : "Dictate"}
-        >
-          <Mic className={`${iconSm} text-black/75 dark:text-white/80 ${isDictating ? "text-blue-600 dark:text-blue-400" : ""}`} />
-        </button>
-      )}
+      ) : null}
+      <button
+        type="button"
+        onClick={handleDictateToggle}
+        className={`${iconBtn} lykn-chat-neu-chat-icon-plain flex items-center justify-center shrink-0 ${isDictating ? "ring-1 ring-blue-400/40 rounded-lg" : ""}`}
+        title={isDictating ? "Stop recording" : "Dictate"}
+      >
+        <Mic className={`${iconSm} text-black/75 dark:text-white/80 ${isDictating ? "text-blue-600 dark:text-blue-400" : ""}`} />
+      </button>
       <button
         type="button"
         onClick={() => void onSend()}
         disabled={sendDisabled}
         className={`${iconBtn} lykn-chat-neu-chat-send-btn flex items-center justify-center shrink-0 ${sendDisabled ? "opacity-40 cursor-not-allowed" : "text-blue-600 dark:text-blue-400"}`}
-        title="Send"
+        title={isChatLoading ? "Queue prompt" : "Send"}
       >
         <ChatSendIcon className={iconSm} strokeWidth={2.25} />
       </button>

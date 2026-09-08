@@ -2,11 +2,11 @@ import { useState, useCallback, useEffect } from "react";
 import { Check, Minus } from "lucide-react";
 import { motion } from "framer-motion";
 import {
-  PLANS,
   BILLING_PERIODS,
   getDisplayPrice,
   getAnnualSavings,
   isStudentEmail,
+  plansForPicker,
 } from "@/lib/pricing-config";
 import { API_BASE_URL } from "@/lib/api-config";
 import { supabase } from "@/lib/supabase";
@@ -507,7 +507,7 @@ export default function Billing() {
             Pick the plan that fits how you work
           </h2>
           <p className="text-base text-black/45 dark:text-white/60 mt-3 max-w-lg mx-auto leading-relaxed">
-            You're already on Free with $10 of usage to spend. Go Pro to get
+            You're already on Free with $20 of usage to spend. Go Pro to get
             chat included plus monthly usage for everything else, get the same
             on the Student plan for $15/mo ($12/mo billed annually), or go Max
             for five times the usage. Cancel anytime, no hidden fees.
@@ -570,7 +570,7 @@ export default function Billing() {
           <BillingToggle period={period} onChange={setPeriod} />
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-16">
-          {PLANS.filter((p) => p.id !== "free").map((plan, i) => (
+          {plansForPicker(currentPlan).filter((p) => p.id !== "free").map((plan, i) => (
             <motion.div
               key={plan.id}
               className="h-full"

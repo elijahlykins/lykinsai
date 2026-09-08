@@ -32,19 +32,28 @@ const LEGACY_ALIASES = {
   ...LEGACY_FRONTIER_ALIASES,
 };
 
+const OPENROUTER_ID_RE = /^[a-z0-9._-]+\/[a-z0-9._:/-]{1,180}$/i;
+const IMAGINE_ID_RE = /^(gpt-image-2|dall-e-3|gemini-2\.5-flash-image|gemini-3\.1-flash-image)$/;
+
 export function canonicalizeModelId(modelId) {
   const id = String(modelId || "").trim();
   if (!id) return null;
+  if (id === "auto") return id;
   if (LEGACY_ALIASES[id]) return LEGACY_ALIASES[id];
   if (KNOWN_MODEL_IDS.includes(id)) return id;
+  // OpenRouter catalog (vendor/model) and Imagine generators: selectable on
+  // paid plans the same way curated frontier ids are. Unknown junk stays out.
+  if (OPENROUTER_ID_RE.test(id) || IMAGINE_ID_RE.test(id)) return id;
   return null;
 }
 
 export function classifyModel(modelId) {
   const id = canonicalizeModelId(modelId) || String(modelId || "").trim();
-  if (!id) return MODEL_TIER_BASIC;
+  if (!id || id === "auto") return MODEL_TIER_BASIC;
+  if (BASIC_MODEL_IDS.has(id)) return MODEL_TIER_BASIC;
   if (FRONTIER_MODEL_IDS.has(id)) return MODEL_TIER_FRONTIER;
-  return MODEL_TIER_BASIC;
+  // Catalog / Imagine ids that passed canonicalize are paid-plan frontier.
+  return MODEL_TIER_FRONTIER;
 }
 
 export function allowedTiersForPlan(planModelTier) {

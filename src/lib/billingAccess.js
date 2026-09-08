@@ -65,6 +65,7 @@ const SUBSCRIPTION_GATE_EXACT = new Set([
   "/pricing",
   "/security",
   "/download",
+  "/windows",
   "/news",
   "/mobile",
 ]);

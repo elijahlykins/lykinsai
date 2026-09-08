@@ -53,10 +53,10 @@ Model Builder custom models (`lykn_custom_models.base_model_id`) are soft-disabl
 
 - Usage Balance: integer microdollars, `lib/billing/money.js` is the only math surface.
 - Ledger: `lykn_usage_lots` / `lykn_usage_ledger` / `lykn_usage_reservations` via SECURITY DEFINER RPCs (migration 131), append-only, idempotency keys.
-- Payer order per action: included subscription chat → expiring Usage → legacy credits → purchased Usage → insufficient. One payer per action, never split.
+- Payer order per action: expiring Usage → legacy credits → purchased Usage → insufficient. One payer per action, never split. (Included subscription chat was retired; only internal unlimited-usage accounts skip metering.)
 - Markup: `USAGE_MARKUP` in `lib/billing/usagePricing.js` (1.6x multiplier, $0.01 min) - a hardcoded constant before this work.
 - Legacy credits: `lykn_credit_wallets` coexist; packs retired from sale. Remaining balances convert to purchased Usage via `npm run billing:migrate-credits` (see `docs/architecture/USAGE_BALANCE.md`).
-- Subscriptions: `user_billing` + Stripe webhooks; Pro/Max normal chat included (`usageEntitlements.js`).
+- Subscriptions: `user_billing` + Stripe webhooks; every plan's chat meters the Usage Balance at the flat rate in `lib/billing/pricingProfiles.js`.
 
 ### Problems the migration addresses
 

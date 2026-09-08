@@ -18,9 +18,10 @@ const DROP_PROPERTIES = Object.freeze({
 const EDIT_DESCRIPTIONS = Object.freeze({
   lykn_build_react_artifact:
     'Patch the OPEN React app/artifact. Pass the same title plus `edits` ' +
-    '([{find, replace, path?}]) and/or `file_ops` ([{op:"write"|"delete", path, content?}]). ' +
-    'Copy each `find` verbatim from [ARTIFACT_OPEN]. ONE call covering every change. ' +
-    'Do not resubmit the full source.',
+    '([{find, replace, path?, occurrence?, replace_all?}]) and/or `file_ops` ' +
+    '([{op:"write"|"delete", path, content?}]). Copy each `find` from [ARTIFACT_OPEN]. ' +
+    'If a snippet appears more than once, set `occurrence` or `replace_all` rather than ' +
+    'padding it with context. ONE call covering every change. Do not resubmit the full source.',
   lykn_build_template:
     'Patch the OPEN deck/doc. Pass the same title and template_type plus `section_edits` ' +
     '(and theme/font only if asked). Do not resubmit the full sections array.',

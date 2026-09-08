@@ -405,14 +405,18 @@ export default function DriveListing({
                         ? "No generated images yet."
                         : folder?.id === "docs"
                           ? "No documents yet."
-                          : "Nothing here yet."}
+                          : folder?.id === "builds"
+                            ? "No builds yet."
+                            : "Nothing here yet."}
                     </p>
                     <p className="text-[0.75rem]">
                       {folder?.id === "images"
                         ? "Images you make in chat land here once you save them."
                         : folder?.id === "docs"
                           ? "Letters, memos, and write-outs land here."
-                          : "Artifacts you save from chat land here."}
+                          : folder?.id === "builds"
+                            ? "Projects LYKN builds for you land here."
+                            : "Artifacts you save from chat land here."}
                     </p>
                   </>
                 )}

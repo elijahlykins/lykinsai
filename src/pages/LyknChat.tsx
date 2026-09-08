@@ -31,7 +31,7 @@ import { isLiveBuildStatus, useThinkingStatus } from "@/hooks/useThinkingStatus"
 import { copyMarkdownAsRich } from "@/lib/copyRichClipboard";
 import { getAiPrefs } from "@/lib/ai-prefs";
 
-import { ingestChatFiles } from "@/lib/chat/ingestChatFiles";
+import { CHAT_FILE_ACCEPT, ingestChatFiles } from "@/lib/chat/ingestChatFiles";
 import { persistMessageFeedback } from "@/lib/chat/messageFeedback";
 import { useIsTouchOnlyDevice } from "@/hooks/useViewportTier";
 
@@ -43,13 +43,15 @@ import LyknChatToasts from "@/components/lyknChat/LyknChatToasts";
 import LyknChatVaultOverlay from "@/components/lyknChat/LyknChatVaultOverlay";
 import FileDropModeDialog from "@/components/lyknChat/FileDropModeDialog";
 import LyknChatView from "@/components/lyknChat/LyknChatView";
+import { focusedAttachmentFromSlashApp } from "@/lib/chat/slashAppAttach";
 import AppSourceStrip from "@/components/lyknChat/AppSourceStrip";
 import LyknChatVoiceMode from "@/components/lyknChat/LyknChatVoiceMode";
 
 import SubAgentTasksStrip from "@/components/lyknChat/SubAgentTasksStrip";
 import MobileLyknChat from "@/components/lyknChat/MobileLyknChat";
 import { useLyknChatPersistence, makeDefaultNotesPages } from "@/hooks/useLyknChatPersistence";
-import { fetchMostRecentLyknChat } from "@/lib/lyknChat/fetchLyknChatsWithContext";
+import { fetchRecentBoardWithContext } from "@/lib/lyknChat/fetchLyknChatsWithContext";
+import { filterLyknChatsWithContext } from "@/lib/lyknChat/lyknChatHasContext";
 import { shouldReplaceProvisionalChat, provisionalChatHasUserMessages } from "@/lib/lyknChat/resumeOwnership";
 import { useChatEngine } from "@/hooks/useChatEngine";
 import StudioImagineMode from "@/components/lyknChat/StudioImagineMode";
@@ -64,21 +66,24 @@ import {
 } from "@/lib/lyknChat/chatTurnTypes";
 import { makeAttId } from "@/lib/lyknChat/chatAttachmentInput";
 import {
-  STUDIO_COMPOSER_PLACEHOLDERS,
   STUDIO_VIEW_HEADLINES,
   STUDIO_VIEW_MODES,
-  STUDIO_VIEW_SUBTITLES,
-  StudioComposerStrip,
   StudioModePill,
   StudioResearchSidebar,
 } from "@/components/lyknChat/StudioChatChrome";
 import ChatBarToolbar from "@/components/lyknChat/ChatBarToolbar";
+import PromptQueueBar from "@/components/lyknChat/PromptQueueBar";
 import { useChatVaultSaves } from "@/hooks/useChatVaultSaves";
 import { useChatVoiceMode } from "@/hooks/useChatVoiceMode";
 import { useLoadInGreeting } from "@/hooks/useLoadInGreeting";
 import { useChatModelSelection } from "@/hooks/useChatModelSelection";
+import { useBuildModelSelection } from "@/hooks/useBuildModelSelection";
+import { peekStudioSendModels } from "@/lib/ai/studioModeModels";
+import BuildModelSelect from "@/components/lyknChat/BuildModelSelect";
+import BuildStreamPanel from "@/components/lyknChat/BuildStreamPanel";
 import { useChatAttachmentIngress } from "@/hooks/useChatAttachmentIngress";
 import { useStudioChatSession } from "@/hooks/useStudioChatSession";
+import { useRotatingPlaceholder } from "@/hooks/useRotatingPlaceholder";
 
 // `studioSurface` — the page is mounted IN-DOCUMENT inside the LYKN Studio
 // panel (its own MemoryRouter, no iframe). It behaves like the glass Studio
@@ -164,6 +169,27 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     planLoading,
     isGuest,
     nav,
+  });
+
+  // Build page coding model. Declared here (above useChatEngine) because the
+  // engine reads `buildTurnModelRef` at send time; the ref is pointed at the
+  // live studioView by the effect further down, once that hook has run.
+  const {
+    catalog: studioModelCatalog,
+    buildModel,
+    setBuildModel,
+    researchModel,
+    setResearchModel,
+    imagineModel,
+    setImagineModel,
+    buildTurnModelRef,
+    imagineModelRef,
+    resolveSendModels,
+    syncStudioTurnModel,
+  } = useBuildModelSelection({
+    modelTier,
+    planLoading,
+    customModelId: activeCustomModelId,
   });
 
   // Legacy notes-pages snapshot field: the notes rail UI is gone, but old
@@ -257,7 +283,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
       let storedBoard: { id: string; updated_at?: string | null } | null = null;
 
       try {
-        const recent = await fetchMostRecentLyknChat(user.id);
+        const recent = await fetchRecentBoardWithContext(user.id);
         if (recent?.id) remoteBoard = recent;
       } catch {
         // ignore
@@ -268,11 +294,11 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         if (stored) {
           const { data } = await supabase
             .from("lykn_chats")
-            .select("id, updated_at")
+            .select("id, title, updated_at, lykn_chat_states(state)")
             .eq("id", stored)
             .eq("user_id", user.id)
             .maybeSingle();
-          if (data?.id) storedBoard = data;
+          if (data?.id && filterLyknChatsWithContext([data]).length) storedBoard = data;
         }
       } catch {
         // ignore
@@ -593,12 +619,15 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     setShowAttachMenu,
     studioModeInstructionsRef,
     researchSourcePrefsRef,
+    buildTurnModelRef,
+    imagineModelRef,
+    resolveStudioSendModels: resolveSendModels,
   });
   draftCleanupRef.current = chatEngine.cleanupDraftTimers;
   const {
     chatInputRef, chatInputHasText, setChatInput, handleChatInputChange,
     isChatLoading, setIsChatLoading, chatStatusText, setChatStatusText,
-    inFlightBuild,
+    inFlightBuild, inFlightWorkspace, buildProgress,
     focusedChatAttachments, setFocusedChatAttachments,
     expandedAiMsgIds, expandedUserPromptIds, chatReactions, setChatReactions,
     copiedMsgId, setCopiedMsgId,
@@ -609,7 +638,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     chatScrollRef, chatPanelInputRef, centerChatInputRef,
     chatUserScrolledUpRef, chatProgrammaticScrollRef,
     pendingAiBrickActionRef,
-    handleChatSend, handleStopAi, handleDictateToggle,
+    handleChatSend, drainPromptQueue, handleStopAi, handleDictateToggle,
     handleChatPaste, handleOpenAttachments,
     removeFocusedAttachment, addFocusedAttachment, updateFocusedAttachment,
     applyVaultDropToChat, resizeChatInput,
@@ -647,6 +676,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     handleToggleMedia,
     handleDismissMedia,
     renderFocusedAttachmentPreview,
+    ingestMacPathsToChat,
   } = useChatAttachmentIngress({
     addFocusedAttachment,
     removeFocusedAttachment,
@@ -695,29 +725,31 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
 
   const {
     studioView,
-    studioChipsDismissed,
     researchSourcePref,
     setResearchSourcePref,
     imagineAspect,
     setImagineAspect,
     imagineStarted,
+    imagineBusy,
     imagineRef,
     handleImagineBusy,
     handleStudioModeSelect,
     handleStudioNewChat,
-    handleComposerChipInsert,
     studioGuardedSend,
+    stopWorking,
     handleImagineBatchCommit,
     imagineSeedBatches,
     handleDismissAppEdit,
     appSourceStrip,
     editingAppId,
     latestResearch,
+    sourcesSlot,
+    openSourcesSlot,
     hasChatTurns,
-    hideSuggestionPills,
   } = useStudioChatSession({
     handleChatSend,
     handleStopAi,
+    drainPromptQueue,
     setChatInput,
     setComposerMode,
     composerMode,
@@ -749,9 +781,22 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     studioModeSaveRef,
     studioModeHydratedCbRef,
     researchSourcePrefsRef,
+    syncStudioTurnModel,
   });
 
+  // Point the send-time model refs at the live Studio view.
+  useEffect(() => {
+    syncStudioTurnModel(studioView, isGlassChat);
+  }, [studioView, isGlassChat, syncStudioTurnModel]);
+
+  const composerHint = useRotatingPlaceholder(studioView, { enabled: isGlassChat });
+
+  // Lane vs visibility: the build-phrase lane is for artifact turns that
+  // stream code from the first token. Workspace turns say "Thinking…" until
+  // real tool statuses arrive, but the indicator must stay visible through
+  // the reasoning gaps between tool calls, so they arm visibility only.
   const keepBuildThinking = inFlightBuild || isLiveBuildStatus(chatStatusText);
+  const keepThinkingVisible = keepBuildThinking || inFlightWorkspace;
   const thinkingStatus = useThinkingStatus(isChatLoading, chatStatusText, keepBuildThinking);
 
   // Save-to-vault paths (images, links, attachments, reports, artifacts) —
@@ -804,9 +849,9 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
 
   const chatBarToolbarProps = useMemo(() => ({
     chatInputHasText, hasAttachments: focusedChatAttachments.length > 0,
-    isChatLoading, isDictating, isTranscribing,
+    isChatLoading: isChatLoading || imagineBusy, isDictating, isTranscribing,
     modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
-    handleOpenAttachments, handleStopAi, handleDictateToggle,
+    handleOpenAttachments, handleStopAi: stopWorking, handleDictateToggle,
     handlePickFiles, handleAddLinkClick, handlePullFromVault,
     handleSelectProjectClick, scopedProjectName: chatScopedProject?.name ?? null, handleClearScopedProject,
     composerMode, setComposerMode,
@@ -825,9 +870,9 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     onImagineAspectChange: setImagineAspect,
   }), [
     chatInputHasText, focusedChatAttachments.length,
-    isChatLoading, isDictating, isTranscribing,
+    isChatLoading, imagineBusy, isDictating, isTranscribing,
     modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
-    handleOpenAttachments, handleStopAi, handleDictateToggle,
+    handleOpenAttachments, stopWorking, handleDictateToggle,
     handlePickFiles, handleAddLinkClick, handlePullFromVault,
     handleSelectProjectClick, chatScopedProject, handleClearScopedProject,
     composerMode, setComposerMode,
@@ -1191,6 +1236,13 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           hasThread={hasChatTurns}
           visible={studioView === "imagine"}
           onBusyChange={handleImagineBusy}
+          resolveImageModel={() =>
+            peekStudioSendModels({
+              mode: "imagine",
+              catalog: studioModelCatalog,
+              modelTier,
+            }).imageModel
+          }
           onAttachReference={(dataUrl, name) => {
             addFocusedAttachment({
               id: makeAttId(),
@@ -1209,7 +1261,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           chatMessages={chatMessages}
           isChatLoading={isChatLoading}
           thinkingStatus={thinkingStatus}
-          keepThinkingWhileLoading={keepBuildThinking}
+          keepThinkingWhileLoading={keepThinkingVisible}
           chatInputRef={chatInputRef}
           onChatInputChange={handleChatInputChange}
           onSend={studioGuardedSend}
@@ -1225,11 +1277,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
               : isGlassChat && studioView !== "chat"
                 ? STUDIO_VIEW_HEADLINES[studioView]
                 : typedWelcome
-          }
-          welcomeSubtitle={
-            isGlassChat && studioView !== "chat"
-              ? STUDIO_VIEW_SUBTITLES[studioView]
-              : undefined
           }
           isMobilePhone={isMobilePhone}
           isDictating={isDictating}
@@ -1266,6 +1313,9 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           renderFocusedAttachmentPreview={renderFocusedAttachmentPreview}
           onDragOver={handleFocusedChatDragOver}
           onDrop={handleFocusedChatDrop}
+          onAttachMacPaths={ingestMacPathsToChat}
+          onAttachSlashApp={(option) => addFocusedAttachment(focusedAttachmentFromSlashApp(option))}
+          slashModelMode={studioView}
           chatBarToolbar={
             <ChatBarToolbar
               onSend={studioGuardedSend}
@@ -1281,9 +1331,8 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           // Research page shows the source links in the right rail, so the
           // per-message chips under the report would be duplicates.
           hideMessageSources={isGlassChat && studioView === "research"}
+          onOpenMessageSources={openSourcesSlot}
           researchSidebar={
-            // Appears once the report has finished streaming — not while
-            // LYKN is still researching/writing.
             isGlassChat &&
             studioView === "research" &&
             !isChatLoading &&
@@ -1294,6 +1343,16 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
                 canSave={!!latestResearch.report}
                 saving={researchReportSaving}
                 onSave={handleSaveResearchReport}
+              />
+            ) : isGlassChat && sourcesSlot ? (
+              <StudioResearchSidebar
+                title="Sources"
+                sources={sourcesSlot.sources}
+                chatId={routeChatId || chatId || undefined}
+                canSave={false}
+                saving={false}
+                onSave={() => {}}
+                onClose={() => openSourcesSlot(sourcesSlot.messageId)}
               />
             ) : null
           }
@@ -1315,34 +1374,49 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           }
           composerAbove={
             <>
-              {(isGlassChat &&
-                (studioView === "research" || studioView === "build") &&
-                !hasChatTurns &&
-                !studioChipsDismissed &&
-                !appSourceStrip &&
-                !hideSuggestionPills) ||
-              (isMainAgentChat && CUSTOM_MODELS_ENABLED) ? (
-                <>
-                  {isGlassChat &&
-                  (studioView === "research" || studioView === "build") &&
-                  !hasChatTurns &&
-                  !studioChipsDismissed &&
-                  !appSourceStrip &&
-                  !hideSuggestionPills ? (
-                    <StudioComposerStrip
-                      view={studioView}
-                      onInsert={handleComposerChipInsert}
-                    />
-                  ) : null}
-                  {isMainAgentChat && CUSTOM_MODELS_ENABLED ? (
-                    <SubAgentTasksStrip chatId={chatId} enabled={isMainAgentChat} />
-                  ) : null}
-                </>
+              {isMainAgentChat && CUSTOM_MODELS_ENABLED ? (
+                <SubAgentTasksStrip chatId={chatId} enabled={isMainAgentChat} />
               ) : null}
+              <PromptQueueBar chatId={routeChatId || chatId} />
             </>
           }
           composerPlaceholder={
-            isGlassChat ? STUDIO_COMPOSER_PLACEHOLDERS[studioView] : undefined
+            isGlassChat ? composerHint : undefined
+          }
+          composerBelow={
+            isGlassChat ? (
+              <BuildModelSelect
+                mode={studioView}
+                value={
+                  studioView === "chat"
+                    ? modelSelectValue
+                    : studioView === "research"
+                      ? researchModel
+                      : studioView === "imagine"
+                        ? imagineModel
+                        : buildModel
+                }
+                onChange={
+                  studioView === "chat"
+                    ? persistSelectedModel
+                    : studioView === "research"
+                      ? setResearchModel
+                      : studioView === "imagine"
+                        ? setImagineModel
+                        : setBuildModel
+                }
+                catalog={studioModelCatalog}
+                modelTier={modelTier}
+                chatModelId={selectedModel}
+              />
+            ) : null
+          }
+          buildStream={
+            // Only for a build with nothing already open — an edit patches the
+            // artifact panel in place and streams no `code` to show.
+            buildProgress && !activeArtifact ? (
+              <BuildStreamPanel progress={buildProgress} onClose={handleStopAi} />
+            ) : null
           }
         />
 
@@ -1482,7 +1556,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
       <input
         ref={fileInputRef}
         type="file"
-        accept="*/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.md,.json,.html,.csv,.rtf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,.mp3,.wav,.ogg,.flac,.mp4,.mov,.avi,.webm,.m4a,.aac,.wma"
+        accept={CHAT_FILE_ACCEPT}
         multiple
         className="hidden"
         onChange={(e) => {

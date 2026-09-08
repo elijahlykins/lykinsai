@@ -9,12 +9,14 @@ export const BILLING_PERIODS = {
 // card (`checkout: false` so it never hits Stripe).
 //
 // The model is one dollar-denominated usage balance for all metered work:
-// - Free accounts get a one-time $10 of usage at signup and can top up.
-// - Student / Pro / Max include normal chat (it never draws usage) and turn
-//   each subscription payment into that month's usage for everything else,
-//   at a better internal rate than top-ups (Max best, then Pro/Student).
+// - Free accounts get a one-time $20 of usage at signup and can top up.
+// - Student / Pro / Pro+ / Max turn each subscription payment into that
+//   month's usage for everything - chat included - at the same flat internal
+//   rate as top-ups (lib/billing/pricingProfiles.js).
+// Pro+ stays in the catalog (Stripe prices, grants, entitlements) but is
+// unlisted until we turn it back on in pickers and marketing.
 // Legacy ids `studio_pro` / `studio_max` may still appear on older billing
-// rows — they resolve to the same limits as `studio`.
+// rows - they resolve to the same limits as `studio`.
 //
 // The authoritative plan catalog for the server is lib/billing/planCatalog.js;
 // keep prices and included-usage copy here in sync with it.
@@ -22,7 +24,7 @@ export const PLANS = [
   {
     id: "free",
     name: "Free",
-    tagline: "Start with $10 of free usage. No card required.",
+    tagline: "The entire LYKN desktop. Pay as you go. $20 of credits at signup.",
     monthlyPrice: 0,
     annualPrice: 0,
     cta: "Get started free",
@@ -31,11 +33,10 @@ export const PLANS = [
     checkout: false,
     comingSoon: false,
     features: [
-      { text: "$10 of usage included at signup", included: true, accent: true },
-      { text: "One simple balance for chat, images, and agents", included: true },
-      { text: "Top up anytime, from $5", included: true },
-      { text: "LYKN model", included: true },
-      { text: "No credit card required", included: true },
+      { text: "$20 of free credits on signup", included: true, accent: true },
+      { text: "The entire LYKN desktop", included: true },
+      { text: "Access to all models", included: true },
+      { text: "Pay as you go", included: true },
     ],
   },
   {
@@ -51,9 +52,7 @@ export const PLANS = [
     checkout: true,
     comingSoon: false,
     features: [
-      { text: "Chat included — never draws usage", included: true, accent: true },
-      { text: "Monthly usage for images, agents, and premium models", included: true, accent: true },
-      { text: "Better usage value than top-ups", included: true },
+      { text: "$15 of monthly usage — chat, images, agents, premium models", included: true, accent: true },
       { text: "LYKN Memory", included: true },
       { text: "Bots", included: true },
       { text: "All models: LYKN + frontier picks", included: true },
@@ -68,7 +67,7 @@ export const PLANS = [
   {
     id: "studio",
     name: "Pro",
-    tagline: "Chat included, plus monthly usage for everything else.",
+    tagline: "Your subscription becomes monthly usage for everything you do.",
     monthlyPrice: 20,
     // $17/mo billed annually = $204/yr.
     annualPrice: 204,
@@ -79,13 +78,33 @@ export const PLANS = [
     checkout: true,
     comingSoon: false,
     features: [
-      { text: "Chat included — never draws usage", included: true, accent: true },
-      { text: "Monthly usage for images, agents, and premium models", included: true, accent: true },
-      { text: "Better usage value than top-ups", included: true },
+      { text: "$20 of monthly usage — chat, images, agents, premium models", included: true, accent: true },
       { text: "LYKN Memory", included: true },
       { text: "Bots", included: true },
       { text: "All models: LYKN + frontier picks", included: true },
       { text: "All connections unlocked", included: true },
+    ],
+  },
+  {
+    id: "pro_plus",
+    name: "Pro+",
+    tagline: "Triple the monthly usage for people who work in LYKN every day.",
+    monthlyPrice: 60,
+    // $51/mo billed annually = $612/yr.
+    annualPrice: 612,
+    cta: "Upgrade to Pro+",
+    ctaVariant: "default",
+    highlighted: false,
+    badge: "New",
+    checkout: true,
+    comingSoon: false,
+    // Hidden from billing pickers and the landing pricing page. Catalog,
+    // Stripe prices, and entitlements stay so we can list it again later.
+    listed: false,
+    features: [
+      { text: "$60 of monthly usage — 3× Pro", included: true, accent: true },
+      { text: "Everything in Pro", included: true },
+      { text: "Priority support", included: true },
     ],
   },
   {
@@ -98,13 +117,10 @@ export const PLANS = [
     cta: "Go Max",
     ctaVariant: "default",
     highlighted: false,
-    badge: "New",
     checkout: true,
     comingSoon: false,
     features: [
-      { text: "Chat included — never draws usage", included: true, accent: true },
-      { text: "5× the monthly usage of Pro", included: true, accent: true },
-      { text: "Better usage value than top-ups", included: true },
+      { text: "$100 of monthly usage — 5× Pro", included: true, accent: true },
       { text: "Everything in Pro", included: true },
       { text: "Priority support", included: true },
       { text: "Early access to new capabilities", included: true },
@@ -136,19 +152,19 @@ export const FAQ_ITEMS = [
     id: "usage-balance",
     question: "How does usage work?",
     answer:
-      "Everything metered in LYKN — images, agents, premium models, research — draws from one dollar-denominated usage balance. You always see plain dollars, never credits or per-feature quotas. Subscriptions add monthly usage that resets each billing period; top-ups are yours until you spend them.",
+      "Everything in LYKN — chat, images, agents, premium models, research — draws from one dollar-denominated usage balance. You always see plain dollars, never credits or per-feature quotas. Subscriptions add monthly usage that resets each billing period; top-ups are yours until you spend them.",
   },
   {
     id: "free-plan",
     question: "What's included in Free?",
     answer:
-      "Every new account starts with $10 of free usage — enough to genuinely try chat, images, and agents. No card is required. When it runs out you can top up from $5 or upgrade to a plan that includes chat.",
+      "Every new account starts with $20 of free credits and the entire LYKN desktop, including every model. No card is required. When it runs out you can top up from $5 or upgrade to a plan with monthly usage.",
   },
   {
     id: "student-plan",
     question: "What is the Student plan?",
     answer:
-      "The Student plan is the full Pro experience at a student price: $15/month, or $12/month when billed annually ($144/year). Chat is included, your subscription adds monthly usage for everything else, and you get LYKN Memory, Bots, every model in the picker, and every connection. Your LYKN account email must be a school address to unlock the student price.",
+      "The Student plan is the full Pro experience at a student price: $15/month, or $12/month when billed annually ($144/year). Your subscription becomes $15 of monthly usage for everything — chat, images, agents, premium models — and you get LYKN Memory, Bots, every model in the picker, and every connection. Your LYKN account email must be a school address to unlock the student price.",
   },
   {
     id: "student-eligibility",
@@ -160,19 +176,26 @@ export const FAQ_ITEMS = [
     id: "pro-included",
     question: "What does Pro include?",
     answer:
-      "Pro includes normal LYKN chat — it never draws from your usage balance — plus monthly usage for images, agents, and premium models at a better rate than top-ups. You also get LYKN Memory, Bots, every model in the picker, and every connection. It is $20/month on monthly billing or $17/month when billed annually ($204/year). Existing $25 monthly subscribers stay at $25 for the current period and move to $20 at the next renewal.",
+      "Pro turns your subscription into $20 of monthly usage for everything you do — chat, images, agents, and premium models. You also get LYKN Memory, Bots, every model in the picker, and every connection. It is $20/month on monthly billing or $17/month when billed annually ($204/year). Existing $25 monthly subscribers stay at $25 for the current period and move to $20 at the next renewal.",
+  },
+  {
+    id: "pro-plus-included",
+    question: "What does Pro+ include?",
+    answer:
+      "Pro+ is everything in Pro with three times the monthly usage - $60 every month - plus priority support. It is $60/month on monthly billing or $51/month when billed annually ($612/year).",
+    listed: false,
   },
   {
     id: "max-included",
     question: "What does Max include?",
     answer:
-      "Max is everything in Pro with five times the monthly usage at the same plan rate — better value than top-ups — plus priority support and early access to new capabilities. It is $100/month on monthly billing or $75/month when billed annually ($900/year).",
+      "Max is everything in Pro with five times the monthly usage — $100 every month — plus priority support and early access to new capabilities. It is $100/month on monthly billing or $75/month when billed annually ($900/year).",
   },
   {
-    id: "included-chat",
-    question: "Which models are included with a subscription?",
+    id: "model-costs",
+    question: "Do different models cost different amounts?",
     answer:
-      "On Student, Pro, and Max, LYKN's automatic routing is always included. Manually picking a model is also included as long as it costs no more than the models LYKN routes to automatically. Pricier frontier models are marked \"Uses usage\" in the picker and draw from your usage balance instead.",
+      "Yes. Every plan can use every model; what changes is how quickly usage draws down. LYKN's automatic routing picks the most cost-effective model for each message, and manually picking a heavier frontier model simply uses more of your balance per message.",
   },
   {
     id: "usage-expiry",
@@ -184,13 +207,13 @@ export const FAQ_ITEMS = [
     id: "free-trial",
     question: "Do I need a card to try LYKN?",
     answer:
-      "No. Every new account starts with $10 of free usage and no card on file. You only add a payment method when you top up or subscribe.",
+      "No. Every new account starts with $20 of free credits and no card on file. You only add a payment method when you top up or subscribe.",
   },
   {
     id: "annual-savings",
     question: "How much do I save by paying yearly?",
     answer:
-      "Roughly a third off. Pro is $20/mo monthly or $17/mo when billed annually ($204/yr), and Max is $100/mo monthly or $75/mo when billed annually ($900/yr).",
+      "Pro is $20/mo monthly or $17/mo when billed annually ($204/yr), and Max is $100/mo monthly or $75/mo annually ($900/yr). Student is $15/mo monthly or $12/mo annually ($144/yr).",
   },
   {
     id: "switch-or-cancel",
@@ -221,11 +244,7 @@ export const FAQ_ITEMS = [
 // Per-plan structural limits. `Infinity` = no cap. `seats` is for team plans.
 // Enforcement hooks live in useUsageGate.js (vault/grid); blocks-per-grid is
 // applied at the canvas layer. There are no per-feature monthly quotas —
-// metered work is priced through the dollar usage balance instead.
-//
-// `unlimitedNormalChat` means normal chat is included with the subscription
-// and never draws from the usage balance (Auto routing, or a manual model at
-// or below the Auto tier — see lib/billing/usageEntitlements.js).
+// metered work (chat included) is priced through the dollar usage balance.
 export const PLAN_LIMITS = {
   free: {
     vaultCards: 50,
@@ -234,7 +253,6 @@ export const PLAN_LIMITS = {
     projects: Infinity,
     seats: 1,
     modelTier: "basic",
-    unlimitedNormalChat: false,
   },
   // Student — full Pro entitlements at the discounted student price.
   student: {
@@ -244,7 +262,6 @@ export const PLAN_LIMITS = {
     projects: Infinity,
     seats: 1,
     modelTier: "top+media",
-    unlimitedNormalChat: true,
   },
   studio: {
     vaultCards: Infinity,
@@ -253,7 +270,14 @@ export const PLAN_LIMITS = {
     projects: Infinity,
     seats: 1,
     modelTier: "top+media",
-    unlimitedNormalChat: true,
+  },
+  pro_plus: {
+    vaultCards: Infinity,
+    blocksPerGrid: Infinity,
+    grids: Infinity,
+    projects: Infinity,
+    seats: 1,
+    modelTier: "top+media",
   },
   max: {
     vaultCards: Infinity,
@@ -262,7 +286,6 @@ export const PLAN_LIMITS = {
     projects: Infinity,
     seats: 1,
     modelTier: "top+media",
-    unlimitedNormalChat: true,
   },
   // Legacy paid ids — same entitlements as Pro (grandfathered billing rows).
   studio_pro: {
@@ -272,7 +295,6 @@ export const PLAN_LIMITS = {
     projects: Infinity,
     seats: 1,
     modelTier: "top+media",
-    unlimitedNormalChat: true,
   },
   studio_max: {
     vaultCards: Infinity,
@@ -281,14 +303,8 @@ export const PLAN_LIMITS = {
     projects: Infinity,
     seats: 1,
     modelTier: "top+media",
-    unlimitedNormalChat: true,
   },
 };
-
-export function planHasUnlimitedNormalChat(planId) {
-  const limits = PLAN_LIMITS[String(planId || "free")] || PLAN_LIMITS.free;
-  return Boolean(limits.unlimitedNormalChat);
-}
 
 // ---------------------------------------------------------------------------
 // Upload rate limits (per-user).
@@ -300,6 +316,7 @@ export const UPLOAD_RATE_LIMITS = {
   free:       { perMinute: 20,  perHour: 120  },
   student:    { perMinute: 300, perHour: 3600 },
   studio:     { perMinute: 300, perHour: 3600 },
+  pro_plus:   { perMinute: 600, perHour: 7200 },
   max:        { perMinute: 600, perHour: 7200 },
   studio_pro: { perMinute: 300, perHour: 3600 },
   studio_max: { perMinute: 600, perHour: 7200 },
@@ -366,6 +383,7 @@ export const PLAN_LABELS = {
   free: "Free",
   student: "Student",
   studio: "Pro",
+  pro_plus: "Pro+",
   max: "Max",
   studio_pro: "Pro",
   studio_max: "Pro",
@@ -373,6 +391,25 @@ export const PLAN_LABELS = {
 
 export function planLabel(planId) {
   return PLAN_LABELS[String(planId || "free")] || "Free";
+}
+
+/**
+ * Marketing / picker visibility. Unlisted plans keep catalog, Stripe, and
+ * checkout logic so they can be turned back on later.
+ */
+export function isListedPlan(plan) {
+  return Boolean(plan) && plan.listed !== false;
+}
+
+/** Plans shown on pricing and in the upgrade picker. */
+export function listedPlans(plans = PLANS) {
+  return plans.filter(isListedPlan);
+}
+
+/** Picker rows: listed plans, plus the user's current plan if it is unlisted. */
+export function plansForPicker(currentPlanId, plans = PLANS) {
+  const current = String(currentPlanId || "");
+  return plans.filter((plan) => isListedPlan(plan) || plan.id === current);
 }
 
 // ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ import {
   addOpenThread,
   getLastLyknChatId,
   patchThreadSnapshot,
+  pauseInFlightWork,
   rememberLyknChatId,
 } from "@/lib/chat/chatThreadRuntime";
 import { notifyLyknChatsChanged } from "@/lib/lyknChat/chatsChanged";
@@ -38,8 +39,6 @@ import {
   takePendingAppEdit,
 } from "@/lib/apps/editApp";
 import { publishAppSourceStrip, subscribeDismissAppEdit } from "@/components/lyknChat/AppSourceStrip";
-import { detectStudioModeRedirect, imagineSwitchNotice } from "@/lib/ai/studioModeIntent";
-import { isTypedNewDeliverableAsk } from "@/lib/ai/artifactBuildIntent";
 import {
   IMAGINE_CLEAR_EVENT,
   imagineBatchesFromTurns,
@@ -62,15 +61,18 @@ import {
   chatAttachmentsToImagineInput,
   makeAttId,
 } from "@/lib/lyknChat/chatAttachmentInput";
+import { imagineConversationBriefForPrompt } from "@/lib/chat/imagineConversationPrompt";
 import {
   focusedAttachmentFromArtifact,
   isChatArtifact,
 } from "@/lib/lyknChat/artifactChatAttach";
+import { focusedAttachmentFromSlashApp } from "@/lib/chat/slashAppAttach";
 import {
   STUDIO_VIEW_MODES,
   studioInstructionsFor,
   type StudioView,
 } from "@/components/lyknChat/StudioChatChrome";
+import { citationSourcesFromMessage } from "@/lib/ai/webCitationSources";
 import type { ComposerMode } from "@/hooks/useChatEngine";
 import { useBotChatBridge } from "@/hooks/useBotChatBridge";
 import type { ChatSendOpts } from "@/lib/ai/chatSendTarget";
@@ -80,6 +82,12 @@ import {
   parseLyknChatSendDetail,
   parseLyknChatStopDetail,
 } from "@/lib/lyknChat/browserChatSend";
+import {
+  enqueuePrompt,
+  PROMPT_QUEUE_DRAIN_EVENT,
+  setImagineBusy,
+  type QueuedPrompt,
+} from "@/lib/chat/promptQueue";
 import { fetchTrustedBrowserTabPage } from "@/lib/lyknChat/browserSurfaceContext";
 import {
   startChatForUnboundBrowserTab,
@@ -89,6 +97,7 @@ import {
 export function useStudioChatSession({
   handleChatSend,
   handleStopAi,
+  drainPromptQueue,
   setChatInput,
   setComposerMode,
   composerMode,
@@ -120,9 +129,11 @@ export function useStudioChatSession({
   studioModeSaveRef,
   studioModeHydratedCbRef,
   researchSourcePrefsRef,
+  syncStudioTurnModel,
 }: {
   handleChatSend: (opts?: ChatSendOpts) => Promise<void>;
   handleStopAi: (targetChatId?: string) => void;
+  drainPromptQueue: (targetChatId?: string) => void;
   setChatInput: (valOrFn: string | ((prev: string) => string)) => void;
   setComposerMode: (mode: ComposerMode) => void;
   composerMode: ComposerMode;
@@ -154,6 +165,8 @@ export function useStudioChatSession({
   studioModeSaveRef: MutableRefObject<string | null>;
   studioModeHydratedCbRef: MutableRefObject<(mode: string | null) => void>;
   researchSourcePrefsRef: MutableRefObject<string>;
+  /** Point send-time model refs at this view before handleChatSend runs. */
+  syncStudioTurnModel?: (view: StudioView, active: boolean) => void;
 }) {
   // Which studio page view is active. Build / Imagine / Research are sticky
   // mode sessions: the chat stays in that mode (forced tool lane + mode
@@ -169,9 +182,6 @@ export function useStudioChatSession({
   const [editingAppName, setEditingAppName] = useState<string | null>(null);
   // Read by the re-attach below without making it depend on the panel.
   const openArtifactRef = useRef<ChatArtifact | null>(null);
-  // Build / Research empty-state demo chips — hide after a chip click or
-  // the first send, then come back on a new chat or mode switch.
-  const [studioChipsDismissed, setStudioChipsDismissed] = useState(false);
   const [researchSourcePref, setResearchSourcePref] = useState<ResearchSourcePref>("all");
   researchSourcePrefsRef.current = researchSourcePref;
   const [imagineAspect, setImagineAspect] = useState<string>(() => loadImagineAspect());
@@ -195,8 +205,12 @@ export function useStudioChatSession({
   // "Generate any image" headline would otherwise sit behind the bar for the
   // whole generate. Latch as soon as a batch is in flight.
   const [imagineStarted, setImagineStarted] = useState(false);
+  const [imagineBusy, setImagineBusyState] = useState(false);
+  const imagineBusyRef = useRef(false);
   useEffect(() => {
     setImagineStarted(false);
+    setImagineBusyState(false);
+    imagineBusyRef.current = false;
   }, [routeChatId]);
   useEffect(() => {
     const onClear = () => setImagineStarted(false);
@@ -204,8 +218,15 @@ export function useStudioChatSession({
     return () => window.removeEventListener(IMAGINE_CLEAR_EVENT, onClear);
   }, []);
   const handleImagineBusy = useCallback((busy: boolean) => {
+    const was = imagineBusyRef.current;
+    imagineBusyRef.current = busy;
+    setImagineBusyState(busy);
+    setImagineBusy(busy, routeChatId || chatId);
     if (busy) setImagineStarted(true);
-  }, []);
+    if (was && !busy) {
+      queueMicrotask(() => drainPromptQueue(routeChatId || chatId || undefined));
+    }
+  }, [drainPromptQueue, routeChatId, chatId]);
 
   useEffect(() => {
     const sync = () => {
@@ -235,8 +256,8 @@ export function useStudioChatSession({
     );
   }, [studioView, setComposerMode, chatPanelInputRef, centerChatInputRef]);
 
-  // Studio "New chat" (top-left icon): same flow as the app sidebar — create
-  // the chat row immediately, then navigate this surface to it. The current
+  // Studio "New chat" (top-left icon): same flow as the app sidebar — mint
+  // a chat id, then navigate this surface to it. The current
   // mode session (Build / Imagine / Research) carries over. Imagine's canvas
   // is cleared up front so it blanks immediately rather than lingering on the
   // old generations until the navigation remounts it.
@@ -317,29 +338,6 @@ export function useStudioChatSession({
     syncStudioBrowserToChat(routeChatId || chatId);
   }, [routeChatId, chatId]);
 
-  // Quick-start chip → drop the template into the composer, cursor at the
-  // end, ready for the user to finish the sentence. Picking one dismisses
-  // the demo strip so it doesn't sit under a prompt that's already started.
-  const handleComposerChipInsert = useCallback((text: string) => {
-    setStudioChipsDismissed(true);
-    setChatInput(text);
-    // Hosted on Home the page's own composer is hidden — the desktop's
-    // rounded bar listens for this and takes the text instead.
-    window.dispatchEvent(
-      new CustomEvent("lykn-home-compose-insert", { detail: { text } }),
-    );
-    window.setTimeout(() => {
-      const el = chatPanelInputRef.current || centerChatInputRef.current;
-      if (!el) return;
-      el.focus();
-      try {
-        el.setSelectionRange(el.value.length, el.value.length);
-      } catch {
-        /* selection is cosmetic */
-      }
-    }, 0);
-  }, [setChatInput, chatPanelInputRef, centerChatInputRef]);
-
   // Home-bar / mode-switch send: flip to the target Studio mode, arm its
   // lane, and send immediately so the user lands mid-task.
   // Uses handleChatSend (not studioGuardedSend) because we intentionally left
@@ -351,12 +349,28 @@ export function useStudioChatSession({
     prompt: string,
     opts?: { allowEmptyText?: boolean },
   ) => {
-    if (isChatLoading) return;
     const text = String(prompt || "").trim();
     // An attachment-only turn from the home bar arrives with no words;
     // handleChatSend still requires text or an attachment.
     if (!text && !opts?.allowEmptyText) return;
+    const bid = String(routeChatId || chatId || "").trim();
+    const working = isChatLoading || imagineBusyRef.current;
+    if (working) {
+      if (!bid || (!text && !focusedChatAttachments.length)) return;
+      enqueuePrompt({
+        chatId: bid,
+        text,
+        attachments: [...focusedChatAttachments],
+        kind: view === "imagine" ? "imagine" : "chat",
+        composerMode: view === "chat" ? "none" : STUDIO_VIEW_MODES[view],
+      });
+      setChatInput("");
+      setFocusedChatAttachments([]);
+      return;
+    }
     setStudioView(view);
+    studioViewRef.current = view;
+    syncStudioTurnModel?.(view, true);
     setComposerMode(view === "chat" ? "none" : STUDIO_VIEW_MODES[view]);
     studioModeInstructionsRef.current = studioInstructionsFor(
       view,
@@ -372,6 +386,10 @@ export function useStudioChatSession({
       const ok = imagineRef.current?.generate({
         ...chatAttachmentsToImagineInput(text, focusedChatAttachments),
         aspectRatio: imagineAspectRef.current,
+        conversationBrief: imagineConversationBriefForPrompt(
+          text,
+          chatMessagesRef.current,
+        ),
       });
       if (ok) {
         setChatInput("");
@@ -390,6 +408,9 @@ export function useStudioChatSession({
     handleChatSend,
     focusedChatAttachments,
     setFocusedChatAttachments,
+    syncStudioTurnModel,
+    routeChatId,
+    chatId,
   ]);
 
   // A mode picked from the home desktop must survive chat hydration: the
@@ -442,6 +463,13 @@ export function useStudioChatSession({
       researchSourcePref?: string;
       imagineAspect?: string;
       vaultPayloads?: Record<string, unknown>[];
+      apps?: Array<{
+        name?: string;
+        source?: string;
+        id?: string;
+        catalogId?: string;
+        path?: string;
+      }>;
     } = {}) => {
       let view = String(fallback.view || "");
       let text = String(fallback.text || "");
@@ -449,6 +477,7 @@ export function useStudioChatSession({
       let sourcePref = String(fallback.researchSourcePref || "");
       let aspectPref = String(fallback.imagineAspect || "");
       let vaultPayloads = Array.isArray(fallback.vaultPayloads) ? fallback.vaultPayloads : [];
+      let homeApps = Array.isArray(fallback.apps) ? fallback.apps : [];
       try {
         const raw = sessionStorage.getItem("lykn_pending_home_chat");
         if (raw) {
@@ -460,6 +489,13 @@ export function useStudioChatSession({
             researchSourcePref?: string;
             imagineAspect?: string;
             vaultPayloads?: Record<string, unknown>[];
+            apps?: Array<{
+              name?: string;
+              source?: string;
+              id?: string;
+              catalogId?: string;
+              path?: string;
+            }>;
           };
           view = String(p?.view || view);
           text = String(p?.text || text);
@@ -467,6 +503,7 @@ export function useStudioChatSession({
           sourcePref = String(p?.researchSourcePref || sourcePref);
           aspectPref = String(p?.imagineAspect || aspectPref);
           if (Array.isArray(p?.vaultPayloads)) vaultPayloads = p.vaultPayloads;
+          if (Array.isArray(p?.apps)) homeApps = p.apps;
         }
       } catch {
         /* storage blocked — fall back to the event payload */
@@ -506,7 +543,7 @@ export function useStudioChatSession({
       const homeFiles = takePendingHomeChatFiles();
       const homeFolders = takePendingHomeChatFolders();
       const homeArtifacts = takePendingHomeChatArtifacts().filter(isChatArtifact);
-      if (!text && !homeFiles.length && !homeFolders.length && !vaultPayloads.length && !homeArtifacts.length) return;
+      if (!text && !homeFiles.length && !homeFolders.length && !vaultPayloads.length && !homeArtifacts.length && !homeApps.length) return;
       // Empty view = follow-up from the home bar mid-conversation: keep
       // whatever mode this surface is currently in. The live pill is the
       // source of truth; the persistence bridge ref only breaks ties when
@@ -519,8 +556,19 @@ export function useStudioChatSession({
             ? liveView
             : ((studioModeSaveRef.current as StudioView) || "chat");
       homeModeOverrideRef.current = { view: resolved, at: Date.now() };
-      if (homeFiles.length || homeFolders.length || vaultPayloads.length || homeArtifacts.length) {
+      if (homeFiles.length || homeFolders.length || vaultPayloads.length || homeArtifacts.length || homeApps.length) {
         pendingHomeAttachSendRef.current = { view: resolved, text, ready: false };
+        for (const app of homeApps) {
+          const name = String(app?.name || "").trim();
+          if (!name) continue;
+          addFocusedAttachment(focusedAttachmentFromSlashApp({
+            id: String(app.id || name),
+            name,
+            source: app.source === "mac" ? "mac" : "connected",
+            catalogId: app.catalogId,
+            path: app.path,
+          }));
+        }
         for (const snap of homeFolders) {
           addFocusedAttachment({
             id: makeAttId(),
@@ -571,6 +619,13 @@ export function useStudioChatSession({
         researchSourcePref?: string;
         imagineAspect?: string;
         vaultPayloads?: Record<string, unknown>[];
+        apps?: Array<{
+          name?: string;
+          source?: string;
+          id?: string;
+          catalogId?: string;
+          path?: string;
+        }>;
       });
     window.addEventListener("lykn-home-chat-send", onSend);
     return () => window.removeEventListener("lykn-home-chat-send", onSend);
@@ -923,35 +978,6 @@ export function useStudioChatSession({
     );
   }, [hasChatTurns, boardLoading]);
 
-  useEffect(() => {
-    setStudioChipsDismissed(false);
-  }, [studioView]);
-
-  useEffect(() => {
-    if (!hasChatTurns) setStudioChipsDismissed(false);
-  }, [hasChatTurns]);
-
-  // Home's rounded bar keeps its own attachment tray. When something is in
-  // it the bar grows over the suggestion pills, so they hide for the same
-  // reason a page-composer attachment does.
-  const [homeBarAttached, setHomeBarAttached] = useState(
-    () =>
-      typeof document !== "undefined" &&
-      document.documentElement.hasAttribute("data-home-bar-attached"),
-  );
-  useEffect(() => {
-    const onAttached = (event: Event) => {
-      setHomeBarAttached(
-        Boolean((event as CustomEvent<{ attached?: boolean }>).detail?.attached),
-      );
-    };
-    window.addEventListener("lykn-home-bar-attachments", onAttached);
-    setHomeBarAttached(document.documentElement.hasAttribute("data-home-bar-attached"));
-    return () => window.removeEventListener("lykn-home-bar-attachments", onAttached);
-  }, []);
-  const hideSuggestionPills =
-    focusedChatAttachments.length > 0 || homeBarAttached;
-
   // Mode sessions are sticky: useChatEngine auto-clears composerMode after
   // every send, so while a mode page is active re-arm it — each turn keeps
   // the forced tool lane (build / image / research) until the user switches
@@ -1013,95 +1039,126 @@ export function useStudioChatSession({
     return null;
   }, [chatMessages, studioView]);
 
-  // Sticky-mode lane guard: explicit deliverable requests on Chat / Build /
-  // Imagine / Research route down that page's pipeline, so a clearly
-  // out-of-lane commission (e.g. "generate an image of a dog" on Chat or
-  // Research) could run the wrong pipeline before the model could object.
-  // Catch it before dispatch and answer instantly with a pointer to the
-  // mode pills at the top of the page instead of wasting a full pipeline run.
+  const [sourcesSlotMessageId, setSourcesSlotMessageId] = useState<string | null>(null);
+  useEffect(() => {
+    setSourcesSlotMessageId(null);
+  }, [routeChatId, chatId, studioView]);
+
+  const openSourcesSlot = useCallback((msgId: string, _sources?: { title: string; url: string }[]) => {
+    setSourcesSlotMessageId((cur) => (cur === msgId ? null : msgId));
+  }, []);
+
+  const sourcesSlot = useMemo(() => {
+    if (!sourcesSlotMessageId) return null;
+    const msg = chatMessages.find((m) => m.id === sourcesSlotMessageId);
+    const sources = citationSourcesFromMessage(msg);
+    if (!sources.length) return null;
+    return { messageId: sourcesSlotMessageId, sources };
+  }, [sourcesSlotMessageId, chatMessages]);
+
+  // The selected Studio pill owns the send. Keyword classifiers used to
+  // bounce a Build brief that mentioned "graphics" into Imagine, or silently
+  // hop Chat into Build — the prompt never reached the mode the user picked.
+  // Imagine still writes the 4-up canvas; everything else is the prompt.
   const studioGuardedSend = useCallback(async () => {
-    if (isGlassChat) {
+    if (isGlassChat && studioView === "imagine") {
       const text = chatInputRef.current.trim();
-      if (studioView === "chat" && isTypedNewDeliverableAsk(text)) {
-        studioModeInstructionsRef.current = studioInstructionsFor(
-          "build",
-          openBrowserPageRef.current,
-        );
-        setStudioView("build");
-        setComposerMode("create:webapp");
-        await handleChatSend();
-        return;
-      }
-      const redirect = text ? detectStudioModeRedirect(text, studioView) : null;
-      if (redirect) {
-        const CURRENT_LABEL: Record<string, string> = {
-          chat: "Chat",
-          build: "Build",
-          imagine: "Imagine",
-          research: "Research",
-        };
-        const LANE_DESC: Record<string, string> = {
-          chat: "answers in conversation",
-          build: "builds apps and artifacts",
-          imagine: "generates images",
-          research: "writes research reports",
-        };
-        const ASK_KIND: Record<string, string> = {
-          build: "a build request",
-          imagine: "an image request",
-          research: "a research request",
-        };
-        const notice =
-          studioView === "chat"
-            ? imagineSwitchNotice()
-            : `That looks like ${ASK_KIND[redirect.target]}, and this ${CURRENT_LABEL[studioView]} page only ` +
-              `${LANE_DESC[studioView]}. Switch to **${redirect.label}** using the pills at the top of the page ` +
-              `and send it again. I'll take it from there.`;
-        const id =
-          typeof crypto !== "undefined" && crypto.randomUUID
-            ? crypto.randomUUID()
-            : `mode-guard-${Date.now().toString(36)}`;
-        setChatMessages((prev) => [
-          ...prev,
-          { id, role: "user", content: text, aiResponse: notice, kind: "prompt" },
-        ]);
-        try {
-          aiThreadRef.current = [
-            ...(aiThreadRef.current || []),
-            { role: "user", content: text },
-            { role: "assistant", content: notice },
-          ];
-        } catch { /* ignore */ }
-        setChatInput("");
-        return;
-      }
-      if (studioView === "imagine") {
-        if (!text) return;
-        const ok = imagineRef.current?.generate({
-          ...chatAttachmentsToImagineInput(text, focusedChatAttachments),
-          aspectRatio: imagineAspectRef.current,
+      const bid = String(routeChatId || chatId || "").trim();
+      if (!text && !focusedChatAttachments.length) return;
+      if (imagineBusyRef.current && bid) {
+        enqueuePrompt({
+          chatId: bid,
+          text,
+          attachments: [...focusedChatAttachments],
+          kind: "imagine",
         });
-        if (ok) {
-          setChatInput("");
-          setFocusedChatAttachments([]);
-        }
+        setChatInput("");
+        setFocusedChatAttachments([]);
         return;
       }
+      const ok = imagineRef.current?.generate({
+        ...chatAttachmentsToImagineInput(text, focusedChatAttachments),
+        aspectRatio: imagineAspectRef.current,
+        conversationBrief: imagineConversationBriefForPrompt(
+          text,
+          chatMessagesRef.current,
+        ),
+      });
+      if (ok) {
+        setChatInput("");
+        setFocusedChatAttachments([]);
+      }
+      return;
     }
     await handleChatSend();
   }, [
     isGlassChat,
     studioView,
     chatInputRef,
-    setChatMessages,
-    aiThreadRef,
     setChatInput,
     handleChatSend,
     focusedChatAttachments,
     setFocusedChatAttachments,
-    setComposerMode,
-    studioModeInstructionsRef,
+    routeChatId,
+    chatId,
   ]);
+
+  const runQueuedImagine = useCallback((item: QueuedPrompt) => {
+    const ok = imagineRef.current?.generate({
+      ...chatAttachmentsToImagineInput(item.text, item.attachments),
+      aspectRatio: imagineAspectRef.current,
+      conversationBrief: imagineConversationBriefForPrompt(
+        item.text,
+        chatMessagesRef.current,
+      ),
+    });
+    if (!ok) {
+      void handleChatSend({
+        chatId: item.chatId,
+        text: item.text,
+        attachments: item.attachments,
+        composerMode: item.composerMode,
+        fromQueue: true,
+      });
+    }
+  }, [handleChatSend, chatMessagesRef]);
+
+  useEffect(() => {
+    const onDrain = (e: Event) => {
+      const item = (e as CustomEvent<QueuedPrompt>).detail;
+      if (!item || item.kind !== "imagine") return;
+      const bid = String(routeChatId || chatId || "").trim();
+      if (bid && item.chatId && item.chatId !== bid) return;
+      runQueuedImagine(item);
+    };
+    window.addEventListener(PROMPT_QUEUE_DRAIN_EVENT, onDrain);
+    return () => window.removeEventListener(PROMPT_QUEUE_DRAIN_EVENT, onDrain);
+  }, [runQueuedImagine, routeChatId, chatId]);
+
+  const stopWorking = useCallback(() => {
+    if (imagineBusyRef.current) {
+      imagineRef.current?.stop();
+      return;
+    }
+    handleStopAi();
+  }, [handleStopAi]);
+
+  useEffect(() => {
+    const onStop = () => stopWorking();
+    window.addEventListener("lykn-composer-stop", onStop);
+    return () => window.removeEventListener("lykn-composer-stop", onStop);
+  }, [stopWorking]);
+
+  useEffect(() => {
+    const lykn = (window as {
+      lykn?: { onWorkPaused?: (cb: () => void) => () => void };
+    }).lykn;
+    if (!lykn?.onWorkPaused) return;
+    return lykn.onWorkPaused(() => {
+      pauseInFlightWork();
+      imagineRef.current?.stop("Paused");
+    });
+  }, []);
 
   // Imagine writes the prompt the moment a batch starts, then patches the
   // same turn as slots land. A new turn id is what collapses older 4-ups.
@@ -1242,7 +1299,6 @@ export function useStudioChatSession({
     studioView,
     setStudioView,
     editingAppName,
-    studioChipsDismissed,
     researchSourcePref,
     setResearchSourcePref,
     researchSourcePrefsRef,
@@ -1250,13 +1306,14 @@ export function useStudioChatSession({
     setImagineAspect,
     openBrowserPage,
     imagineStarted,
+    imagineBusy,
     imagineRef,
     handleImagineBusy,
     handleStudioModeSelect,
     handleStudioNewChat,
-    handleComposerChipInsert,
     handleStudioFollowUp,
     studioGuardedSend,
+    stopWorking,
     persistImagineThread,
     handleImagineBatchCommit,
     imagineSeedBatches,
@@ -1264,9 +1321,9 @@ export function useStudioChatSession({
     appSourceStrip,
     editingAppId,
     latestResearch,
+    sourcesSlot,
+    openSourcesSlot,
     hasChatTurns,
-    hideSuggestionPills,
-    homeBarAttached,
   };
 }
 

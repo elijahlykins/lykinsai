@@ -15,6 +15,7 @@ import UsageNudge from '@/components/billing/UsageNudge';
 import OutOfUsageCard from '@/components/billing/OutOfUsageCard';
 import LyknMediaPopHost from '@/components/lyknChat/LyknMediaPopHost';
 import { WrittenDocumentDriveSync } from '@/hooks/useWrittenDocumentDriveSync';
+import { LocalVaultAutoImport } from '@/hooks/useLocalVaultAutoImport';
 import FileWindowHost from '@/components/files/FileWindowHost';
 import { SupabaseAuthProvider, useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
@@ -48,6 +49,7 @@ import ShareReceiver from "./pages/ShareReceiver";
 import Pricing from "./pages/Pricing";
 import Security from "./pages/Security";
 import DownloadLykn from "./pages/DownloadLykn";
+import WindowsWaitlist from "./pages/WindowsWaitlist";
 import CapabilityPage from "./pages/CapabilityPage";
 import News, { NewsArticle } from "./pages/News";
 import Templates from "./pages/Templates";
@@ -185,7 +187,7 @@ async function fetchBillingMeForGate() {
 }
 
 // Legacy trial-checkout gate. Under usage-based billing every account gets in
-// with its $10 signup usage, and the server reports needs_trial_checkout=false
+// with its $20 signup usage, and the server reports needs_trial_checkout=false
 // unconditionally — so this never redirects for current payloads. It stays as
 // a fail-closed backstop for cached/legacy responses. Metered endpoints are
 // enforced server-side (requireAppAccess + usage balance), which is the real
@@ -270,6 +272,7 @@ function AppShell() {
     location.pathname === "/pricing" ||
     location.pathname === "/security" ||
     location.pathname === "/download" ||
+    location.pathname === "/windows" ||
     location.pathname === "/privacy" ||
     location.pathname === "/terms" ||
     location.pathname === "/cookies" ||
@@ -336,6 +339,7 @@ function AppShell() {
     location.pathname === "/pricing" ||
     location.pathname === "/security" ||
     location.pathname === "/download" ||
+    location.pathname === "/windows" ||
     location.pathname === "/privacy" ||
     location.pathname === "/terms" ||
     location.pathname === "/cookies" ||
@@ -435,6 +439,7 @@ function AppShell() {
             <Route path="/pricing" element={<Pricing />} />
             <Route path="/security" element={<Security />} />
             <Route path="/download" element={<DownloadLykn />} />
+            <Route path="/windows" element={<WindowsWaitlist />} />
             {/* Capability product pages: Chat / Build / Imagine / Voice /
                 Research / Browser / Drive / Glass. */}
             <Route path="/product/:capId" element={<CapabilityPage />} />
@@ -601,6 +606,9 @@ function AppShell() {
       {/* Hard-stop card when a request fails on an empty usage balance. */}
       {!isEmbeddedRoute && !isGlassSurface && <OutOfUsageCard />}
       <WrittenDocumentDriveSync />
+      {/* Cloud-era accounts on the (now default) local vault: copy their
+          items down automatically instead of showing an empty AI Drive. */}
+      <LocalVaultAutoImport />
       {!isEmbeddedRoute && <LyknMediaPopHost />}
       {/* Only renders the file windows the Studio desktop didn't claim. */}
       {!isEmbeddedRoute && <FileWindowHost />}

@@ -20,6 +20,7 @@ import {
   redactDeep,
   assertNoSecretMaterial,
   executeMcpTool,
+  resolutionWithExplicitTool,
   resolveHttpMcpCallAuthority,
   summarizeMcpApproval,
   mcpCallRequiresApproval,
@@ -798,4 +799,43 @@ test('approval summary redacts secret-looking arguments', () => {
   assert.equal(summary.arguments.password, '[redacted]');
   assert.equal(summary.arguments.token, '[redacted]');
   assert.equal(summary.arguments.to, 'Sarah');
+});
+
+test('explicit HTTP tool calls are not dropped by disclosure ranking', async () => {
+  const fetch = classifyMcpTool({ name: 'GMAIL_FETCH_EMAILS', description: 'Fetch inbox messages' });
+  const listed = classifyMcpTool({ name: 'GMAIL_LIST_THREADS', description: 'List threads in the inbox' });
+  const connection = {
+    id: 'gmail',
+    name: 'Gmail',
+    status: MCP_STATUSES.CONNECTED,
+    classifiedTools: [fetch, listed],
+  };
+  const ranked = {
+    ok: true,
+    tools: [{ ...fetch, connectionId: 'gmail', toolName: fetch.toolName || 'GMAIL_FETCH_EMAILS' }],
+  };
+  const resolution = resolutionWithExplicitTool(ranked, {
+    connection,
+    toolName: listed.toolName || 'GMAIL_LIST_THREADS',
+  });
+  assert.equal(resolution.tools[0].toolName, listed.toolName || 'GMAIL_LIST_THREADS');
+  let called = '';
+  const executed = await executeMcpTool({
+    task: {
+      id: 't1',
+      capabilities: listed.semanticCapabilities || ['communication.email.read'],
+      association: { connectionIds: ['gmail'] },
+    },
+    resolution,
+    connectionId: 'gmail',
+    toolName: listed.toolName || 'GMAIL_LIST_THREADS',
+    args: {},
+    connection,
+    callTool: async ({ toolName }) => {
+      called = toolName;
+      return { ok: true };
+    },
+  });
+  assert.equal(executed.ok, true);
+  assert.equal(called, listed.toolName || 'GMAIL_LIST_THREADS');
 });

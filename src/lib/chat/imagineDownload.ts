@@ -82,6 +82,30 @@ export function imagineDownloadFilters(format?: ImagineDownloadFormat): {
   }));
 }
 
+function mimeOfBlob(blob: Blob): string {
+  return String(blob.type || "")
+    .toLowerCase()
+    .split(";")[0]
+    .trim();
+}
+
+export function formatFromMime(mime: string | null | undefined): ImagineDownloadFormat | null {
+  const m = String(mime || "")
+    .toLowerCase()
+    .split(";")[0]
+    .trim();
+  if (m === "image/jpeg" || m === "image/jpg") return "jpeg";
+  if (m === "image/webp") return "webp";
+  if (m === "image/png") return "png";
+  return null;
+}
+
+function mimeAlreadyMatches(srcMime: string, opt: ImagineDownloadOption): boolean {
+  if (!srcMime) return false;
+  if (srcMime === opt.mime) return true;
+  return opt.id === "jpeg" && (srcMime === "image/jpg" || srcMime === "image/jpeg");
+}
+
 function canvasToBlob(
   canvas: HTMLCanvasElement,
   mime: string,
@@ -105,11 +129,37 @@ function canvasToBlob(
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.crossOrigin = "anonymous";
+    // blob: and data: are same-origin. Setting crossOrigin on them can make
+    // Chromium reject the load, which used to fail PNG downloads after a
+    // successful fetch.
+    if (!src.startsWith("blob:") && !src.startsWith("data:")) {
+      img.crossOrigin = "anonymous";
+    }
     img.onload = () => resolve(img);
     img.onerror = () => reject(new Error("decode"));
     img.src = src;
   });
+}
+
+async function rasterizeToFormat(
+  source: CanvasImageSource,
+  w: number,
+  h: number,
+  opt: ImagineDownloadOption,
+): Promise<Blob> {
+  if (w < 1 || h < 1) throw new Error("empty");
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("canvas");
+  if (opt.id === "jpeg") {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, w, h);
+  }
+  ctx.drawImage(source, 0, 0, w, h);
+  const quality = opt.id === "jpeg" ? JPEG_QUALITY : opt.id === "webp" ? WEBP_QUALITY : undefined;
+  return canvasToBlob(canvas, opt.mime, quality);
 }
 
 /** Re-encode pixels as PNG / JPEG / WebP. JPEG flattens transparency on white. */
@@ -118,25 +168,78 @@ export async function encodeImageToFormat(
   format: ImagineDownloadFormat,
 ): Promise<Blob> {
   const opt = imagineDownloadOption(format);
+  const srcMime = mimeOfBlob(source);
+  if (mimeAlreadyMatches(srcMime, opt)) {
+    return srcMime === opt.mime ? source : new Blob([source], { type: opt.mime });
+  }
+
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(source);
+      try {
+        return await rasterizeToFormat(bitmap, bitmap.width, bitmap.height, opt);
+      } finally {
+        bitmap.close();
+      }
+    } catch {
+      /* Image() fallback */
+    }
+  }
+
   const objectUrl = URL.createObjectURL(source);
   try {
     const img = await loadImage(objectUrl);
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
-    if (w < 1 || h < 1) throw new Error("empty");
-    const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("canvas");
-    if (opt.id === "jpeg") {
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, w, h);
-    }
-    ctx.drawImage(img, 0, 0, w, h);
-    const quality = opt.id === "jpeg" ? JPEG_QUALITY : opt.id === "webp" ? WEBP_QUALITY : undefined;
-    return await canvasToBlob(canvas, opt.mime, quality);
+    return await rasterizeToFormat(img, w, h, opt);
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
+}
+
+/** Bytes behind an Imagine tile - local `lykn-blob://` or a hosted proxy URL. */
+export async function fetchImagineSourceBlob(url: string): Promise<Blob> {
+  const res = await fetch(url, { credentials: "include" });
+  if (!res.ok) throw new Error(`fetch_${res.status}`);
+  const blob = await res.blob();
+  if (!blob.size) throw new Error("empty");
+  return blob;
+}
+
+export type PreparedImagineDownload = {
+  blob: Blob;
+  filename: string;
+  mime: string;
+  filters: ReturnType<typeof imagineDownloadFilters>;
+};
+
+/**
+ * Fetch the generated image and encode it to the picked type.
+ *
+ * Encoding is skipped when the bytes are already that type. If conversion
+ * fails, the original pixels are kept rather than failing the download.
+ */
+export async function prepareImagineDownload(opts: {
+  url: string;
+  format: ImagineDownloadFormat;
+  label: string;
+}): Promise<PreparedImagineDownload> {
+  const picked = imagineDownloadOption(opts.format).id;
+  const source = await fetchImagineSourceBlob(opts.url);
+  let blob: Blob;
+  let format = picked;
+  try {
+    blob = await encodeImageToFormat(source, picked);
+  } catch {
+    format = formatFromMime(source.type) || picked;
+    const fallbackMime = mimeOfBlob(source) || imagineDownloadOption(format).mime;
+    blob = mimeOfBlob(source) ? source : new Blob([source], { type: fallbackMime });
+  }
+  const opt = imagineDownloadOption(format);
+  return {
+    blob,
+    filename: imagineDownloadFilename(opts.label, format),
+    mime: blob.type || opt.mime,
+    filters: imagineDownloadFilters(format),
+  };
 }

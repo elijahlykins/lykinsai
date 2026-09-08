@@ -6,6 +6,10 @@ export type ChatSendOpts = {
   text?: string;
   surfaceContext?: BrowserSurfaceContext;
   attachments?: FocusedChatAttachment[];
+  /** Composer capability mode captured with a queued prompt. */
+  composerMode?: string;
+  /** Drain of a queued prompt — do not clear the live composer. */
+  fromQueue?: boolean;
 };
 
 export function resolveChatSendTarget(

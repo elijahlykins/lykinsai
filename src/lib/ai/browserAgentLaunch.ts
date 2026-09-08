@@ -1,18 +1,18 @@
 /**
  * Launch a LYKN browser agent from a desktop conversation.
  *
- * Host execution context (chatId) is trusted and never taken from model
- * tool arguments. The created tab is stamped with sourceChatId before
- * Studio projects state.
+ * The agent tab is its OWN conversation: it is never bound to the chat
+ * that launched it, so the launching LYKN chat and the agent's rail chat
+ * can run side by side without mixing. The rail mints a fresh lykn_chats
+ * row on the first Ask-LYKN send (startChatForUnboundBrowserTab).
  */
 import type { LocalToolResult } from "@/lib/localMode";
 import { STUDIO_SHOW_BROWSER_EVENT } from "@/lib/lyknChat/openInStudioBrowser";
-import { bindBrowserTabChat, markBrowserTabRevealed } from "@/lib/lyknChat/browserChatAttach";
+import { markBrowserTabRevealed } from "@/lib/lyknChat/browserChatAttach";
 
 type AgentBridge = {
   agentCreate?: (payload: {
     goal?: string;
-    sourceChatId?: string;
   }) => Promise<{ ok?: boolean; agentId?: string } | null>;
   studioAgentSend?: (
     text: string,
@@ -27,20 +27,19 @@ export type LocalToolHostContext = {
   chatId?: string | null;
 };
 
-function hostChatId(host?: LocalToolHostContext): string {
-  return String(host?.chatId || "").trim();
-}
-
 /**
  * local_browser_agent — the model decided this turn's work belongs in the
  * browser. Create a browser agent (its own tab), start the task, and move the
  * user to the browser so they can watch.
  *
- * `host.chatId` is the originating lykn_chats.id. Model args.chatId is ignored.
+ * Separation contract: the launching chat's id is deliberately NOT stamped
+ * onto the tab (no renderer bind, no main-process sourceChatId, no
+ * task.chatId lineage). Any of those would make the agent rail render the
+ * launching LYKN chat instead of the agent's own thread.
  */
 export async function startBrowserAgentTask(
   args: Record<string, unknown>,
-  host?: LocalToolHostContext,
+  _host?: LocalToolHostContext,
 ): Promise<LocalToolResult> {
   const task = typeof args.task === "string" ? args.task.trim() : "";
   const url = typeof args.url === "string" ? args.url.trim() : "";
@@ -52,37 +51,23 @@ export async function startBrowserAgentTask(
   if (!api || typeof api.studioAgentSend !== "function") {
     return { ok: false, error: "The browser agent is only available in the desktop app." };
   }
-  const chatId = hostChatId(host);
   const goal = url ? `${task}\n\nStart at: ${url}` : task;
   // Agents and tabs pair one-to-one, so give the task its own agent. An empty
   // id falls back to the active agent — a shared tab beats refusing the task.
-  // Fallback never overwrites another conversation's tab lineage (main stamps
-  // sourceChatId only when the tab is unbound or already this chat).
   let agentId = "";
   if (typeof api.agentCreate === "function") {
     try {
-      const created = await api.agentCreate({
-        goal,
-        ...(chatId ? { sourceChatId: chatId } : {}),
-      });
+      const created = await api.agentCreate({ goal });
       if (created?.ok && created.agentId) agentId = String(created.agentId);
     } catch {
       /* fall through to the active agent */
     }
   }
-  if (agentId && chatId) {
-    bindBrowserTabChat(agentId, chatId);
-    markBrowserTabRevealed(agentId);
-  }
+  if (agentId) markBrowserTabRevealed(agentId);
   try {
     // Resolves when the whole browser run finishes — must not be awaited, or
     // this chat turn would block for the length of the browser task.
-    void api.studioAgentSend(
-      goal,
-      [],
-      agentId,
-      chatId ? { task: { chatId } } : {},
-    ).catch(() => {});
+    void api.studioAgentSend(goal, [], agentId, {}).catch(() => {});
   } catch {
     return { ok: false, error: "Couldn't start the browser agent." };
   }
@@ -91,7 +76,6 @@ export async function startBrowserAgentTask(
       new CustomEvent(STUDIO_SHOW_BROWSER_EVENT, {
         detail: {
           agentId: agentId || undefined,
-          chatId: chatId || undefined,
         },
       }),
     );
@@ -102,7 +86,8 @@ export async function startBrowserAgentTask(
     ok: true,
     note:
       "The browser agent is now running the task in its own tab, and the user has been " +
-      "moved to the browser to watch. Tell them it's underway there and they can take over " +
+      "moved to the browser to watch. It runs as its own separate conversation — this " +
+      "chat stays independent. Tell the user it's underway there and they can take over " +
       "the tab anytime. Do NOT describe steps as if you performed them yourself.",
   };
 }

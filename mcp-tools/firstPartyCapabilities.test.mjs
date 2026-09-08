@@ -106,6 +106,16 @@ test('hello discloses zero tools', () => {
   assert.equal(d.inspect.bytes, 0);
 });
 
+test('hello with connected apps still leaves tools off', () => {
+  const d = disclose('hello', {
+    hasConnectedApps: true,
+    connectedApps: [{ id: 'c1', name: 'Gmail', catalogId: 'gmail' }],
+  });
+  assert.deepEqual(names(d), []);
+  assert.equal(d.keepToolsOn, false);
+  assert.equal(d.capabilities.includes('connections.external'), false);
+});
+
 test('web search discloses the web family only', () => {
   const d = disclose("search the web for today's AI news");
   assert.deepEqual(names(d), ['lykn_web_search', 'lykn_web_fetch']);
@@ -113,6 +123,23 @@ test('web search discloses the web family only', () => {
   assert.ok(d.capabilities.includes('web.read'));
   assert.ok(d.inspect.count < 5);
   assert.ok(d.inspect.approxTokens < 2000);
+});
+
+test('real questions disclose web search so the model can choose', () => {
+  for (const msg of [
+    "what's on the news",
+    'is clive a word',
+    'would it be valid in scrabble',
+    'chatgpt said yes haha',
+    'explain how transformers work',
+  ]) {
+    const d = disclose(msg);
+    assert.ok(names(d).includes('lykn_web_search'), `lykn_web_search missing for: ${msg}`);
+    assert.ok(d.capabilities.includes('web.search'), `web.search missing for: ${msg}`);
+    assert.ok(d.inspect.count < 8, `too many tools for: ${msg}`);
+  }
+  const hi = disclose('hello');
+  assert.equal(names(hi).includes('lykn_web_search'), false);
 });
 
 test('brand-name site asks disclose web.read without a TLD in the message', () => {
@@ -129,10 +156,10 @@ test('brand-name site asks disclose web.read without a TLD in the message', () =
   }
 });
 
-test('bare "page" asks do not arm web fetch', () => {
+test('bare "page" asks stay small, not a leftover dump', () => {
   const d = disclose('open the settings page');
-  assert.equal(d.capabilities.includes('web.read'), false);
-  assert.equal(names(d).includes('lykn_web_fetch'), false);
+  assert.ok(d.inspect.count < 8);
+  assert.ok(d.inspect.count < FALLBACK_42);
 });
 
 test('vault save discloses vault write, not the leftover dump', () => {
@@ -141,8 +168,7 @@ test('vault save discloses vault write, not the leftover dump', () => {
   assert.ok(names(d).includes('lykn_saveFileToVault'));
   assert.ok(names(d).includes('lykn_saveLinkToVault'));
   assert.equal(names(d).some((n) => n.startsWith('lykn_listProjects')), false);
-  assert.equal(names(d).includes('lykn_web_search'), false);
-  assert.ok(d.inspect.count <= 6);
+  assert.ok(d.inspect.count <= 8);
   assert.ok(d.inspect.count < FALLBACK_42);
 });
 
@@ -173,10 +199,14 @@ test('make an image without Imagine does not dump leftover Chat tools', () => {
   assert.ok(d.inspect.count < 8);
 });
 
-test('Imagine exclusive mode is image family only', () => {
+test('armed image mode keeps only process_image — generation is Imagine-only', () => {
+  // Image GENERATION never registers on chat turns (it lives behind the
+  // /api/ai/imagine-image endpoint); a stale client arming forceImage gets the
+  // edit/OCR tool plus a redirect reply, never lykn_generate_image.
   const d = disclose('make an image', { forceImage: true, exclusiveComposerMode: 'image' });
-  assert.deepEqual(names(d), ['lykn_generate_image', 'lykn_process_image']);
+  assert.deepEqual(names(d), ['lykn_process_image']);
 });
+
 
 test('browse example.com discloses web read, not 42 Chat tools', () => {
   const d = disclose('browse example.com');
@@ -191,12 +221,93 @@ test('named Mac folder asks disclose local file reads', () => {
   assert.ok(names(first).includes('local_list_dir'));
   assert.equal(first.keepToolsOn, true);
 
+  const analyze = disclose('analyze this folder', { localMode: true });
+  assert.ok(names(analyze).includes('local_read_file'));
+  assert.equal(analyze.keepToolsOn, true);
+
   const follow = disclose('just list whats inside', {
     localMode: true,
     conversation: [{ role: 'user', content: 'hey can you read my LYKN folder' }],
   });
   assert.ok(names(follow).includes('local_list_dir'));
   assert.equal(follow.keepToolsOn, true);
+});
+
+test('a workspace-armed turn discloses local capabilities regardless of wording', () => {
+  // The easy-cad failure: "are the edits still in there" carries no file
+  // keyword, so the disclosure said web-only while 11 local tools sat armed
+  // in the request — and the model truthfully refused to touch the project.
+  const d = disclose('are the edits you made on the shift select still in there', {
+    localMode: true,
+    buildWorkspace: true,
+  });
+  assert.ok(d.capabilities.includes('local.files.read'));
+  assert.ok(d.capabilities.includes('local.files.write'));
+  assert.ok(d.capabilities.includes('local.shell'));
+  assert.ok(names(d).includes('local_read_file'));
+  assert.ok(names(d).includes('local_edit_file'));
+  assert.equal(d.keepToolsOn, true);
+
+  // Workspace-only mode (Local Mode switch off): the Electron gate confines
+  // calls to ~/LYKN/Builds, so the tools stay disclosed rather than stripped.
+  const workspaceOnly = disclose('make the map bigger', {
+    localMode: false,
+    buildWorkspace: true,
+  });
+  assert.ok(workspaceOnly.capabilities.includes('local.files.write'));
+  assert.ok(names(workspaceOnly).includes('local_edit_file'));
+
+  // Without the workspace armed, the wording alone still discloses nothing
+  // local — ordinary chats keep their lean disclosure.
+  const plain = disclose('are the edits you made on the shift select still in there', {
+    localMode: true,
+  });
+  assert.equal(plain.capabilities.includes('local.files.write'), false);
+});
+
+test('3D-asset intent and workspace turns arm lykn_generate_3d_model', () => {
+  // Explicit 3D vocabulary arms the generator in plain chat…
+  for (const msg of [
+    'make me a 3d model of a porsche 911',
+    'generate a character in 3D for my game',
+    'can you get me a glb of a viking helmet',
+  ]) {
+    const d = disclose(msg, {});
+    assert.ok(d.capabilities.includes('media.model3d'), `expected media.model3d for: ${msg}`);
+    assert.ok(names(d).includes('lykn_generate_3d_model'), msg);
+  }
+  // …and every workspace turn carries it: "add a car to my game" has no 3D
+  // wording, but procedural code cannot sculpt a car.
+  const ws = disclose('add a car the player can drive around', {
+    localMode: true,
+    buildWorkspace: true,
+  });
+  assert.ok(ws.capabilities.includes('media.model3d'));
+  assert.ok(names(ws).includes('lykn_generate_3d_model'));
+  // Ordinary chats stay lean — "model" alone (AI models) must not arm it.
+  const plain = disclose('which ai model should I use for writing', {});
+  assert.equal(plain.capabilities.includes('media.model3d'), false);
+});
+
+test('asking LYKN to physically drive the Mac arms the desktop-control tools', () => {
+  // "control blender for me" / "what's on my screen" — the see→click→type
+  // loop (local_desktop_look/act) rides the local.desktop family.
+  for (const msg of [
+    'take control of blender and sculpt the head for me',
+    "what's on my screen right now",
+    'take a screenshot of my screen and tell me what you see',
+    'click the render button in the app for me',
+  ]) {
+    const d = disclose(msg, { localMode: true });
+    assert.ok(d.capabilities.includes('local.desktop'), `expected local.desktop for: ${msg}`);
+    assert.ok(names(d).includes('local_desktop_look'), `expected look tool for: ${msg}`);
+    assert.ok(names(d).includes('local_desktop_act'), `expected act tool for: ${msg}`);
+  }
+
+  // A generic coding ask must NOT arm physical control — "click submit" in a
+  // web-dev chat is about the user's own page, not their desktop.
+  const codey = disclose('make the submit button bigger when you click it', { localMode: true });
+  assert.equal(names(codey).includes('local_desktop_act'), false);
 });
 
 test('ok check them after a folder-capability turn keeps local file reads', () => {
@@ -303,6 +414,17 @@ test('web search with Local Mode on does not append leftover Chat or all Local t
   assert.ok(names(d).length < 10);
 });
 
+test('finding something in an attached folder discloses nested file reads', () => {
+  const d = disclose('can you find where the build feature sits in this', {
+    localMode: true,
+    attachedFolders: [{ name: 'LYKN-dev', path: '/Users/me/LYKN-dev' }],
+  });
+  assert.ok(names(d).includes('local_search_files'));
+  assert.ok(names(d).includes('local_list_dir'));
+  assert.ok(names(d).includes('local_read_file'));
+  assert.equal(d.keepToolsOn, true);
+});
+
 test("what's in agents.md after a dropped folder keeps local_read_file", () => {
   const d = disclose("what's in agents.md", {
     localMode: true,
@@ -315,6 +437,19 @@ test("what's in agents.md after a dropped folder keeps local_read_file", () => {
   assert.equal(d.keepToolsOn, true);
 });
 
+test('unrelated brainstorming after a dropped folder does not keep local file reads', () => {
+  const d = disclose("let's brainstorm a new onboarding flow for the marketing site", {
+    localMode: true,
+    conversation: [{
+      role: 'user',
+      content: 'Desktop folder "Docs" — call local_list_dir or local_read_file\nPath: /Users/me/Docs',
+    }],
+  });
+  assert.equal(names(d).includes('local_read_file'), false);
+  assert.equal(names(d).includes('local_search_files'), false);
+  assert.equal(names(d).includes('local_list_dir'), false);
+});
+
 test("what's in agents.md is a local file ask when Local Mode is on", () => {
   const d = disclose("what's in agents.md", { localMode: true });
   assert.ok(names(d).includes('local_read_file'));
@@ -323,8 +458,9 @@ test("what's in agents.md is a local file ask when Local Mode is on", () => {
 
 test('SSH into a dev server is not the Chat leftover dump', () => {
   const d = disclose('SSH into dev server');
-  assert.deepEqual(names(d), []);
-  assert.ok(d.inspect.count === 0);
+  assert.deepEqual(names(d), ['lykn_web_search', 'lykn_web_fetch']);
+  assert.ok(d.inspect.count < 5);
+  assert.ok(d.inspect.count < FALLBACK_42);
 });
 
 test('ambiguous agent-capable turns never receive the 42-tool fallback', () => {

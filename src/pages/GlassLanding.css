@@ -270,6 +270,14 @@
   flex: none;
 }
 
+.lx-wordmark--tight {
+  margin-right: 0;
+}
+
+.lx-wordmark-punct {
+  margin-left: 0.02em;
+}
+
 /* Stacked slides: every rotation occupies the same three-line grid cell so
    the headline height stays put; only the entering/leaving slides are
    visible, their lines staggering in and out. */
@@ -355,6 +363,12 @@
 /* The hero screen: wave wallpaper filling a rounded stage, with the frosted
    desktop UI glass covering that image. */
 .gl-hero-stage {
+  /* Designed at 864×540 (16:10). Narrow stages scale the whole scene so
+     widgets, folders, the chat bar, dock, and browser stay in proportion. */
+  --hero-scene-w: 864px;
+  --hero-scene-h: 540px;
+  container-type: inline-size;
+  container-name: hero-desk;
   position: relative;
   width: min(54rem, 100%);
   aspect-ratio: 16 / 10;
@@ -392,6 +406,23 @@
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
   backdrop-filter: blur(28px) saturate(1.45);
   -webkit-backdrop-filter: blur(28px) saturate(1.45);
+}
+
+.gl-hero-scene {
+  position: absolute;
+  inset: 0;
+}
+
+@supports (width: 1cqi) {
+  .gl-hero-scene {
+    inset: auto;
+    top: 0;
+    left: 0;
+    width: var(--hero-scene-w);
+    height: var(--hero-scene-h);
+    transform: scale(calc(100cqi / var(--hero-scene-w)));
+    transform-origin: top left;
+  }
 }
 
 .gl-hero-desk-widgets {
@@ -491,7 +522,7 @@
   align-items: baseline;
   justify-content: center;
   gap: 0.28em;
-  font-size: clamp(0.95rem, 1.4vw, 1.25rem);
+  font-size: 1.15rem;
   font-weight: 650;
   letter-spacing: -0.03em;
   color: #ffffff;
@@ -1692,7 +1723,8 @@
 }
 /* Live desktop-stage view (the Apps tab): the hero's desktop UI rendered
    for real, framed exactly like the screenshot views. */
-.gl-any-live {
+.gl-any-live,
+.gl-apps-live {
   position: relative;
   aspect-ratio: 1024 / 661;
   overflow: hidden;
@@ -1702,7 +1734,8 @@
   background: #0b1c33;
   animation: gl-any-shot-in 0.35s ease;
 }
-.gl-any-live .gl-hero-stage {
+.gl-any-live .gl-hero-stage,
+.gl-apps-live .gl-hero-stage {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -1711,7 +1744,8 @@
   box-shadow: none;
   animation: none;
 }
-.gl-any-live .gl-hero-glass {
+.gl-any-live .gl-hero-glass,
+.gl-apps-live .gl-hero-glass {
   border-radius: 16px;
 }
 
@@ -1774,6 +1808,124 @@
   object-fit: cover;
   border-radius: 16px;
   box-shadow: 0 24px 60px -30px rgba(15, 23, 42, 0.4);
+}
+
+/* ── Desktop apps tour: numbered accordion + live desktop stage ──
+   Reference: the "01 Desktop / 02 CLI / …" surfaces list — small gray
+   index, bold item name, hairline dividers, one description open at a
+   time; the hero's live desktop animation sits on the right. */
+.gl-apps {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  padding: clamp(3.5rem, 9vh, 7rem) clamp(1.25rem, 6vw, 5rem);
+}
+.gl-apps-inner {
+  max-width: 1360px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.55fr);
+  gap: clamp(2.5rem, 7vw, 7rem);
+  align-items: center;
+}
+@media (max-width: 960px) {
+  .gl-apps-inner {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.gl-apps-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.gl-apps-item {
+  border-bottom: 1px solid rgba(15, 23, 42, 0.12);
+}
+.gl-apps-row {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  width: 100%;
+  padding: 1.05rem 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.gl-apps-num {
+  min-width: 1.5rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+  color: #94a3b8;
+}
+.gl-apps-name {
+  font-size: clamp(1.15rem, 1.7vw, 1.4rem);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: #0f172a;
+  transition: color 160ms ease;
+}
+.gl-apps-row:hover .gl-apps-name {
+  color: #0e6fff;
+}
+.gl-apps-item.is-open .gl-apps-name {
+  color: #0f172a;
+}
+
+/* Expand/collapse via the 0fr → 1fr grid-row trick — animates to the
+   description's natural height with no hard-coded max-height. */
+.gl-apps-desc-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 300ms ease;
+}
+.gl-apps-item.is-open .gl-apps-desc-wrap {
+  grid-template-rows: 1fr;
+}
+.gl-apps-desc {
+  overflow: hidden;
+  min-height: 0;
+  margin: 0;
+  /* Indent to the name (number width + row gap). */
+  padding: 0 0 0 2.5rem;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: #64748b;
+}
+.gl-apps-item.is-open .gl-apps-desc {
+  padding-bottom: 1.15rem;
+}
+
+.gl-apps-stage {
+  position: relative;
+}
+
+.gl-apps-slide {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.gl-apps-slide-wall {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  user-select: none;
+  filter: blur(14px);
+  transform: scale(1.08);
+}
+
+.gl-apps-slide .ls-vis-agents,
+.gl-apps-slide .ls-vis-sync {
+  position: relative;
+  width: min(27rem, 86%);
 }
 
 /* ── Home desktop preview (hero bar, cap card, sync section, showcase) ── */

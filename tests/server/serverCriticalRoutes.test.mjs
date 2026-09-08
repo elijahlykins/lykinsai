@@ -172,7 +172,7 @@ const MB = 1024 * 1024;
 const bigBody = { pad: 'x'.repeat(1.2 * MB) };
 
 test('a >1mb JSON body 413s on a standard route (global 1mb parser)', async () => {
-  const res = await postJson('/api/ai/local-tool-result', bigBody);
+  const res = await postJson('/api/client-error', bigBody);
   assert.equal(res.status, 413);
   const body = await res.json();
   assert.equal(body.code, 'payload_too_large');
@@ -181,11 +181,15 @@ test('a >1mb JSON body 413s on a standard route (global 1mb parser)', async () =
 test('the same >1mb body is ACCEPTED by an image-bearing AI route (12mb parser branch)', async () => {
   // These paths are in IMAGE_BEARING_AI_ROUTES: the parser accepts the body,
   // so the request reaches requireAuth and 401s instead of 413ing.
-  // agent-model is on the list because local screenshot reads post a data URL.
+  // agent-model is on the list because local screenshot reads post a data URL;
+  // local-tool-result because client-executed tools return pixels now
+  // (local_desktop_look screenshots, local_read_file image reads).
   const res = await postJson('/api/ai/invoke', bigBody);
   assert.equal(res.status, 401);
   const model = await postJson('/api/desktop/agent-model', bigBody);
   assert.equal(model.status, 401);
+  const toolResult = await postJson('/api/ai/local-tool-result', bigBody);
+  assert.equal(toolResult.status, 401);
 });
 
 // ── Authentication ─────────────────────────────────────────────────────────
@@ -327,6 +331,13 @@ test('guest stream validates input before any provider call (400 on empty prompt
   assert.equal(res.status, 400);
   const body = await res.json();
   assert.equal(body.error, 'Prompt is required');
+});
+
+test('windows waitlist validates email before any database write', async () => {
+  const res = await postJson('/api/waitlist/windows', { email: 'not-an-email' });
+  assert.equal(res.status, 400);
+  const body = await res.json();
+  assert.equal(body.error, 'invalid_request');
 });
 
 test('ElevenLabs custom-LLM proxy rejects unauthenticated calls', async () => {

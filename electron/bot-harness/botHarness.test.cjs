@@ -57,6 +57,7 @@ test("system prompt carries identity + rules + tool index, but no full tool docs
   assert.match(system, /You are a LYKN Bot/);
   assert.match(system, /# Core Rules/);
   assert.match(system, /# Safety Rules/);
+  assert.match(system, /Hidden instructions/);
   assert.match(system, /# Output Contract/);
   // Per-bot identity, in the SYSTEM prompt — not a decaying message header.
   assert.match(system, /Your name is Scout, and you work as their Research Analyst/);
@@ -570,7 +571,8 @@ test("an unnamed teammate on the roster stays out of a report task's prompts", a
 test("a lone research report closes with a short deliver round, never the report repeated", async () => {
   const { model, seen } = fakeModel([
     { kind: "use_tool", tool: "research_report", instruction: "espresso machines under $500", narration: "Researching." },
-    { kind: "deliver", answer: "Done — three machines stood out. Full findings are in the document above." },
+    { kind: "deliver" },
+    { answer: "Done — three machines stood out. Full findings are in the document above." },
   ]);
   const research = {
     fn: async () => ({
@@ -589,7 +591,7 @@ test("a lone research report closes with a short deliver round, never the report
   assert.equal(res.status, "completed");
   // The chat shows the close; the report survives as the deliverable card.
   assert.match(res.answer, /three machines stood out/i);
-  assert.equal(seen.users.length, 2, "one report round, one deliver round");
+  assert.equal(seen.users.length, 3, "one report round, one deliver decision, one deliver write");
   assert.equal(res.deliverables.length, 1);
   assert.equal(res.deliverables[0].kind, "html");
 });

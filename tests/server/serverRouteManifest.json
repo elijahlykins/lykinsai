@@ -4,13 +4,13 @@
     "Ordered registration surface of server.js (Express app). Entry order IS the contract:",
     "Express matches in registration order, so any reordering here is a behavior change."
   ],
-  "routeCount": 175,
+  "routeCount": 176,
   "middlewareCount": 7,
   "byMethod": {
     "DELETE": 7,
-    "GET": 64,
+    "GET": 63,
     "PATCH": 7,
-    "POST": 95,
+    "POST": 97,
     "PUT": 2
   },
   "byDomain": {
@@ -27,10 +27,10 @@
     "feeds": 8,
     "files": 6,
     "learning": 1,
-    "other": 39,
+    "other": 41,
     "platform": 4,
     "synthesis": 5,
-    "usage": 6,
+    "usage": 5,
     "vaultMedia": 6,
     "voice": 12,
     "webtools": 3,
@@ -1219,6 +1219,24 @@
       "methods": [
         "POST"
       ],
+      "path": "/api/ai/imagine-video",
+      "chain": [
+        "requireAuth",
+        "requireAppAccess",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": [
+        "auth",
+        "appAccess"
+      ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
       "path": "/api/ai/describe-image",
       "chain": [
         "requireAuth",
@@ -2258,21 +2276,6 @@
       "methods": [
         "GET"
       ],
-      "path": "/api/models/billing-states",
-      "chain": [
-        "requireAuth",
-        "<anonymous>"
-      ],
-      "domain": "other",
-      "flags": [
-        "auth"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "GET"
-      ],
       "path": "/api/models/curated",
       "chain": [
         "requireAuth",
@@ -2409,21 +2412,6 @@
         "GET"
       ],
       "path": "/api/usage/summary",
-      "chain": [
-        "requireAuth",
-        "<anonymous>"
-      ],
-      "domain": "usage",
-      "flags": [
-        "auth"
-      ]
-    },
-    {
-      "kind": "route",
-      "methods": [
-        "GET"
-      ],
-      "path": "/api/usage/daily",
       "chain": [
         "requireAuth",
         "<anonymous>"
@@ -2763,6 +2751,33 @@
         "auth",
         "billingSensitive"
       ]
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/waitlist/windows",
+      "chain": [
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/waitlist/windows",
+      "chain": [
+        "<anonymous>",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": []
     },
     {
       "kind": "route",

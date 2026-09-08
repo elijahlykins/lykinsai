@@ -265,7 +265,14 @@ export default function LandingModelsTools() {
       <div className="gl-mt-inner">
         <article className="gl-mt-card">
           <header className="gl-mt-head">
-            <h3>Models</h3>
+            <div className="gl-mt-head-row">
+              <h3>Models</h3>
+              <span className="gl-mt-tags">
+                <span className="gl-mt-tag">Open</span>
+                <span className="gl-mt-tag">Closed</span>
+                <span className="gl-mt-tag">Diffusion</span>
+              </span>
+            </div>
             <p>
               In LYKN you get access to every model under one subscription.
               Route them how and where you want.

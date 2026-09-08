@@ -20,14 +20,127 @@ export const LOCAL_TOOL_NAMES = [
   'local_write_file',
   'local_edit_file',
   'local_run_command',
+  'local_build_workspace',
+  'local_start_process',
+  'local_process_status',
+  'local_stop_process',
+  'local_install_app',
   'local_synced_folders',
   'local_running_apps',
   'local_read_app',
   'local_open_app',
   'local_open_path',
   'local_organize_desktop',
+  'local_desktop_look',
+  'local_desktop_act',
   'local_browser_agent',
   'local_ask_bot',
+  'local_mcp_search_tools',
+  'local_mcp_call_tool',
+  'local_mcp_catalog',
+  'local_mcp_connect',
+];
+
+/**
+ * Desktop MCP registry tools — how chat reaches MCP servers that run ON the
+ * user's machine (Blender, Ableton, any stdio MCP server they connected in
+ * Settings). The mirror of lykn_search_connected_tools /
+ * lykn_call_connected_tool, but client-executed: the Electron main process
+ * owns those processes (electron/mcp/localMcpHost.cjs), so these are armed
+ * only when the desktop app reports connected servers on the turn
+ * (`desktopMcpApps` in the request), independent of the Local Mode switch.
+ */
+export const DESKTOP_MCP_TOOL_NAMES = [
+  'local_mcp_search_tools',
+  'local_mcp_call_tool',
+  'local_mcp_catalog',
+  'local_mcp_connect',
+];
+
+/**
+ * The compact per-turn summary the desktop client ships: which local MCP
+ * apps are connected and a taste of their tools. Renderer input — cap and
+ * whitelist every field before it reaches prompts or arming decisions.
+ */
+export function sanitizeDesktopMcpApps(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw.slice(0, 24)) {
+    const name = String(item?.name || '').trim().slice(0, 60);
+    if (!name) continue;
+    const toolCount = Math.max(0, Math.min(999, Number(item?.toolCount) || 0));
+    const tools = (Array.isArray(item?.tools) ? item.tools : [])
+      .slice(0, 6)
+      .map((t) => String(t || '').trim().slice(0, 80))
+      .filter(Boolean);
+    out.push({ name, toolCount, tools });
+  }
+  return out;
+}
+
+/**
+ * Does this message name one of the connected desktop MCP apps ("make a cube
+ * in blender")? Used by the stream casual-tier gate the same way
+ * looksLikeLocalSystemAsk keeps Local Mode turns armed.
+ */
+export function mentionsDesktopMcpApp(text, apps) {
+  const t = String(text || '').toLowerCase();
+  if (!t.trim()) return false;
+  for (const app of Array.isArray(apps) ? apps : []) {
+    const name = String(app?.name || '').trim().toLowerCase();
+    if (name && name.length > 2 && t.includes(name)) return true;
+  }
+  return false;
+}
+
+/**
+ * Does this message want to CONNECT a new tool/app ("connect to blender",
+ * "hook lykn up to my figma", "add an mcp server", "what apps can you
+ * control")? This is what arms local_mcp_catalog / local_mcp_connect when
+ * ZERO servers are connected yet — the boot-strapping problem the
+ * connected-app matcher above cannot solve, because there is nothing
+ * connected to name. Deliberately generous: arming two extra tool schemas on
+ * a false positive costs nothing, while failing to arm strands the user in
+ * Settings.
+ */
+const MCP_CONNECT_INTENT_RE = new RegExp(
+  [
+    // "connect (to/with) X", "connect blender", "hook (me/lykn) up to X"
+    /\b(?:connect|reconnect)\b(?!\s+(?:the\s+)?dots)/.source,
+    /\bhook\s+(?:\w+\s+)?up\b/.source,
+    // "link/plug/wire ... to/into/up"
+    /\b(?:link|plug|wire)\s+(?:\w+\s+){0,2}(?:to|into|up|with)\b/.source,
+    // "add/install/set up ... mcp/server/integration/tool"
+    /\b(?:add|install|set\s*up|setup|use)\b[^.?!\n]{0,50}\b(?:mcp|server|integration|plugin|connector)\b/.source,
+    // any explicit mcp mention
+    /\bmcp\b/.source,
+    // capability discovery: "what (apps|tools|programs) can you (connect|control|use|work with)"
+    /\bwhat\b[^.?!\n]{0,40}\b(?:apps?|tools?|programs?|software)\b[^.?!\n]{0,40}\b(?:connect|control|drive|use|work with|talk to)\b/.source,
+    // "(can you) control/take over <app>" — connecting is step one of controlling
+    /\b(?:can you|could you)?\s*(?:control|take over|operate|drive)\s+(?:my\s+)?[a-z]/.source,
+  ].join('|'),
+  'i',
+);
+
+export function messageWantsMcpConnect(text) {
+  const t = String(text || '');
+  if (!t.trim()) return false;
+  return MCP_CONNECT_INTENT_RE.test(t);
+}
+
+/** The subset armed on Build-workspace turns (real software builds on disk). */
+export const BUILD_WORKSPACE_TOOL_NAMES = [
+  'local_build_workspace',
+  'local_list_dir',
+  'local_read_file',
+  'local_search_files',
+  'local_write_file',
+  'local_edit_file',
+  'local_run_command',
+  'local_start_process',
+  'local_process_status',
+  'local_stop_process',
+  'local_install_app',
 ];
 
 export const LOCAL_CHAT_TOOLS = [
@@ -55,12 +168,27 @@ export const LOCAL_CHAT_TOOLS = [
       'documents — PDF, Word (docx/doc/rtf/odt), Excel (xlsx), PowerPoint (pptx) — are extracted ' +
       'to text page by page or sheet by sheet; images (png/jpeg/gif/webp/heic) and screen ' +
       'recordings (mp4/mov/webm) are looked at with vision so you can see what is on screen. ' +
-      'Do not ask the user to describe a screenshot you can read. Large files are truncated; ' +
-      'other binary files are refused.',
+      'Do not ask the user to describe a screenshot you can read. ' +
+      'Engineering files (STL, STEP, IGES, glTF, OBJ, DXF, G-code, and similar CAD/mesh/CAM) ' +
+      'return a structured brief of what is in the file; keep the original bytes for import. ' +
+      'Large files are returned in line windows: default ~400 lines. If truncated is true, ' +
+      'call again with offset set to nextOffset (1-based line) until you have enough to answer. ' +
+      'Search first, then read the matching ranges — do not guess from a listing or a stub. ' +
+      'Other binary files are refused.',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'File to read (absolute, ~-relative, or home-relative).' },
+        offset: {
+          type: 'integer',
+          minimum: 1,
+          description: '1-based line to start reading from. Defaults to 1. Use nextOffset from a truncated read to continue.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Max lines to return (capped). Defaults to 400. Use a smaller window for a known region.',
+        },
       },
       required: ['path'],
       additionalProperties: false,
@@ -72,7 +200,8 @@ export const LOCAL_CHAT_TOOLS = [
       'Search the user\'s files and folders by name pattern and/or files by text content, starting from a folder. ' +
       'Read-only; runs immediately. Provide namePattern (glob-like, e.g. "*.ts", "LYKN", "*Brand Assets*"), query (text to ' +
       'find inside files), or both. Use this when they name a folder or file without a path — search Home for that name, then list or read the match. ' +
-      'Skips node_modules, .git, caches, and system folders.',
+      'For analysis, search first to find the relevant files and line numbers, then local_read_file those ranges. ' +
+      'Skips node_modules, .git, caches, and system folders. Prefer a specific path over the whole home folder.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -145,17 +274,149 @@ export const LOCAL_CHAT_TOOLS = [
   {
     name: 'local_run_command',
     description:
-      'Run a shell command in the user\'s terminal (zsh) on their Mac and return its output. ' +
-      'Reads, writes, and ordinary commands run immediately. Deleting files or downloading ' +
-      'anything (rm, curl, wget, git clone, and similar) requires the user to approve first. ' +
-      'Commands are non-interactive (no stdin), time out after 60s, and output is capped.',
+      'Run a shell command in the user\'s terminal (zsh) on their Mac and return its exit code ' +
+      'and output. Inside the Build workspace (~/LYKN/Builds) EVERYTHING runs immediately — ' +
+      'installs, git clone, curl, rm. Outside it, deletes and downloads ask the user first. ' +
+      'Commands are non-interactive (no stdin) and time out at 60s by default; pass timeoutSec ' +
+      '(max 240) for slow installs/builds. Long-lived commands (dev servers, watchers) must use ' +
+      'local_start_process instead — they would be killed at the timeout here. If output is ' +
+      'truncated, the result includes fullOutputPath: a log file with the complete output.',
     inputSchema: {
       type: 'object',
       properties: {
         command: { type: 'string', description: 'The shell command to run.' },
-        cwd: { type: 'string', description: 'Working directory. Defaults to the home folder.' },
+        cwd: { type: 'string', description: 'Working directory. Defaults to the Build workspace (or home).' },
+        timeoutSec: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 240,
+          description: 'Seconds before the command is killed. Default 60. Use up to 240 for installs/builds.',
+        },
       },
       required: ['command'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local_build_workspace',
+    description:
+      'Get the Build workspace root (~/LYKN/Builds) and the projects already in it. Call this ' +
+      'FIRST when starting any real software build: create each new project in its own subfolder ' +
+      'of the root, or continue in an existing project folder listed here. Everything inside the ' +
+      'workspace is fully accessible without approval prompts. Read-only; runs immediately.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local_start_process',
+    description:
+      'Start a long-running command as a MANAGED BACKGROUND PROCESS — dev servers (npm run dev, ' +
+      'vite, next dev, python app.py), watchers, or installs longer than 240s. Returns a ' +
+      'processId plus the first seconds of output, the detected port/url when the process starts ' +
+      'serving, and an early exit code if it crashed immediately. Starting the same command in ' +
+      'the same cwd REPLACES the running instance (reported as replacedProcessId) — that is how ' +
+      'you restart a server. The process keeps running while you continue working: poll it with ' +
+      'local_process_status, stop it with local_stop_process. Do NOT use local_run_command for ' +
+      'anything that stays alive.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'The shell command to run in the background.' },
+        cwd: { type: 'string', description: 'Working directory. Defaults to the Build workspace root.' },
+        name: { type: 'string', description: 'Short label for this process, e.g. "dev server".' },
+        waitMs: {
+          type: 'integer',
+          minimum: 250,
+          maximum: 20000,
+          description: 'How long to wait for startup output before returning. Default 3000.',
+        },
+      },
+      required: ['command'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local_process_status',
+    description:
+      'Check a managed background process: running or exited, exit code, detected port/url, and ' +
+      'the most recent log lines. Pass processId for one process (with logLines to control how ' +
+      'much log you see) or omit it to list every managed process. Use this after starting a dev ' +
+      'server to confirm it is serving, and to read build/runtime errors from its logs. ' +
+      'Read-only; runs immediately.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        processId: { type: 'string', description: 'The processId returned by local_start_process. Omit to list all.' },
+        logLines: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 400,
+          description: 'How many trailing log lines to return. Default 60.',
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local_stop_process',
+    description:
+      'Stop a managed background process by processId (SIGTERM, then SIGKILL after a grace ' +
+      'period). Use it to shut down dev servers the project no longer needs — always after ' +
+      'local_install_app succeeds (the installed app replaces the dev server), and whenever ' +
+      'the user asks to stop or close something that is running. local_process_status lists ' +
+      'every managed process when you do not know the id. Runs immediately.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        processId: { type: 'string', description: 'The processId returned by local_start_process.' },
+      },
+      required: ['processId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local_install_app',
+    description:
+      'Install a finished Build-workspace project into the user\'s LYKN dock as a real app. ' +
+      'Run the project\'s production build first (e.g. `npm run build`) — this tool packages ' +
+      'the emitted dist/build/out folder (or a root index.html for plain sites) and installs ' +
+      'it as a static app with its own icon and window. On success the app OPENS on the ' +
+      'user\'s screen automatically and stays in their dock; no dev server or terminal ' +
+      'involved — stop the project\'s dev server with local_stop_process afterwards. ' +
+      'Reinstalling the same project updates the app in place and keeps the user\'s saved ' +
+      'data — but after EDITING an already-installed app, re-run the dev server so the user ' +
+      'sees the changes first, and ask before installing the update; do not reinstall ' +
+      'unprompted. Only works for frontend apps; anything needing its own backend server ' +
+      'cannot be installed this way. Runs immediately.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'The project folder inside the Build workspace (e.g. "~/LYKN/Builds/my-app").',
+        },
+        name: {
+          type: 'string',
+          description: 'Display name for the dock (e.g. "Nook"). Defaults to the project folder name.',
+        },
+        description: {
+          type: 'string',
+          description: 'One-line description of what the app does.',
+        },
+        icon: {
+          type: 'string',
+          description:
+            'Lucide icon name that fits THIS specific app — e.g. "Crosshair" for a shooter, ' +
+            '"Castle" for a mansion explorer, "NotebookPen" for a notes app, "ChefHat" for a ' +
+            'recipe box. PascalCase or kebab-case. ALWAYS pick one deliberately; without it ' +
+            'the dock shows a generic tile. An icon the user already picked themselves is ' +
+            'never overridden.',
+        },
+      },
+      required: ['path'],
       additionalProperties: false,
     },
   },
@@ -276,6 +537,79 @@ export const LOCAL_CHAT_TOOLS = [
     },
   },
   {
+    name: 'local_desktop_look',
+    description:
+      "Take a screenshot of the user's screen (or one window) and SEE it — the pixels come " +
+      'back to you as a real image, plus the frontmost app and open window titles. This is ' +
+      'how you observe native Mac apps before acting on them with local_desktop_act, and how ' +
+      'you verify what an action actually did. Coordinates for actions are 0-1000 on the ' +
+      'image this returns (x: 0 left → 1000 right, y: 0 top → 1000 bottom). Read-only; runs ' +
+      'immediately. Look → act → look again: never chain several actions blind, and never ' +
+      'describe a screen you have not looked at.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        window: {
+          type: 'string',
+          description:
+            'Scope the screenshot to one window by (partial) title, e.g. "Blender" or ' +
+            '"Untitled — Pixelmator". The window is raised first so it is actually visible. ' +
+            'Omit for the full screen — start there when you do not know what is open.',
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local_desktop_act',
+    description:
+      "Perform ONE physical input on the user's Mac — a real mouse click, drag, scroll, " +
+      'keystroke, or typed text — aimed with 0-1000 coordinates on your latest ' +
+      'local_desktop_look screenshot. This drives NATIVE apps (Blender, Finder, Logic — ' +
+      'anything on screen); for websites use local_browser_agent, and for apps with a ' +
+      'connected MCP server prefer local_mcp_call_tool, which is far more precise than ' +
+      'clicking. The first action asks the user once to allow desktop control for the ' +
+      'session; after that, actions run immediately. If the result says the screenshot is ' +
+      'stale or the window moved, that is not a failure — take a fresh look and aim again. ' +
+      'One action per call; look between actions that change the screen.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['click', 'double_click', 'right_click', 'drag', 'scroll', 'type', 'key', 'focus_window', 'move'],
+          description:
+            'click/double_click/right_click and move aim at (x, y). drag goes from (x, y) to ' +
+            '(toX, toY) with real intermediate motion — sliders, marquee selects, and viewport ' +
+            'orbits need drag, not two clicks. scroll wheels at (x, y) if given. type sends ' +
+            'literal text to the focused control; key presses one key (with modifiers) — use ' +
+            'key for Enter/Escape/shortcuts, type for content. focus_window raises a window ' +
+            'by title.',
+        },
+        x: { type: 'number', description: '0-1000 across the last screenshot (0 = left edge).' },
+        y: { type: 'number', description: '0-1000 down the last screenshot (0 = top edge).' },
+        toX: { type: 'number', description: 'Drag destination x (0-1000).' },
+        toY: { type: 'number', description: 'Drag destination y (0-1000).' },
+        text: { type: 'string', description: 'For type: the literal text to type.' },
+        key: {
+          type: 'string',
+          description: 'For key: one key name — Enter, Escape, Tab, Delete, Up, F5, a, 5…',
+        },
+        modifiers: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Held during the action: cmd, shift, ctrl, alt. E.g. ["cmd"] with key "s" saves.',
+        },
+        button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Mouse button for click/drag. Default left.' },
+        direction: { type: 'string', enum: ['up', 'down', 'left', 'right'], description: 'Scroll direction. Default down.' },
+        amount: { type: 'number', description: 'Scroll wheel ticks (1-50). Default 3.' },
+        window: { type: 'string', description: 'For focus_window: (partial) window title to raise.' },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'local_browser_agent',
     description:
       'Hand a task to LYKN\'s browser agent — a separate agent that opens a real browser tab ' +
@@ -337,6 +671,126 @@ export const LOCAL_CHAT_TOOLS = [
       },
       required: ['name', 'message'],
       additionalProperties: false,
+    },
+  },
+  {
+    name: 'local_mcp_search_tools',
+    description:
+      'Search the action catalogs of the MCP apps running on the user\'s OWN computer — ' +
+      'the ones listed in [DESKTOP_MCP_APPS] (e.g. Blender for 3D modeling and animation). ' +
+      'These are different from OAuth-connected cloud apps: they control real desktop ' +
+      'software live on the user\'s machine. Search with a plain-language action ' +
+      '("add a cube", "get the current scene", "create a midi track"), then CALL the match ' +
+      'with local_mcp_call_tool. A search result is not an answer. Do not invent tool names.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['query'],
+      properties: {
+        query: {
+          type: 'string',
+          description: 'What you want to do, in plain language (add a cube, list scene objects).',
+        },
+        app: {
+          type: 'string',
+          description: 'Optional app name from [DESKTOP_MCP_APPS] (e.g. Blender). Omit to search all.',
+        },
+      },
+    },
+  },
+  {
+    name: 'local_mcp_call_tool',
+    description:
+      'Run one action on a desktop MCP app (Blender, Ableton, …) after ' +
+      'local_mcp_search_tools told you the exact tool name and schema. The action executes ' +
+      'on the user\'s machine; consequential actions ask the user to approve the tool once, ' +
+      'then run freely. Work iteratively: make a change, read the result back (scene info, ' +
+      'screenshots) and continue. If a call errors, search again — do not invent tool names.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['app', 'tool'],
+      properties: {
+        app: {
+          type: 'string',
+          description: 'Desktop MCP app name exactly as returned by the search (e.g. Blender).',
+        },
+        tool: {
+          type: 'string',
+          description: 'Exact tool name from the search result (e.g. execute_blender_code).',
+        },
+        args: {
+          type: 'object',
+          description: 'Arguments matching the inputSchema from the search result.',
+          additionalProperties: true,
+        },
+      },
+    },
+  },
+  {
+    name: 'local_mcp_catalog',
+    description:
+      "Find apps and tools LYKN can connect to on the user's computer. Searches the vetted " +
+      'catalog (Blender, Ableton, Unity, Godot, GitHub, Notion, Figma, Obsidian, Playwright ' +
+      'and more) plus the public MCP registry, and reports for each: whether it is DETECTED ' +
+      'as installed on this Mac, whether it is already CONNECTED, any API keys it needs, and ' +
+      'app-side setup steps. Call this FIRST when the user wants to connect, control, or ' +
+      'automate an app that is not in [DESKTOP_MCP_APPS] — then connect the match with ' +
+      'local_mcp_connect. Read-only; runs immediately. Empty query lists the whole catalog.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: {
+          type: 'string',
+          description:
+            'App name or capability ("blender", "3d modeling", "notion", "browser automation"). ' +
+            'Omit to list everything.',
+        },
+      },
+    },
+  },
+  {
+    name: 'local_mcp_connect',
+    description:
+      "Connect an app's MCP server on the user's computer so its tools become available this " +
+      'session and every future one. Prefer `app` with a catalog id/name from ' +
+      'local_mcp_catalog — the launch command is then pinned from the vetted catalog. The ' +
+      'user approves the exact command once before anything runs. If the result is ' +
+      'env_required, ASK the user for the listed key(s) (each has a hint saying where to ' +
+      'find it) and call again with env — keys are stored encrypted on their Mac. If the ' +
+      'result includes setup steps, walk the user through them (e.g. enabling the Blender ' +
+      'addon), then connect again. On success, use local_mcp_search_tools and ' +
+      'local_mcp_call_tool to do the actual work — connecting is step one, not the task.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        app: {
+          type: 'string',
+          description:
+            'Catalog id or name from local_mcp_catalog (e.g. "blender", "notion"). Preferred: ' +
+            'the launch command comes from the vetted catalog, not from you.',
+        },
+        commandLine: {
+          type: 'string',
+          description:
+            'Custom launch command for servers NOT in the catalog, e.g. "uvx some-mcp" or ' +
+            '"npx -y @scope/mcp-server". Plain argv only — no shells, pipes, or quoting. ' +
+            'Only use commands from official docs or the registry entry, never guessed ones.',
+        },
+        name: {
+          type: 'string',
+          description: 'Display name for a custom connection (e.g. "Godot"). Ignored when app matches the catalog.',
+        },
+        env: {
+          type: 'object',
+          description:
+            'API keys the server needs, exactly as named by a previous env_required result, ' +
+            'e.g. { "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..." }. Ask the user; never invent values.',
+          additionalProperties: { type: 'string' },
+        },
+      },
     },
   },
 ];
@@ -417,10 +871,25 @@ export function looksLikeLocalSystemAsk(text) {
   if (/\b(list|show|check|look|see|read)\b.{0,32}\b(what.?s|whats|what is)\s+inside\b/.test(t)) {
     return true;
   }
+  // "find where X sits in this" after a folder drop.
+  if (
+    /\b(find|locate|where (is|does)|sits)\b/.test(t) &&
+    /\b(in this|in here|this (folder|repo|project|codebase|tree)|attached)\b/.test(t)
+  ) {
+    return true;
+  }
+  if (
+    /\b(analy[sz]e|summar(?:y|ise|ize)|review|inspect|go through|look through)\b/.test(t) &&
+    (/\b(file|files|folder|folders|directory|directories|code|codebase|project|repo|listing)\b/.test(t) ||
+      LOCAL_NAMED_FILE_RE.test(t) ||
+      /~\/|\/users\//.test(t))
+  ) {
+    return true;
+  }
   // file operations with a file/folder-ish reference (but not artifact
   // builds like "create a document/deck/presentation").
   if (
-    /\b(read|open|edit|create|write|delete|rename|move|search|find|list|show|check)\b/.test(t) &&
+    /\b(read|open|edit|create|write|delete|rename|move|search|find|list|show|check|analy[sz]e|review|inspect)\b/.test(t) &&
     (/\b(file|files|folder|folders|directory|directories|script)\b|\.(txt|md|js|ts|py|json|csv)\b|~\/|\/users\//.test(t)) &&
     !/\b(document|doc|deck|slides?|presentation|spreadsheet|report|artifact|image|video|website|landing page)\b/.test(t)
   ) {

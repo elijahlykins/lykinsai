@@ -6,7 +6,7 @@ import ManagedConnectionsSection from "@/components/connections/ManagedConnectio
 import McpConnectionsPanel from "@/components/connections/McpConnectionsPanel";
 import RemoteTargetsSection from "@/components/connections/RemoteTargetsSection";
 import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { EXTERNAL_CALENDAR_SYNC_ENABLED } from "@/lib/calendar/calendarConfig";
 import { remoteTargetsAvailable } from "@/lib/remote/remoteTargetsClient";
 
@@ -45,7 +45,7 @@ export default function ConnectionsAppGrid({
           <ConnectionCard
             icon={Plug}
             title="MCP servers"
-            description="Connect any MCP server by URL. Remote servers use HTTPS; sign-in runs through the server's own OAuth."
+            description="Connect any MCP server — remote by URL, or local apps like Blender that run on this Mac."
             action="Manage"
             onClick={() => setMcpOpen(true)}
           />
@@ -90,8 +90,15 @@ export default function ConnectionsAppGrid({
 
       <Dialog open={remoteOpen} onOpenChange={setRemoteOpen}>
         <DialogContent className="max-h-[80vh] max-w-lg overflow-y-auto">
-          <DialogTitle className="sr-only">Remote targets</DialogTitle>
-          <RemoteTargetsSection />
+          <DialogHeader className="pr-8 text-left">
+            <DialogTitle>Remote targets</DialogTitle>
+            <DialogDescription className="text-[12.5px] leading-relaxed">
+              SSH hosts LYKN can work on. Authentication uses your system SSH keys and agent.
+              LYKN never stores passwords or key files. First connection asks you to verify the
+              host&apos;s key fingerprint. Production hosts always require your approval for changes.
+            </DialogDescription>
+          </DialogHeader>
+          <RemoteTargetsSection hideHeader />
         </DialogContent>
       </Dialog>
     </section>

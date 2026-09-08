@@ -22,10 +22,12 @@ import {
   markBotSeen,
   subscribeBots,
 } from "@/lib/bots/botsClient";
+import { createStreamTypewriter, type StreamTypewriter } from "@/lib/ai/streamTypewriter";
 import {
   addOpenThread,
   dispatchThreadRuntimeChange,
   ensureThreadSnapshot,
+  getActiveThreadChatId,
   getThreadSnapshot,
 } from "@/lib/chat/chatThreadRuntime";
 import { createNewChat } from "@/lib/chat/chatThreadsClient";
@@ -89,6 +91,12 @@ export function useBotChatBridge({
   const rowsRef = useRef<PromptMessage[]>(chatMessages);
   rowsRef.current = chatMessages;
 
+  // Per-row typewriters. Bot deltas land as full text; this is what makes
+  // the reply type out instead of replacing the bubble in one paint.
+  const typersRef = useRef(
+    new Map<string, { tw: StreamTypewriter; meta: BotRowUpdate; pendingDone: BotRowUpdate | null }>(),
+  );
+
   /**
    * A settled Bot turn must survive like any other chat turn: thread context
    * for the next LYKN send, a durable board save, and a real title instead
@@ -138,6 +146,93 @@ export function useBotChatBridge({
     [userId],
   );
 
+  const patchBoardMessages = useCallback(
+    (boardId: string, updater: (prev: PromptMessage[]) => PromptMessage[]) => {
+      if (!boardId) {
+        setChatMessages(updater);
+        return;
+      }
+      try {
+        const snap = ensureThreadSnapshot(boardId);
+        const reactRows = rowsRef.current;
+        if (reactRows.length > snap.chatMessages.length) {
+          snap.chatMessages = reactRows;
+        }
+        snap.chatMessages = updater(snap.chatMessages);
+        snap.updatedAt = Date.now();
+        dispatchThreadRuntimeChange(boardId);
+        const viewing =
+          getActiveThreadChatId() === String(boardId) ||
+          String(routeChatId || "") === String(boardId);
+        if (viewing) {
+          rowsRef.current = snap.chatMessages;
+          setChatMessages(() => snap.chatMessages);
+        }
+      } catch {
+        setChatMessages(updater);
+      }
+    },
+    [routeChatId, setChatMessages],
+  );
+
+  const bindBotRowStream = useCallback(
+    (msgId: string, boardId: string, botName: string, userText: string) => {
+      const paint = (partial: string) => {
+        const entry = typersRef.current.get(msgId);
+        if (!entry) return;
+        patchBoardMessages(boardId, (prev) =>
+          prev.map((m) => (m.id === msgId ? patchedBotRow(m, { ...entry.meta, text: partial }) : m)),
+        );
+      };
+      const existing = typersRef.current.get(msgId);
+      existing?.tw.stop();
+      const tw = createStreamTypewriter({ onPaint: paint });
+      const already = String(rowsRef.current.find((m) => m.id === msgId)?.aiResponse || "");
+      if (already) tw.seed(already);
+      const entry = { tw, meta: { text: tw.shown() } as BotRowUpdate, pendingDone: null as BotRowUpdate | null };
+      typersRef.current.set(msgId, entry);
+      return (update: BotRowUpdate) => {
+        entry.meta = update;
+        paint(tw.shown());
+        tw.setTarget(String(update.text || ""));
+        if (!update.done) return;
+        entry.pendingDone = update;
+        tw.whenCaughtUp(() => {
+          settleBotTurn(boardId, botName, userText, msgId, update);
+          tw.stop();
+          typersRef.current.delete(msgId);
+        });
+      };
+    },
+    [patchBoardMessages, settleBotTurn],
+  );
+
+  const settleBotTurnRef = useRef(settleBotTurn);
+  settleBotTurnRef.current = settleBotTurn;
+  const routeChatIdLiveRef = useRef(routeChatId);
+  routeChatIdLiveRef.current = routeChatId;
+  useEffect(
+    () => () => {
+      for (const [msgId, entry] of typersRef.current) {
+        entry.tw.stop({ snap: true });
+        if (entry.pendingDone) {
+          const boardId = String(routeChatIdLiveRef.current || "");
+          const row = rowsRef.current.find((m) => m.id === msgId);
+          const botName = String(row?.bot?.name || "Bot");
+          settleBotTurnRef.current(
+            boardId,
+            botName,
+            String(row?.content || ""),
+            msgId,
+            entry.pendingDone,
+          );
+        }
+      }
+      typersRef.current.clear();
+    },
+    [],
+  );
+
   const handleBotChatSend = useCallback(
     (botId: string, text: string, attachments: BotSendAttachment[] = []) => {
       const bot = getBot(botId);
@@ -154,7 +249,7 @@ export function useBotChatBridge({
         mime: "",
         size: 0,
       }));
-      setChatMessages((prev) => [
+      patchBoardMessages(chatIdAtSend, (prev) => [
         ...prev,
         {
           id: msgId,
@@ -170,27 +265,18 @@ export function useBotChatBridge({
       // mid-task must not lose the prompt row (the mounted board's
       // persistence listens for this and saves from live refs).
       window.setTimeout(() => window.dispatchEvent(new Event("lyknchat_flush_save")), 600);
-      const taskId = sendBotChatTurn(
-        botId,
-        text,
-        (update: BotRowUpdate) => {
-          setChatMessages((prev) =>
-            prev.map((m) => (m.id === msgId ? patchedBotRow(m, update) : m)),
-          );
-          if (update.done) settleBotTurn(chatIdAtSend, bot.name, text, msgId, update);
-        },
-        attachments,
-      );
+      const onUpdate = bindBotRowStream(msgId, chatIdAtSend, bot.name, text);
+      const taskId = sendBotChatTurn(botId, text, onUpdate, attachments);
       // Stamp the task on the row so it can re-attach after a remount, and
       // remember we're already streaming it so the re-attach effect skips it.
       if (taskId) {
         followedBotTasksRef.current.add(taskId);
-        setChatMessages((prev) =>
+        patchBoardMessages(chatIdAtSend, (prev) =>
           prev.map((m) => (m.id === msgId ? { ...m, botTaskId: taskId } : m)),
         );
       }
     },
-    [routeChatId, setChatMessages, settleBotTurn],
+    [bindBotRowStream, patchBoardMessages, routeChatId],
   );
 
   const attachBotTaskRow = useCallback(
@@ -199,7 +285,7 @@ export function useBotChatBridge({
       const msgId = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
       const chatIdAtSend = String(routeChatId || "");
       followedBotTasksRef.current.add(taskId);
-      setChatMessages((prev) => [
+      patchBoardMessages(chatIdAtSend, (prev) => [
         ...prev,
         {
           id: msgId,
@@ -212,14 +298,9 @@ export function useBotChatBridge({
           botWorking: true,
         } as PromptMessage,
       ]);
-      followBotTask(bot.id, taskId, (update: BotRowUpdate) => {
-        setChatMessages((prev) =>
-          prev.map((m) => (m.id === msgId ? patchedBotRow(m, update) : m)),
-        );
-        if (update.done) settleBotTurn(chatIdAtSend, bot.name, displayText, msgId, update);
-      });
+      followBotTask(bot.id, taskId, bindBotRowStream(msgId, chatIdAtSend, bot.name, displayText));
     },
-    [routeChatId, setChatMessages, settleBotTurn],
+    [bindBotRowStream, patchBoardMessages, routeChatId],
   );
 
   // LYKN asked a teammate from this thread: stream that work here so the
@@ -283,14 +364,9 @@ export function useBotChatBridge({
       const boardId = String(routeChatId || "");
       const userText = String(row.content || "");
       const botName = bot.name;
-      followBotTask(bot.id, taskId, (update: BotRowUpdate) => {
-        setChatMessages((prev) =>
-          prev.map((m) => (m.id === msgId ? patchedBotRow(m, update) : m)),
-        );
-        if (update.done) settleBotTurn(boardId, botName, userText, msgId, update);
-      });
+      followBotTask(bot.id, taskId, bindBotRowStream(msgId, boardId, botName, userText));
     }
-  }, [chatId, routeChatId, chatMessages, setChatMessages, settleBotTurn]);
+  }, [bindBotRowStream, chatId, routeChatId, chatMessages, setChatMessages]);
 
   const mintBotBoard = useCallback(async () => {
     const id = String(userId || "").trim();

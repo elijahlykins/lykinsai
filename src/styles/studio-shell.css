@@ -33,6 +33,44 @@ html.lykn-studio-mode {
 .lykn-studio-fs-pad {
   padding-top: calc(0.75rem + var(--lykn-display-top-inset, 0px));
 }
+/* Simple fullscreen hides native traffic lights. Hovering the top of the
+   display reveals an in-page cluster, like a real fullscreen Mac app.
+   Studio unmounts this while a hosted window is filling the display so the
+   two clusters never stack. */
+.lykn-studio-fs-traffic {
+  position: absolute;
+  top: var(--lykn-display-top-inset, 0px);
+  left: 0;
+  z-index: 80;
+  width: 7.5rem;
+  height: 36px;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+.lykn-studio-fs-traffic-edge {
+  position: fixed;
+  top: var(--lykn-display-top-inset, 0px);
+  left: 0;
+  right: 0;
+  z-index: 80;
+  height: 8px;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+.lykn-studio-fs-traffic-cluster {
+  position: absolute;
+  top: 4px;
+  left: 16px;
+  opacity: 0;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
+  transition: opacity 120ms ease;
+}
+.lykn-studio-fs-traffic:hover .lykn-studio-fs-traffic-cluster,
+.lykn-studio-fs-traffic:focus-within .lykn-studio-fs-traffic-cluster {
+  opacity: 1;
+  pointer-events: auto;
+}
 .lykn-studio-research-rail {
   padding-top: calc(3.5rem + var(--lykn-display-top-inset, 0px));
 }
@@ -294,8 +332,8 @@ html:not(.dark) .lykn-split-quad-btn:hover {
   bottom: 4.25rem !important;
 }
 /* Fresh mode pages: every mode reads the same on the desktop — headline
-   comfortably above the center-screen bar, extras (chips / showcase tiles)
-   right below it. Centering-with-padding drifted with column height, so pin
+   comfortably above the center-screen bar, extras (showcase tiles) right
+   below it. Centering-with-padding drifted with column height, so pin
    the welcome column outright: its bottom lands just above the bar.
    (The container ends 8.75rem above the window bottom, so 50% − 2rem of
    it ≈ the column bottom at window-center − 2rem.) */
@@ -306,27 +344,15 @@ html:not(.dark) .lykn-split-quad-btn:hover {
   transform: translateX(-50%);
   margin: 0;
 }
-/* Build / Research quick-start chips: pulled out of the welcome column and
-   pinned just below the bar — the same spot Imagine's showcase tiles sit.
-   Anchored off the pinned column above: its bottom edge sits ~2rem above
-   window center, so +5.25rem below it ≈ 3.25rem under the bar.
-   The grow term is doubled here: the column these hang from has already moved
-   up by one of them, so clearing a taller bar's bottom edge costs two. */
-.lykn-home-chat-host .lykn-chat-empty-state .lykn-studio-chips {
-  position: absolute;
-  left: 50%;
-  top: calc(100% + 4rem + 2 * var(--lykn-home-bar-grow));
-  transform: translateX(-50%);
-  margin: 0;
-  width: max-content;
-  max-width: min(90vw, 40rem);
-  justify-content: center;
-  flex-wrap: wrap;
-  overflow-x: visible;
+/* The Home chat bar owns the model name (it is the bar the user types in).
+   Hide the page copy so empty Chat / a live thread don't draw a second one. */
+.lykn-home-chat-host .lykn-chat-empty-state .lykn-build-model-row,
+.lykn-home-chat-host .lykn-chat-thread-stage .lykn-build-model-row {
+  display: none !important;
 }
-/* A taller attachment tray covers this pinned strip — hide it rather than
-   trying to keep the gap. */
-html[data-home-bar-attached] .lykn-home-chat-host .lykn-studio-chips {
+/* A taller attachment tray covers the under-bar model name — hide it rather
+   than trying to keep the gap. */
+html[data-home-bar-attached] .lykn-home-bar-model {
   display: none !important;
 }
 /* Imagine's empty page on Home: the desktop rounded bar steps aside, so this
@@ -367,7 +393,7 @@ html[data-home-bar-attached] .lykn-home-chat-host .lykn-studio-chips {
   pointer-events: none;
 }
 /* Imagine's empty-page showcase collage: sit right below the center-screen
-   bar, matching Build / Research chips. */
+   bar, matching Research chips / Build's model name. */
 .lykn-home-chat-host .lykn-imagine-showcase {
   position: absolute;
   left: 50%;
@@ -518,8 +544,18 @@ html.lykn-studio-mode .lykn-voice-overlay {
   background: rgba(255, 255, 255, 0.1);
   color: var(--lg-text, rgba(255, 255, 255, 0.92));
 }
-html:not(.dark) .lykn-voice-popup-close:hover {
-  background: rgba(0, 0, 0, 0.08);
+html.dark .lykn-voice-overlay .lykn-voice-activity,
+.lykn-voice-overlay .lykn-voice-activity {
+  width: 100%;
+  margin-top: 2px;
+  --lykn-thinking-line: rgba(255, 255, 255, 0.14);
+}
+.lykn-voice-overlay .lykn-thinking__label {
+  font-size: 0.72rem;
+  text-align: left;
+}
+html:not(.dark) .lykn-voice-overlay .lykn-voice-activity {
+  --lykn-thinking-line: rgba(0, 0, 0, 0.12);
 }
 
 /* Artifact popup: the window itself is `lg-window` glass (same as dialogs
@@ -575,6 +611,18 @@ html.lykn-studio-mode:not(.dark) .\!text-white\/35 { color: rgba(0, 0, 0, 0.38) 
 html.lykn-studio-mode:not(.dark) .\!text-white\/70 { color: rgba(0, 0, 0, 0.68) !important; }
 html.lykn-studio-mode:not(.dark) .placeholder\:text-white\/35::placeholder { color: rgba(0, 0, 0, 0.4); }
 html.lykn-studio-mode:not(.dark) .placeholder\:text-white\/40::placeholder { color: rgba(0, 0, 0, 0.44); }
+
+/* Wallpaper-sitting ink: desktop file names and the Home-bar model sit on
+   the photo, not on glass chrome. Neutral remaps white utilities to dark
+   ink for frost panels; that would hide these labels on a dark wallpaper. */
+html.lykn-studio-mode:not(.dark) .lykn-desk-wallpaper-ink,
+html.lykn-studio-mode:not(.dark) .lykn-desk-wallpaper-ink .lykn-build-model-trigger {
+  color: rgba(255, 255, 255, 0.9);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+html.lykn-studio-mode:not(.dark) .lykn-desk-wallpaper-ink .lykn-build-model-trigger:hover {
+  color: rgba(255, 255, 255, 0.96);
+}
 
 html.lykn-studio-mode:not(.dark) .bg-white\/\[0\.07\] { background-color: rgba(0, 0, 0, 0.05); }
 html.lykn-studio-mode:not(.dark) .bg-white\/\[0\.08\] { background-color: rgba(0, 0, 0, 0.05); }
@@ -637,6 +685,20 @@ html.dark .lykn-browser-rail .lykn-chat-thinking-text,
 .lykn-browser-rail .lykn-chat-thinking-text {
   --lykn-chat-thinking-dim: rgba(0, 0, 0, 0.42);
   --lykn-chat-thinking-bright: #000;
+}
+.lykn-browser-rail .lykn-thinking__label,
+.lykn-browser-rail .lykn-thinking__label--head,
+.lykn-browser-rail .lykn-thinking__step--live .lykn-thinking__label {
+  color: rgba(0, 0, 0, 0.55);
+}
+.lykn-browser-rail .lykn-thinking__label--head {
+  color: rgba(0, 0, 0, 0.72);
+}
+.lykn-browser-rail .lykn-thinking__glyph {
+  color: rgba(0, 0, 0, 0.38);
+}
+.lykn-browser-rail .lykn-thinking {
+  --lykn-thinking-line: rgba(0, 0, 0, 0.12);
 }
 .lykn-chat-thread--browser a {
   overflow-wrap: anywhere;

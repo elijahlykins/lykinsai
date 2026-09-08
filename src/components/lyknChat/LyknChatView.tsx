@@ -1,10 +1,10 @@
-import React, { useRef, useEffect, useCallback } from "react";
+import React, { useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
 import LocalToolApprovalCard from "@/components/lyknChat/LocalToolApprovalCard";
 import { useBotLocalApprovals } from "@/lib/bots/botLocalApproval";
 import LyknChatArtifactPanel from "@/components/lyknChat/LyknChatArtifactPanel";
 import ChatMessageItem from "@/components/lyknChat/ChatMessageItem";
-import { isLiveBuildStatus, useBuildThoughtTrail } from "@/hooks/useThinkingStatus";
+import { isLiveBuildStatus, useThinkingTrail } from "@/hooks/useThinkingStatus";
 import { useWrittenDocumentPersist } from "@/hooks/useWrittenDocumentPersist";
 
 // Studio Research rail width — floats over the right edge; chat stays put.
@@ -22,6 +22,12 @@ import { chatBarMinHeight } from "@/lib/appearance";
 import { useAppearance } from "@/lib/useAppearance";
 import { isPullUpAsk, openLyknMediaPop } from "@/lib/lyknMediaPop";
 import { openArtifactFileWindow } from "@/lib/files/openArtifactWindow";
+import SlashPathMenu from "@/components/lyknChat/SlashPathMenu";
+import { useSlashPathMention } from "@/hooks/useSlashPathMention";
+import { useSlashAppMention } from "@/hooks/useSlashAppMention";
+import { useStudioSlashModel } from "@/hooks/useStudioSlashModel";
+import { useSlashAppOptions } from "@/lib/chat/slashAppCatalog";
+import type { SlashAppOption } from "@/lib/chat/slashAppQuery";
 
 export interface LyknChatViewProps {
   chatMessages: PromptMessage[];
@@ -35,8 +41,6 @@ export interface LyknChatViewProps {
   onSend: () => void | Promise<void>;
 
   typedWelcome: string;
-  /** Optional line under the centered welcome heading (empty-state only). */
-  welcomeSubtitle?: React.ReactNode;
   isMobilePhone?: boolean;
 
   isDictating: boolean;
@@ -87,6 +91,12 @@ export interface LyknChatViewProps {
 
   onDragOver: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent) => void;
+  /** Desktop: `/path` in the composer attaches a local file or folder chip. */
+  onAttachMacPaths?: (paths: string[]) => void | Promise<void>;
+  /** `/app`, `/gmail`, `/spotify` attach a connected tool or Mac app chip. */
+  onAttachSlashApp?: (option: SlashAppOption) => void;
+  /** Studio mode for `/model` search (chat / build / imagine / research). */
+  slashModelMode?: "chat" | "build" | "imagine" | "research";
 
   chatBarToolbar: React.ReactNode;
 
@@ -126,8 +136,11 @@ export interface LyknChatViewProps {
   composerAbove?: React.ReactNode;
   /** Context chips that belong inside the composer (e.g. Editing {app} + files). */
   composerInside?: React.ReactNode;
-  /** Optional content under the composer (active thread). */
+  /** Optional content under the composer — rendered on both the empty
+   *  welcome screen and the active thread (e.g. Build's coding-model pill). */
   composerBelow?: React.ReactNode;
+  /** Live build view, shown while a fresh artifact is still being written. */
+  buildStream?: React.ReactNode;
   /** Composer placeholder — Studio mode pages set a per-mode prompt. */
   composerPlaceholder?: string;
   /** Keep the composer pinned to the bottom even with no messages (e.g. new chat in a thread). */
@@ -145,6 +158,8 @@ export interface LyknChatViewProps {
   /** Hide the per-message source chips under AI responses (Studio Research
    *  page shows the links in the right rail instead). */
   hideMessageSources?: boolean;
+  /** Open the sources rail for a message's citation list. */
+  onOpenMessageSources?: (msgId: string, sources: { title: string; url: string }[]) => void;
   activeArtifact?: ChatArtifact | null;
   onActiveArtifactChange?: (artifact: ChatArtifact | null) => void;
   /** Save the open artifact (deck/doc/chart/file) to the vault. */
@@ -183,6 +198,43 @@ function messageHasInFlightTools(msg: { toolCalls?: ToolCallEvent[] } | null | u
 }
 
 
+function ComposerSlashMenus({
+  slash,
+  slashModel,
+  slashApp,
+}: {
+  slash: ReturnType<typeof useSlashPathMention>;
+  slashModel: ReturnType<typeof useStudioSlashModel>;
+  slashApp: ReturnType<typeof useSlashAppMention>;
+}) {
+  const active = slashModel.open ? slashModel : slashApp.open ? slashApp : slash;
+  if (!slashModel.open && !slashApp.open && !slash.open) return null;
+  return (
+    <SlashPathMenu
+      open
+      items={active.items}
+      index={active.index}
+      hint={active.hint}
+      onHover={active.setIndex}
+      onPick={(item, mode) => {
+        if (slashModel.open) slashModel.pick(item);
+        else if (slashApp.open) slashApp.pick(item);
+        else slash.pick(item, mode);
+      }}
+      ariaLabel={
+        slashModel.open ? "Choose a model" : slashApp.open ? "Choose an app" : "Link a file or folder"
+      }
+      emptyHint={
+        slashModel.open
+          ? "Type to search models"
+          : slashApp.open
+            ? "Type /gmail or /spotify"
+            : "Type a file or folder on this Mac"
+      }
+    />
+  );
+}
+
 const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatView({
   chatMessages,
   isChatLoading,
@@ -192,7 +244,6 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   onChatInputChange,
   onSend,
   typedWelcome,
-  welcomeSubtitle,
   isMobilePhone = false,
   isDictating,
   isTranscribing,
@@ -220,6 +271,9 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   renderFocusedAttachmentPreview,
   onDragOver,
   onDrop,
+  onAttachMacPaths,
+  onAttachSlashApp,
+  slashModelMode = "chat",
   chatBarToolbar,
   chatId = null,
   composerMinH = 52,
@@ -234,10 +288,12 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   composerAbove = null,
   composerInside = null,
   composerBelow = null,
+  buildStream = null,
   composerPlaceholder = "Ask me anything...",
   pinComposerToBottom = false,
   researchSidebar = null,
   hideMessageSources = false,
+  onOpenMessageSources,
   activeArtifact = null,
   onActiveArtifactChange,
   onSaveArtifact,
@@ -250,9 +306,15 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   // bar's geometry is CSS tokens.
   const appearance = useAppearance();
   const barMinH = chatBarMinHeight(appearance, composerMinH);
+  const slate = appearance.chatBarShape === "slate";
+  // Slate is a writing pad, so the field itself is the min height. Skinny
+  // shapes (pill, rectangle, leaf) keep that floor on the wrapper and let
+  // the textarea hug one line, so the placeholder and caret sit in the
+  // middle instead of at the top of a tall empty box.
+  const fieldMinH = slate ? barMinH : 36;
   const owningChatId = String(chatId || chatKey || "").trim();
   useWrittenDocumentPersist(chatMessages, onSaveArtifact, owningChatId);
-  const buildThoughtTrail = useBuildThoughtTrail(
+  const buildThoughtTrail = useThinkingTrail(
     thinkingStatus,
     isChatLoading || keepThinkingWhileLoading,
   );
@@ -412,14 +474,54 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   }, [chatMessages, chatKey, onActiveArtifactChange, isChatLoading]);
 
   const isControlledInput = chatInputValue !== undefined;
-  const handleComposerInputChange = useCallback(
-    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      const value = e.target.value;
+  const applyComposerValue = useCallback(
+    (value: string, textarea?: HTMLTextAreaElement | null) => {
       chatInputRef.current = value;
       onChatInputChange(value);
-      onResizeInput(e.currentTarget);
+      if (textarea) onResizeInput(textarea);
     },
     [chatInputRef, onChatInputChange, onResizeInput],
+  );
+  useLayoutEffect(() => {
+    onResizeInput(chatPanelInputRef.current);
+  }, [fieldMinH, slate, onResizeInput, chatPanelInputRef]);
+  const slash = useSlashPathMention({
+    enabled: typeof onAttachMacPaths === "function",
+    onValue: (value) => applyComposerValue(value, chatPanelInputRef.current),
+    onAttachPaths: onAttachMacPaths,
+  });
+  const slashModel = useStudioSlashModel({
+    mode: slashModelMode,
+    enabled: true,
+    onValue: (value) => applyComposerValue(value, chatPanelInputRef.current),
+  });
+  const slashAppOptions = useSlashAppOptions();
+  const slashApp = useSlashAppMention({
+    enabled: typeof onAttachSlashApp === "function",
+    onValue: (value) => applyComposerValue(value, chatPanelInputRef.current),
+    onSelect: onAttachSlashApp,
+    options: slashAppOptions,
+  });
+  const handleComposerInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      applyComposerValue(e.target.value, e.currentTarget);
+      slashModel.onInput(e.currentTarget);
+      slashApp.onInput(e.currentTarget);
+      slash.onInput(e.currentTarget);
+    },
+    [applyComposerValue, slash, slashApp, slashModel],
+  );
+  const handleComposerKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (slashModel.onKeyDown(e)) return;
+      if (slashApp.onKeyDown(e)) return;
+      if (slash.onKeyDown(e)) return;
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        void onSend();
+      }
+    },
+    [onSend, slash, slashApp, slashModel],
   );
 
   return (
@@ -447,7 +549,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
           <div
             className={`mx-auto my-auto w-full max-w-2xl ${compactPreview ? "space-y-3 px-1" : "space-y-8 sm:space-y-10"}`}
           >
-            <div className={`lykn-chat-ink pointer-events-none text-center ${compactPreview ? "space-y-1" : "space-y-2.5"}`}>
+            <div className="lykn-chat-ink pointer-events-none text-center">
               <p
                 className={`font-semibold tracking-tight text-black dark:text-white ${
                   compactPreview ? "text-sm min-h-0 line-clamp-2" : "text-xl sm:text-3xl min-h-0"
@@ -455,15 +557,6 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
               >
                 {typedWelcome}
               </p>
-              {welcomeSubtitle ? (
-                <p
-                  className={`text-black/55 dark:text-white/50 max-w-lg mx-auto leading-relaxed ${
-                    compactPreview ? "text-[11px] line-clamp-2" : "text-[13px] sm:text-sm"
-                  }`}
-                >
-                  {welcomeSubtitle}
-                </p>
-              ) : null}
             </div>
             <div className="mx-auto w-full flex flex-col gap-1">
               {composerAbove}
@@ -481,24 +574,33 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                   {isDictating ? (<><div className="dictation-wave"><span /><span /><span /><span /><span /></div><span className="text-xs text-blue-600 dark:text-blue-400 font-medium">Recording...</span></>) : (<><div className="brick-spinner" style={{ width: 14, height: 14 }} /><span className="text-xs text-black/60 dark:text-white/55">Transcribing...</span></>)}
                 </div>
               ) : (
-                <textarea
-                  ref={chatPanelInputRef}
-                  autoFocus={isMobilePhone}
-                  data-min-h={String(barMinH)}
-                  style={{ minHeight: barMinH }}
-                  {...(isControlledInput
-                    ? { value: chatInputValue }
-                    : { defaultValue: chatInputRef.current })}
-                  onChange={handleComposerInputChange}
-                  onPaste={onPaste}
-                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onSend(); } }}
-                  placeholder={composerPlaceholder}
-                  rows={1}
-                  className="w-full max-h-[180px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-5 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none"
-                />
+                <div
+                  className={`relative w-full${slate ? "" : " flex items-center"}`}
+                  style={slate ? undefined : { minHeight: barMinH }}
+                >
+                  <textarea
+                    ref={chatPanelInputRef}
+                    autoFocus={isMobilePhone}
+                    data-min-h={String(fieldMinH)}
+                    style={slate ? { minHeight: barMinH } : undefined}
+                    {...(isControlledInput
+                      ? { value: chatInputValue }
+                      : { defaultValue: chatInputRef.current })}
+                    onChange={handleComposerInputChange}
+                    onPaste={onPaste}
+                    onKeyDown={handleComposerKeyDown}
+                    placeholder={composerPlaceholder}
+                    rows={1}
+                    className={`w-full max-h-[180px] lykn-chat-neu-chat-field px-3 text-xs leading-5 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none ${
+                      slate ? "py-2" : ""
+                    }`}
+                  />
+                  <ComposerSlashMenus slash={slash} slashModel={slashModel} slashApp={slashApp} />
+                </div>
               )}
               {chatBarToolbar}
             </div>
+            {composerBelow}
             </div>
           </div>
         </div>
@@ -530,7 +632,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                   // once loading ends, or in plain chat once the model
                   // has finished talking and no tool/build status is live
                   // (avoids a stale "Responding…" under a completed reply).
-                  const isInFlightUserTurn =
+      const isInFlightUserTurn =
                     isChatLoading &&
                     idx === chatMessages.length - 1 &&
                     msg.role === "user" &&
@@ -546,6 +648,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                     idx={idx}
                     isLatest={idx === chatMessages.length - 1}
                     hideMessageSources={hideMessageSources}
+                    onOpenMessageSources={onOpenMessageSources}
                     chatId={owningChatId || undefined}
                     isAiExpanded={expandedAiMsgIds.has(msg.id)}
                     isUserPromptExpanded={expandedUserPromptIds.has(msg.id)}
@@ -614,21 +717,29 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                   {isDictating ? (<><div className="dictation-wave"><span /><span /><span /><span /><span /></div><span className="text-xs text-blue-600 dark:text-blue-400 font-medium">Recording...</span></>) : (<><div className="brick-spinner" style={{ width: 14, height: 14 }} /><span className="text-xs text-black/60 dark:text-white/55">Transcribing...</span></>)}
                 </div>
               ) : (
-                <textarea
-                  ref={chatPanelInputRef}
-                  autoFocus={isMobilePhone}
-                  data-min-h={String(barMinH)}
-                  style={{ minHeight: barMinH }}
-                  {...(isControlledInput
-                    ? { value: chatInputValue }
-                    : { defaultValue: chatInputRef.current })}
-                  onChange={handleComposerInputChange}
-                  onPaste={onPaste}
-                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onSend(); } }}
-                  placeholder={composerPlaceholder}
-                  rows={1}
-                  className="w-full max-h-[180px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-5 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none"
-                />
+                <div
+                  className={`relative w-full${slate ? "" : " flex items-center"}`}
+                  style={slate ? undefined : { minHeight: barMinH }}
+                >
+                  <textarea
+                    ref={chatPanelInputRef}
+                    autoFocus={isMobilePhone}
+                    data-min-h={String(fieldMinH)}
+                    style={slate ? { minHeight: barMinH } : undefined}
+                    {...(isControlledInput
+                      ? { value: chatInputValue }
+                      : { defaultValue: chatInputRef.current })}
+                    onChange={handleComposerInputChange}
+                    onPaste={onPaste}
+                    onKeyDown={handleComposerKeyDown}
+                    placeholder={composerPlaceholder}
+                    rows={1}
+                    className={`w-full max-h-[180px] lykn-chat-neu-chat-field px-3 text-xs leading-5 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none ${
+                      slate ? "py-2" : ""
+                    }`}
+                  />
+                  <ComposerSlashMenus slash={slash} slashModel={slashModel} slashApp={slashApp} />
+                </div>
               )}
               {chatBarToolbar}
             </div>
@@ -662,6 +773,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
           chatId={owningChatId || undefined}
         />
       ) : null}
+      {buildStream}
     </>
   );
 });

@@ -26,6 +26,7 @@ const {
   session,
   Notification,
   powerMonitor,
+  powerSaveBlocker,
   nativeTheme,
   protocol,
   net: electronNet,
@@ -61,6 +62,7 @@ const { attachLiveWatch } = require("./overlay/liveWatch.cjs");
 const { attachOverlaySessions } = require("./overlay/sessions.cjs");
 const { attachWelcomeOnboarding } = require("./windows/welcomeOnboarding.cjs");
 const { attachBrowserAutomation } = require("./os/browserAutomation.cjs");
+const { attachWorkKeepAlive } = require("./os/workKeepAlive.cjs");
 const { attachAskPipeline } = require("./overlay/askPipeline.cjs");
 
 // Intel-Mac glass fallback: see GLASS_FALLBACK in shell/appEnv.cjs.
@@ -1326,7 +1328,7 @@ const d = {
   electron: {
     app, BrowserWindow, WebContentsView, shell, globalShortcut, Menu, ipcMain,
     desktopCapturer, screen, systemPreferences, dialog, nativeImage, clipboard,
-    Tray, session, Notification, powerMonitor, nativeTheme, protocol,
+    Tray, session, Notification, powerMonitor, powerSaveBlocker, nativeTheme, protocol,
     net: electronNet, safeStorage,
   },
   node: {
@@ -1371,6 +1373,7 @@ function bindShellContext() {
   attachOverlaySettings(d);
   attachOverlaySessions(d);
   attachBrowserAutomation(d);
+  attachWorkKeepAlive(d);
   attachAskPipeline(d);
   attachWelcomeOnboarding(d);
   attachAgentBrowser(d);

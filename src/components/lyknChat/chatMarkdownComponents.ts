@@ -26,7 +26,14 @@ export const STATIC_MD_COMPONENTS = {
   h2: ({ children }: any) => React.createElement("h2", { className: "text-lg font-semibold mt-5 mb-2 tracking-tight" }, children),
   h3: ({ children }: any) => React.createElement("h3", { className: "text-base font-semibold mt-4 mb-1.5 tracking-tight" }, children),
   p: ({ children }: any) => React.createElement("p", { className: "mb-4 last:mb-0 leading-[1.65] whitespace-pre-wrap" }, children),
-  ul: ({ children }: any) => React.createElement("ul", { className: "my-3 list-disc pl-5 space-y-1.5" }, children),
+  ul: ({ children, className }: any) => {
+    const isTaskList = /\bcontains-task-list\b/.test(String(className || ""));
+    return React.createElement(
+      "ul",
+      { className: isTaskList ? "my-3 list-none space-y-1.5 pl-1" : "my-3 list-disc pl-5 space-y-1.5" },
+      children,
+    );
+  },
   ol: ({ children }: any) => React.createElement("ol", { className: "my-3 list-decimal pl-5 space-y-1.5" }, children),
   strong: ({ children }: any) => React.createElement("strong", { className: "font-semibold" }, children),
   blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 dark:border-white/20 pl-3 my-2 text-black/70 dark:text-white/70 italic" }, children),
@@ -101,8 +108,14 @@ export const BROWSER_MD_COMPONENTS = {
     React.createElement("h3", { className: "text-sm font-semibold mt-2 mb-1 tracking-tight" }, children),
   p: ({ children }: any) =>
     React.createElement("p", { className: "mb-2 last:mb-0 leading-[1.55] whitespace-pre-wrap" }, children),
-  ul: ({ children }: any) =>
-    React.createElement("ul", { className: "my-2 list-disc pl-4 space-y-1" }, children),
+  ul: ({ children, className }: any) => {
+    const isTaskList = /\bcontains-task-list\b/.test(String(className || ""));
+    return React.createElement(
+      "ul",
+      { className: isTaskList ? "my-2 list-none space-y-1 pl-0.5" : "my-2 list-disc pl-4 space-y-1" },
+      children,
+    );
+  },
   ol: ({ children }: any) =>
     React.createElement("ol", { className: "my-2 list-decimal pl-4 space-y-1" }, children),
   img: ({ src, alt }: any) =>
@@ -162,15 +175,28 @@ export function useChatMarkdownComponents(
     const comps: Record<string, React.ComponentType<any>> = {
       ...STATIC_MD_COMPONENTS,
       a: chatOwnedMarkdownAnchor(ownedChatId),
-      li: ({ children }: any) => {
+      li: ({ children, className }: any) => {
+        const isTaskItem = /\btask-list-item\b/.test(String(className || ""));
         const raw = flattenNodeText(children).trim();
         const match = raw.match(/^\[( |x|X)\]\s+(.+)$/);
-        if (!match) return React.createElement("li", { className: "leading-relaxed" }, children);
-        const defaultChecked = String(match[1]).toLowerCase() === "x";
-        const taskText = match[2];
-        const taskKey = raw;
+        if (!match && !isTaskItem) return React.createElement("li", { className: "leading-relaxed" }, children);
+        let defaultChecked = false;
+        let taskText = raw;
+        if (match) {
+          defaultChecked = String(match[1]).toLowerCase() === "x";
+          taskText = match[2];
+        } else {
+          const nodes = React.Children.toArray(children);
+          for (const node of nodes) {
+            if (React.isValidElement(node) && (node.props as any)?.type === "checkbox") {
+              defaultChecked = Boolean((node.props as any).checked);
+              break;
+            }
+          }
+        }
+        const taskKey = match ? raw : `[${defaultChecked ? "x" : " "}] ${taskText}`;
         const isChecked = checks?.[taskKey] ?? defaultChecked;
-        return React.createElement("li", { className: `list-none ml-[-1.25rem] flex items-start gap-2 leading-relaxed ${isChecked ? "opacity-60" : ""}` },
+        return React.createElement("li", { className: `list-none ml-0 flex items-start gap-2 leading-relaxed ${isChecked ? "opacity-60" : ""}` },
           React.createElement("input", { type: "checkbox", className: "mt-[0.28rem] shrink-0 accent-blue-500", checked: isChecked, onChange: (e: any) => updateTaskCheck(msgId, taskKey, e.target.checked) }),
           React.createElement("span", { className: isChecked ? "line-through" : "" }, taskText),
         );

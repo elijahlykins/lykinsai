@@ -30,6 +30,13 @@ const ALLOWED_EXTENSIONS = new Set<string>([
   "mp4", "mov", "webm", "m4v", "avi", "mkv", "wmv", "mpeg", "mpg", "3gp", "qt",
   // audio
   "mp3", "wav", "ogg", "m4a", "aac", "flac", "wma",
+  // engineering / CAD / mesh
+  "stl", "obj", "ply", "glb", "gltf", "3mf", "fbx", "dae", "3ds", "usdz",
+  "step", "stp", "iges", "igs", "brep", "sat", "x_t", "x_b",
+  "dxf", "dwg",
+  "scad", "fcstd", "3dm", "sldprt", "sldasm", "ipt", "iam", "prt",
+  "catpart", "catproduct", "f3d",
+  "gcode", "nc", "tap",
 ]);
 
 function extOf(filename: string): string {

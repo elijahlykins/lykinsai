@@ -8,31 +8,38 @@ export const GENERIC_BUILD_RE =
 const LIVE_BUILD_STATUS_RE =
   /^(building(?:\s|$)|designing the|drafting the|composing the|writing the (code|document|animation|components)|laying\sout|wiring|assembling|sketching|polishing|almost ready|putting (on the finishing|together)|creating the|rendering|filling in|figuring out|updating |patching )/i;
 
+const THINK_PHASES = [
+  { text: "Thinking…", duration: 1600 },
+  { text: "Reading what you said…", duration: 1800 },
+  { text: "Pulling together context…", duration: 2000 },
+  { text: "Working through it…", duration: 2200 },
+  { text: "Reasoning it out…", duration: 2400 },
+  { text: "Connecting the pieces…", duration: 2600 },
+  { text: "Putting it together…", duration: 2800 },
+  { text: "Almost there…", duration: 3200 },
+  { text: "Polishing the details…", duration: 6000 },
+];
+const BUILD_PHASES = [
+  { text: "Designing the build…", duration: 1800 },
+  { text: "Sketching the layout…", duration: 2000 },
+  { text: "Building out the sections…", duration: 2400 },
+  { text: "Writing the components…", duration: 2600 },
+  { text: "Wiring the interactions…", duration: 2400 },
+  { text: "Laying out the screens…", duration: 2600 },
+  { text: "Filling in the details…", duration: 2800 },
+  { text: "Checking the layout…", duration: 2800 },
+];
+const BUILD_LOOP_FROM = 2;
+
+export function isRotationPhrase(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  return THINK_PHASES.some((p) => p.text === t) || BUILD_PHASES.some((p) => p.text === t);
+}
+
 export function attachStatusRotation(host) {
   // Client-side status rotation (mirrors src/hooks/useThinkingStatus.js) so Build
   // mode doesn't freeze on a bare "Building…" the way Research narrates steps.
-  const THINK_PHASES = [
-    { text: "Thinking…", duration: 1600 },
-    { text: "Reading what you said…", duration: 1800 },
-    { text: "Pulling together context…", duration: 2000 },
-    { text: "Working through it…", duration: 2200 },
-    { text: "Reasoning it out…", duration: 2400 },
-    { text: "Connecting the pieces…", duration: 2600 },
-    { text: "Putting it together…", duration: 2800 },
-    { text: "Almost there…", duration: 3200 },
-    { text: "Polishing the details…", duration: 6000 },
-  ];
-  const BUILD_PHASES = [
-    { text: "Designing the build…", duration: 1800 },
-    { text: "Sketching the layout…", duration: 2000 },
-    { text: "Building out the sections…", duration: 2400 },
-    { text: "Writing the components…", duration: 2600 },
-    { text: "Wiring the interactions…", duration: 2400 },
-    { text: "Laying out the screens…", duration: 2600 },
-    { text: "Filling in the details…", duration: 2800 },
-    { text: "Checking the layout…", duration: 2800 },
-  ];
-  const BUILD_LOOP_FROM = 2;
   let statusRotateTimer = null;
   let statusRotateIndex = 0;
 
@@ -50,9 +57,10 @@ export function attachStatusRotation(host) {
   }
 
   function shouldKeepBuildingUnder() {
-    // Once the model is talking, only keep the spinner for build/tool work —
-    // not the generic "Thinking…" rotation under a finished (or finishing) reply.
-    return host.answerStillWorking && host.statusRotateLane === "build";
+    // Keep the outline looping for the whole turn. Dropping it the moment
+    // the first token arrived made the animation start/stop between tool
+    // hops and token bursts.
+    return !!host.answerStillWorking;
   }
 
   function applyRotatedStatus(text) {

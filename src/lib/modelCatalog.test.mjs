@@ -28,8 +28,8 @@ test('top models are the current flagships', () => {
     FRONTIER_GOOGLE_ID,
     FRONTIER_XAI_ID,
   ]);
-  assert.equal(FRONTIER_OPENAI_ID, 'gpt-5.6-sol');
-  assert.equal(FRONTIER_ANTHROPIC_ID, 'claude-fable-5');
+  assert.equal(FRONTIER_OPENAI_ID, 'gpt-6-astra');
+  assert.equal(FRONTIER_ANTHROPIC_ID, 'claude-fable-5.1');
   assert.equal(FRONTIER_GOOGLE_ID, 'gemini-3.1-pro-preview');
   assert.equal(FRONTIER_XAI_ID, 'grok-4.6');
 });
@@ -37,7 +37,10 @@ test('top models are the current flagships', () => {
 test('company groups cover still-served models', () => {
   const byId = Object.fromEntries(MODEL_GROUPS.map((group) => [group.id, group]));
   assert.ok(byId.openai.items.some((item) => item.value === 'gpt-5.6-terra'));
+  assert.ok(byId.openai.items.some((item) => item.value === 'gpt-5.6-sol'));
+  assert.ok(byId.openai.items.some((item) => item.value === 'gpt-6-astra-pro'));
   assert.ok(byId.anthropic.items.some((item) => item.value === 'claude-opus-5'));
+  assert.ok(byId.anthropic.items.some((item) => item.value === 'claude-fable-5'));
   assert.ok(byId.google.items.some((item) => item.value === 'gemini-3.6-flash'));
   assert.ok(byId.xai.items.some((item) => item.value === 'grok-4.5'));
 });

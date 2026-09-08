@@ -35,7 +35,10 @@ const batchPolicy = require("./runtime/batch.cjs");
 const deadEnd = require("./runtime/deadEnd.cjs");
 const { rewriteDocsWriteAction } = require("../docsTitleGuard.cjs");
 
-const DEFAULT_MAX_ROUNDS = 24;
+// Matches the desktop MCP hop budget philosophy: enough rounds that a run
+// never dies mid-flow for budget reasons alone — the evidence checks and
+// recovery ladder end bad runs, the budget ends runaway ones.
+const DEFAULT_MAX_ROUNDS = 32;
 
 /**
  * Page-level proof a delivery already went out. Gmail's toast is "Message sent";

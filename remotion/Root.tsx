@@ -1,4 +1,6 @@
 import { Composition } from "remotion";
+import { LYKNcodex, LYKN_CODEX_DURATION } from "./LYKNcodex";
+import { LyknDesktopChatbarZoom, DESKTOP_CHATBAR_ZOOM_DURATION } from "./LyknDesktopChatbarZoom";
 import { HelloLykn } from "./HelloLykn";
 import { LyknLogoReveal } from "./LyknLogoReveal";
 import { LyknIconSpin, lyknIconSpinDefaults } from "./LyknIconSpin";
@@ -71,12 +73,46 @@ import {
   HERO_DESKTOP_BUILD_DURATION,
 } from "./LyknHeroDesktopBuild";
 import { LyknLaptopDockZoom, LAPTOP_DOCK_ZOOM_DURATION } from "./LyknLaptopDockZoom";
+import { LyknLaunch, LAUNCH_DURATION } from "./LyknLaunch";
+import { LyknLaunchEndCard, END_CARD_DURATION } from "./LyknLaunchEndCard";
 
 // Every composition you want to render or preview is registered here.
 // Add more <Composition> entries as we build new things.
 export const RemotionRoot: React.FC = () => {
   return (
     <>
+      <Composition
+        id="LYKNcodex"
+        component={LYKNcodex}
+        durationInFrames={LYKN_CODEX_DURATION}
+        fps={30}
+        width={1920}
+        height={1080}
+      />
+      <Composition
+        id="LyknDesktopChatbarZoom"
+        component={LyknDesktopChatbarZoom}
+        durationInFrames={DESKTOP_CHATBAR_ZOOM_DURATION}
+        fps={30}
+        width={HERO_DESKTOP_WIDTH}
+        height={HERO_DESKTOP_HEIGHT}
+      />
+      <Composition
+        id="LyknLaunch"
+        component={LyknLaunch}
+        durationInFrames={LAUNCH_DURATION}
+        fps={30}
+        width={1920}
+        height={1080}
+      />
+      <Composition
+        id="LyknLaunchEndCard"
+        component={LyknLaunchEndCard}
+        durationInFrames={END_CARD_DURATION}
+        fps={30}
+        width={1920}
+        height={1080}
+      />
       <Composition
         id="LyknLogoReveal"
         component={LyknLogoReveal}

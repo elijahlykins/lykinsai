@@ -124,7 +124,9 @@ html[data-chat-bubble-shape]:not([data-chat-bubble-shape='tail']) .lykn-user-pro
    welcome headline, the mode pages' column and chips, the thread's bottom
    clearance) because centering them with padding drifted. Each of those adds
    this so it keeps the gap it was drawn with rather than letting a taller bar
-   eat it. Slate is 6.5rem against the pill's 2.75rem: 1.875rem a side. */
+   eat it. HomeChatBar publishes the live value from the actual bar (wrapped
+   prompt, attachments, size, Slate). The Slate rule below is the pre-measure
+   fallback: 6.5rem against the pill's 2.75rem, 1.875rem a side. */
 html {
   --lykn-home-bar-grow: 0rem;
 }
@@ -210,6 +212,30 @@ html[data-chat-bar-size='custom'] .lykn-home-chat-bar {
 
 html[data-chat-bar-size='custom'] .lykn-home-chat-bar-input {
   font-size: var(--lykn-chat-bar-font);
+}
+
+/* One-line Home bars (pill, rectangle, leaf). Chromium top-aligns textarea
+   glyphs, so a 32px field with 32px line-height still paints the caret at
+   the top of the buttons. A short line-height plus extra top padding is
+   what actually drops the placeholder onto the control row. */
+html:not([data-chat-bar-shape='slate'])
+  .lykn-home-chat-bar:not([data-prompt-wrap='true'])
+  .lykn-home-chat-bar-input {
+  box-sizing: border-box;
+  height: 2rem;
+  min-height: 2rem;
+  max-height: 2rem;
+  line-height: 18px;
+  padding-top: 13px;
+  padding-bottom: 1px;
+  overflow: hidden;
+}
+
+html:not([data-chat-bar-shape='slate'])
+  .lykn-chat-neu-chat-shell
+  textarea.lykn-chat-neu-chat-field {
+  padding-top: 16px;
+  padding-bottom: 4px;
 }
 
 /* ─────────────────────────────────────────────────────────────

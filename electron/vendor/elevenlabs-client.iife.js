@@ -13064,7 +13064,7 @@ var ElevenLabsClient = (function(exports) {
 	};
 	const audioDefaults = {
 		deviceId: { ideal: "default" },
-		autoGainControl: true,
+		autoGainControl: false,
 		echoCancellation: true,
 		noiseSuppression: true,
 		voiceIsolation: true
@@ -21725,7 +21725,7 @@ var ElevenLabsClient = (function(exports) {
 					deviceId: { exact: deviceId },
 					echoCancellation: true,
 					noiseSuppression: true,
-					autoGainControl: true,
+					autoGainControl: false,
 					channelCount: { ideal: 1 }
 				});
 				await this.room.localParticipant.publishTrack(audioTrack, {
@@ -22243,7 +22243,7 @@ registerProcessor("rawAudioProcessor", RawAudioProcessor);
 	const defaultConstraints = {
 		echoCancellation: true,
 		noiseSuppression: true,
-		autoGainControl: true,
+		autoGainControl: false,
 		channelCount: { ideal: 1 }
 	};
 	var MediaDeviceInput = class MediaDeviceInput {
@@ -22707,7 +22707,12 @@ registerProcessor("rawAudioProcessor", RawAudioProcessor);
 		let unlockedAudioContext = null;
 		try {
 			if (useWakeLock) wakeLock = await requestWakeLock();
-			preliminaryInputStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			preliminaryInputStream = await navigator.mediaDevices.getUserMedia({ audio: {
+				echoCancellation: true,
+				noiseSuppression: true,
+				autoGainControl: false,
+				channelCount: { ideal: 1 }
+			} });
 			const platform = detectPlatform();
 			await applyDelay(resolveDelay(options.connectionDelay, platform));
 			const connection = await createConnection(options);

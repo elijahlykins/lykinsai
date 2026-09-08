@@ -1,11 +1,15 @@
 /**
  * Picking a vault backend.
  *
- * Three things must all be true before the vault reads from this device:
- * the app is the desktop shell, the store bridge is actually present, and the
- * user has turned it on. The last one is a real switch rather than a build
- * flag because the same bundle serves https://lykn.io in a plain browser,
- * where there is no local store at all and Supabase is the only answer.
+ * On the desktop shell (store bridge present), LOCAL IS THE DEFAULT: a fresh
+ * install reads and writes this device from the first session, and generated
+ * media never becomes a cloud object. The localStorage preference is an
+ * explicit opt-out ("0"), not an opt-in — it exists for users who started on
+ * the cloud vault and haven't copied their items down yet (the Local Vault
+ * settings pane owns that migration and the switch).
+ *
+ * In a plain browser there is no local store at all, so Supabase is the only
+ * answer regardless of the preference.
  *
  * The preference lives in localStorage because backend selection happens
  * during render, before any async call could resolve it.
@@ -30,10 +34,13 @@ export function isLocalVaultAvailable(): boolean {
 export function isLocalVaultEnabled(): boolean {
   if (!isLocalVaultAvailable()) return false;
   try {
-    return window.localStorage.getItem(LOCAL_VAULT_PREF_KEY) === "1";
+    // Default ON: only an explicit "0" (the settings switch) selects the cloud
+    // vault. Unset — every fresh install — means local.
+    return window.localStorage.getItem(LOCAL_VAULT_PREF_KEY) !== "0";
   } catch {
-    // Private browsing and some hardened profiles throw on localStorage.
-    return false;
+    // Private browsing and some hardened profiles throw on localStorage. With
+    // no way to read the opt-out, stay local — that is the desktop default.
+    return true;
   }
 }
 

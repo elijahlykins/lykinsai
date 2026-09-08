@@ -292,6 +292,17 @@ const MIGRATIONS = [
       ALTER TABLE apps ADD COLUMN icon_source TEXT;
     `,
   },
+  {
+    version: 7,
+    name: "app_files_encoding",
+    sql: `
+      -- How \`content\` is stored: NULL/'utf8' is text as before; 'base64' is a
+      -- binary asset (font, image) encoded for the TEXT column. Static apps
+      -- installed from a Build-workspace production bundle carry real assets,
+      -- which the JSX-source apps this table was built for never did.
+      ALTER TABLE app_files ADD COLUMN encoding TEXT;
+    `,
+  },
 ];
 
 const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0);

@@ -12,12 +12,8 @@ import {
   putUserModelSettings,
   updateUserRoute,
 } from '../../lib/models/userModelSettings.js';
-import { dailyUsageSpend, listUsageEvents, summarizeUsageEvents } from '../../lib/usage/usageEvents.js';
+import { listUsageEvents, summarizeUsageEvents } from '../../lib/usage/usageEvents.js';
 import { syncOpenRouterCatalog } from '../../lib/inference/openRouterCatalog.js';
-import {
-  includedChatBaseline,
-  modelBillingStateForPaidChat,
-} from '../../lib/billing/usageEntitlements.js';
 
 function publicModel(def) {
   return {
@@ -31,6 +27,7 @@ function publicModel(def) {
     contextWindow: def.contextWindow,
     pricing: def.pricing,
     enabled: def.enabled,
+    modalities: def.modalities || { input: ["text"], output: ["text"] },
   };
 }
 
@@ -69,18 +66,6 @@ export function registerModelPlatformRoutes(app, { requireAuth }) {
 
   app.get('/api/models/recommended', requireAuth, (_req, res) => {
     return res.json({ models: listRecommendedModels().map(publicModel) });
-  });
-
-  // Included-vs-metered chat billing per model, derived from canonical
-  // registry pricing against the Auto advanced-tier baseline. The picker
-  // shows "Included" / "Uses usage" from this; never exposes multipliers.
-  app.get('/api/models/billing-states', requireAuth, (_req, res) => {
-    res.set('Cache-Control', 'private, max-age=300');
-    const states = {};
-    for (const def of listModels()) {
-      states[def.id] = modelBillingStateForPaidChat(def.id);
-    }
-    return res.json({ baseline_model: includedChatBaseline().modelId, states });
   });
 
   app.get('/api/models/curated', requireAuth, (_req, res) => {
@@ -155,13 +140,5 @@ export function registerModelPlatformRoutes(app, { requireAuth }) {
   app.get('/api/usage/summary', requireAuth, async (req, res) => {
     const summary = await summarizeUsageEvents(req.user.id);
     return res.json(summary);
-  });
-
-  // Daily spend for the billing chart. Category-level customer charge only —
-  // never model ids, providers, or raw provider cost.
-  app.get('/api/usage/daily', requireAuth, async (req, res) => {
-    const days = Number(req.query.days) || 30;
-    const daily = await dailyUsageSpend(req.user.id, { days });
-    return res.json(daily);
   });
 }

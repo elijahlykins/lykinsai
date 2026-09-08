@@ -16,6 +16,9 @@ const NOTES_CHARS = 280;
 const HTTP_BODY_CHARS = 8000;
 const WEB_PAGE_CHARS = 2000;
 const DOCUMENT_BODY_CHARS = 16000;
+const FILE_READ_BODY_CHARS = 24000;
+const SERIALISE_CAP = 16000;
+const FILE_SERIALISE_CAP = 32000;
 const ARRAY_PREVIEW = 25;
 
 function clipText(value, max) {
@@ -245,6 +248,28 @@ function boundNamedPayload(name, payload) {
     return payload;
   }
 
+  if (name === 'local_read_file') {
+    if (typeof payload.content === 'string' && payload.content.length > FILE_READ_BODY_CHARS) {
+      return {
+        ...payload,
+        content: payload.content.slice(0, FILE_READ_BODY_CHARS),
+        truncated: true,
+        hint:
+          payload.hint ||
+          (payload.nextOffset
+            ? `Call again with offset: ${payload.nextOffset}`
+            : 'Content clipped. Re-read with offset/limit for the rest.'),
+      };
+    }
+    return payload;
+  }
+
+  if (name === 'local_search_files') {
+    const hits = Array.isArray(payload.results) ? payload.results : [];
+    const { items, omitted } = capArray(hits, 40);
+    return withTruncationMeta({ ...payload, results: items }, omitted, 'omitted');
+  }
+
   return payload;
 }
 
@@ -260,4 +285,49 @@ export function measureResultPayload(payload) {
   const json = typeof payload === 'string' ? payload : JSON.stringify(payload ?? '');
   const bytes = Buffer.byteLength(json, 'utf8');
   return { bytes, approxTokens: Math.round(bytes / 4), chars: json.length };
+}
+
+function serialiseCapFor(name) {
+  return name === 'local_read_file' ? FILE_SERIALISE_CAP : SERIALISE_CAP;
+}
+
+/**
+ * JSON for the model. Prefer clipping a `content` field over slicing the
+ * JSON mid-string, so a truncated file read still has nextOffset / hint.
+ */
+export function clipJsonToCap(forModel, originalPayload, name, cap = serialiseCapFor(name)) {
+  const json = JSON.stringify(forModel ?? '');
+  if (json.length <= cap) return json;
+  if (forModel && typeof forModel === 'object' && !Array.isArray(forModel) && typeof forModel.content === 'string') {
+    const overhead = json.length - forModel.content.length;
+    const room = Math.max(400, cap - overhead - 160);
+    const hint =
+      forModel.nextOffset
+        ? `Call again with offset: ${forModel.nextOffset}`
+        : forModel.hint || 'Content clipped for the model. Re-read a later offset.';
+    const clipped = {
+      ...forModel,
+      content: forModel.content.slice(0, room),
+      truncated: true,
+      hint,
+    };
+    const out = JSON.stringify(clipped);
+    if (out.length <= cap) return out;
+    return JSON.stringify({
+      ok: originalPayload?.ok,
+      truncated: true,
+      path: clipped.path,
+      startLine: clipped.startLine,
+      endLine: clipped.endLine,
+      totalLines: clipped.totalLines,
+      nextOffset: clipped.nextOffset,
+      hint,
+      content: String(clipped.content || '').slice(0, Math.max(200, cap - 500)),
+    });
+  }
+  return JSON.stringify({
+    ok: originalPayload?.ok,
+    truncated: true,
+    preview: json.slice(0, cap),
+  });
 }

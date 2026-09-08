@@ -18,19 +18,19 @@ const FEATURE_ITEMS = [
   {
     id: "chat",
     name: "Chat",
-    desc: "Ask anything with your context already loaded.",
+    desc: "Ask anything, and connect the tools you already use.",
     to: "/product/chat",
   },
   {
     id: "build",
     name: "Build",
-    desc: "Turn a sentence into working software.",
+    desc: "Describe it. LYKN builds the rest on your device.",
     to: "/product/build",
   },
   {
     id: "imagine",
     name: "Imagine",
-    desc: "On-brand images, ads, and art from a prompt.",
+    desc: "Images from any model, video from the best.",
     to: "/product/imagine",
   },
   {
@@ -42,7 +42,7 @@ const FEATURE_ITEMS = [
   {
     id: "research",
     name: "Research",
-    desc: "Deep digs into sources, structured as a report.",
+    desc: "Pick your sources. Get a real report.",
     to: "/product/research",
   },
   {
@@ -54,7 +54,7 @@ const FEATURE_ITEMS = [
   {
     id: "agents",
     name: "Agents",
-    desc: "AI teammates for inbox, research, and routines.",
+    desc: "Standing AI teammates on your desktop.",
     to: "/product/agents",
   },
   {
@@ -311,8 +311,8 @@ export default function LandingHeader({
           <button type="button" className="lkn-nav-link" onClick={() => navigate("/security")}>
             Security
           </button>
-          <button type="button" className="lkn-nav-link" onClick={() => navigate("/news")}>
-            News
+          <button type="button" className="lkn-nav-link" onClick={() => navigate("/windows")}>
+            Windows
           </button>
         </nav>
 
@@ -373,9 +373,9 @@ export default function LandingHeader({
             <button
               type="button"
               className="lkn-mobile-link"
-              onClick={() => menuGo(() => navigate("/news"))}
+              onClick={() => menuGo(() => navigate("/windows"))}
             >
-              <span className="lkn-mobile-link-name">News</span>
+              <span className="lkn-mobile-link-name">Windows</span>
             </button>
           </div>
           <div className="lkn-mobile-ctas">

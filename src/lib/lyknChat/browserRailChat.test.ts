@@ -60,6 +60,30 @@ test("opening the browser rail does not unmount the Home chat bar", () => {
   assert.doesNotMatch(studio, /!railAttachedOpen &&\s*\(\s*<HomeChatBar/);
 });
 
+test("Home chat bar publishes live grow so a tall prompt cannot cover Welcome back", () => {
+  const homeBar = src("src/components/macdesktop/HomeChatBar.jsx");
+  assert.match(homeBar, /HOME_BAR_BASE_H_REM/);
+  assert.match(homeBar, /ResizeObserver/);
+  assert.match(homeBar, /setProperty\("--lykn-home-bar-grow"/);
+  assert.match(
+    homeBar,
+    /top: 'calc\(50% - 1\.375rem - 2\.875rem - var\(--lykn-home-bar-grow\)\)'/,
+  );
+});
+
+test("Home chat bar owns the Studio model picker so idle Chat has one", () => {
+  const homeBar = src("src/components/macdesktop/HomeChatBar.jsx");
+  const picker = src("src/components/lyknChat/BuildModelSelect.tsx");
+  const css = src("src/styles/studio-shell.css");
+  assert.match(homeBar, /HomeBarStudioModelSelect/);
+  assert.match(homeBar, /lykn-home-bar-model/);
+  assert.match(
+    css,
+    /\.lykn-home-chat-host \.lykn-chat-thread-stage \.lykn-build-model-row/,
+  );
+  assert.match(picker, /acceptsStudioModelPickerEvent/);
+});
+
 test("browser and rail share one pane with a hairline join", () => {
   const body = src("src/components/studio/StudioBrowserBody.jsx");
   const layout = src("src/components/studio/browserPaneLayout.js");

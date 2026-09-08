@@ -54,6 +54,16 @@ const MAX_SAFE_LEAKED_DELETE = 25;
 const VAULT_OBJECT_SHAPE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/.+/i;
 
+// Ephemeral transit objects: `<userId>/ephemeral/<file>`. Written only by
+// lib/exterior/generate3dModel.js (GLBs + previews) whose deliverable lands on
+// the user's machine — the prefix IS the expiry contract, so anything here
+// older than the TTL is deleted unconditionally (no reference allow-list
+// needed, and no destructive flag: expiring is the designed behavior).
+// Mirrors EPHEMERAL_OBJECT_TTL_MINUTES in lib/exterior/constants.js.
+const EPHEMERAL_OBJECT_SHAPE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/ephemeral\/.+/i;
+const EPHEMERAL_TTL_MINUTES = 60 * 24; // 24 hours
+
 function buildAdminClient() {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error('vaultReconcilerJob: missing SUPABASE_URL / SERVICE_ROLE_KEY');
@@ -354,6 +364,41 @@ async function sweepLeakedFiles(admin, { bucket, leakGraceMinutes, referenced, d
 }
 
 /**
+ * SAFE, always-on sweep of expired ephemeral transit objects
+ * (`<userId>/ephemeral/<file>`, currently 3D GLBs + previews). The path prefix
+ * is the contract: these objects exist only so a fresh generation can be
+ * downloaded to the user's machine, and are meant to disappear after the TTL.
+ * No allow-list cross-check and no destructive flag — expiry IS the behavior.
+ * Respects dryRun like everything else.
+ */
+async function sweepEphemeralObjects(admin, { bucket, dryRun }) {
+  const { data, error } = await admin.rpc('vault_list_storage_objects', {
+    p_bucket: bucket,
+    older_than_minutes: EPHEMERAL_TTL_MINUTES,
+  });
+  if (error) {
+    // RPC not deployed — nothing accumulates fast here; just report.
+    return { expired: 0, deleted: 0, rpcMissing: true, sample: [] };
+  }
+  const expired = [];
+  for (const obj of data || []) {
+    const name = obj?.name;
+    if (!name || !EPHEMERAL_OBJECT_SHAPE.test(name)) continue;
+    expired.push(name);
+  }
+
+  let deleted = 0;
+  if (!dryRun && expired.length) {
+    for (let i = 0; i < expired.length; i += 100) {
+      const batch = expired.slice(i, i + 100);
+      const { error: rmErr } = await admin.storage.from(bucket).remove(batch);
+      if (!rmErr) deleted += batch.length;
+    }
+  }
+  return { expired: expired.length, deleted, rpcMissing: false, sample: expired.slice(0, 20) };
+}
+
+/**
  * SAFE, always-on sweep of abandoned in-flight uploads via the upload ledger
  * (migration 112). A `lykn_upload_ledger` row still state='uploading' past the
  * grace window is positive proof the vault pipeline started an upload that
@@ -487,6 +532,10 @@ export async function runVaultReconciler(opts = {}) {
     deleteLeaked,
   });
 
+  // 6. Ephemeral transit objects (3D GLBs staged for download): delete by age.
+  // Always on — the `<userId>/ephemeral/` prefix is the expiry contract.
+  const ephemeral = await sweepEphemeralObjects(admin, { bucket, dryRun });
+
   const summary = {
     dryRun,
     deleteLeaked,
@@ -508,6 +557,10 @@ export async function runVaultReconciler(opts = {}) {
     leakedRefused: leak.refused,
     leakRpcMissing: leak.rpcMissing,
     leakedSample: leak.sample,
+    ephemeralExpired: ephemeral.expired,
+    ephemeralDeleted: ephemeral.deleted,
+    ephemeralRpcMissing: ephemeral.rpcMissing,
+    ephemeralSample: ephemeral.sample,
     durationMs: Date.now() - startedAt,
   };
 
@@ -520,6 +573,8 @@ export async function runVaultReconciler(opts = {}) {
       `leakedCandidates=${leak.candidates} leakedDeleted=${leak.deleted}` +
       `${leak.refused ? ' (REFUSED: over cap)' : ''}` +
       `${leak.rpcMissing ? ' (leak RPC not deployed)' : ''} ` +
+      `ephemeralExpired=${ephemeral.expired} ephemeralDeleted=${ephemeral.deleted}` +
+      `${ephemeral.rpcMissing ? ' (ephemeral RPC not deployed)' : ''} ` +
       `${summary.durationMs}ms`,
   );
 

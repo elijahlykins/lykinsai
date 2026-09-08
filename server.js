@@ -50,6 +50,7 @@ import {
   markTopupPayer,
 } from './lib/billing/creditWallet.js';
 import { getUsageBalance } from './lib/billing/usageBalance.js';
+import { grantUnlimitedUsage } from './lib/billing/internalAccounts.js';
 import { logStripePriceConfig } from './lib/billing/stripePriceConfig.js';
 import { compressConversation as compressConversationForPrompt } from './src/lib/ai/conversationFormat.js';
 import { makeRssPoller } from './rss-service.js';
@@ -58,6 +59,7 @@ import { registerAccountRoutes } from './server/routes/account.routes.js';
 import { registerAdminRoutes } from './server/routes/admin.routes.js';
 import { registerAppleAuthRoutes, registerEmailAuthRoutes } from './server/routes/authFlows.routes.js';
 import { registerBillingRoutes } from './server/routes/billing.routes.js';
+import { registerWaitlistRoutes } from './server/routes/waitlist.routes.js';
 import { registerMetricsRoutes, registerFeedbackRoutes, registerProjectInviteRoutes } from './server/routes/platform.routes.js';
 import { registerClientErrorRoute, registerHealthRoute, registerFileProxyAndArtifactRoutes } from './server/routes/preLimiterPlatform.routes.js';
 import { registerStripeWebhook } from './server/routes/stripeWebhook.routes.js';
@@ -648,6 +650,10 @@ const STRIPE_PRICE_MAP = {
     monthly: process.env.STRIPE_PRICE_STUDIO_MONTHLY,
     annual: process.env.STRIPE_PRICE_STUDIO_ANNUAL,
   },
+  pro_plus: {
+    monthly: process.env.STRIPE_PRICE_PRO_PLUS_MONTHLY,
+    annual: process.env.STRIPE_PRICE_PRO_PLUS_ANNUAL,
+  },
   max: {
     monthly: process.env.STRIPE_PRICE_MAX_MONTHLY,
     annual: process.env.STRIPE_PRICE_MAX_ANNUAL,
@@ -753,6 +759,10 @@ const IMAGE_BEARING_AI_ROUTES = new Set([
   '/api/ai/stream',
   '/api/ai/invoke',
   '/api/ai/imagine-image',
+  // Client-executed tool results carry pixels now: local_desktop_look
+  // screenshots, local_read_file image reads, desktop-MCP viewport captures.
+  // On 1mb they 413 silently and the agent loop sees a vanished tool result.
+  '/api/ai/local-tool-result',
   '/api/desktop/browser-plan',
   '/api/desktop/browser-plan-next',
   '/api/desktop/browser-report',
@@ -1199,6 +1209,28 @@ const guestAiDailyLimiter = rateLimit({
   handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'guestAiDailyLimiter'),
 });
 
+const waitlistLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip,
+  validate: rlValidateOff,
+  message: { error: 'Too many waitlist attempts — try again later' },
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'waitlistLimiter'),
+});
+
+const waitlistReadLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip,
+  validate: rlValidateOff,
+  message: { error: 'Too many waitlist requests — try again later' },
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'waitlistReadLimiter'),
+});
+
 // Server-wide guest ceiling. In-memory rolling hour counter to act as
 // a kill switch if the demo gets dogpiled (e.g. shared on social) so
 // the entire LLM bill can't be torched by anonymous traffic. Resets
@@ -1234,13 +1266,11 @@ app.use('/api/', globalLimiter);
 app.use('/oauth/', oauthCallbackLimiter);
 
 // Metered-usage gate — replaces the retired monthly glass-request quota.
-// There are no per-feature request caps anymore: included chat is free for
-// paid plans, everything else meters the dollar Usage Balance.
+// There are no per-feature request caps anymore: everything meters the
+// dollar Usage Balance, chat included.
 //
-//   • Chat paths: paid plans pass (included chat); free-tier chat is metered
-//     but requireAppAccess has already verified a positive balance. Premium
-//     manual-model checks happen inside the chat route, where the requested
-//     model is known.
+//   • Chat paths: pass here; the per-turn balance check happens inside the
+//     chat route (assertChatTurnBillable), after the route is resolved.
 //   • Non-chat compute (TTS, transcription, describe, …): metered for every
 //     plan — requires a positive Usage Balance, or leftover legacy credits
 //     until the migration converts them.
@@ -1250,6 +1280,11 @@ async function checkAiUsageLimit(req, res, next) {
     if (!userId) return next();
     // Local/dev without a service role has no billing backend; skip the gate.
     if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return next();
+
+    if (grantUnlimitedUsage({ userId, email: req.user?.email })) {
+      markTopupPayer(userId, false);
+      return next();
+    }
 
     const isChatPath = CHAT_USAGE_GATE_PATHS.includes(String(req.path || ''));
     if (isChatPath) {
@@ -1478,59 +1513,46 @@ registerVoiceRoutes(app, {
  */
 async function buildRealtimeMemoryGrounding(authHeader, userId) {
   if (!userId) return '';
-  const sections = [];
-  try {
-    const [projectSection, memoryTurn] = await Promise.all([
-      fetchProjectSection(authHeader, userId).catch(() => ({ text: '' })),
-      resolveProductionChatMemory({ userId, skip: false }).catch(() => ({ text: '' })),
-    ]);
-    if (memoryTurn?.text) sections.push(memoryTurn.text);
-    if (projectSection?.text) sections.push(projectSection.text);
-  } catch (e) {
-    console.warn('⚠️ buildRealtimeMemoryGrounding:', e?.message || e);
-  }
-  // Custom-model sub-agent roster soft-unplugged from voice.
-  if (CUSTOM_MODELS_ENABLED) {
-    try {
-      if (supabaseAdmin) {
-        const roster = await loadPublishedRoster(supabaseAdmin, userId, { limit: 16 });
-        const block = formatDefaultMainAgentBlock(roster, { voice: true });
-        if (block) sections.push(block);
-      }
-    } catch (e) {
-      console.warn('⚠️ voice main-agent roster:', e?.message || e);
-    }
-  }
-  // Past conversations: the text chat injects [CONVERSATION_MEMORY] from the
-  // client, but voice's client grounding only carries the CURRENT session — so
-  // without this the voice agent genuinely can't see anything said in earlier
-  // sessions and tells the user it has no memory of them. Pull recent exchanges
-  // server-side via admin (no user JWT reaches the custom-LLM endpoint) so voice
-  // has the same recall the written chat does.
-  try {
-    if (supabaseAdmin) {
-      const { data: memRows } = await supabaseAdmin
+  const [projectSection, memoryTurn, rosterBlock, pastMemory] = await Promise.all([
+    fetchProjectSection(authHeader, userId).catch(() => ({ text: '' })),
+    resolveProductionChatMemory({ userId, skip: false }).catch(() => ({ text: '' })),
+    CUSTOM_MODELS_ENABLED && supabaseAdmin
+      ? loadPublishedRoster(supabaseAdmin, userId, { limit: 16 })
+        .then((roster) => formatDefaultMainAgentBlock(roster, { voice: true }) || '')
+        .catch((e) => {
+          console.warn('⚠️ voice main-agent roster:', e?.message || e);
+          return '';
+        })
+      : Promise.resolve(''),
+    supabaseAdmin
+      ? supabaseAdmin
         .from('ai_conversation_memory')
         .select('user_message, assistant_message, surface, surface_title, created_at')
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
-        .limit(12);
-      const exchanges = (memRows || []).slice().reverse();
-      let memText = '';
-      for (const ex of exchanges) {
-        const label = ex.surface_title ? `${ex.surface} "${ex.surface_title}"` : String(ex.surface || 'chat');
-        memText += `--- (${label}) ---\nUser: ${String(ex.user_message || '').slice(0, 600)}\nAssistant: ${String(ex.assistant_message || '').slice(0, 600)}\n\n`;
-      }
-      memText = memText.trim();
-      if (memText) {
-        sections.push(
-          `[CONVERSATION_MEMORY — past exchanges from earlier sessions/projects/vault; reference them when relevant]\n${sanitizeStaleSurfaceLanguage(memText.slice(0, 4000))}`,
-        );
-      }
-    }
-  } catch (e) {
-    console.warn('⚠️ voice conversation memory:', e?.message || e);
-  }
+        .limit(12)
+        .then(({ data: memRows }) => {
+          const exchanges = (memRows || []).slice().reverse();
+          let memText = '';
+          for (const ex of exchanges) {
+            const label = ex.surface_title ? `${ex.surface} "${ex.surface_title}"` : String(ex.surface || 'chat');
+            memText += `--- (${label}) ---\nUser: ${String(ex.user_message || '').slice(0, 600)}\nAssistant: ${String(ex.assistant_message || '').slice(0, 600)}\n\n`;
+          }
+          memText = memText.trim();
+          if (!memText) return '';
+          return `[CONVERSATION_MEMORY — past exchanges from earlier sessions/projects/vault; reference them when relevant]\n${sanitizeStaleSurfaceLanguage(memText.slice(0, 4000))}`;
+        })
+        .catch((e) => {
+          console.warn('⚠️ voice conversation memory:', e?.message || e);
+          return '';
+        })
+      : Promise.resolve(''),
+  ]);
+  const sections = [];
+  if (memoryTurn?.text) sections.push(memoryTurn.text);
+  if (projectSection?.text) sections.push(projectSection.text);
+  if (rosterBlock) sections.push(rosterBlock);
+  if (pastMemory) sections.push(pastMemory);
   return sections.join('\n\n');
 }
 
@@ -1657,7 +1679,6 @@ registerBillingRoutes(app, {
   COMPED_PRO_PLAN_ID,
   PLAN_IDS,
   BILLING_PERIODS,
-  PLAN_LIMITS,
   creditPackById,
   availableCreditPacks,
   STRIPE_PRICE_MAP,
@@ -1665,6 +1686,8 @@ registerBillingRoutes(app, {
   STRIPE_TRIAL_DAYS,
   trialCheckoutCustomText,
 });
+
+registerWaitlistRoutes(app, { supabaseAdmin, waitlistLimiter, waitlistReadLimiter });
 
 // App Store Server Notifications V2 — Apple's Stripe-webhook analogue. Unlike
 // Stripe it does not need the raw body (the signature travels as a JWS string

@@ -15,8 +15,10 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
 import { API_BASE_URL } from "@/lib/api-config";
+import { CHAT_FILE_ACCEPT } from "@/lib/chat/ingestChatFiles";
 import { VOICE_FIRST_MESSAGE_OVERRIDE } from "@/lib/voice/voiceConfig";
 import { micErrorMessage, requestMicStream } from "@/lib/voice/micAccess";
+import { voiceMicStreamConstraints } from "@/lib/voice/voicePickup";
 import { getVoiceId } from "@/lib/ai-prefs";
 import { TUNE_VOICE_TOOL, applyVoiceInstructionTune } from "@/lib/voice/tuneInstructions";
 import { applyVoiceToolClientEffects } from "@/lib/voice/applyVoiceToolResult";
@@ -29,6 +31,7 @@ import {
 import { refreshLocalMode } from "@/lib/localMode";
 import VoiceModePopup from "./VoiceModePopup";
 import VoiceTechOrb from "./VoiceTechOrb";
+import VoiceActivityStatus from "./VoiceActivityStatus";
 
 type VoiceUiState = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "error";
 
@@ -89,6 +92,7 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
   // activeToolsRef counts concurrent tools so the label only clears once they
   // ALL finish (multiple tools can run for a single turn).
   const [toolLabel, setToolLabel] = useState("");
+  const [toolTrail, setToolTrail] = useState<string[]>([]);
   const activeToolsRef = useRef(0);
 
   // Paste-bar state: lets the user share links/images/PDFs/docs into the live
@@ -121,10 +125,17 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
   // One client-tool handler shape for all four; each forwards to the same
   // server dispatch endpoint the OpenAI Realtime path uses.
   const callTool = useCallback(async (name: string, params: unknown): Promise<string> => {
-    // Surface what the agent is doing under the orb for the duration of the
-    // call, then clear it once every concurrent tool for this turn has settled.
+    // Surface what the agent is doing under the orb. The last live line stays
+    // until speaking or listening resumes so a short tool call doesn't flicker.
     activeToolsRef.current += 1;
-    setToolLabel(TOOL_STATUS_COPY[name] || "Working on it…");
+    const label = TOOL_STATUS_COPY[name] || "Working on it…";
+    setUiState("thinking");
+    setToolLabel((prev) => {
+      if (prev && prev !== label) {
+        setToolTrail((trail) => [...trail, prev].slice(-6));
+      }
+      return label;
+    });
     try {
       // Self-tuning instructions are persisted in the user's LOCAL settings, so
       // this tool is handled in the browser instead of the server dispatch.
@@ -148,7 +159,6 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
       return JSON.stringify({ ok: false, error: "tool_request_failed" });
     } finally {
       activeToolsRef.current = Math.max(0, activeToolsRef.current - 1);
-      if (activeToolsRef.current === 0) setToolLabel("");
     }
   }, []);
 
@@ -160,15 +170,28 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
 
   const conversation = useConversation({
     clientTools,
-    onConnect: () => { setErrorText(""); setUiState("listening"); },
-    onDisconnect: () => setUiState("idle"),
+    onConnect: () => { setErrorText(""); setToolTrail([]); setToolLabel(""); setUiState("listening"); },
+    onDisconnect: () => { setToolTrail([]); setToolLabel(""); setUiState("idle"); },
     onError: (e: unknown) => {
       const msg = (e as { message?: string })?.message || (typeof e === "string" ? e : "Voice connection error.");
       setErrorText(msg);
       setUiState("error");
     },
-    onModeChange: ({ mode }: { mode: "speaking" | "listening" }) =>
-      setUiState(mode === "speaking" ? "speaking" : "listening"),
+    onModeChange: ({ mode }: { mode: "speaking" | "listening" }) => {
+      if (activeToolsRef.current > 0) {
+        setUiState("thinking");
+        return;
+      }
+      if (mode === "speaking") {
+        setToolTrail([]);
+        setToolLabel("");
+        setUiState("speaking");
+        return;
+      }
+      setToolTrail([]);
+      setToolLabel("");
+      setUiState("listening");
+    },
     onMessage: (m: { source?: string; message?: string }) => {
       const text = String(m?.message || "").trim();
       if (!text) return;
@@ -177,8 +200,11 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
     },
   });
 
-  const { startSession, endSession, status, isSpeaking, getInputVolume, getOutputVolume, sendContextualUpdate } =
-    conversation as typeof conversation & { sendContextualUpdate?: (text: string) => void };
+  const { startSession, endSession, status, isSpeaking, getInputVolume, getOutputVolume, sendContextualUpdate, setMicMuted } =
+    conversation as typeof conversation & {
+      sendContextualUpdate?: (text: string) => void;
+      setMicMuted?: (muted: boolean) => void;
+    };
 
   // Keep the latest endSession in a ref so teardown always ends the CURRENT
   // session, even if the effect cleanup captured an earlier render's closure.
@@ -206,6 +232,11 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
     else if (status === "disconnected") setUiState((s) => (s === "error" ? s : "idle"));
   }, [status]);
 
+  useEffect(() => {
+    if (typeof setMicMuted !== "function") return;
+    try { setMicMuted(Boolean(toolLabel) || isSpeaking); } catch { /* ignore */ }
+  }, [setMicMuted, toolLabel, isSpeaking]);
+
   const begin = useCallback(async () => {
     if (startedRef.current) return;
     startedRef.current = true;
@@ -215,11 +246,13 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
     // live session — otherwise the agent keeps listening/talking with no UI.
     const cancelled = () => beginGenRef.current !== gen;
     setErrorText("");
+    setToolTrail([]);
+    setToolLabel("");
     setUiState("connecting");
     try {
       // Prompt for permission only; the SDK opens its own mic stream, so stop
       // these throwaway tracks immediately or the mic stays "live" after exit.
-      const permStream = await requestMicStream({ audio: true });
+      const permStream = await requestMicStream(voiceMicStreamConstraints());
       try { permStream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
     } catch (err: unknown) {
       if (cancelled()) return;
@@ -250,7 +283,7 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
           // ("3pm") to the user's local instant instead of UTC.
           timezone: (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; } })(),
           desktop: isDesktopVoiceClient(),
-          localMode: await refreshLocalMode(),
+          localMode: (await refreshLocalMode()) || isDesktopVoiceClient(),
           lyknBots: snapshotLyknBots(),
         }),
       });
@@ -438,13 +471,14 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
         className="relative flex flex-col items-center justify-center outline-none"
         aria-label="Voice orb"
       >
-        <VoiceTechOrb state={uiState} micLevel={micLevel} size={148} />
+        <VoiceTechOrb state={toolLabel ? "thinking" : uiState} micLevel={micLevel} size={148} />
         <div className="mt-1 flex flex-col items-center gap-1.5 text-center px-2">
-          <span className="text-foreground/75 text-sm font-medium">
+          <span className={`text-foreground/75 text-sm font-medium ${toolLabel || uiState === "thinking" || uiState === "connecting" ? "lykn-chat-thinking-text" : ""}`}>
             {uiState === "error"
               ? (errorText || STATUS_COPY.error)
-              : (toolLabel || STATUS_COPY[uiState])}
+              : (toolLabel ? STATUS_COPY.thinking : STATUS_COPY[uiState])}
           </span>
+          <VoiceActivityStatus live={toolLabel} trail={toolTrail} />
           {uiState === "error" && (
             <span
               role="button"
@@ -506,7 +540,7 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
             ref={fileInputRef}
             type="file"
             multiple
-            accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.txt,.md,.rtf,.odt,audio/*,video/*"
+            accept={CHAT_FILE_ACCEPT}
             className="hidden"
             onChange={handleFilesPicked}
           />

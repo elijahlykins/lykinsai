@@ -30,6 +30,7 @@ function attachAgentBrowser(d) {
   const botTabVisibility = require("./botTabVisibility.cjs");
   const tabChatLineage = require("./tabChatLineage.cjs");
   const { dockedPageBoundsForOverlay } = require("./menuOverlayLayout.cjs");
+  const { sidebarTargetBounds } = require("./sidebarLayout.cjs");
   const {
     applyViewRadius,
     normalizeViewRadius,
@@ -239,8 +240,6 @@ function notifyAgentFinished(_payload) {}
 
 // ── Agent Mode: sidebar + owned browser sessions ───────────────────────────
 // AGENT_SIDEBAR_WIDTH is shared with overlaySatellites via overlayConstants.
-const AGENT_SIDEBAR_MIN_HEIGHT = 180;
-const AGENT_SIDEBAR_MAX_HEIGHT = 560;
 let agentSidebarWindow = null;
 let agentSidebarHeight = 360;
 let agentSidebarOpen = false;
@@ -346,28 +345,14 @@ function agentSidebarWindowVisible() {
 }
 
 function agentSidebarTargetBounds() {
-  const ob = d.overlayWindow.getBounds();
-  const { workArea } = screen.getPrimaryDisplay();
-  const h = Math.max(
-    AGENT_SIDEBAR_MIN_HEIGHT,
-    Math.min(agentSidebarHeight, AGENT_SIDEBAR_MAX_HEIGHT, workArea.height - 16),
-  );
-  const rightInset =
-    (liveWindowVisible() ? LIVE_WIDTH + MENU_GAP : 0) +
-    (panelWindowVisible() ? panelWidth + MENU_GAP : 0);
-  let x = ob.x + ob.width + MENU_GAP + rightInset;
-  if (x + AGENT_SIDEBAR_WIDTH > workArea.x + workArea.width) {
-    x = ob.x - MENU_GAP - AGENT_SIDEBAR_WIDTH;
-  }
-  x = Math.max(workArea.x, x);
-  let y = ob.y + ob.height - h;
-  y = Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - h));
-  return {
-    x: Math.round(x),
-    y: Math.round(y),
-    width: AGENT_SIDEBAR_WIDTH,
-    height: h,
-  };
+  return sidebarTargetBounds({
+    overlayBounds: d.overlayWindow.getBounds(),
+    workArea: screen.getPrimaryDisplay().workArea,
+    sidebarHeight: agentSidebarHeight,
+    liveVisible: liveWindowVisible(),
+    panelVisible: panelWindowVisible(),
+    panelWidth: d.panelWidth,
+  });
 }
 
 function positionAgentSidebarWindow() {
@@ -1065,9 +1050,10 @@ let studioStageEmbedded = false;
 // starts a fresh session. Minimize never sets this.
 let studioBrowserDisposing = false;
 // The browser docks into the body of the Studio's floating Browser window.
-// Chrome wears the frame's corner curve. The live page stays square so it
-// meets the tab strip flush — Electron cannot round only the bottom. The
-// renderer owns that chrome radius and reports it with the bounds; this is
+// Chrome and the live page both wear the frame's corner curve. Electron
+// cannot round only the bottom, so the page's top rounding is filled by the
+// chrome sitting behind it. CSS on the renderer cannot clip these views.
+// The renderer owns that radius and reports it with the bounds; this is
 // just the fallback until the first report lands.
 const STUDIO_DOCK_RADIUS = 14;
 let studioStageRadius = STUDIO_DOCK_RADIUS;
@@ -1282,7 +1268,7 @@ function setStudioBrowserEmbed({ open, bounds, radius } = {}) {
   if (nextRadius != null && !viewRadiiEqual(nextRadius, studioStageRadius)) {
     studioStageRadius = nextRadius;
     if (studioStageEmbedded) {
-      for (const view of agentBrowserViews.values()) setViewRadius(view, pageClipRadius());
+      for (const view of agentBrowserViews.values()) setViewRadius(view, pageClipRadius(studioStageRadius));
       setViewRadius(studioStageChromeView, nextRadius);
     }
   }
@@ -1300,7 +1286,7 @@ function setStudioBrowserEmbed({ open, bounds, radius } = {}) {
     const chrome = ensureStudioStageChromeView();
     attachViewToWindow(d.studioWindow, chrome);
     for (const view of agentBrowserViews.values()) {
-      setViewRadius(view, pageClipRadius());
+      setViewRadius(view, pageClipRadius(studioStageRadius));
       attachViewToWindow(d.studioWindow, view);
     }
     // Tabs wait on the persisted agent list so a raced load() can't add
@@ -2080,8 +2066,8 @@ function layoutAgentStageViews() {
     const pageH = Math.max(0, b.height - chromeH);
     const r = viewRadiusMax(studioStageRadius);
     // Chrome is clipped with the frame curve, which also rounds its bottom.
-    // Extending it below the seam (hidden behind the square page, which stacks
-    // on top) keeps that bottom curve off the tab strip.
+    // Extending it below the seam (hidden behind the page, which stacks on top)
+    // keeps that bottom curve off the tab strip and fills the page's top rounding.
     setDockedViewBounds(
       studioStageChromeView,
       {
@@ -2124,7 +2110,7 @@ function layoutAgentStageViews() {
             // the toolbar into this rect. Leaving a live page here swallows clicks.
             view.setBounds(pageBounds);
           } else {
-            setDockedViewBounds(view, pageBounds, { radius: pageClipRadius() });
+            setDockedViewBounds(view, pageBounds, { radius: pageClipRadius(studioStageRadius) });
             raiseAgentStageView(d.studioWindow, view, `studio:page:${id}`);
           }
         } else {
@@ -3072,7 +3058,7 @@ async function toggleAgentIncognito(agentId) {
   } catch (_) {}
   if (studioStageEmbedActive()) {
     try {
-      setViewRadius(newView, pageClipRadius());
+      setViewRadius(newView, pageClipRadius(studioStageRadius));
     } catch (_) {}
     attachViewToWindow(d.studioWindow, newView);
   } else {
@@ -3845,6 +3831,7 @@ function initAgentRuntime() {
     // back empty (fresh tab, or a dock/undock re-parented the view).
     setBotShotAgents,
     prepareBotShotSurface,
+    workKeepAlive: d.workKeepAlive,
   });
   agentRuntimeLoadPromise = Promise.resolve(agentRuntime.load()).catch((err) => {
     console.warn("[agent-runtime] load failed:", err?.message || err);

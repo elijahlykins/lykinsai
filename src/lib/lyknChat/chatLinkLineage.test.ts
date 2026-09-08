@@ -23,10 +23,11 @@ test("markdown anchors inherit the owning chatId, not Home", () => {
   assert.doesNotMatch(md, /getActiveThreadChatId/);
 });
 
-test("ChatMessageItem source chips pass the rendered message chatId", () => {
+test("ChatMessageItem source pill opens the owning chat's sources rail", () => {
   const item = src("src/components/lyknChat/ChatMessageItem.tsx");
   assert.match(item, /const linkOpts = studioOpenChatOpts\(chatId\)/);
-  assert.match(item, /handleLyknBrowserClick\(e, href, src\.title, linkOpts\)/);
+  assert.match(item, /MessageSourcesPill/);
+  assert.match(item, /onOpenMessageSources/);
   assert.match(item, /handleLyknBrowserClick\(e, href, domain, linkOpts\)/);
   assert.doesNotMatch(item, /getActiveThreadChatId/);
 });

@@ -27,11 +27,12 @@ These can be removed from the main app after DNS/deployment cutover, if they are
 - `src/pages/GlassLanding.tsx` and `src/pages/GlassLanding.css`
 - `src/pages/Pricing.jsx`
 - `src/pages/DownloadLykn.tsx` and `src/pages/DownloadLykn.css`
+- `src/pages/WindowsWaitlist.tsx` and `src/pages/WindowsWaitlist.css`
 - `src/pages/News.tsx`
 - `src/pages/Templates.tsx` and `src/pages/Templates.css`
 - `src/pages/CapabilityPage.tsx` and `src/pages/CapabilityPage.css`
 - `src/components/landing/*`
-- Marketing routes in `src/App.jsx` (`/`, `/landing`, `/glass`, `/pricing`, `/download`, `/news`, `/templates`, `/product/:capId`)
+- Marketing routes in `src/App.jsx` (`/`, `/landing`, `/glass`, `/pricing`, `/download`, `/windows`, `/news`, `/templates`, `/product/:capId`)
 
 Legal pages (`/privacy`, `/terms`, `/cookies`, `/dpa`, `/support`) are also copied into the landing repo.
 Confirm whether the product app still needs in-app copies before deleting them here.

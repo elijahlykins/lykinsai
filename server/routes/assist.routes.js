@@ -12,6 +12,7 @@
 //   rely on ESM module-cache identity.
 import { searchWeb } from '../../lib/exterior/webSearch.js';
 import { generateChatImage } from '../../lib/exterior/generateImage.js';
+import { generateChatVideo } from '../../lib/exterior/generateVideo.js';
 import { authorizeImageUsage } from '../../lib/billing/usageBalance.js';
 import {
   getOrCreateSession,
@@ -42,7 +43,7 @@ export function registerAssistRoutes(app, deps) {
   // Quota is enforced per image inside generateChatImage.
   app.post('/api/ai/imagine-image', requireAuth, requireAppAccess, imagineLimiter, async (req, res) => {
     try {
-      const { prompt, aspectRatio, imageSize, referenceImages, maskImage, deliverBytes } = req.body || {};
+      const { prompt, aspectRatio, imageSize, referenceImages, maskImage, deliverBytes, model } = req.body || {};
       const refs = Array.isArray(referenceImages)
         ? referenceImages
             .filter((u) => typeof u === 'string' && /^(https?:|data:image\/)/i.test(u.trim()))
@@ -56,17 +57,19 @@ export function registerAssistRoutes(app, deps) {
       // so the image never becomes a bucket object it would only duplicate
       // locally and leave behind.
       const wantsBytes = deliverBytes === true;
+      const requestedModel = typeof model === "string" ? model.trim().slice(0, 120) : "";
       const result = await generateChatImage({
         prompt,
         aspectRatio,
         imageSize,
         referenceImages: refs,
         maskImage: mask,
+        model: requestedModel || undefined,
         userId: req.user?.id,
         supabaseAdmin,
         deliverBytes: wantsBytes,
         logUsage: (info) => logAiUsage({ ...info, metadata: { ...info?.metadata, surface: 'studio_imagine' } }),
-        authorizeUsage: ({ actionType }) => authorizeImageUsage(req.user?.id, req.userPlanId, actionType),
+        authorizeUsage: ({ actionType }) => authorizeImageUsage(req.user?.id, req.userPlanId, actionType, req.user?.email),
       });
       if (!result.ok) {
         const err = String(result.error || 'image_generation_failed');
@@ -97,6 +100,66 @@ export function registerAssistRoutes(app, deps) {
     } catch (e) {
       console.error('❌ imagine-image:', e?.message || e);
       return res.status(500).json({ ok: false, error: 'image_generation_failed' });
+    }
+  });
+
+  // Studio Imagine "video" lane — Veo through the Gemini API. One clip per
+  // call (they take 30s–4min, so the client shows a progress card, not a
+  // batch grid). A referenceImage (a picked Imagine generation or an
+  // attachment) becomes the FIRST FRAME so "animate this image" is real.
+  // Quota (video_gen, fixed-cost) is enforced inside generateChatVideo.
+  app.post('/api/ai/imagine-video', requireAuth, requireAppAccess, imagineLimiter, async (req, res) => {
+    try {
+      const { prompt, aspectRatio, durationSeconds, referenceImage, model, deliverBytes } = req.body || {};
+      const ref =
+        typeof referenceImage === 'string' && /^(https?:|data:image\/)/i.test(referenceImage.trim())
+          ? referenceImage.trim()
+          : undefined;
+      const result = await generateChatVideo({
+        prompt,
+        aspectRatio,
+        durationSeconds,
+        referenceImage: ref,
+        model: typeof model === 'string' ? model.trim().slice(0, 120) : undefined,
+        // Local-vault desktop clients: return the MP4 as base64 so the clip
+        // lands on the user's machine — no cloud storage object is created.
+        deliverBytes: deliverBytes === true,
+        userId: req.user?.id,
+        supabaseAdmin,
+        logUsage: (info) => logAiUsage({ ...info, metadata: { ...info?.metadata, surface: 'studio_imagine' } }),
+        authorizeUsage: ({ actionType }) => authorizeImageUsage(req.user?.id, req.userPlanId, actionType, req.user?.email),
+      });
+      if (!result.ok) {
+        const err = String(result.error || 'video_generation_failed');
+        if (err === 'insufficient_usage_balance') {
+          return res.status(402).json({
+            ok: false,
+            error: err,
+            code: 'insufficient_usage_balance',
+            message: result.message || 'Add funds to continue with this action.',
+            usage_balance_usd: result.usage_balance_usd,
+            required_usd: result.required_usd,
+            add_funds: true,
+          });
+        }
+        const status = err === 'unauthenticated' ? 401 : /quota|limit/i.test(err) ? 429 : 502;
+        return res.status(status).json({ ok: false, error: err });
+      }
+      return res.json({
+        ok: true,
+        videoUrl: result.video_url,
+        storagePath: result.storage_path,
+        videoBase64: result.video_base64 || null,
+        mimeType: result.mime_type,
+        prompt: result.prompt,
+        provider: result.provider,
+        model: result.model,
+        durationSeconds: result.duration_seconds,
+        filteredReasons: result.filtered_reasons || null,
+      });
+    } catch (e) {
+      console.error('❌ imagine-video:', e?.message || e);
+      return res.status(500).json({ ok: false, error: 'video_generation_failed' });
     }
   });
 

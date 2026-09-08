@@ -4,6 +4,7 @@ import { CREDIT_COSTS, extractOpenAIUsage, getCreditCost } from '../../../usageT
 import {
   CHAT_ROUTE_MODELS,
   chatRouteUsageMetadata,
+  holdFastToPhatic,
   ROUTING_SOURCES,
   isAutoRoutedModelId,
   openaiReasoningPayload,
@@ -11,7 +12,9 @@ import {
   resolveChatRoute,
   shouldSkipGlassRequestCap,
   supportedReasoningEfforts,
+  assertChatTurnBillable,
 } from './index.js';
+import { clearUnlimitedUsage } from '../../../lib/billing/internalAccounts.js';
 
 const COMPLEX_ARCHITECTURE = [
   'Design a robust memory architecture for a local-first autonomous agent system.',
@@ -19,6 +22,14 @@ const COMPLEX_ARCHITECTURE = [
   'and say which one will scale when we add multi-agent retrieval and conflict resolution.',
   'Include failure modes and how the agent should recover when a write is interrupted.',
 ].join(' ');
+
+// Long enough to ask the classifier (maybeAdvanced) without the heuristic
+// already promoting to advanced.
+const BORDERLINE_REWRITE = [
+  'Please rewrite this.',
+  '',
+  `Draft: ${'word '.repeat(80)}`,
+].join('\n');
 
 test('simple greeting routes to the fast tier', async () => {
   const route = await resolveChatRoute({
@@ -65,10 +76,10 @@ test('uncertain classification escalates instead of cheapening quality', async (
   assert.ok(route.confidence < 0.78);
 });
 
-test('classifier can promote a short rewrite to fast when confident', async () => {
+test('classifier cannot send a real question to the fast tier', async () => {
   const route = await resolveChatRoute({
     requestedModel: 'lykn',
-    text: 'rewrite this sentence to sound better',
+    text: BORDERLINE_REWRITE,
     planId: 'studio',
     classifyFn: async () => ({
       modelTier: 'fast',
@@ -77,8 +88,44 @@ test('classifier can promote a short rewrite to fast when confident', async () =
       routingSource: ROUTING_SOURCES.CLASSIFIER,
     }),
   });
-  assert.equal(route.modelTier, 'fast');
-  assert.equal(route.routingSource, ROUTING_SOURCES.CLASSIFIER);
+  assert.equal(route.modelTier, 'standard');
+  assert.equal(route.modelId, CHAT_ROUTE_MODELS.standard);
+  assert.match(route.reason, /greetings\/acks only/);
+});
+
+test('holdFastToPhatic keeps greetings on fast and questions on standard', () => {
+  const greeting = holdFastToPhatic({
+    modelTier: 'fast',
+    confidence: 0.94,
+    reason: 'greeting or phatic turn',
+    routingSource: ROUTING_SOURCES.HEURISTIC,
+  }, "hey what's up");
+  assert.equal(greeting.modelTier, 'fast');
+
+  const question = holdFastToPhatic({
+    modelTier: 'fast',
+    confidence: 0.92,
+    reason: 'simple rewrite',
+    routingSource: ROUTING_SOURCES.CLASSIFIER,
+  }, 'what is photosynthesis');
+  assert.equal(question.modelTier, 'standard');
+});
+
+test('short everyday questions stay on standard, not Luna', async () => {
+  for (const text of [
+    'what is photosynthesis',
+    'help me think about pricing',
+    'how does this work',
+  ]) {
+    const route = await resolveChatRoute({
+      requestedModel: 'lykn',
+      text,
+      planId: 'studio',
+    });
+    assert.equal(route.modelTier, 'standard', text);
+    assert.equal(route.modelId, CHAT_ROUTE_MODELS.standard, text);
+    assert.equal(route.reasoningEffort, 'low', text);
+  }
 });
 
 test('explicit user model selection bypasses Auto routing', async () => {
@@ -95,7 +142,7 @@ test('explicit user model selection bypasses Auto routing', async () => {
 test('classifier failure falls back to the standard model', async () => {
   const route = await resolveChatRoute({
     requestedModel: 'lykn',
-    text: 'rewrite this sentence to sound better',
+    text: BORDERLINE_REWRITE,
     planId: 'studio',
     classifyFn: async () => {
       throw new Error('classifier timeout');
@@ -240,4 +287,21 @@ test('OpenAI usage extract captures cached and reasoning tokens', () => {
   assert.equal(usage.output_tokens, 80);
   assert.equal(usage.cached_input_tokens, 400);
   assert.equal(usage.reasoning_tokens, 12);
+});
+
+test('unlimited-usage email never 402s a premium chat turn', async () => {
+  const userId = 'dddddddd-1111-4111-8111-111111111111';
+  clearUnlimitedUsage(userId);
+  try {
+    const result = await assertChatTurnBillable({
+      userId,
+      planId: 'free',
+      email: 'admin@lykn.io',
+      chatRoute: { routingSource: ROUTING_SOURCES.OVERRIDE, modelId: 'claude-fable-5' },
+    });
+    assert.equal(result.allowed, true);
+    assert.equal(result.metered, false);
+  } finally {
+    clearUnlimitedUsage(userId);
+  }
 });

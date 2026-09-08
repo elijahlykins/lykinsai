@@ -184,3 +184,145 @@ export function isTypedNewDeliverableAsk(
   }
   return false;
 }
+
+/* -------------------------------------------------------------------- */
+/*  Shared turn-shape vocabulary                                         */
+/*                                                                       */
+/*  These used to live as inline literals in BOTH                        */
+/*  src/lib/ai/artifactSendPlan.ts and server/ai/chatStream.routes.js,   */
+/*  behind "keep in sync" comments — and had already drifted (the server */
+/*  verb list had `dimmer`/`muted`, the client's didn't; the server's    */
+/*  different-deliverable nouns had `deck|site|page`, the client's       */
+/*  didn't). Both consumers now call these instead of carrying their own */
+/*  copy. artifactBuildIntent.parity.test.mjs fails if the two physical  */
+/*  homes ever diverge again.                                            */
+/* -------------------------------------------------------------------- */
+
+/** Add/fix/change verbs — the surface of a surgical tweak, not a rebuild. */
+export const SURGICAL_TWEAK_VERB_RE =
+  /\b(?:fix|change|update|tweak|adjust|add|make|rename|remove|delete|patch|bug|typo|font|colou?r|theme|move|replace|swap|hide|show|enable|disable|increase|decrease|darken|brighten|dim|dimmer|mute|muted|darker|lighter|brighter|edit|improve|polish|wire|connect|implement|insert|extend|expand|shorten|widen|narrow|resize|restyle|reword|rewrite|correct|repair)\b/i;
+
+/** Length cap above which a message reads as a brief, not a tweak. */
+export const SURGICAL_TWEAK_MAX_CHARS = 400;
+
+/**
+ * Raw "this looks like a small change" signal. Callers layer their own
+ * negations on top (the client excludes redesign/new-deliverable asks, the
+ * server also excludes regular-chat build asks) — those differ legitimately,
+ * the vocabulary does not.
+ */
+export function isSurgicalTweakAsk(text: string): boolean {
+  const t = String(text || '').trim();
+  return t.length < SURGICAL_TWEAK_MAX_CHARS && SURGICAL_TWEAK_VERB_RE.test(t);
+}
+
+/** "build me a DIFFERENT app" — an explicit request for another deliverable. */
+export const DIFFERENT_DELIVERABLE_RE =
+  /\b(?:different|brand[- ]?new|entirely new|fresh|whole new|completely new)\s+(?:game|app|build|artifact|world|deck|site|page)\b/i;
+
+export function isDifferentDeliverableAsk(text: string): boolean {
+  return DIFFERENT_DELIVERABLE_RE.test(String(text || ''));
+}
+
+/** "like this" / "based on this" — the ask points at an attachment or screen. */
+export const REFERENCE_PHRASE_RE =
+  /\b(?:like this|like that|from this|based on this|from the (?:image|screenshot|picture|reference)|as shown|in the (?:image|screenshot|picture))\b/i;
+
+export function isReferencePhraseAsk(text: string): boolean {
+  return REFERENCE_PHRASE_RE.test(String(text || ''));
+}
+
+/** "exact clone" / "1:1" / "recreate" — a full rebuild against a reference. */
+export const REFERENCE_REBUILD_RE =
+  /\b(?:exact(?:ly)?\s+clone|identical|1\s*:\s*1|recreate|clone\s+(?:this|that|it)|(?:look|make)\s+(?:it\s+)?(?:just\s+)?like\s+this|full\s+rewrite)\b/i;
+
+export function isReferenceRebuildAsk(text: string): boolean {
+  return REFERENCE_REBUILD_RE.test(String(text || ''));
+}
+
+/** Font / colour / theme wording — allows signature churn on a refine. */
+export const STYLE_CHANGE_RE =
+  /\b(?:font|typeface|typography|colou?r|theme|accent|palette|recolou?r|background|neutral|gr[ae]yscale|monochrome|dark\s*mode|light\s*mode|darken|brighten|dim(?:mer)?|muted?|opacity|red|orange|yellow|green|blue|purple|pink|black|white|gray|grey|amber|mustard)\b/i;
+
+export function isStyleChangeAsk(text: string): boolean {
+  return STYLE_CHANGE_RE.test(String(text || ''));
+}
+
+/* ---- Fresh-webapp signals (client mirror of isFreshWebappBuildAsk) ---- */
+
+export const MAKING_VERB_RE =
+  /\b(?:make|build|create|generate|design|code|write|whip up|mock up|put together)\b/i;
+
+export const WEBAPP_NOUN_RE =
+  /\b(?:games?(?! ?plan)|apps?|web ?apps?|mini[- ]?apps?|sandbox(?:es)?|simulators?|minecraft|voxel|platformers?|shooters?|rpg|first[- ]?person|\b3d\b|three\.?js)\b/i;
+
+export const COPY_OF_WEBAPP_RE =
+  /\bcopy of\b[^.!?\n]{0,80}\b(?:minecraft|games?(?! ?plan)|apps?|sandbox(?:es)?|voxel|platformers?|world)\b/i;
+
+export function isMakingVerbAsk(text: string): boolean {
+  return MAKING_VERB_RE.test(String(text || ''));
+}
+
+export function mentionsWebappNoun(text: string): boolean {
+  return WEBAPP_NOUN_RE.test(String(text || ''));
+}
+
+export function isCopyOfWebappAsk(text: string): boolean {
+  return COPY_OF_WEBAPP_RE.test(String(text || ''));
+}
+
+/* ---- Studio sticky-mode turn shapes (Build / Imagine pages) ---- */
+
+/** Opens with a question word — discussion, never an automatic build. */
+export const DISCUSSION_QUESTION_RE =
+  /^(?:what|why|how|when|where|who|which|should|would|could|can|is|are|do|does|did|has|have|tell\s+me|explain|describe|discuss|help\s+me\s+understand|give\s+me\s+advice|make\s+sense)\b/i;
+
+export function isDiscussionQuestion(text: string): boolean {
+  return DISCUSSION_QUESTION_RE.test(String(text || '').trim());
+}
+
+/** "can you make …" — phrased as a question but asking for the deliverable. */
+export const DIRECT_CREATE_QUESTION_RE =
+  /^(?:can|could|would|will)\s+(?:you|we)\s+(?:please\s+)?(?:make|build|create|generate|design|draw|add|apply|give|put|change|update|edit|fix|format|style|organize|reorder|group|align|center|bold|italicize|underline|highlight|adjust|tweak|dim|darken|brighten|remove|replace|redesign|rebuild|restyle|turn|set)\b/i;
+
+export function isDirectCreateQuestion(text: string): boolean {
+  return DIRECT_CREATE_QUESTION_RE.test(String(text || '').trim());
+}
+
+/** Bare imperative — "add a dark mode", "ok now make the header sticky". */
+export const IMPERATIVE_MODE_ACTION_RE =
+  /^(?:(?:ok|okay|now|then|also|please|and|let['’]s)\s*[,—-]?\s*)*(?:make|build|create|generate|design|draw|add|apply|give|put|change|update|edit|fix|format|style|organize|reorder|group|align|center|bold|italicize|underline|highlight|adjust|tweak|dim|darken|brighten|remove|replace|redesign|rebuild|restyle|turn|set|redo|reimagine|render)\b/i;
+
+export function isImperativeModeAction(text: string): boolean {
+  return IMPERATIVE_MODE_ACTION_RE.test(String(text || '').trim());
+}
+
+/**
+ * Edits phrased as a desired end state rather than an imperative:
+ * "every note should have a heading", "I want the sidebar darker".
+ */
+export const DESIRED_STATE_RE =
+  /\b(?:should|needs? to|must)\s+(?:be|have|show|use|include|display|look|feel|read|say|contain)\b/i;
+
+export const WANT_STATE_RE = /\b(?:i want|i need|i(?:'|’)d like|i would like)\b/i;
+
+export function isDesiredStateAsk(text: string): boolean {
+  const t = String(text || '').trim();
+  return DESIRED_STATE_RE.test(t) || WANT_STATE_RE.test(t);
+}
+
+/** A bare noun brief — "a landing page", "dashboard", "pitch deck". */
+export const BARE_BUILD_BRIEF_RE =
+  /^(?:(?:an?|the|my|another|new)\s+)?(?:web ?app|web ?site|site|landing ?page|dashboard|app|game|tool|calculator|prototype|widget|quiz|tracker|form|simulator|pitch ?deck|slide ?deck|presentation|spread ?sheet|flow ?chart|diagram|chart|study ?guide|work ?sheet)\b/i;
+
+export function isBareBuildBrief(text: string): boolean {
+  return BARE_BUILD_BRIEF_RE.test(String(text || '').trim());
+}
+
+/** "same but darker", "another one", "try again" — refines a prior output. */
+export const IMAGE_REFINEMENT_RE =
+  /^(?:(?:ok|okay|now|then|also|and)\s*[,—-]?\s*)*(?:same\b|another\b|again\b|darker\b|lighter\b|brighter\b|more\b|less\b|try\b|redo\b)/i;
+
+export function isImageRefinementAsk(text: string): boolean {
+  return IMAGE_REFINEMENT_RE.test(String(text || '').trim());
+}

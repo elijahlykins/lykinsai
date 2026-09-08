@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
       args: args || {},
       // Approval is a main-issued token, not a renderer-asserted boolean.
       approvalToken: typeof opts?.approvalToken === "string" ? opts.approvalToken : "",
+      // Build workspace opt-in (main confines scope when Local Mode is off).
+      workspace: opts?.workspace === true,
     }),
   // Ask LYKN about the current screen. The main process captures the screen
   // silently and streams the answer back via onDelta/onDone/onError.
@@ -35,6 +37,7 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   //                        server forces the React artifact builder).
   ask: (text, history, attachments, opts) =>
     ipcRenderer.send("lykn:ask", { text, history, attachments, ...(opts || {}) }),
+  askCancel: () => ipcRenderer.send("lykn:ask-cancel"),
   onShown: (cb) => ipcRenderer.on("lykn:overlay-shown", () => cb()),
   // Re-key the glass bar so typing works after another app / agent stage stole focus.
   focusComposer: () => ipcRenderer.send("lykn:focus-overlay-composer"),
@@ -93,6 +96,15 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   ensureOverlaySession: () => ipcRenderer.invoke("lykn:ensure-overlay-session"),
   // Open a native file picker and get back ready-to-send attachment objects.
   pickFiles: () => ipcRenderer.invoke("lykn:pick-files"),
+  // `/path` autocomplete in the composer: list Local Mode folders, then attach.
+  files: {
+    list: (args = {}) => ipcRenderer.invoke("lykn:files-list", args),
+    search: (args = {}) => ipcRenderer.invoke("lykn:files-search", args),
+    roots: () => ipcRenderer.invoke("lykn:files-roots"),
+  },
+  macAppsList: () => ipcRenderer.invoke("lykn:mac-apps-list"),
+  connectedApps: () => ipcRenderer.invoke("lykn:overlay-connected-apps"),
+  attachPaths: (paths) => ipcRenderer.invoke("lykn:overlay-attach-paths", { paths }),
   // Drag-select a region of the screen and get it back as an image attachment.
   snipScreen: () => ipcRenderer.invoke("lykn:snip-screen"),
   // Voice mode: fetch a signed ElevenLabs session, and dispatch agent tools.
@@ -276,5 +288,10 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
     const fn = (_e, p) => cb(p || {});
     ipcRenderer.on("lykn:agent-sources", fn);
     return () => ipcRenderer.removeListener("lykn:agent-sources", fn);
+  },
+  onWorkPaused: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:work-paused", fn);
+    return () => ipcRenderer.removeListener("lykn:work-paused", fn);
   },
 });

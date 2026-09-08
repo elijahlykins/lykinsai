@@ -1,5 +1,72 @@
 "use strict";
 
+
+/**
+ * Tools a Bot may run without a planning round in front of them.
+ *
+ * The test is not "is this tool cheap" — it is "has the planner got anything
+ * left to decide". These four produce one thing from one instruction, none of
+ * them spends money or reaches another person, and each one's own pipeline
+ * handles its errors. Anything consequential (browser, connected_apps,
+ * local_computer), anything that composes with other work
+ * (research_report → build_artifact), and anything where choosing IS the work
+ * keeps the full harness.
+ */
+const DIRECT_TOOLS = new Set(["reply", "web_search", "generate_image", "write_document"]);
+
+const DIRECT_NARRATION = {
+  reply: "Replying…",
+  web_search: "Looking that up…",
+  generate_image: "Creating the image…",
+  write_document: "Writing it out…",
+};
+
+/**
+ * Wording that means the ask has more than one part, so a single tool call
+ * cannot finish it. Deliberately generous: a false positive costs one decide
+ * round (the old behaviour), a false negative silently drops half the user's
+ * request, which is the failure this whole fast path must not reintroduce.
+ */
+const MULTI_PART_RE = new RegExp(
+  [
+    // "…and then put it in a doc", "…, then email it"
+    /\b(?:and\s+then|then\s+(?:also\s+)?(?:put|send|email|save|add|make|build|create|write|share|post|update)|after\s+that|afterwards?|finally)\b/
+      .source,
+    // "…and save it to", "…and send it to" — a second verb on a second object
+    /\band\s+(?:also\s+)?(?:put|send|email|save|share|post|upload|add|attach|file|update|schedule|build|create|make|write|turn)\b/
+      .source,
+    // Enumerated or sequenced asks: "1. … 2. …", "…. Next, save them".
+    // Anchored to a sentence boundary so "what's next in AI" is not a
+    // second step.
+    /(?:^|\n|[.!?]\s+)\s*(?:[2-9]\s*[.)]|second(?:ly)?\b|next\b[,\s])/.source,
+    // An explicit second deliverable
+    /\b(?:as\s+well\s+as|plus\s+(?:a|an|the)\b|along\s+with\s+(?:a|an|the)\b)/.source,
+  ].join("|"),
+  "i",
+);
+
+function looksMultiPart(text) {
+  return MULTI_PART_RE.test(String(text || ""));
+}
+
+/**
+ * The tool this task can run immediately, or "" to use the full harness.
+ *
+ * @param {{primaryTool:string, objective:string, replyOnly?:boolean, executors:object}} args
+ */
+function resolveDirectTool({ primaryTool, objective, replyOnly, executors }) {
+  // Explicit reply-only callers keep their existing contract unconditionally.
+  if (replyOnly) return typeof executors?.reply === "function" ? "reply" : "";
+  const tool = String(primaryTool || "");
+  if (!DIRECT_TOOLS.has(tool)) return "";
+  if (typeof executors?.[tool] !== "function") return "";
+  // `reply` was always direct regardless of shape — a chatty multi-part
+  // message is still one reply. The others produce one artifact each, so a
+  // multi-part ask genuinely needs the loop.
+  if (tool !== "reply" && looksMultiPart(objective)) return "";
+  return tool;
+}
+
 class BotExecutor {
   constructor({ runBotTask } = {}) {
     if (typeof runBotTask !== "function") throw new TypeError("runBotTask is required");
@@ -30,35 +97,65 @@ class BotExecutor {
       runtime.onProgress?.(progress);
     };
 
-    // Casual Bot chat is still a Task, but it has deterministic completion:
-    // one persona-carrying reply is produced, then the runtime closes the Task.
-    if (runtime.replyOnly || primaryTool === "reply") {
-      const reply = executors.reply;
-      if (typeof reply !== "function") {
-        return { ok: false, status: "failed", reason: "reply_executor_unavailable" };
+    // ── Direct execution ────────────────────────────────────────────────
+    //
+    // Casual Bot chat has always taken this branch: one persona-carrying
+    // reply, then the runtime closes the Task — no decide round, no verify
+    // round. That is why chat felt fast while everything else did not.
+    //
+    // The same reasoning covers any ask where the planning has nothing left
+    // to decide: routing already named the tool, there is one step, and the
+    // tool is safe to run unsupervised. "Check the news" does not need a
+    // planner to be told it is a search. Those asks used to pay two blocking
+    // model round-trips — decide, then deliver — around a single call.
+    //
+    // Everything else keeps the full harness: multi-part asks, consequential
+    // tools, anything where choosing IS the work.
+    const directTool = resolveDirectTool({
+      primaryTool,
+      objective: task.objective,
+      replyOnly: runtime.replyOnly,
+      executors,
+    });
+    if (directTool) {
+      const run = executors[directTool];
+      if (typeof run !== "function") {
+        return { ok: false, status: "failed", reason: `${directTool}_executor_unavailable` };
       }
-      onProgress({ phase: "acting", tool: "reply", narration: "Replying…" });
-      const result = await reply({ instruction: task.objective, signal: runtime.signal });
+      onProgress({
+        phase: "acting",
+        tool: directTool,
+        narration: DIRECT_NARRATION[directTool] || "On it…",
+      });
+      const result = await run({ instruction: task.objective, signal: runtime.signal });
       if (runtime.signal?.aborted) return { ok: false, status: "cancelled" };
       if (result?.status === "waiting_for_approval" || result?.status === "waiting_for_user") {
         return {
           ...result,
           status: result.status,
           question: String(result.question || result.output || result.answer || ""),
-          executor: "reply",
+          executor: directTool,
         };
       }
       const output = String(result?.output || result?.answer || "");
       if (result?.ok === false || !output.trim()) {
+        // A direct run that came back empty is not a dead end: fall through to
+        // the full harness, which can pick a different tool or ask. Failing
+        // here would make the fast path strictly worse than the slow one.
+        onProgress({ phase: "recovering", tool: directTool });
+      } else {
+        if (result?.deliverable && typeof result.deliverable === "object") {
+          onProgress({ phase: "deliverable", tool: directTool, deliverable: result.deliverable });
+        }
+        onProgress({ phase: "delivered", answer: output });
         return {
-          ok: false,
-          status: "failed",
-          reason: String(result?.summary || result?.error || "empty_reply"),
+          ok: true,
+          status: "completed",
           output,
+          executor: directTool,
+          deliverables: result?.deliverable ? [{ tool: directTool, deliverable: result.deliverable }] : [],
         };
       }
-      onProgress({ phase: "delivered", answer: output });
-      return { ok: true, status: "completed", output, executor: "reply" };
     }
 
     const onApproval = runtime.onApproval
@@ -175,4 +272,4 @@ class BotExecutor {
   }
 }
 
-module.exports = { BotExecutor };
+module.exports = { BotExecutor, resolveDirectTool, looksMultiPart, DIRECT_TOOLS};

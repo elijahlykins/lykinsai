@@ -21,6 +21,8 @@ import {
   Newspaper,
   Plug,
   Plus,
+  AppWindow,
+  Square,
   Telescope,
   TrendingUp,
   Users,
@@ -85,8 +87,21 @@ import { openConnectionsSettings } from "@/lib/mcp/mcpApi";
 import { openStudioTab } from "@/lib/studioTabs";
 import {
   getActiveThreadChatId,
+  getThreadSnapshot,
   subscribeThreadRuntime,
 } from "@/lib/chat/chatThreadRuntime";
+import { IMAGINE_BUSY_EVENT, isImagineBusy } from "@/lib/chat/promptQueue";
+import PromptQueueBar from "@/components/lyknChat/PromptQueueBar";
+import HomeBarStudioModelSelect from "@/components/macdesktop/HomeBarStudioModelSelect";
+import SlashPathMenu from "@/components/lyknChat/SlashPathMenu";
+import { useRotatingPlaceholder } from "@/hooks/useRotatingPlaceholder";
+import { useSlashPathMention } from "@/hooks/useSlashPathMention";
+import { useSlashAppMention } from "@/hooks/useSlashAppMention";
+import { useStudioSlashModel } from "@/hooks/useStudioSlashModel";
+import { useSlashAppOptions } from "@/lib/chat/slashAppCatalog";
+import { attachedAppsFromComposer } from "@/lib/chat/slashAppQuery";
+import { homeBarAppChip } from "@/lib/chat/slashAppAttach";
+import { CHAT_FILE_ACCEPT } from "@/lib/chat/ingestChatFiles";
 
 /**
  * Home-desktop chat entry — the same chat bar + Chat / Build / Imagine /
@@ -107,6 +122,11 @@ const BAR_SURFACE = "lg-desktop-surface";
 /** How tall the prompt field grows before it scrolls instead. */
 const PROMPT_MAX_H = 128;
 
+/** Shipped idle pill height. `--lykn-home-bar-grow` is half of anything
+ *  above this, so the welcome headline (and the other center-pinned chrome)
+ *  keep their gap as the bar wraps, takes attachments, or switches shape. */
+const HOME_BAR_BASE_H_REM = 2.75;
+
 /* Above the hosted chat surface (z-20) but under the Calendar / To-dos app
  * windows (z-25), so dragging a window over the pill, the welcome headline or
  * the bar puts the window on top — the desktop chrome is the backdrop here. */
@@ -120,16 +140,9 @@ const MODES = [
   { id: "research", label: "Research", icon: Telescope },
 ];
 
-const PLACEHOLDERS = {
-  chat: "Ask me anything...",
-  build: "Describe what you want to build...",
-  imagine: "Describe the image you want...",
-  research: "What should LYKN research?",
-};
 
 // Same set the chat page's "Add photos & files" accepts.
-const FILE_ACCEPT =
-  "*/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.md,.json,.html,.csv,.rtf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,.mp3,.wav,.ogg,.flac,.mp4,.mov,.avi,.webm,.m4a,.aac,.wma";
+const FILE_ACCEPT = CHAT_FILE_ACCEPT;
 
 const SOURCE_ICONS = {
   all: Layers,
@@ -242,6 +255,9 @@ export default function HomeChatBar({
   /** Browser-rail tab id. When set, the Bot dropdown follows whoever owns
    *  that screen instead of an independent pick. */
   screenAgentId = "",
+  /** A zoomed file/app is filling the desktop. Stay mounted so Chat can
+   *  attach, but don't paint over the preview. */
+  covered = false,
 }) {
   const finderInputId = useId();
   const [view, setView] = useState("chat");
@@ -275,11 +291,13 @@ export default function HomeChatBar({
   const layoutPanelRef = useRef(null);
   const botsBtnRef = useRef(null);
   const botsPanelRef = useRef(null);
+  const slashPanelRef = useRef(null);
   const menuWrapRef = useRef(null);
   const [addPos, setAddPos] = useState({});
   const [sourcesPos, setSourcesPos] = useState({});
   const [layoutPos, setLayoutPos] = useState({});
   const [botsPos, setBotsPos] = useState({});
+  const [slashPos, setSlashPos] = useState({});
   const recorderRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
@@ -305,6 +323,9 @@ export default function HomeChatBar({
       ? surfaceView
       : view;
   const busy = dictating || transcribing || dropping;
+  const rotatingHint = useRotatingPlaceholder(barMode, {
+    enabled: !placeholderOverride && !busy && !text.trim() && !targetBotId,
+  });
   // Bots — the bar can target a Bot instead of LYKN. Shared singleton state,
   // so the Bots window and this dropdown always agree.
   const showBots = botsAvailable();
@@ -336,6 +357,28 @@ export default function HomeChatBar({
     sync();
     return subscribeThreadRuntime(sync);
   }, []);
+  const [threadLoading, setThreadLoading] = useState(false);
+  const [imagineBusy, setImagineBusy] = useState(() => isImagineBusy());
+  const [queueChatId, setQueueChatId] = useState(() => getActiveThreadChatId() || "");
+  useEffect(() => {
+    const sync = () => {
+      const chatId = getActiveThreadChatId() || "";
+      setQueueChatId(chatId);
+      setThreadLoading(!!(chatId && getThreadSnapshot(chatId)?.isChatLoading));
+    };
+    sync();
+    return subscribeThreadRuntime(sync);
+  }, []);
+  useEffect(() => {
+    const onBusy = (e) => {
+      const detail = e?.detail || {};
+      if (detail.chatId && queueChatId && detail.chatId !== queueChatId) return;
+      setImagineBusy(!!detail.busy);
+    };
+    window.addEventListener(IMAGINE_BUSY_EVENT, onBusy);
+    return () => window.removeEventListener(IMAGINE_BUSY_EVENT, onBusy);
+  }, [queueChatId]);
+  const working = threadLoading || imagineBusy;
   // A file on its own is a valid turn — for LYKN and for a Bot alike. In
   // Imagine it lands on that bar as a reference and waits there for the
   // prompt it belongs to.
@@ -348,18 +391,52 @@ export default function HomeChatBar({
   // Grow with what's typed, up to a cap, then scroll. The one-line height is
   // measured on the first pass rather than guessed at, since the line box
   // moves with the chat bar size setting and the shape's own padding.
+  // Layout rather than paint: the welcome headline keys off the bar's height
+  // in the same frame, so a wrap can't cover "Welcome back" for a tick.
   const promptBaseHRef = useRef(0);
-  useEffect(() => {
+  useLayoutEffect(() => {
+    promptBaseHRef.current = 0;
+  }, [slate]);
+  useLayoutEffect(() => {
     const el = inputRef.current;
     if (!el) return;
     el.style.height = "auto";
     const full = el.scrollHeight;
     if (full > 0 && !promptBaseHRef.current) promptBaseHRef.current = full;
-    el.style.height = `${Math.min(full, PROMPT_MAX_H)}px`;
-    setPromptTall(Boolean(promptBaseHRef.current) && full > promptBaseHRef.current + 4);
+    const wrapped = Boolean(promptBaseHRef.current) && full > promptBaseHRef.current + 4;
+    setPromptTall(wrapped);
+    // Single-line skinny bars (pill / rectangle / leaf) size the field in CSS
+    // so the caret sits on the control row. An inline height would fight that.
+    if (!slate && !wrapped) {
+      el.style.height = "";
+    } else {
+      el.style.height = `${Math.min(full, PROMPT_MAX_H)}px`;
+    }
     // Slate is in the deps because it changes the field's padding and type, so
     // the height has to be taken again rather than carried across the switch.
   }, [text, slate]);
+
+  // The welcome headline (and Imagine / Research chrome) are pinned off the
+  // window center with `--lykn-home-bar-grow`. Publish the live half-extra
+  // so a wrapped prompt pushes that chrome instead of covering it.
+  useLayoutEffect(() => {
+    if (embedded) return undefined;
+    const el = barRef.current;
+    if (!el) return undefined;
+    const root = document.documentElement;
+    const sync = () => {
+      const rootPx = parseFloat(getComputedStyle(root).fontSize) || 16;
+      const extraPx = Math.max(0, el.getBoundingClientRect().height - HOME_BAR_BASE_H_REM * rootPx);
+      root.style.setProperty("--lykn-home-bar-grow", `${(extraPx / 2).toFixed(2)}px`);
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      root.style.removeProperty("--lykn-home-bar-grow");
+    };
+  }, [embedded]);
 
   useEffect(() => {
     if (!focusNonce) return;
@@ -394,9 +471,10 @@ export default function HomeChatBar({
     return () => window.removeEventListener("lykn-chat-vault-add", onVaultAdd);
   }, []);
 
-  // Suggestion pills sit just under this bar on Build / Research. When an
-  // attachment makes the bar grow they would be covered, so tell the page
-  // to put them away until the tray is empty again.
+  // Suggestion pills sit just under this bar on Research (Build uses the
+  // coding-model picker in that slot). When an attachment makes the bar grow
+  // they would be covered, so tell the page to put them away until the tray
+  // is empty again.
   useEffect(() => {
     const attached = attachments.length > 0;
     document.documentElement.toggleAttribute("data-home-bar-attached", attached);
@@ -430,9 +508,9 @@ export default function HomeChatBar({
     return () => window.clearInterval(timer);
   }, [welcomeText, active]);
 
-  // Quick-start chips on the Build / Research pages fill the page's own
-  // composer — which is hidden while hosted on Home. They also broadcast
-  // the text so it lands here, in the bar the user actually sees.
+  // Quick-start chips on the Research page fill the page's own composer —
+  // which is hidden while hosted on Home. They also broadcast the text so
+  // it lands here, in the bar the user actually sees.
   useEffect(() => {
     const onInsert = (e) => {
       const t = String(e?.detail?.text ?? "");
@@ -651,6 +729,39 @@ export default function HomeChatBar({
     }
   };
 
+  const slash = useSlashPathMention({
+    enabled: true,
+    onValue: setText,
+    onAttachPaths: (paths) => void ingestPathsRef.current(paths),
+  });
+  const slashModel = useStudioSlashModel({
+    mode: barMode,
+    enabled: true,
+    onValue: setText,
+  });
+  const slashAppOptions = useSlashAppOptions();
+  const slashApp = useSlashAppMention({
+    enabled: true,
+    onValue: setText,
+    options: slashAppOptions,
+    onSelect: (option) => {
+      setAttachments((prev) => {
+        if (prev.some((a) => a.kind === "app" && a.appId === option.id)) return prev;
+        return [...prev, homeBarAppChip(option)];
+      });
+    },
+  });
+
+  useLayoutEffect(() => {
+    if (!slash.open && !slashModel.open && !slashApp.open) return;
+    const place = () => {
+      setSlashPos(barMenuOffset(menuWrapRef.current, inputRef.current, slashPanelRef.current));
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [slash.open, slash.items.length, slashModel.open, slashModel.items.length, slashApp.open, slashApp.items.length, slate, tall]);
+
   // "Ask LYKN about this", from the Files window or a desktop icon. Claimed on
   // mount too, since the surface that asked may have been covering the bar.
   useEffect(() => {
@@ -820,6 +931,7 @@ export default function HomeChatBar({
       clearStagedHomeChatArtifacts();
     }
     const folders = attachments.filter((a) => a.kind === "folder" && a.path);
+    const apps = attachedAppsFromComposer(attachments);
     let t = text.trim();
     if (folders.length) {
       setDropping(true);
@@ -831,6 +943,11 @@ export default function HomeChatBar({
         setDropping(false);
       }
     }
+    if (!t && apps.length) {
+      t = apps.length > 1
+        ? `Use ${apps.map((a) => a.name).join(" and ")}.`
+        : `Use ${apps[0].name}.`;
+    }
     // While a conversation is live (active), an empty view means "keep the
     // chat surface's current mode" — its own pill controls mode from there.
     const payload = {
@@ -839,6 +956,7 @@ export default function HomeChatBar({
       researchSourcePref: sourcePref,
       imagineAspect: barMode === "imagine" ? aspect : undefined,
       vaultPayloads: attachments.map((a) => a.vaultPayload).filter(Boolean),
+      ...(apps.length ? { apps } : {}),
     };
     try {
       sessionStorage.setItem("lykn_pending_home_chat", JSON.stringify(payload));
@@ -870,8 +988,8 @@ export default function HomeChatBar({
   };
 
   // Idle pill mode click — reveal the real mode page (Build / Imagine /
-  // Research headline, chips, showcase) immediately instead of waiting for
-  // the first send. Same cold/warm hand-off as sends.
+  // Research headline, research chips, Imagine showcase) immediately instead
+  // of waiting for the first send. Same cold/warm hand-off as sends.
   const pickMode = (id) => {
     setView(id);
     // Idle desktop: Chat stays put. Embedded rail: every pill switches the
@@ -1049,39 +1167,56 @@ export default function HomeChatBar({
   );
 
   const field = (
-    <textarea
-      ref={inputRef}
-      value={text}
-      rows={1}
-      onChange={(e) => setText(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" && !e.shiftKey) {
-          e.preventDefault();
-          send();
+    <div className={`relative min-w-0 ${slate ? "w-full flex-auto" : "flex-1 self-center"}`}>
+      <textarea
+        ref={inputRef}
+        value={text}
+        rows={1}
+        onChange={(e) => {
+          setText(e.target.value);
+          slashModel.onInput(e.currentTarget);
+          slashApp.onInput(e.currentTarget);
+          slash.onInput(e.currentTarget);
+        }}
+        onKeyDown={(e) => {
+          if (slashModel.onKeyDown(e)) return;
+          if (slashApp.onKeyDown(e)) return;
+          if (slash.onKeyDown(e)) return;
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            send();
+          }
+        }}
+        placeholder={
+          dropping
+            ? "Adding files..."
+            : dictating
+              ? "Listening..."
+              : transcribing
+                ? "Transcribing..."
+                : targetBot
+                  ? botsLive[targetBot.agentId]?.waiting?.waiting
+                    ? `Answer ${targetBot.name}...`
+                    : `Message ${targetBot.name}...`
+                  : placeholderOverride || rotatingHint
         }
-      }}
-      placeholder={
-        dropping
-          ? "Adding files..."
-          : dictating
-            ? "Listening..."
-            : transcribing
-              ? "Transcribing..."
-              : targetBot
-                ? botsLive[targetBot.agentId]?.waiting?.waiting
-                  ? `Answer ${targetBot.name}...`
-                  : `Message ${targetBot.name}...`
-                : placeholderOverride || PLACEHOLDERS[barMode]
-      }
-      autoComplete="off"
-      // flex-auto rather than flex-1 under Slate: the field's own grown height
-      // is its flex basis, so it fills the tall shell while empty and pushes
-      // the shell taller once it outgrows it. flex-1 would zero that basis and
-      // pin the bar at its minimum forever.
-      className={`lykn-home-chat-bar-input min-w-0 resize-none bg-transparent py-1 text-black/85 outline-none ring-0 placeholder:text-black/40 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 dark:text-white/90 dark:placeholder:text-white/40 ${
-        slate ? "w-full flex-auto px-2 text-[0.92rem]" : "flex-1 self-center text-[0.85rem]"
-      }`}
-    />
+        autoComplete="off"
+        // flex-auto rather than flex-1 under Slate: the field's own grown height
+        // is its flex basis, so it fills the tall shell while empty and pushes
+        // the shell taller once it outgrows it. flex-1 would zero that basis and
+        // pin the bar at its minimum forever.
+        className={`lykn-home-chat-bar-input min-w-0 resize-none bg-transparent text-black/85 outline-none ring-0 placeholder:text-black/40 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 dark:text-white/90 dark:placeholder:text-white/40 ${
+          slate
+            ? "w-full px-2 py-1 text-[0.92rem]"
+            : `w-full text-[0.85rem] ${promptTall ? "py-1" : ""}`
+        }`}
+        style={
+          !slate && !promptTall
+            ? { height: 32, maxHeight: 32, paddingTop: 13, paddingBottom: 1, lineHeight: "18px" }
+            : undefined
+        }
+      />
+    </div>
   );
 
   const layoutOpt = imagineLayoutOption(aspect);
@@ -1154,6 +1289,18 @@ export default function HomeChatBar({
     </button>
   );
 
+  const stopButton = working ? (
+    <button
+      type="button"
+      onClick={() => window.dispatchEvent(new CustomEvent("lykn-composer-stop"))}
+      title="Stop generating"
+      aria-label="Stop generating"
+      className={ICON_BTN}
+    >
+      <Square className="h-2.5 w-2.5 text-red-600 dark:text-red-400" fill="currentColor" />
+    </button>
+  ) : null;
+
   const voiceButton = (
     <button
       type="button"
@@ -1171,7 +1318,7 @@ export default function HomeChatBar({
       type="button"
       onClick={send}
       disabled={!canSend || busy}
-      title="Send"
+      title={working ? "Queue prompt" : "Send"}
       aria-label="Send"
       className="lykn-chat-send-btn flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-black/85 text-white shadow transition-all enabled:hover:scale-105 disabled:opacity-35 dark:bg-white dark:text-black"
     >
@@ -1180,7 +1327,10 @@ export default function HomeChatBar({
   );
 
   return (
-    <>
+    <div
+      className={covered ? "pointer-events-none invisible absolute inset-0" : "contents"}
+      aria-hidden={covered || undefined}
+    >
       {/* Mode pill — same look/position as the chat page's floating pill.
           Hidden once a conversation is live: the chat surface's own pill
           (identical, same spot) takes over. The browser-rail copy stays
@@ -1272,7 +1422,9 @@ export default function HomeChatBar({
             } ${BAR_SURFACE} ${
               dropHot || barDrop.hot ? "ring-2 ring-blue-400/80 bg-blue-500/[0.08]" : ""
             }`}
+            data-prompt-wrap={promptTall ? "true" : undefined}
           >
+            {queueChatId ? <PromptQueueBar chatId={queueChatId} compact /> : null}
             {showAppEdit ? (
               <AppSourceStrip
                 compact
@@ -1303,6 +1455,7 @@ export default function HomeChatBar({
                   <span className="flex-1" />
                   {dictateButton}
                   {voiceButton}
+                  {stopButton}
                   {sendButton}
                 </div>
               </>
@@ -1316,9 +1469,19 @@ export default function HomeChatBar({
                 {layoutButton}
                 {dictateButton}
                 {voiceButton}
+                {stopButton}
                 {sendButton}
               </div>
             )}
+          </div>
+
+          {/* Rides the visible Home bar: idle Chat (the page isn't mounted
+              yet), fresh mode pages, and the docked bar after a send. */}
+          <div
+            className="lykn-home-bar-model lykn-desk-wallpaper-ink pointer-events-auto absolute top-full right-0 z-[23]"
+            style={NO_DRAG}
+          >
+            <HomeBarStudioModelSelect mode={barMode} docked={docked} />
           </div>
 
           {/* Tiny live viewport of a Bot working the browser (approved task).
@@ -1384,6 +1547,44 @@ export default function HomeChatBar({
               panelRef={botsPanelRef}
               style={{ ...NO_DRAG, ...botsPos }}
             />
+          )}
+
+          {(slashModel.open || slashApp.open || slash.open) && (
+            <div
+              ref={slashPanelRef}
+              style={{ ...NO_DRAG, ...slashPos }}
+              className="pointer-events-auto absolute z-40"
+            >
+              <SlashPathMenu
+                open
+                anchored
+                items={slashModel.open ? slashModel.items : slashApp.open ? slashApp.items : slash.items}
+                index={slashModel.open ? slashModel.index : slashApp.open ? slashApp.index : slash.index}
+                hint={slashModel.open ? slashModel.hint : slashApp.open ? slashApp.hint : slash.hint}
+                onHover={slashModel.open ? slashModel.setIndex : slashApp.open ? slashApp.setIndex : slash.setIndex}
+                onPick={
+                  slashModel.open
+                    ? slashModel.pick
+                    : slashApp.open
+                      ? slashApp.pick
+                      : slash.pick
+                }
+                ariaLabel={
+                  slashModel.open
+                    ? "Choose a model"
+                    : slashApp.open
+                      ? "Choose an app"
+                      : "Link a file or folder"
+                }
+                emptyHint={
+                  slashModel.open
+                    ? "Type to search models"
+                    : slashApp.open
+                      ? "Type /gmail or /spotify"
+                      : "Type a file or folder on this Mac"
+                }
+              />
+            </div>
           )}
 
           {addOpen && (
@@ -1486,7 +1687,7 @@ export default function HomeChatBar({
           )}
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -1509,6 +1710,7 @@ function ChipIcon({ kind, path }) {
   if (kind === "artifact") return <LayoutPanelTop className="h-3.5 w-3.5 shrink-0 opacity-60" />;
   if (kind === "audio") return <Music className="h-3.5 w-3.5 shrink-0 opacity-60" />;
   if (kind === "video") return <Film className="h-3.5 w-3.5 shrink-0 opacity-60" />;
+  if (kind === "app") return <AppWindow className="h-3.5 w-3.5 shrink-0 text-emerald-500" />;
   return <FileIcon className="h-3.5 w-3.5 shrink-0 opacity-60" />;
 }
 
@@ -1550,7 +1752,11 @@ function BarAttachment({ att, onRemove }) {
 
   return (
     <span className="group inline-flex max-w-[11rem] items-center gap-1.5 rounded-full bg-black/[0.06] py-1 pl-2 pr-1 text-[0.7rem] text-black/75 dark:bg-white/10 dark:text-white/80">
-      <ChipIcon kind={att.kind} path={att.path} />
+      {att.kind === "app" && att.logoUrl ? (
+        <img src={att.logoUrl} alt="" className="h-3.5 w-3.5 shrink-0 rounded-[3px] object-contain" />
+      ) : (
+        <ChipIcon kind={att.kind} path={att.path} />
+      )}
       <span className="min-w-0 truncate">{att.name}</span>
       <button
         type="button"

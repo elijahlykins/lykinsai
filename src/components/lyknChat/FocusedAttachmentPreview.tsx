@@ -1,4 +1,5 @@
 import {
+  AppWindow,
   BookOpen,
   FileText,
   Folder as FolderIcon,
@@ -115,6 +116,19 @@ export default function FocusedAttachmentPreview({
       <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 px-3 py-2 group">
         <FolderIcon className="w-4 h-4 flex-shrink-0 opacity-60" />
         <span className="max-w-[11.25rem] truncate text-xs">{att.vaultTitle || att.name || "Folder"}</span>
+        <button type="button" onClick={() => onRemove(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center"><X className="w-3 h-3" /></button>
+      </div>
+    );
+  }
+  if (t === "app") {
+    return (
+      <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 px-3 py-2 group">
+        {att.logoUrl ? (
+          <img src={att.logoUrl} alt="" className="h-4 w-4 flex-shrink-0 rounded-[3px] object-contain" />
+        ) : (
+          <AppWindow className="w-4 h-4 flex-shrink-0 opacity-60" />
+        )}
+        <span className="max-w-[11.25rem] truncate text-xs">{att.vaultTitle || att.name || "App"}</span>
         <button type="button" onClick={() => onRemove(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center"><X className="w-3 h-3" /></button>
       </div>
     );

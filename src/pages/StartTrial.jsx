@@ -11,11 +11,11 @@ import { API_BASE_URL } from "@/lib/api-config";
 import { hasAppAccess } from "@/lib/billingAccess";
 import { supabase } from "@/lib/supabase";
 import {
-  PLANS,
   BILLING_PERIODS,
   getDisplayPrice,
   getAnnualSavings,
   isStudentEmail,
+  listedPlans,
 } from "@/lib/pricing-config";
 
 const LANDING_FONT =
@@ -25,7 +25,7 @@ const DEFAULT_TRIAL_DAYS = 14;
 
 // Plans the trial picker offers: the checkout-able, currently-available tiers.
 // Teams / coming-soon plans are excluded.
-const TRIAL_PLANS = PLANS.filter((p) => p.checkout !== false && !p.comingSoon);
+const TRIAL_PLANS = listedPlans().filter((p) => p.checkout !== false && !p.comingSoon);
 
 function formatPrice(value) {
   if (value === 0) return "$0";

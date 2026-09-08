@@ -15,6 +15,13 @@ import {
 import { botStandingWorkUiEnabled } from "@/lib/bots/botStandingWorkUi";
 import { botSeed } from "@/lib/bots/botStore";
 import { botsAvailable, removeBot, setBotModelPolicy, useBots } from "@/lib/bots/botsClient";
+import BotModelSelect from "@/components/bots/BotModelSelect";
+import {
+  botModelHint,
+  botModelPolicyFor,
+  botModelSelectValue,
+} from "@/lib/bots/botModels";
+import { useUserPlan } from "@/lib/useUserPlan";
 import { routinesAvailable } from "@/lib/routines/routinesClient";
 import { useTeachSession, workflowsAvailable } from "@/lib/workflows/workflowsClient";
 
@@ -24,6 +31,8 @@ export default function BotDetailPage() {
   const desktop = botsAvailable();
   const { bots, agentStates, live } = useBots();
   const teaching = useTeachSession();
+  // Gates the model picker's premium rows, same as every other picker.
+  const { modelTier } = useUserPlan();
   const bot = bots.find((b) => b.id === botId) || null;
   const teachingThisBot = teaching.active && teaching.session?.botId === bot?.id;
 
@@ -117,23 +126,17 @@ export default function BotDetailPage() {
           </div>
         </div>
 
-        <label className="mt-4 block">
+        <div className="mt-4">
           <span className="text-[0.72rem] text-black/45 dark:text-white/45">Model</span>
-          <select
-            className="mt-1 h-8 w-full rounded-[10px] bg-black/[0.04] px-2.5 text-[13px] dark:bg-white/[0.06]"
-            value={bot.modelPolicy?.mode || "lykn"}
-            onChange={(e) => {
-              const mode = e.target.value;
-              setBotModelPolicy(bot.id, {
-                mode,
-                modelId: mode === "model" ? bot.modelPolicy?.modelId || null : null,
-              });
-            }}
-          >
-            <option value="lykn">LYKN</option>
-            <option value="my_setup">My Setup</option>
-          </select>
-        </label>
+          <BotModelSelect
+            value={botModelSelectValue(bot.modelPolicy)}
+            modelTier={modelTier}
+            onChange={(next) => setBotModelPolicy(bot.id, botModelPolicyFor(next))}
+          />
+          <span className="mt-1 block text-[0.66rem] leading-relaxed text-black/35 dark:text-white/35">
+            {botModelHint(bot.modelPolicy)}
+          </span>
+        </div>
 
         {bot.persona ? (
           <p className="mt-3 text-[0.78rem] leading-relaxed text-black/50 dark:text-white/50">

@@ -16,7 +16,9 @@ const GENERIC_CHAT_TOOL_GUIDANCE = [
   '    with the result in plain language.',
   '  • Refer to the user\'s stuff ("your vault", "your calendar") — never',
   '    internal tool names.',
-  '  • Most turns need zero tools, many need one, very few need more than two.',
+  '  • Most turns need zero tools or one. File, folder, and code asks are',
+  '    the exception: keep calling tools until you can answer with specifics',
+  '    from what you actually read. Do not stop after a listing or a stub.',
   '  • If a listed tool errors, try another listed tool that can answer.',
   '    Do not invent a permissions or reconnect story.',
 ].join('\n');
@@ -81,8 +83,11 @@ const FAMILY_GUIDANCE = {
     'point-in-time nudge and an event for a scheduled start/end.',
   ].join('\n'),
   'web.search': [
-    'WEB SEARCH — live facts (news, weather, prices, current events). Call before answering.',
+    'WEB SEARCH — live facts (news, weather, prices, current events) and checkable',
+    'facts you are not sure of. Call before answering. Never say you lack live',
+    'headlines. If they contradict a factual claim, search before reversing.',
     'Do not search the vault for outside-world info.',
+    'Do not write "I\'ll check" / "Let me look that up" first. Call the tool, then answer.',
   ].join('\n'),
   'web.read': [
     'WEB READ — fetch one URL you already have (pasted, search hit, or open-tab).',
@@ -123,6 +128,12 @@ const FAMILY_GUIDANCE = {
     'LOCAL FILES — use local_* for files on their Mac. Never substitute a vault search for a disk file.',
     'When they name a folder without a path ("my LYKN folder"), search for that name with',
     'local_search_files, then list or read the match. Do not ask them to open Finder or give a path.',
+    'Investigate thoroughly: search to find, then local_read_file the matching files in slices',
+    '(offset / limit). If truncated is true, call again with nextOffset. Keep reading until you',
+    'can cite real contents — do not answer from filenames or a truncated stub.',
+    'A dropped folder listing is one level plus a peek. Nested folders are in play:',
+    'local_search_files on the attached Path, then local_list_dir / local_read_file inside src/,',
+    'server/, and the rest. Never say you only have the top-level listing.',
     'If these tools are listed, you can search, list, and compare synced folders. Do that.',
     'Never say you cannot inspect their Mac from this chat.',
   ].join('\n'),
@@ -170,7 +181,7 @@ const VOICE_FAMILY_GUIDANCE = {
   'projects.write':
     'create_project only after they clearly say yes. Otherwise set_active_project for an existing one.',
   'web.search':
-    'Outside-world questions (weather, news, prices) call web_search immediately — never a vault search.',
+    'Outside-world questions (weather, news, prices) and checkable facts you are not sure of call web_search immediately — never a vault search. Never say you lack live headlines.',
   'connections.external':
     'Use the listed connected-app / MCP tools; prefer them over browser_agent for apps that are connected. Do not dump first-party Chat tools for Gmail.',
   'self.write':
@@ -182,7 +193,7 @@ const VOICE_FAMILY_GUIDANCE = {
   'documents.write':
     'write_document saves a finished letter, memo, or simple document and opens it on screen. Not for apps or research reports.',
   'media.image':
-    'generate_image draws a new picture and puts it on screen. process_image is OCR / edit of an existing image.',
+    'process_image is OCR / edit of an existing image. Creating a NEW image happens in Imagine mode — tell the user to switch to Imagine and resend; never fake or promise a generation here.',
   'artifacts.build':
     'Build the thing they asked for (chart, diagram, sheet, deck, app, video) and put it on screen. write_document is for a simple letter or memo.',
   'compute.math':
@@ -192,7 +203,7 @@ const VOICE_FAMILY_GUIDANCE = {
   'shell.open':
     'open_app puts a LYKN page or AI Drive item on screen. open_settings opens the settings pane. A real Mac app is local_open_app.',
   'local.files.read':
-    'local_* for files on their Mac. Search by name when they did not give a path. Never substitute a vault search.',
+    'local_* for files on their Mac. Search by name when they did not give a path. Read matching files until you can cite contents. Never substitute a vault search.',
   'media.translate':
     'translate the text they gave you. Speak the translation.',
 };

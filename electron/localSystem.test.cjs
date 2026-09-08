@@ -469,7 +469,7 @@ test("shell commands cannot trivially target paths outside approved roots", asyn
   assert.equal(quoted.ok, false);
 });
 
-test("routine commands without path tokens still run inside an approved cwd", async () => {
+test('routine commands without path tokens still run inside an approved cwd', async () => {
   write({ syncAll: false, syncedFolders: [desktop] });
   const result = await localSystem.run(
     "local_run_command",
@@ -478,4 +478,46 @@ test("routine commands without path tokens still run inside an approved cwd", as
   );
   assert.equal(result.ok, true);
   assert.match(result.output, /hi/);
+});
+
+test("local_read_file returns a line window and nextOffset for a long file", async () => {
+  write({ syncAll: false, syncedFolders: [desktop] });
+  const file = path.join(desktop, "long.ts");
+  const lines = Array.from({ length: 520 }, (_, i) => `line-${i + 1}`);
+  fs.writeFileSync(file, lines.join("\n"));
+
+  const first = await localSystem.run(
+    "local_read_file",
+    { path: file },
+    { userDataPath: userData },
+  );
+  assert.equal(first.ok, true);
+  assert.equal(first.startLine, 1);
+  assert.equal(first.truncated, true);
+  assert.equal(first.nextOffset, first.endLine + 1);
+  assert.match(first.content, /^line-1\n/);
+  assert.doesNotMatch(first.content, /line-520$/);
+
+  const rest = await localSystem.run(
+    "local_read_file",
+    { path: file, offset: first.nextOffset, limit: 200 },
+    { userDataPath: userData },
+  );
+  assert.equal(rest.ok, true);
+  assert.equal(rest.startLine, first.nextOffset);
+  assert.match(rest.content, new RegExp(`^line-${first.nextOffset}\\n`));
+  assert.match(rest.content, /line-520$/);
+  assert.equal(rest.truncated, false);
+});
+
+test("local_search_files finds text by query inside a synced folder", async () => {
+  write({ syncAll: false, syncedFolders: [desktop] });
+  fs.writeFileSync(path.join(desktop, "notes.md"), "alpha\nfind-me-please\nomega\n");
+  const out = await localSystem.run(
+    "local_search_files",
+    { path: desktop, query: "find-me-please" },
+    { userDataPath: userData },
+  );
+  assert.equal(out.ok, true);
+  assert.ok(out.results.some((hit) => /find-me-please/.test(hit.match || hit.path)));
 });

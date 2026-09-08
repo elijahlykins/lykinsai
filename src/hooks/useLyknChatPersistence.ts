@@ -7,6 +7,8 @@ import type { NotePage } from "@/components/notes/NotesPanel";
 import { notifyBlocksCapIfApplicable } from "@/lib/lyknChat/blocksCapError";
 import { fetchMostRecentLyknChat } from "@/lib/lyknChat/fetchLyknChatsWithContext";
 import { notifyLyknChatsChanged } from "@/lib/lyknChat/chatsChanged";
+import { snapshotHasContext } from "@/lib/lyknChat/lyknChatHasContext";
+import { ensureChatBoardRow } from "@/lib/chat/chatThreadsClient";
 import { getThreadSnapshot, shouldPreferRuntimeSnapshot } from "@/lib/chat/chatThreadRuntime";
 import { isDemoLyknChatId, getDemoLyknChatSnapshot } from "@/lib/demoLyknChats";
 import { sanitizeImagineTurnForPersist } from "@/lib/chat/imagineThread";
@@ -69,32 +71,6 @@ function isValidNotesTiptapDoc(v: unknown): v is { type: string; content: unknow
     (v as { type?: string }).type === "doc" &&
     Array.isArray((v as { content?: unknown }).content)
   );
-}
-
-/**
- * Returns true when a single tiptap doc has no meaningful content
- * (empty, or just empty paragraphs with no text/children).
- */
-function isNotesContentEmpty(content: any): boolean {
-  if (!content || typeof content !== "object") return true;
-  if (content.type !== "doc") return false;
-  const nodes = Array.isArray(content.content) ? content.content : [];
-  if (nodes.length === 0) return true;
-  const isEmptyNode = (node: any): boolean => {
-    if (!node || typeof node !== "object") return true;
-    if (node.type === "text") return !String(node.text || "").trim();
-    if (node.type === "paragraph" || node.type === "heading") {
-      const kids = Array.isArray(node.content) ? node.content : [];
-      return kids.every(isEmptyNode);
-    }
-    return false;
-  };
-  return nodes.every(isEmptyNode);
-}
-
-function isNotesPagesEmpty(pages: NotePage[] | null | undefined): boolean {
-  if (!Array.isArray(pages) || pages.length === 0) return true;
-  return pages.every((p) => isNotesContentEmpty(p?.content));
 }
 
 function isValidNotesPages(v: unknown): v is NotePage[] {
@@ -331,11 +307,9 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
   /* ------------------------------------------------------------------ */
   const isBoardEmpty = useCallback(() => {
     if (chatMessages.length > 0) return false;
-    if (aiThreadRef.current.length > 0) return false;
-    if (!isNotesPagesEmpty(notesPagesRef.current)) return false;
-    return true;
+    return !snapshotHasContext(buildSnapshot());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages.length]);
+  }, [chatMessages.length, buildSnapshot]);
 
   /* ------------------------------------------------------------------ */
   /*  sanitizeSnapshotForDb                                              */
@@ -488,11 +462,15 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
           console.error("[LYKN] Board row lookup failed:", lookupErr.message);
         }
         if (!existingRow?.id) {
-          const { error: insertErr } = await supabase
-            .from("lykn_chats")
-            .insert({ id: chatId, user_id: userId, title: savedTitle });
-          if (insertErr && import.meta.env.DEV) {
-            console.error("[LYKN] Board row insert failed:", insertErr.message);
+          try {
+            await ensureChatBoardRow(userId, chatId, savedTitle);
+          } catch (insertErr) {
+            if (import.meta.env.DEV) {
+              console.error(
+                "[LYKN] Board row insert failed:",
+                insertErr instanceof Error ? insertErr.message : insertErr,
+              );
+            }
             return;
           }
         }
@@ -646,11 +624,16 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
     setTitleTracked(next);
     if (next !== "New Chat") userRenamedRef.current = true;
     if (!boardRowExistsRef.current) {
-      const { error: insertErr } = await supabase
-        .from("lykn_chats")
-        .insert({ id: chatId, user_id: userId, title: next });
-      if (insertErr) {
-        if (import.meta.env.DEV) console.error("[LYKN] Board title insert failed:", insertErr.message);
+      if (next === "New Chat" && isBoardEmpty()) return;
+      try {
+        await ensureChatBoardRow(userId, chatId, next);
+      } catch (insertErr) {
+        if (import.meta.env.DEV) {
+          console.error(
+            "[LYKN] Board title insert failed:",
+            insertErr instanceof Error ? insertErr.message : insertErr,
+          );
+        }
         return;
       }
       boardRowExistsRef.current = true;
@@ -663,7 +646,7 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
         .eq("user_id", userId);
     }
     notifyLyknChatsChanged();
-  }, [chatId, setTitleTracked, userId]);
+  }, [chatId, isBoardEmpty, setTitleTracked, userId]);
 
   /* ------------------------------------------------------------------ */
   /*  Board load effect                                                  */
@@ -760,34 +743,8 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
         } catch {
           // ignore
         }
-        // Explicit new-chat navigation — register the row immediately so
-        // sidebars and the Projects workspace list it before the first save.
-        try {
-          const { error: insertErr } = await supabase
-            .from("lykn_chats")
-            .insert({
-              id: routeChatId,
-              user_id: userId,
-              title: "New Chat",
-            });
-          if (!insertErr) {
-            boardRowExistsRef.current = true;
-            localStorage.setItem("lyknchat_active_id", routeChatId);
-          } else {
-            const { data: existing } = await supabase
-              .from("lykn_chats")
-              .select("id")
-              .eq("id", routeChatId)
-              .eq("user_id", userId)
-              .maybeSingle();
-            if (existing?.id) {
-              boardRowExistsRef.current = true;
-              localStorage.setItem("lyknchat_active_id", routeChatId);
-            }
-          }
-        } catch {
-          // ignore
-        }
+        // Keep this board ephemeral until the first real save. Inserting here
+        // filled history with empty "New Chat" shells every time a composer opened.
       }
       if (!id && !routeChatId) {
         try {
@@ -1042,6 +999,7 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
   /* ------------------------------------------------------------------ */
   const writeChatCacheSync = useCallback((id: string, messages: any[]) => {
     if (!id || isDemoLyknChatId(id)) return;
+    if (!Array.isArray(messages) || messages.length === 0) return;
     try {
       const MAX_LOCAL_CHAT = 30;
       const SIGNED_URL_RE = /supabase\.co\/storage\//;
@@ -1075,6 +1033,7 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
   useEffect(() => {
     if (!chatId) return;
     if (isDemoLyknChatId(chatId)) return; // demo grids stay fresh across visits
+    if (!chatMessages.length) return;
     const timer = setTimeout(() => {
       writeChatCacheSync(chatId, chatMessages);
     }, 1500);
@@ -1107,6 +1066,7 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
     // the request is on the wire. The next mount restores from this draft
     // (lyknchat_draft_<chatId>), so the user never loses work.
     const writeDraftSync = () => {
+      if (!lastSaveTimeRef.current && isBoardEmpty()) return;
       try {
         const snapshot = buildSnapshot();
         (snapshot as any)._savedAt = lastSaveTimeRef.current || new Date().toISOString();

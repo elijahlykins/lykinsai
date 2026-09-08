@@ -273,9 +273,12 @@ export const OUTPUT_CAPS = {
   vault_search: 800,
   // Coded-artifact turns (lykn_build_react_artifact): the model writes a
   // complete React app/site/worksheet into a tool-call argument, so it needs
-  // far more room than a chat reply. 30k tokens ≈ 120KB of code — matches
-  // the tool's MAX_CODE_LEN. clampForProvider still bounds this per provider
-  // (grok/gemini 32k ceilings pass it through; openai/claude clamp lower).
+  // far more room than a chat reply. 30k tokens ≈ 120KB of code (the tool's
+  // own MAX_CODE_LEN is 220KB, so the cap — not the tool — is the real
+  // ceiling on one build). clampForProvider bounds this per provider:
+  // claude/gemini/grok pass 30k through at their 32k ceiling, OpenAI clamps
+  // to 16,384, which is why very large single-shot builds are noticeably
+  // more likely to truncate on an OpenAI route.
   coded_artifact: 30000,
   // Open-artifact / installed-app refine: patches (`edits` / `file_ops`) plus
   // a short summary. 30k invited grok to re-stream the whole app and hang.
@@ -293,16 +296,29 @@ export const OUTPUT_CAPS = {
 // Per-provider single-call output ceilings. Used to clamp our caps right
 // before the request goes out so we never get a 400 "max_tokens too
 // large" from any provider — no matter how generous OUTPUT_CAPS gets.
-// Keep these conservative: when in doubt, use the lower model in the
-// family. Claude was 8,192 (the 3.5 Sonnet floor) but resolveAnthropicModel
-// now maps every legacy id to 4.x models (64K output), and coded-artifact
-// builds on Opus need well past 8K for the component source — 32,768
-// matches the gemini/grok ceiling and stays under every 4.x model's limit.
+// Claude was 8,192 (the 3.5 Sonnet floor) but resolveAnthropicModel now maps
+// every legacy id to 4.x models (64K output), and coded-artifact builds on
+// Opus need well past 8K for the component source — 32,768 stays under every
+// 4.x model's limit.
+//
+// OpenAI sat at 16,384 — the gpt-4o family's true ceiling — which silently
+// halved the 30k coded_artifact cap on every OpenAI build. The gpt-5.x,
+// gpt-4.1 and o-series families all accept far more, so the provider default
+// is now 32,768 (matching the others) and only the models that genuinely cap
+// lower are listed in MODEL_OUTPUT_CEILINGS below.
 export const PROVIDER_OUTPUT_CEILINGS = {
   gemini: 32768,
-  openai: 16384,
+  openai: 32768,
   claude: 32768,
   grok: 32768,
+};
+
+// Per-model exceptions, applied ahead of the provider ceiling. Only models
+// whose real single-call output limit is BELOW their provider default belong
+// here — an entry that is too high produces a 400 from the provider.
+export const MODEL_OUTPUT_CEILINGS = {
+  'gpt-4o': 16384,
+  'gpt-4o-mini': 16384,
 };
 
 export function getProviderForModel(model) {
@@ -314,8 +330,12 @@ export function getProviderForModel(model) {
 }
 
 export function clampForProvider(cap, model) {
-  const provider = getProviderForModel(model);
-  const ceiling = PROVIDER_OUTPUT_CEILINGS[provider] || OUTPUT_CAPS.max;
+  const id = String(model || '').trim();
+  const provider = getProviderForModel(id);
+  const ceiling =
+    MODEL_OUTPUT_CEILINGS[id] ||
+    PROVIDER_OUTPUT_CEILINGS[provider] ||
+    OUTPUT_CAPS.max;
   return Math.min(Math.floor(cap), ceiling);
 }
 

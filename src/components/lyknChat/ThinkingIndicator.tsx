@@ -1,6 +1,25 @@
+import { useEffect, useRef, useState } from "react";
+import {
+  Circle,
+  Code,
+  FileText,
+  Film,
+  Folder,
+  Globe,
+  Image,
+  LayoutTemplate,
+  Lightbulb,
+  Plug,
+  Search,
+} from "lucide-react";
 import BotAvatar from "@/components/bots/BotAvatar";
-import { classifyStatusLine, useThinkingStatus } from "@/hooks/useThinkingStatus";
+import { classifyStatusLine, isTrailWorthyStatus, useThinkingStatus, useThinkingTrail } from "@/hooks/useThinkingStatus";
 import { botSeed } from "@/lib/bots/botStore";
+import {
+  collapseThinkingSteps,
+  thinkingHeaderLabel,
+  type ThinkingActivityKind,
+} from "@/lib/lyknChat/thinkingActivity";
 import LyknOutlineSpinner from "./LyknOutlineSpinner";
 
 export type ThinkingBotFace = {
@@ -30,26 +49,56 @@ interface ThinkingIndicatorProps {
    */
   paused?: boolean;
   className?: string;
-  /** Earlier build thoughts shown above the live line. Plan-echo and
-   *  generic think lines are never stacked here. */
+  /** Earlier activity lines. Generic think/build rotation is never stacked. */
   trail?: string[];
 }
 
-function priorThoughts(trail: string[] | undefined, live: string) {
-  return (trail || [])
-    .map((line) => String(line || "").trim())
-    .filter((line) => {
-      if (!line || line === live) return false;
-      const kind = classifyStatusLine(line);
-      return kind === "live-build";
-    })
-    .slice(-3);
+const STEP_ICONS: Record<ThinkingActivityKind, typeof Search> = {
+  search: Search,
+  read: Globe,
+  research: Lightbulb,
+  build: LayoutTemplate,
+  image: Image,
+  write: FileText,
+  code: Code,
+  files: Folder,
+  video: Film,
+  connect: Plug,
+  other: Circle,
+};
+
+function StepIcon({ kind, size }: { kind: ThinkingActivityKind; size: number }) {
+  const Icon = STEP_ICONS[kind] || Search;
+  return <Icon size={size} strokeWidth={1.75} aria-hidden className="lykn-thinking__glyph" />;
+}
+
+function useElapsedSeconds(running: boolean) {
+  const [seconds, setSeconds] = useState(0);
+  const originRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!running) {
+      originRef.current = null;
+      setSeconds(0);
+      return;
+    }
+    if (originRef.current == null) originRef.current = Date.now();
+    const tick = () => {
+      if (originRef.current == null) return;
+      setSeconds(Math.floor((Date.now() - originRef.current) / 1000));
+    };
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [running]);
+
+  return seconds;
 }
 
 /**
- * A live mark beside the working-through line. LYKN uses the outline spinner;
- * a Bot turn uses that Bot's face. Both write the current thought next to
- * the mark, with earlier thoughts faded above it.
+ * LYKN (or a Bot) thinks at the top. Real work appears underneath as a
+ * connected activity log — same language in chat, Build, Imagine, Research,
+ * and Bot turns.
  */
 export default function ThinkingIndicator({
   status,
@@ -68,38 +117,32 @@ export default function ThinkingIndicator({
       classification === "generic-build");
   const rotated = useThinkingStatus(rotate, status, classification === "generic-build");
   const text = (rotate ? rotated : status)?.trim() || "Thinking…";
-  const gapClass = compact ? "gap-2" : "gap-3";
-  const prior = priorThoughts(trail, text);
+  const localTrail = useThinkingTrail(status, !paused && trail == null);
+  const lines = (trail ?? localTrail).filter(isTrailWorthyStatus);
+  const liveStep = isTrailWorthyStatus(text) ? text : "";
+  const steps = collapseThinkingSteps(lines, liveStep);
+  const elapsed = useElapsedSeconds(!paused);
+  const header = thinkingHeaderLabel({
+    paused,
+    stepCount: steps.length,
+    elapsedSeconds: elapsed,
+    fallback: text,
+  });
+  const timed = !paused && steps.length > 0;
   const mark = compact ? 16 : 24;
+  const glyph = compact ? 12 : 14;
+  const hasSteps = steps.length > 0;
 
   return (
     <div
-      className={`flex flex-col ${compact ? "gap-1" : "gap-1.5"} ${
-        tone === "inherit" ? "lykn-mark-inherit" : ""
-      } ${className}`}
+      className={`lykn-thinking ${compact ? "lykn-thinking--compact" : ""} ${
+        hasSteps ? "lykn-thinking--steps" : ""
+      } ${tone === "inherit" ? "lykn-mark-inherit" : ""} ${className}`}
       aria-live="polite"
-      aria-label={text}
+      aria-label={[header, ...steps.map((s) => s.label)].filter(Boolean).join(". ")}
     >
-      {prior.length > 0 ? (
-        <ul className="space-y-0.5 pl-0.5" aria-label="What has been worked through">
-          {prior.map((line) => (
-            <li
-              key={line}
-              className={`leading-snug ${
-                compact ? "text-[11px]" : "text-[12px]"
-              } ${
-                tone === "inherit"
-                  ? "opacity-50"
-                  : "text-black/40 dark:text-white/35"
-              }`}
-            >
-              {line.replace(/[.…]+$/g, "")}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      <div className={`flex items-start ${gapClass}`}>
-        <span className="mt-0.5 shrink-0 translate-x-[3px] -translate-y-[2px]">
+      <div className="lykn-thinking__row lykn-thinking__head">
+        <span className="lykn-thinking__mark">
           {bot ? (
             <BotAvatar
               face={bot.face}
@@ -114,13 +157,30 @@ export default function ThinkingIndicator({
           )}
         </span>
         <span
-          className={`min-w-0 break-words leading-snug ${
-            paused ? "" : "lykn-chat-thinking-text"
+          className={`lykn-thinking__label lykn-thinking__label--head ${
+            paused || timed ? "" : "lykn-chat-thinking-text"
           }`}
         >
-          {text}
+          {header}
         </span>
       </div>
+      {hasSteps ? (
+        <ul className="lykn-thinking__steps" aria-label="What has been worked through">
+          {steps.map((step, i) => (
+            <li
+              key={`${step.kind}-${i}`}
+              className={`lykn-thinking__row lykn-thinking__step${
+                step.live ? " lykn-thinking__step--live" : ""
+              }`}
+            >
+              <span className="lykn-thinking__mark">
+                <StepIcon kind={step.kind} size={glyph} />
+              </span>
+              <span className="lykn-thinking__label">{step.label}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }

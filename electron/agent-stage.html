@@ -735,21 +735,20 @@
       html.menu-overlay #page { background: transparent; pointer-events: none; }
       html.menu-overlay #empty { visibility: hidden; }
     </style>
-    <link rel="stylesheet" href="hover-tips.css" />
   </head>
   <body>
     <div id="shell">
       <div id="toast" hidden></div>
       <div id="tabrow">
         <div id="winbtns" aria-label="Window controls">
-          <button type="button" class="winbtn" id="win-close" title="Close" aria-label="Close" style="background:#ff5f57">
+          <button type="button" class="winbtn" id="win-close" aria-label="Close" style="background:#ff5f57">
             <svg viewBox="0 0 10 10" fill="none" stroke="rgba(0,0,0,0.75)" stroke-width="1.4" stroke-linecap="round"><path d="M2 2 L8 8 M8 2 L2 8"/></svg>
           </button>
-          <button type="button" class="winbtn" id="win-min" title="Minimize" aria-label="Minimize" style="background:#febc2e">
+          <button type="button" class="winbtn" id="win-min" aria-label="Minimize" style="background:#febc2e">
             <svg viewBox="0 0 10 10" fill="none" stroke="rgba(0,0,0,0.75)" stroke-width="1.4" stroke-linecap="round"><path d="M2 5 H8"/></svg>
           </button>
           <div id="win-zoom-wrap">
-            <button type="button" class="winbtn" id="win-zoom" title="Zoom" aria-label="Zoom" style="background:#28c840">
+            <button type="button" class="winbtn" id="win-zoom" aria-label="Zoom" style="background:#28c840">
               <svg viewBox="0 0 10 10" fill="none" stroke="rgba(0,0,0,0.75)" stroke-width="1.4" stroke-linecap="round"><path d="M2.5 7.5 L7.5 2.5 M3 3 H7 V7"/></svg>
             </button>
             <div id="win-zoom-menu" class="zoom-tile-menu" role="menu" hidden>
@@ -763,16 +762,16 @@
         <div id="tabs" aria-label="Agent tabs"></div>
       </div>
       <div id="chrome">
-        <button type="button" id="back" title="Back" aria-label="Back">
+        <button type="button" id="back" aria-label="Back">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
         </button>
-        <button type="button" id="forward" title="Forward" aria-label="Forward">
+        <button type="button" id="forward" aria-label="Forward">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
         </button>
-        <button type="button" id="reload" title="Reload" aria-label="Reload">
+        <button type="button" id="reload" aria-label="Reload">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
         </button>
-        <button type="button" id="download" title="Download this page" aria-label="Download this page">
+        <button type="button" id="download" aria-label="Download this page">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M4 20h16"/></svg>
         </button>
         <div id="url-wrap">
@@ -781,7 +780,7 @@
           </div>
           <div id="url-suggest" hidden role="listbox" aria-label="Suggestions"></div>
         </div>
-        <button type="button" id="use-lykn" title="Ask LYKN" aria-label="Ask LYKN" aria-pressed="false">
+        <button type="button" id="use-lykn" aria-label="Ask LYKN" aria-pressed="false">
           <span class="label">Ask</span>
           <svg viewBox="0 0 204.29 204.29" aria-hidden="true">
             <path
@@ -790,7 +789,7 @@
             />
           </svg>
         </button>
-        <button type="button" id="sync-btn" title="Bring your Chrome logins & tabs" aria-label="Sync from Chrome" aria-expanded="false">
+        <button type="button" id="sync-btn" aria-label="Sync from Chrome" aria-expanded="false">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M21 12a9 9 0 0 1-9 9c-2.5 0-4.8-1-6.4-2.7" />
             <path d="M3 12a9 9 0 0 1 9-9c2.5 0 4.8 1 6.4 2.7" />
@@ -811,7 +810,7 @@
       </div>
       <div id="favs" hidden aria-label="Frequent sites">
         <div id="favs-scroll"></div>
-        <button type="button" id="favs-more" title="More sites" aria-label="Scroll to more sites">
+        <button type="button" id="favs-more" aria-label="Scroll to more sites">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 17 5-5-5-5"/><path d="m13 17 5-5-5-5"/></svg>
         </button>
       </div>
@@ -837,7 +836,6 @@
         </div>
       </div>
     </div>
-    <script src="hover-tips.js"></script>
     <script src="chromeSyncContract.cjs"></script>
     <script src="agent-stage.js"></script>
   </body>

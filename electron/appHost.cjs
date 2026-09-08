@@ -164,6 +164,79 @@ async function installApp({
   return { ok: true, app: apps.getApp(app.id), bytes: built.bytes };
 }
 
+/**
+ * Install (or update) a STATIC app — a production web build served verbatim.
+ *
+ * This is how Build-workspace projects land in the dock: the agent compiles
+ * the project (`npm run build`), and the emitted bundle is stored as-is with
+ * `entry: "index.html"`, which appProtocol serves without the React shell or
+ * the JSX compiler. No verify pass here — the caller just built and ran the
+ * project, which is a stronger check than loading a headless window.
+ *
+ * As with installApp, passing an existing `id` updates in place, and the id
+ * being the app's origin is what lets an update keep the user's data.
+ */
+function installStaticApp({
+  id = null,
+  title = "App",
+  files = [],
+  icon = null,
+  description = null,
+  sourceChat = null,
+} = {}) {
+  const list = (Array.isArray(files) ? files : [])
+    .filter((f) => f && typeof f.path === "string")
+    .map((f) => ({
+      path: String(f.path),
+      content: String(f.content ?? ""),
+      encoding: f.encoding === "base64" ? "base64" : null,
+    }));
+
+  if (!list.length) return { ok: false, error: "no_files", hint: "The build produced no files." };
+  if (!list.some((f) => f.path === "index.html")) {
+    return {
+      ok: false,
+      error: "no_entry",
+      hint: "A static app needs an index.html at the root of its build output.",
+    };
+  }
+
+  const name = String(title || "App").slice(0, 120);
+  const existing = id ? apps.getApp(id) : null;
+  // The icon here comes from the MODEL (local_install_app), not the user, so
+  // it ranks like a manifest icon: an icon the user picked from the dock
+  // survives every reinstall, and the model's choice never claims icon_source
+  // "user" — otherwise the user's later pick could be overridden by a rebuild.
+  const chosenIcon = resolveIcon(null, icon, existing);
+
+  let app;
+  if (existing) {
+    apps.snapshotVersion(existing.id, `before update to "${name}"`);
+    apps.updateApp(existing.id, {
+      name,
+      ...chosenIcon,
+      description: description ? String(description).slice(0, 500) : existing.description,
+      entry: "index.html",
+      // A static bundle has no bridge manifest — it asks for nothing.
+      capabilities: [],
+      grants: {},
+    });
+    app = apps.getApp(existing.id);
+  } else {
+    app = apps.createApp({
+      name,
+      ...chosenIcon,
+      description: description ? String(description).slice(0, 500) : null,
+      entry: "index.html",
+      capabilities: [],
+      source_chat: sourceChat,
+    });
+  }
+
+  apps.putFiles(app.id, list);
+  return { ok: true, app: apps.getApp(app.id) };
+}
+
 /** Remove an app and everything it stored. */
 function uninstallApp(id) {
   const win = openWindows.get(String(id));
@@ -217,16 +290,23 @@ function windowOptions(app, extra = {}) {
   };
 }
 
-/** Open an installed app in its own window, focusing it if already open. */
-function openApp(id) {
+/**
+ * Open an installed app in its own window, focusing it if already open.
+ * `reload: true` refreshes an already-open window — used right after a
+ * reinstall so the user sees the updated app, not the stale bundle.
+ */
+function openApp(id, { reload = false } = {}) {
   const appId = String(id);
   const app = apps.getApp(appId);
   if (!app || app.deleted_at) return { ok: false, error: "app not found" };
 
   const existing = openWindows.get(appId);
   if (existing && !existing.isDestroyed()) {
+    if (reload) {
+      try { existing.webContents.reload(); } catch { /* window closing */ }
+    }
     existing.focus();
-    return { ok: true, id: appId, focused: true };
+    return { ok: true, id: appId, focused: true, ...(reload ? { reloaded: true } : {}) };
   }
 
   const win = new BrowserWindow(windowOptions(app));
@@ -376,6 +456,7 @@ module.exports = {
   partitionFor,
   parseManifest,
   installApp,
+  installStaticApp,
   uninstallApp,
   openApp,
   verifyApp,

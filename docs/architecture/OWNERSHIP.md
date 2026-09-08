@@ -26,6 +26,26 @@ Remote execution
 MCP tool execution
 → McpExecutor
 
+Build workspace (on-disk projects under ~/LYKN/Builds, managed dev-server processes)
+→ `electron/build-workspace` (execution) + `server/ai/buildWorkspaceTurn.js` (turn wiring)
+
+Desktop MCP servers (stdio MCP processes on the user's machine: Blender, Ableton, custom)
+→ `electron/mcp/localMcpHost.cjs` (lifecycle, persistence, approvals, env encryption) + `server/ai/desktopMcpTurn.js` (turn wiring)
+Desktop MCP catalog (vetted name→command map, installed-app detection, registry fallback)
+→ `electron/mcp/desktopMcpCatalog.cjs`
+
+Desktop control (screen capture, native mouse/keyboard, window geometry)
+→ `electron/desktop-agent` (`surface/*` primitives, `desktopControl.cjs` look/act tools)
+
+Agent stall policy (abandonment classifiers + continuation-nudge prompts for workspace and desktop-MCP turns)
+→ `lib/agentStallPolicy.js` (consulted by `chat-agent-loop.js` after each hop)
+
+Generated media (hosted providers, usage-metered, persisted to storage)
+→ `lib/exterior/generateImage.js` (OpenAI/Gemini images), `lib/exterior/generate3dModel.js` (Tripo/Meshy GLB), `lib/exterior/generateVideo.js` (OpenRouter video gateway, Gemini Veo fallback)
+
+Engineering / CAD / mesh file reads (STL, STEP, glTF, OBJ, DXF, G-code, …)
+→ `lib/engineering/readEngineeringFile.js` (chat ingest, overlay drop, Vault allow-list, `local_read_file`)
+
 ## Automation
 
 Schedules and monitoring
@@ -84,6 +104,9 @@ electron/overlay.js
 Chat model / economics routing
 → server/ai/chatRouting
 
+Build / MCP / coding hop reply (hold mid-work prose; one finish bubble)
+→ `lib/chatWorkReplyGate.js`
+
 Model registry / capabilities
 → lib/models
 
@@ -102,6 +125,9 @@ Chat context / prompt-cache pipeline
 Usage Balance / prepaid dollar ledger
 → lib/billing (usageBalance)
 
+Internal unlimited-usage accounts
+→ lib/billing/internalAccounts.js
+
 Desktop auto-update
 → electron/updater
 
@@ -110,6 +136,12 @@ In-account product update
 
 LyknChat.tsx
 → Chat page composition
+
+Prompt queue (follow-up prompts while a turn is in flight)
+→ `src/lib/chat/promptQueue.ts` (Studio / Home / rail) + `electron/overlay-ui/promptQueue.js` (Glass)
+
+In-flight work across display sleep (keep working) vs full sleep/shutdown (Paused)
+→ `electron/os/workKeepAlive.cjs`
 
 Vault.jsx
 → Vault page composition

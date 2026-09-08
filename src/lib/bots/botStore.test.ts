@@ -311,7 +311,7 @@ test("bots survive a round trip and a task caught mid-run ends right there", () 
   // A reload ends the task - no silent retry on the next dispatch. The chat
   // row re-attaches to this settled result and says what happened.
   assert.equal(revived[0].tasks[0].status, "failed");
-  assert.match(revived[0].tasks[0].result || "", /Stopped/);
+  assert.match(revived[0].tasks[0].result || "", /Paused/);
   assert.ok(revived[0].tasks[0].finishedAt);
   // Ending it once is final - another round trip doesn't rewrite the result.
   const again = parseBots(serializeBots(revived));
@@ -320,7 +320,7 @@ test("bots survive a round trip and a task caught mid-run ends right there", () 
   let q = enqueueTask(createBot({ name: "Q" }), "Later").bot;
   const stoppedQueue = parseBots(serializeBots([q]))[0].tasks[0];
   assert.equal(stoppedQueue.status, "failed");
-  assert.match(stoppedQueue.result || "", /Stopped/);
+  assert.match(stoppedQueue.result || "", /Paused/);
 });
 
 test("settleUnfinishedTasks ends the running task and drops the rest of the queue", () => {

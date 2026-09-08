@@ -19,7 +19,7 @@ import {
 import type { PromptMessage } from "@/lib/lyknChat/chatTurnTypes";
 import { ChatPopImage } from "@/components/lyknChat/LyknMediaPop";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
-import { useBuildThoughtTrail } from "@/hooks/useThinkingStatus";
+import { useThinkingTrail } from "@/hooks/useThinkingStatus";
 import { hydrateThreadSnapshotFromLocal } from "@/lib/lyknChat/hydrateThreadSnapshot";
 import {
   handleLyknBrowserClick,
@@ -199,7 +199,7 @@ export default function AttachedChatThread({
   const messages = snap?.chatMessages || [];
   const loading = !!snap?.isChatLoading;
   const status = String(snap?.chatStatusText || "").trim();
-  const trail = useBuildThoughtTrail(status, loading);
+  const trail = useThinkingTrail(status, loading);
   const liveBot = [...messages].reverse().find((m) => m.bot)?.bot || null;
   const botAlreadyWorking = messages.some((m) => (m as { botWorking?: boolean }).botWorking);
   const lastAiResponse = String(messages[messages.length - 1]?.aiResponse || "");
@@ -208,7 +208,7 @@ export default function AttachedChatThread({
     botAlreadyWorking,
     lastAiResponse,
   });
-  const stopped = !loading && /^stopped$/i.test(status);
+  const stopped = !loading && /^(stopped|paused)$/i.test(status);
 
   return (
     <div
@@ -312,7 +312,7 @@ export default function AttachedChatThread({
         </div>
       ) : null}
       {stopped ? (
-        <p className="px-1 text-[11px] text-black/40">Stopped</p>
+        <p className="px-1 text-[11px] text-black/40">{/^paused$/i.test(status) ? "Paused" : "Stopped"}</p>
       ) : null}
     </div>
   );

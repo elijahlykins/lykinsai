@@ -160,50 +160,52 @@ export default function HeroDesktopStage({
         />
 
         <div className="gl-hero-glass">
-          <div className="gl-hero-desk-widgets">
-            <CalendarTile />
-            <MonthTile />
-          </div>
-
-          <div className="gl-hero-desk-modes">
-            <DesktopModePills mode={mode} onChange={setMode} />
-          </div>
-
-          <div className="gl-hero-desk-icons">
-            {FOLDERS.map((folder) => (
-              <FakeFolder key={folder.label} {...folder} />
-            ))}
-          </div>
-
-          {appWindow == null ? (
-            <div className="gl-hero-desk-center">
-              <p className="gl-hero-desk-welcome">
-                Welcome to <LyknWordmark decorative />
-              </p>
-              <DesktopChatBar
-                className="gl-hero-desk-homebar"
-                showModes={false}
-                mode={mode}
-                onModeChange={setMode}
-                cyclePrompts={prompt == null}
-                staticPrompt={prompt}
-                typeStaticPrompt={typePrompt}
-              />
+          <div className="gl-hero-scene">
+            <div className="gl-hero-desk-widgets">
+              <CalendarTile />
+              <MonthTile />
             </div>
-          ) : (
-            <BrowserWindow />
-          )}
 
-          <div className="gl-hero-desk-dock">
-            <div className="gl-hero-desk-dock-pill">
-              <span className="gl-hero-desk-dock-lykn">
-                <img src={lyknIconLight} alt="" draggable={false} />
-              </span>
-              {DOCK.map(({ id, label, icon: Icon }) => (
-                <span key={id} className="gl-hero-desk-dock-btn" title={label}>
-                  <Icon className="h-[1.05rem] w-[1.05rem]" />
-                </span>
+            <div className="gl-hero-desk-modes">
+              <DesktopModePills mode={mode} onChange={setMode} />
+            </div>
+
+            <div className="gl-hero-desk-icons">
+              {FOLDERS.map((folder) => (
+                <FakeFolder key={folder.label} {...folder} />
               ))}
+            </div>
+
+            {appWindow == null ? (
+              <div className="gl-hero-desk-center">
+                <p className="gl-hero-desk-welcome">
+                  Welcome to <LyknWordmark decorative />
+                </p>
+                <DesktopChatBar
+                  className="gl-hero-desk-homebar"
+                  showModes={false}
+                  mode={mode}
+                  onModeChange={setMode}
+                  cyclePrompts={prompt == null}
+                  staticPrompt={prompt}
+                  typeStaticPrompt={typePrompt}
+                />
+              </div>
+            ) : (
+              <BrowserWindow />
+            )}
+
+            <div className="gl-hero-desk-dock">
+              <div className="gl-hero-desk-dock-pill">
+                <span className="gl-hero-desk-dock-lykn">
+                  <img src={lyknIconLight} alt="" draggable={false} />
+                </span>
+                {DOCK.map(({ id, label, icon: Icon }) => (
+                  <span key={id} className="gl-hero-desk-dock-btn" title={label}>
+                    <Icon className="h-[1.05rem] w-[1.05rem]" />
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
         </div>

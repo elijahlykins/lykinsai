@@ -15,6 +15,7 @@ import {
   AI_DRIVE_FOLDERS,
 } from "@/lib/vault/aiDriveContents";
 import { driveEntryFor } from "@/components/macfiles/driveKinds";
+import { openBuildProject } from "@/lib/vault/buildsDrive";
 import { openFileWindow } from "@/lib/files/fileWindows";
 import { canSaveFileAs, saveFileToChosenFolder } from "@/lib/files/downloadToComputer";
 import { isLocalTarget, localBlobUrl } from "@/lib/vault/repository";
@@ -357,6 +358,21 @@ export function useVaultDriveWindow({
     // the listing out from under the Add / Cancel bar.
     if (isChatPickMode) return;
 
+    // A build project is a directory on this Mac, not a file the drive can
+    // frame — opening it means opening the folder in Finder.
+    if (card.kind === "build-project") {
+      void openBuildProject(card.path).then((res) => {
+        if (!res?.ok) {
+          toast({
+            title: "Couldn't open this build",
+            description: res?.error || "The project folder couldn't be opened.",
+            variant: "destructive",
+          });
+        }
+      });
+      return;
+    }
+
     // What LYKN made opens in the same window a document on the Desktop opens
     // in. A generated image and a downloaded one are both just files, and
     // there was no reason left for them to behave differently.
@@ -515,7 +531,7 @@ export function useVaultDriveWindow({
       }
     }
 
-    if (wantFolder === "artifacts" || wantFolder === "images") setOpenDriveFolder(wantFolder);
+    if (DRIVE_FOLDERS.some((f) => f.id === wantFolder)) setOpenDriveFolder(wantFolder);
     clearDriveLinkParams();
   }, [
     studioSurface, location.search, vaultCards, isLoadingNotes, hasMoreNotes,
@@ -524,8 +540,13 @@ export function useVaultDriveWindow({
 
   const handleDriveMenu = useCallback((entry, element) => {
     if (!entry?.card) return;
-    // Folder tiles are synthetic — there's no row behind them to tag or delete.
-    if (entry.card.kind === "source-folder" || entry.card.kind === "drive-folder") return;
+    // Folder tiles and build projects are synthetic — no row behind them to
+    // tag or delete.
+    if (
+      entry.card.kind === "source-folder" ||
+      entry.card.kind === "drive-folder" ||
+      entry.card.kind === "build-project"
+    ) return;
     openCardMenuForAnchor(entry.id, element);
   }, [openCardMenuForAnchor]);
 

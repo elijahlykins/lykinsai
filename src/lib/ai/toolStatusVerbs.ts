@@ -46,6 +46,7 @@ const TOOL_RUNNING_STATUS: Record<string, string> = {
   lykn_generate_chart: "Building the chart…",
   lykn_generate_diagram: "Drawing the diagram…",
   lykn_generate_image: "Creating the image…",
+  lykn_generate_3d_model: "Generating the 3D model…",
   lykn_build_template: "Building the template…",
   lykn_build_react_artifact: "Building the app…",
   lykn_render_video: "Rendering the video…",

@@ -1,8 +1,10 @@
 /**
- * Generated images that live on this device from the moment they exist.
+ * Generated media (images and Imagine video clips) that live on this device
+ * from the moment they exist.
  *
- * When the vault is local, `/api/ai/imagine-image` hands back raw bytes rather
- * than uploading them, so the renderer is the first and only place they land.
+ * When the vault is local, `/api/ai/imagine-image` and `/api/ai/imagine-video`
+ * hand back raw bytes rather than uploading them, so the renderer is the first
+ * and only place they land.
  * That creates a problem the cloud path never had: a blob directory with no
  * row is exactly what `blobs.findOrphans()` reports as garbage, so an image
  * the user is still looking at would be indistinguishable from debris.
@@ -54,6 +56,11 @@ export interface LocalGeneration {
 function extensionFor(mimeType: string): string {
   const mime = String(mimeType || "").toLowerCase();
   if (mime.includes("jpeg") || mime.includes("jpg")) return "jpg";
+  if (mime.startsWith("video/")) {
+    // Imagine's video lane delivers MP4 clips the same bytes-first way.
+    if (mime.includes("webm")) return "webm";
+    return "mp4";
+  }
   if (mime.includes("webp")) return "webp";
   return "png";
 }
@@ -80,7 +87,7 @@ export async function storeLocalGeneration(opts: {
   const mimeType = String(opts.mimeType || "image/png");
   const id = crypto.randomUUID();
   const blob = blobFromBase64(opts.base64, mimeType);
-  if (!blob.size) throw new Error("generated image was empty");
+  if (!blob.size) throw new Error("generated media was empty");
 
   const written = await writeLocalBlob(id, blob, {
     filename: `generation.${extensionFor(mimeType)}`,

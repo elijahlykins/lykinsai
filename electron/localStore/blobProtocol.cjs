@@ -72,6 +72,32 @@ function contentType(relativePath) {
   return MIME_BY_EXT[ext] || "application/octet-stream";
 }
 
+/**
+ * Headers that let the remote-origin renderer `fetch()` these bytes, not just
+ * put them in an `<img src>`. The window loads https://lykn.io (or Vite in
+ * dev), so a `lykn-blob://` read is cross-origin; without ACAO Chromium
+ * shows the image and refuses the download.
+ */
+function webAccessHeaders(request) {
+  const origin =
+    typeof request?.headers?.get === "function" ? request.headers.get("origin") : null;
+  const headers = {
+    "Cross-Origin-Resource-Policy": "cross-origin",
+  };
+  if (origin) {
+    headers["Access-Control-Allow-Origin"] = origin;
+    headers["Access-Control-Allow-Credentials"] = "true";
+    headers.Vary = "Origin";
+  } else {
+    headers["Access-Control-Allow-Origin"] = "*";
+  }
+  return headers;
+}
+
+function deny(status, message, request) {
+  return new Response(message, { status, headers: webAccessHeaders(request) });
+}
+
 /** Build the URL for a stored blob path. Mirrors the renderer's helper. */
 function urlFor(relativePath) {
   const clean = String(relativePath || "").replace(/^\/+/, "");
@@ -141,20 +167,20 @@ function parseRange(header, size) {
  */
 async function handleRequest(request) {
   const relativePath = pathFromUrl(request?.url);
-  if (!relativePath) return new Response("Bad blob URL", { status: 400 });
+  if (!relativePath) return deny(400, "Bad blob URL", request);
 
   // absolutePath() refuses anything that climbs out of the blobs directory.
   // The path arrives from the renderer, which loads a remote origin, so this
   // is the boundary that keeps a crafted URL from reading the filesystem.
   const absolute = blobs.absolutePath(relativePath);
-  if (!absolute) return new Response("Forbidden", { status: 403 });
+  if (!absolute) return deny(403, "Forbidden", request);
 
   let info;
   try {
     info = await fsp.stat(absolute);
-    if (!info.isFile()) return new Response("Not found", { status: 404 });
+    if (!info.isFile()) return deny(404, "Not found", request);
   } catch {
-    return new Response("Not found", { status: 404 });
+    return deny(404, "Not found", request);
   }
 
   const type = contentType(relativePath);
@@ -165,6 +191,7 @@ async function handleRequest(request) {
     // every time a card scrolls back into view.
     "Cache-Control": "private, max-age=31536000, immutable",
     "Accept-Ranges": "bytes",
+    ...webAccessHeaders(request),
   };
 
   const rangeHeader =
@@ -187,6 +214,18 @@ async function handleRequest(request) {
         "Content-Range": `bytes ${range.start}-${range.end}/${info.size}`,
         "Content-Length": String(range.end - range.start + 1),
       },
+    });
+  }
+
+  // Images are fetched as Blobs for download/encode. A streamed body is
+  // enough for `<img>` and flaky for `fetch()` on a custom scheme, so small
+  // image files go out as one buffer. Video keeps the stream so a 4K clip
+  // does not have to sit in RAM to start playing.
+  if (String(type).startsWith("image/")) {
+    const buf = await fsp.readFile(absolute);
+    return new Response(buf, {
+      status: 200,
+      headers: { ...headers, "Content-Length": String(buf.length) },
     });
   }
 
@@ -229,6 +268,7 @@ module.exports = {
   pathFromUrl,
   parseRange,
   contentType,
+  webAccessHeaders,
   handleRequest,
   schemeRegistration,
   bind,

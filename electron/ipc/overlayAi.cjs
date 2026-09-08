@@ -1,7 +1,7 @@
 "use strict";
 
 const { bindOverlayIpcContext } = require("./overlayIpcContext.cjs");
-const { isTrustedLyknIpcSender, trustedLyknIpcOpts } = require("../trustedIpcSender.cjs");
+const { isTrustedLyknIpcSender, trustedLyknIpcOpts, untrustedSenderResult } = require("../trustedIpcSender.cjs");
 
 function registerOverlayAiIpc(d) {
   const {
@@ -254,6 +254,56 @@ function registerOverlayAiIpc(d) {
         return [];
       }
     });
+
+    // Slash-path attach from the Glass composer. Paths still have to pass
+    // Local Mode's allowlist — typing `/etc/passwd` is not consent.
+    ipcMain.handle("lykn:overlay-attach-paths", async (e, args = {}) => {
+      const denied = untrustedSenderResult(
+        e,
+        trustedLyknIpcOpts({ app, path, appOrigin: APP_ORIGIN, appUrl: APP_URL }),
+      );
+      if (denied) return [];
+      const paths = Array.isArray(args?.paths) ? args.paths.filter(Boolean) : [];
+      const out = [];
+      for (const raw of paths.slice(0, 6)) {
+        const abs = localSystem.resolveUserPath(String(raw || ""));
+        if (!abs || !macFiles.canRead(abs)) continue;
+        let st;
+        try {
+          st = await fs.stat(abs);
+        } catch {
+          continue;
+        }
+        if (st.isDirectory()) {
+          const name = path.basename(abs) || abs;
+          let body = `Attached folder "${name}"\nPath: ${abs}`;
+          try {
+            const listing = await macFiles.list({ path: abs });
+            if (listing?.ok) {
+              const entries = listing.entries || [];
+              const lines = entries.slice(0, 120).map((ent) => {
+                const folder = ent.type === "dir" && !ent.package;
+                return `  - ${ent.name}${folder ? "/" : ""}`;
+              });
+              const extra =
+                entries.length > 120 ? `\n  - …and ${entries.length - 120} more` : "";
+              body += `\n${entries.length} item${entries.length === 1 ? "" : "s"}:\n${lines.join("\n")}${extra}`;
+            }
+          } catch {
+            /* listing is best-effort; the path still tells the model where to look */
+          }
+          out.push({ kind: "text", name, text: body });
+          continue;
+        }
+        try {
+          const [file] = await attachmentsFromPickedPaths([abs]);
+          if (file) out.push(file);
+        } catch {
+          /* skip unreadable file */
+        }
+      }
+      return out;
+    });
   
     // Studio chat-bar Finder: the ordinary macOS Open panel, parented to the
     // window that asked so it isn't attached to the Glass overlay (which is
@@ -397,6 +447,25 @@ function registerOverlayAiIpc(d) {
       } catch (err) {
         return { projects: [], error: err?.message || "Could not load projects." };
       }
+    });
+
+    ipcMain.handle("lykn:overlay-connected-apps", async () => {
+      const token = await getAuthToken().catch(() => null);
+      if (!token) return { connections: [], managed: [], error: "not_signed_in" };
+      const headers = { Authorization: `Bearer ${token}` };
+      const [mcp, managed] = await Promise.all([
+        fetch(`${API_BASE}/api/mcp/connections`, { headers })
+          .then((res) => res.json())
+          .catch(() => ({})),
+        fetch(`${API_BASE}/api/connections/managed`, { headers })
+          .then((res) => res.json())
+          .catch(() => ({})),
+      ]);
+      return {
+        connections: Array.isArray(mcp?.connections) ? mcp.connections : [],
+        managed: Array.isArray(managed?.connections) ? managed.connections : [],
+        error: null,
+      };
     });
   
     ipcMain.handle("lykn:get-overlay-session", async (_e, sessionId) => {

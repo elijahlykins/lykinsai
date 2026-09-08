@@ -57,7 +57,7 @@ export const CHAT_ROUTING_THRESHOLDS = Object.freeze({
 
 export const CHAT_ROUTING_LENGTHS = Object.freeze({
   // Structural bands only - not keyword lists.
-  maybeFastMaxChars: 240,
+  // Fast is greetings/acks only (isPhaticChatTurn), not a length band.
   advancedSoftChars: 1200,
   advancedHardChars: 2500,
   largeContextChars: 4000,

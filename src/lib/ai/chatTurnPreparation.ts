@@ -5,6 +5,7 @@
 // docs/REFACTOR_LOG.md) — string budgets and truncation ordering are
 // UI/prompt-visible contracts, keep them exactly as-is.
 import type { FocusedChatAttachment, PromptMessage } from "@/lib/lyknChat/chatTurnTypes";
+import { isEngineeringPath } from "../../../lib/engineering/readEngineeringFile.js";
 
 const FOLDER_PATH_RE = /^Path:\s+(\/[^\n]+)$/m;
 
@@ -47,13 +48,47 @@ export function collectThreadFolderAttachments(
   return out;
 }
 
+/** True when this send is about a Mac folder/file already on the thread.
+ *  Keep this in the client (do not import mcp-tools/chatIntentSignals). */
+export function messageWantsPriorFolderContext(text: string): boolean {
+  const t = String(text || "").toLowerCase().trim();
+  if (!t) return false;
+  if (/\.(txt|md|markdown|js|jsx|ts|tsx|mjs|cjs|py|json|csv|html|css|rs|go|rb|yml|yaml|toml|sh|env|sql|xml)\b/.test(t)) {
+    return true;
+  }
+  if (/\b(this|that|the)\s+(file|folder|directory|listing|repo|codebase)\b/.test(t)) return true;
+  if (/\b(attached folder|the folder you|that folder|this folder)\b/.test(t)) return true;
+  if (/\b(find|locate|where (is|does)|sits)\b/.test(t) && /\b(in this|in here)\b/.test(t)) return true;
+  if (/\b(what.?s in|what is in)\b/.test(t)) return true;
+  if (
+    /\b(read|open|show|check|list|look (?:at|inside)|analy[sz]e|summar(?:y|ise|ize)|review|inspect|go through|look through)\b/.test(t) &&
+    /\b(file|files|folder|folders|directory|listing|repo|codebase|in (this|here|it|them|those))\b/.test(t)
+  ) {
+    return true;
+  }
+  if (/\b(list|show|check|look|see|read)\b.{0,32}\b(inside|in\s+(it|there|that)|contents?)\b/.test(t)) {
+    return true;
+  }
+  if (
+    /^(?:(?:ok(?:ay)?|sure|yes|yep|yeah|please|go\s+ahead)[,!. ]*)*(?:check|compare|inspect|search|look(?:\s+at)?|read|list)\s+(?:them|those|it|both|the\s+(?:folders?|files?))\b/.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export function attachmentsForPrompt(
   sentAttachments: FocusedChatAttachment[],
   chatMessages: PromptMessage[],
+  text = "",
 ): FocusedChatAttachment[] {
   if (sentAttachments.some(isDesktopFolderAttachment)) return sentAttachments;
   const prior = collectThreadFolderAttachments(chatMessages, []);
-  return prior.length ? [...sentAttachments, ...prior] : sentAttachments;
+  if (!prior.length) return sentAttachments;
+  if (!messageWantsPriorFolderContext(text)) return sentAttachments;
+  return [...sentAttachments, ...prior];
 }
 
 export function buildAttachmentContext(sentAttachments: FocusedChatAttachment[]): string {
@@ -62,9 +97,9 @@ export function buildAttachmentContext(sentAttachments: FocusedChatAttachment[])
     const t = (a.type || "").toLowerCase();
     const label = a.name || a.vaultTitle || "Untitled";
     const parts: string[] = [];
-    if (a.vaultContent) parts.push(String(a.vaultContent).slice(0, 1500));
-    if (a.pdfText) parts.push(String(a.pdfText).slice(0, 1500));
-    if (a.extractedText) parts.push(String(a.extractedText).slice(0, 1500));
+    if (a.vaultContent) parts.push(String(a.vaultContent).slice(0, 12000));
+    if (a.pdfText) parts.push(String(a.pdfText).slice(0, 12000));
+    if (a.extractedText) parts.push(String(a.extractedText).slice(0, 12000));
     if (a.transcript) parts.push(String(a.transcript).slice(0, 8000));
     // A data URL is bytes, not a location: nothing can fetch it and spelling
     // one out costs thousands of tokens of base64.
@@ -73,10 +108,11 @@ export function buildAttachmentContext(sentAttachments: FocusedChatAttachment[])
       const listing = String(a.vaultContent || a.extractedText || "").slice(0, 8000);
       return (
         `Desktop folder "${label}" — the user attached THIS folder from their Mac. ` +
-        `Answer from this listing only. If you need more detail, call local_list_dir or local_read_file ` +
-        `on this exact path — not other folders, the rest of the disk, or the vault. ` +
-        `You may offer to read a specific file inside this folder. ` +
-        `Do not hand this off to another model or bot — summarize it yourself.\n` +
+        `This listing is a shallow snapshot (top level plus a peek into subfolders), not the whole tree. ` +
+        `You CAN read nested folders. Search with local_search_files on this exact Path, then ` +
+        `local_list_dir / local_read_file on matching nested paths (src/, server/, electron/, …) ` +
+        `until you can answer with specifics from the text you read. ` +
+        `Never say you only have the top-level listing. Do not hand this off to another model or bot.\n` +
         (listing || "(empty listing)")
       );
     }
@@ -112,7 +148,22 @@ export function buildAttachmentContext(sentAttachments: FocusedChatAttachment[])
       const kind = String(art?.toolName || "build").replace(/^lykn_/, "").replace(/_/g, " ");
       return `Attached artifact "${label}" (${kind}). The user included this build with their prompt.`;
     }
-    if (parts.length) return `${label}: ${parts.join("\n")}`;
+    if (t === "app") {
+      const mac = a.appSource === "mac";
+      return (
+        `Attached ${mac ? "Mac app" : "connected app"} "${label}". ` +
+        `Prefer this app for this turn. ` +
+        (mac
+          ? "Open or control it with local_open_app — not the website."
+          : "Use its connected tools. The user pinned this app on purpose.")
+      );
+    }
+    if (t === "file" && parts.length && isEngineeringPath(label)) {
+      return (
+        `Engineering/CAD file "${label}". This is a structured read of the file, not a guess. ` +
+        `Keep the original bytes for Build import when you need a mesh or solid.\n${parts.join("\n")}`
+      );
+    }
     if (safeUrl) return `${t || "File"} "${label}" — ${safeUrl}`;
     return `${t || "File"}: ${label}`;
   }).join("\n\n");

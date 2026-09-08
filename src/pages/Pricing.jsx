@@ -4,49 +4,55 @@ import { Check, ChevronDown } from "lucide-react";
 import {
   PLANS,
   FAQ_ITEMS,
-  BILLING_PERIODS,
-  getDisplayPrice,
+  isListedPlan,
 } from "@/lib/pricing-config";
 import LandingHeader from "@/components/landing/LandingHeader";
 import { SiteFooter } from "@/pages/GlassLanding";
 import "./GlassLanding.css";
 import "@/components/landing/landingIcy.css";
 
-// Marketing cards: Free plus the three live paid tiers. Teams stays off this
-// page (coming soon, waitlist lives on the in-app billing screen).
-const DISPLAY_PLANS = PLANS.filter(
-  (p) => p.id === "free" || p.id === "student" || p.id === "studio" || p.id === "max",
-);
+const FREE_PLAN = PLANS.find((p) => p.id === "free");
+const STUDENT_PLAN = PLANS.find((p) => p.id === "student");
+const PRO_PLAN = PLANS.find((p) => p.id === "studio");
+const PRO_PLUS_PLAN = PLANS.find((p) => p.id === "pro_plus");
+const MAX_PLAN = PLANS.find((p) => p.id === "max");
 
-const MARKETING_FEATURES = {
-  free: [
-    "$10 of usage included at signup",
-    "LYKN model",
-    "Desktop and browser apps",
-    "LYKN Glass for desktop",
-    "Chat, images, and core tools",
-    "No credit card required",
-  ],
+// Paid-card rows from the live catalog. Unlisted tiers (Pro+ for now) stay
+// in PLANS so flipping listed:true brings them back without other edits.
+const PAID_TIERS = [STUDENT_PLAN, PRO_PLAN, PRO_PLUS_PLAN, MAX_PLAN].filter(isListedPlan);
+
+const FREE_FEATURES = [
+  "$20 of free credits on signup",
+  "The entire LYKN desktop",
+  "Access to all models",
+  "Pay as you go",
+];
+
+const PAID_FEATURES = {
   student: [
-    "Chat included",
-    "Monthly usage included",
+    "$15 of monthly usage for everything",
     "LYKN Memory",
-    "Custom Bots and personalization",
+    "Custom agents and personalization",
     "All models, tools, and connections",
     "Desktop, browser, and Glass",
     "Available with a school email",
   ],
   studio: [
-    "Chat included",
-    "Monthly usage included",
+    "$20 of monthly usage for everything",
     "LYKN Memory",
-    "Custom Bots and personalization",
+    "Custom agents and personalization",
     "All models, tools, and connections",
+    "Desktop, browser, and Glass",
+  ],
+  pro_plus: [
+    "Everything in Pro",
+    "$60 of monthly usage — 3× Pro",
+    "Priority support",
     "Desktop, browser, and Glass",
   ],
   max: [
     "Everything in Pro",
-    "5× the monthly usage of Pro",
+    "$100 of monthly usage — 5× Pro",
     "Highest limits across all tools",
     "Desktop, browser, and Glass",
     "Priority support",
@@ -58,7 +64,7 @@ const PRICING_FAQ_IDS = new Set([
   "usage-balance",
   "free-plan",
   "student-plan",
-  "included-chat",
+  "model-costs",
   "switch-or-cancel",
 ]);
 const PRICING_FAQ_ITEMS = FAQ_ITEMS.filter((item) => PRICING_FAQ_IDS.has(item.id));
@@ -68,117 +74,113 @@ const PRICING_FAQ_ITEMS = FAQ_ITEMS.filter((item) => PRICING_FAQ_IDS.has(item.id
 // it never drifts from the in-app billing screen.
 export default function Pricing() {
   const navigate = useNavigate();
-  const [period, setPeriod] = useState(BILLING_PERIODS.ANNUAL);
+  const [paidId, setPaidId] = useState(PRO_PLAN?.id ?? "studio");
   const [openFaq, setOpenFaq] = useState(FAQ_ITEMS[0]?.id ?? null);
 
   const goToSignup = () => navigate("/download");
+  const paid = PAID_TIERS.find((tier) => tier.id === paidId) ?? PAID_TIERS[0];
+  const paidFeatures = PAID_FEATURES[paid.id] || PAID_FEATURES.studio;
 
   // Pricing is its own page, so make sure visitors land at the top.
   useEffect(() => {
     window.scrollTo(0, 0);
   }, []);
 
-  const isAnnual = period === BILLING_PERIODS.ANNUAL;
-
   return (
     <div className="glass-land lkn-pricing">
       <LandingHeader />
 
       <main className="lkn-pricing-main">
-        {/* Heading + billing toggle */}
         <section className="lkn-pricing-intro">
-          <h1 className="lkn-section-headline">Pricing</h1>
-
-          <div className="lkn-pricing-toggle" role="tablist" aria-label="Billing period">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={!isAnnual}
-              className={`lkn-pricing-toggle-btn ${!isAnnual ? "is-active" : ""}`}
-              onClick={() => setPeriod(BILLING_PERIODS.MONTHLY)}
-            >
-              Monthly
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={isAnnual}
-              className={`lkn-pricing-toggle-btn ${isAnnual ? "is-active" : ""}`}
-              onClick={() => setPeriod(BILLING_PERIODS.ANNUAL)}
-            >
-              Annual
-            </button>
-          </div>
+          <h1 className="lkn-section-headline">We make pricing simple.</h1>
         </section>
 
-        {/* Plan cards */}
+        {/* Two cards: usage-based Free, then the paid ladder in one card. */}
         <section className="lkn-pricing-plans" aria-label="Plans">
-          {DISPLAY_PLANS.map((plan) => {
-            const price = getDisplayPrice(plan, period);
-            const isFree = plan.monthlyPrice === 0 && !plan.comingSoon;
-            const features = MARKETING_FEATURES[plan.id] || plan.features.map((feature) => feature.text);
-            return (
-              <article
-                key={plan.id}
-                className={`lkn-plan-card ${plan.highlighted ? "is-highlighted" : ""}`}
-              >
-                {plan.badge ? <span className="lkn-plan-badge">{plan.badge}</span> : null}
-                <h2 className="lkn-plan-name">{plan.name}</h2>
+          <article className="lkn-plan-card">
+            <h2 className="lkn-plan-name">Free / pay for your usage</h2>
+            <div className="lkn-plan-price">
+              <span className="lkn-plan-price-amount">$0</span>
+            </div>
+            <p className="lkn-plan-price-note">
+              The entire LYKN desktop. Pay as you go.
+            </p>
 
-                <div className="lkn-plan-price">
-                  {plan.comingSoon ? (
-                    <span className="lkn-plan-price-soon">Coming soon</span>
-                  ) : isFree ? (
-                    <span className="lkn-plan-price-amount">$0</span>
-                  ) : (
-                    <>
-                      <span className="lkn-plan-price-amount">${price}</span>
-                      <span className="lkn-plan-price-unit">/mo</span>
-                    </>
-                  )}
-                </div>
-                {plan.comingSoon ? (
-                  <p className="lkn-plan-price-note">A shared layer for your whole team</p>
-                ) : isFree ? (
-                  <p className="lkn-plan-price-note">Free forever, no card required</p>
-                ) : (
-                  <p className="lkn-plan-price-note">
-                    {isAnnual
-                      ? `$${plan.annualPrice} billed annually`
-                      : "Billed monthly"}
-                  </p>
-                )}
+            <p className="lkn-plan-includes">Includes:</p>
+            <ul className="lkn-plan-features">
+              {FREE_FEATURES.map((feature) => (
+                <li key={feature}>
+                  <span className="lkn-plan-feat-ico" aria-hidden>
+                    <Check size={13} strokeWidth={3} />
+                  </span>
+                  <span>{feature}</span>
+                </li>
+              ))}
+            </ul>
 
-                <p className="lkn-plan-includes">
-                  {plan.id === "max" ? "Includes:" : plan.id === "free" ? "Includes:" : "Everything in Free, plus:"}
-                </p>
-                <ul className="lkn-plan-features">
-                  {features.map((feature) => (
-                    <li key={feature}>
-                      <span className="lkn-plan-feat-ico" aria-hidden>
-                        <Check size={13} strokeWidth={3} />
-                      </span>
-                      <span>{feature}</span>
-                    </li>
-                  ))}
-                </ul>
+            <button
+              type="button"
+              className="lkn-plan-cta lkn-plan-cta--outline"
+              onClick={goToSignup}
+            >
+              {FREE_PLAN?.cta || "Get started free"}
+            </button>
+          </article>
 
-                {plan.comingSoon ? (
-                  <button type="button" className="lkn-plan-cta lkn-plan-cta--ghost" disabled>
-                    {plan.cta}
-                  </button>
-                ) : (
+          <article className="lkn-plan-card is-highlighted">
+            <h2 className="lkn-plan-name">Paid plans</h2>
+            <p className="lkn-plan-price-note">
+              Your subscription becomes monthly usage for everything. Pick a plan.
+            </p>
+
+            <div className="lkn-paid-tiers" role="tablist" aria-label="Paid plan">
+              {PAID_TIERS.map((tier) => {
+                const price = tier.monthlyPrice;
+                const active = tier.id === paid.id;
+                return (
                   <button
+                    key={tier.id}
                     type="button"
-                    className={`lkn-plan-cta ${plan.highlighted ? "lkn-plan-cta--primary" : "lkn-plan-cta--outline"}`}
-                    onClick={goToSignup}
+                    role="tab"
+                    aria-selected={active}
+                    className={`lkn-paid-tier${active ? " is-active" : ""}`}
+                    onClick={() => setPaidId(tier.id)}
                   >
-                    {plan.cta}
+                    <span className="lkn-paid-tier-name">{tier.name}</span>
+                    <span className="lkn-paid-tier-price">
+                      ${price}
+                      <span>/mo</span>
+                    </span>
                   </button>
-                )}
-              </article>
-            );
-          })}
+                );
+              })}
+            </div>
+            <p className="lkn-plan-price-note">Billed monthly</p>
+
+            <p className="lkn-plan-includes">
+              {paid.id === "max" || paid.id === "pro_plus"
+                ? "Includes:"
+                : "Everything in Free, plus:"}
+            </p>
+            <ul className="lkn-plan-features">
+              {paidFeatures.map((feature) => (
+                <li key={feature}>
+                  <span className="lkn-plan-feat-ico" aria-hidden>
+                    <Check size={13} strokeWidth={3} />
+                  </span>
+                  <span>{feature}</span>
+                </li>
+              ))}
+            </ul>
+
+            <button
+              type="button"
+              className="lkn-plan-cta lkn-plan-cta--primary"
+              onClick={goToSignup}
+            >
+              {paid.cta || `Get ${paid.name}`}
+            </button>
+          </article>
         </section>
 
         {/* FAQ */}

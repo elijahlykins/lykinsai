@@ -68,6 +68,13 @@ test("runtime snapshot for Chat A receives the browser turn", () => {
   assert.equal(snap?.chatMessages[0].content, "What is this page about?");
 });
 
+test("empty off-route snapshot does not write a local cache", () => {
+  const chatA = unique("chat-empty");
+  ensureThreadSnapshot(chatA);
+  writeThreadChatCache(chatA);
+  assert.equal(localStorage.getItem(`lyknchat_chat_${chatA}`), null);
+});
+
 test("hydrate empty snapshot from local cache before send", () => {
   const chatA = unique("chat-a");
   localStorage.setItem(`lyknchat_chat_${chatA}`, JSON.stringify({

@@ -9,6 +9,7 @@ import {
   deriveVisibleCards,
   filterVisibleCards,
 } from "@/lib/vault/vaultCardModel";
+import { buildsDriveAvailable, listBuildProjects } from "@/lib/vault/buildsDrive";
 
 // Collage/Grid/Tags/Type belong to the Vault page. AI Drive is a folder
 // listing with its own icons/list preference (see DriveListing), so it has no
@@ -58,6 +59,20 @@ export function useVaultFoldersViews({
     [openSourceFolder],
   );
 
+  // Build-workspace projects for the drive's Builds folder. null = no desktop
+  // bridge (web), which keeps the folder off the drive entirely; [] = desktop
+  // with nothing built yet. Refetched when the Builds folder is entered so a
+  // project the agent just finished shows without a reload.
+  const [buildProjects, setBuildProjects] = useState(null);
+  useEffect(() => {
+    if (!studioSurface || !buildsDriveAvailable()) return;
+    let cancelled = false;
+    listBuildProjects().then((projects) => {
+      if (!cancelled) setBuildProjects(projects);
+    });
+    return () => { cancelled = true; };
+  }, [studioSurface, openDriveFolder]);
+
   const [vaultSearch, setVaultSearch] = useState("");
   const [embeddedSearch, setEmbeddedSearch] = useState("");
   const [conceptResultIds, setConceptResultIds] = useState(null);
@@ -106,6 +121,7 @@ export function useVaultFoldersViews({
         embeddedSearch,
         vaultSearch,
         conceptResultIds,
+        buildProjects,
       }),
     [
       vaultCards,
@@ -117,6 +133,7 @@ export function useVaultFoldersViews({
       embeddedSearch,
       vaultSearch,
       conceptResultIds,
+      buildProjects,
     ],
   );
 

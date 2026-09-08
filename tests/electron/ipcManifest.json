@@ -1,9 +1,9 @@
 {
   "generatedBy": "tests/electron/ipcSurface.cjs",
-  "channelCount": 253,
-  "uniqueChannelCount": 253,
-  "handleCount": 192,
-  "onCount": 61,
+  "channelCount": 262,
+  "uniqueChannelCount": 262,
+  "handleCount": 198,
+  "onCount": 64,
   "duplicateCount": 0,
   "entries": [
     {
@@ -292,6 +292,11 @@
       "file": "ipc/overlayShell.cjs"
     },
     {
+      "mode": "on",
+      "channel": "lykn:ask-cancel",
+      "file": "overlay/askPipeline.cjs"
+    },
+    {
       "mode": "handle",
       "channel": "lykn:auth-clear-desktop-session",
       "file": "auth/desktopAuth.cjs"
@@ -368,6 +373,16 @@
     },
     {
       "mode": "handle",
+      "channel": "lykn:builds-list",
+      "file": "ipc/buildDrive.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:builds-open",
+      "file": "ipc/buildDrive.cjs"
+    },
+    {
+      "mode": "handle",
       "channel": "lykn:chrome-sync-run",
       "file": "ipc/agentBridge.cjs"
     },
@@ -390,6 +405,11 @@
       "mode": "on",
       "channel": "lykn:collapse",
       "file": "ipc/overlayShell.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:desktop-mcp",
+      "file": "ipc/desktopMcp.cjs"
     },
     {
       "mode": "handle",
@@ -459,6 +479,11 @@
     {
       "mode": "handle",
       "channel": "lykn:files-roots",
+      "file": "ipc/localFiles.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:files-search",
       "file": "ipc/localFiles.cjs"
     },
     {
@@ -815,6 +840,16 @@
       "mode": "on",
       "channel": "lykn:open-vault",
       "file": "ipc/overlayShell.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:overlay-attach-paths",
+      "file": "ipc/overlayAi.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:overlay-connected-apps",
+      "file": "ipc/overlayAi.cjs"
     },
     {
       "mode": "on",
@@ -1235,6 +1270,16 @@
       "mode": "handle",
       "channel": "lykn:welcome-widgets",
       "file": "ipc/welcome.cjs"
+    },
+    {
+      "mode": "on",
+      "channel": "lykn:work-hold",
+      "file": "os/workKeepAlive.cjs"
+    },
+    {
+      "mode": "on",
+      "channel": "lykn:work-release",
+      "file": "os/workKeepAlive.cjs"
     },
     {
       "mode": "handle",

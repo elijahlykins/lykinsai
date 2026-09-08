@@ -12,13 +12,12 @@ const {
   formatPageDiff,
 } = require("../lib/browserScreen.cjs");
 
-let nutMouse = null;
-try {
-  const nut = require("@nut-tree-fork/nut-js");
-  nutMouse = { mouse: nut.mouse, Button: nut.Button, Point: nut.Point };
-} catch {
-  /* optional — falls back to osascript clicks */
-}
+// Native input lives in ONE place. This used to require @nut-tree-fork/nut-js
+// directly and swallow the failure in an empty catch — and because that package
+// was never added to electron-builder.json, the require threw in every packaged
+// build and each "physical" click silently degraded to the osascript fallback
+// below. The shared module reports that failure loudly instead of hiding it.
+const desktopInput = require("./desktop-agent/surface/input.cjs");
 
 function decodeBrowserPayload(out) {
   if (!out) return null;
@@ -382,14 +381,9 @@ async function collectBrowserInteractables(runOsascript, appName) {
 }
 
 async function physicalClickAtNut(screenX, screenY) {
-  if (!nutMouse) return { ok: false, error: "nut_unavailable" };
-  try {
-    await nutMouse.mouse.setPosition(new nutMouse.Point(Math.round(screenX), Math.round(screenY)));
-    await nutMouse.mouse.click(nutMouse.Button.LEFT);
-    return { ok: true, x: screenX, y: screenY, via: "nut" };
-  } catch (e) {
-    return { ok: false, error: String(e?.message || e || "mouse click failed") };
-  }
+  const res = await desktopInput.click({ x: screenX, y: screenY, button: "left" });
+  if (!res.ok) return { ok: false, error: res.hint || res.error || "mouse click failed" };
+  return { ok: true, x: res.x, y: res.y, via: "nut" };
 }
 
 async function physicalClickAt(runOsascript, appName, point) {

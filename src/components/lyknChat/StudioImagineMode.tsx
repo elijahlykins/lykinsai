@@ -5,8 +5,10 @@ import {
   ChevronDown,
   Download,
   FileText,
+  Film,
   Folder as FolderIcon,
   FolderOpen,
+  Image as ImageIcon,
   Library,
   Loader2,
   MoreHorizontal,
@@ -27,6 +29,8 @@ import {
 } from "@/lib/chat/imagineLayout";
 import { hasUsedImagine, markImagineUsed } from "@/lib/chat/imagineShowcase";
 import { IMAGINE_BATCH_SIZE } from "@/lib/chat/imagineThread";
+import { isImagineVideoModelId, switchImagineLaneModel } from "@/lib/ai/studioModeModels";
+import { detectImageAsk, detectVideoAsk } from "@/lib/ai/studioModeIntent";
 import LyknMediaPop, { MEDIA_POP_PANEL } from "@/components/lyknChat/LyknMediaPop";
 import GeneratedImage from "@/components/lyknChat/GeneratedImage";
 import ImagineMaskCanvas, {
@@ -43,6 +47,7 @@ import {
   MAX_IMAGE_ATTACHMENTS,
   type ImagineAttachment,
 } from "@/lib/chat/imagineAttachments";
+import { resolveImagineGenerationPrompt } from "@/lib/chat/imagineConversationPrompt";
 import {
   fileNameFromPath,
   filesFromMacPaths,
@@ -63,12 +68,10 @@ import {
   saveFileToChosenFolder,
 } from "@/lib/files/downloadToComputer";
 import {
-  encodeImageToFormat,
   IMAGINE_DOWNLOAD_FORMATS,
-  imagineDownloadFilename,
-  imagineDownloadFilters,
   imagineDownloadOption,
   loadImagineDownloadFormat,
+  prepareImagineDownload,
   saveImagineDownloadFormat,
   type ImagineDownloadFormat,
 } from "@/lib/chat/imagineDownload";
@@ -154,9 +157,11 @@ type ImagineSlot = {
   /** Durable user-files path from /api/ai/imagine-image — required for vault save. */
   storagePath?: string;
   error?: string;
+  /** True when url is an MP4 from /api/ai/imagine-video — tile renders <video>. */
+  video?: boolean;
 };
 
-type BatchKind = "generate" | "refine" | "variations";
+type BatchKind = "generate" | "refine" | "variations" | "video";
 
 export type ImagineBatch = {
   id: string;
@@ -213,7 +218,7 @@ export type ImagineCommit = {
   concept: string;
   kind: BatchKind;
   aspectRatio: string;
-  images: { url: string; storagePath?: string }[];
+  images: { url: string; storagePath?: string; video?: boolean }[];
   /** True until every slot has settled (loading tiles still belong in the turn). */
   pending?: boolean;
   slots?: Array<{
@@ -221,6 +226,7 @@ export type ImagineCommit = {
     url?: string;
     storagePath?: string;
     error?: string;
+    video?: boolean;
   }>;
   referenceUrls?: string[];
 };
@@ -234,7 +240,7 @@ export function imagineBatchesFromTurns(
   msgs: Array<{
     id: string;
     content?: string;
-    aiImages?: { url: string; storagePath?: string }[];
+    aiImages?: { url: string; storagePath?: string; video?: boolean }[];
     imagine?: { aspect?: string; kind?: BatchKind; concept?: string; pending?: boolean };
     createdAt?: string;
   }>,
@@ -249,18 +255,20 @@ export function imagineBatchesFromTurns(
     if (seen.has(sig)) continue;
     seen.add(sig);
     const label = String(m.content || "").trim();
+    const isVideo = m.imagine?.kind === "video" || images.some((img) => img.video);
     out.push({
       id: `turn-${m.id}`,
       label,
       prompt: label,
       concept: String(m.imagine?.concept || label),
-      kind: m.imagine?.kind || "generate",
+      kind: m.imagine?.kind || (isVideo ? "video" : "generate"),
       aspectRatio: String(m.imagine?.aspect || "1:1"),
       slots: images.map((img, i) => ({
         id: `turn-${m.id}-${i}`,
         status: "done" as SlotStatus,
         url: img.url,
         storagePath: img.storagePath,
+        video: isVideo || img.video,
       })),
       createdAt: (m.createdAt ? Date.parse(m.createdAt) : NaN) || Date.now(),
     });
@@ -447,6 +455,8 @@ export type ImagineGenerateInput = {
   referenceUrls?: string[];
   documents?: { name: string; text: string }[];
   aspectRatio?: string;
+  /** Prior Chat brainstorm, folded in when the typed send has no scene. */
+  conversationBrief?: string;
 };
 
 export type ImagineEditInput = {
@@ -463,6 +473,7 @@ export type StudioImagineHandle = {
   generate: (input: ImagineGenerateInput) => boolean;
   openEdit: (input: ImagineEditInput) => void;
   retrySlot: (batchId: string, slotIndex: number) => void;
+  stop: (label?: string) => void;
 };
 
 export type StudioImagineModeProps = {
@@ -495,6 +506,8 @@ export type StudioImagineModeProps = {
   onAttachReference?: (dataUrl: string, name: string) => void;
   /** Shared-thread: a batch is in flight so the empty headline can hide now. */
   onBusyChange?: (busy: boolean) => void;
+  /** Under-bar Imagine generator id, or "" for Auto. Read at request time. */
+  resolveImageModel?: () => string;
 };
 
 const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps>(function StudioImagineMode({
@@ -509,6 +522,7 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
   visible = true,
   onAttachReference,
   onBusyChange,
+  resolveImageModel,
 }, ref) {
   const key = chatKey || "unkeyed";
   const [batches, setBatches] = useState<ImagineBatch[]>(() => hydrateBatches(key, seedBatches || []));
@@ -560,19 +574,25 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
     const fn = onCommitBatchRef.current;
     if (!fn) return;
     const done = b.slots.filter((s) => s.status === "done" && s.url);
+    const asVideo = b.kind === "video";
     fn({
       id: b.id,
       prompt: b.label,
       concept: b.concept,
       kind: b.kind,
       aspectRatio: b.aspectRatio,
-      images: done.map((s) => ({ url: String(s.url), storagePath: s.storagePath })),
+      images: done.map((s) => ({
+        url: String(s.url),
+        storagePath: s.storagePath,
+        video: s.video || asVideo,
+      })),
       pending,
       slots: b.slots.map((s) => ({
         status: s.status,
         url: s.url,
         storagePath: s.storagePath,
         error: s.error,
+        video: s.video || asVideo,
       })),
       referenceUrls: b.referenceUrls,
     });
@@ -601,10 +621,29 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
 
   const [prompt, setPrompt] = useState("");
   const [aspect, setAspect] = useState<string>(() => loadImagineAspect());
+  /** Image (4-up batch) vs video (one clip) — flips the whole send path. */
+  const [mediaKind, setMediaKind] = useState<"image" | "video">("image");
+  // Picking a generator in the model menu implies the lane: choosing Kling or
+  // Veo flips the composer to video, choosing GPT Image 2 flips it back —
+  // otherwise the pick would be silently ignored by the other lane's guard.
+  useEffect(() => {
+    const sync = () => {
+      const picked = resolveImageModel?.() || "";
+      if (!picked) return;
+      setMediaKind(isImagineVideoModelId(picked) ? "video" : "image");
+    };
+    sync();
+    window.addEventListener("lykn_imagine_model_changed", sync);
+    return () => window.removeEventListener("lykn_imagine_model_changed", sync);
+  }, [resolveImageModel]);
   const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
   /** Prompt wrapped past one line — the pill squares off like the Home bar. */
   const [promptTall, setPromptTall] = useState(false);
   const [remarksTall, setRemarksTall] = useState(false);
+  // Appearance › Chat bar shape. This bar is the desktop pill in another mode,
+  // so it wears the same class and answers the same choice — including Slate,
+  // which is a two-row layout rather than a radius.
+  const slate = useAppearance().chatBarShape === "slate";
   const [attachments, setAttachments] = useState<ImagineAttachment[]>([]);
   /** "+" menu open state, and whether files are still being read. */
   const [addOpen, setAddOpen] = useState(false);
@@ -634,6 +673,8 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
   const remarksRef = useRef<HTMLTextAreaElement | null>(null);
   const maskRef = useRef<ImagineMaskCanvasHandle | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const batchAbortRef = useRef(new Map<string, AbortController>());
+  const stopLabelRef = useRef("Stopped");
   const finderInputId = useId();
   const layoutRef = useRef<HTMLDivElement | null>(null);
   const layoutPanelRef = useRef<HTMLDivElement | null>(null);
@@ -650,25 +691,41 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
   // one-line baseline — measuring beats guessing at the line box.
   const promptBaseHRef = useRef(0);
   useEffect(() => {
+    promptBaseHRef.current = 0;
+  }, [slate]);
+  useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
     el.style.height = "auto";
     const full = el.scrollHeight;
     if (full > 0 && !promptBaseHRef.current) promptBaseHRef.current = full;
-    el.style.height = `${Math.min(full, 128)}px`;
-    setPromptTall(Boolean(promptBaseHRef.current) && full > promptBaseHRef.current + 4);
-  }, [prompt]);
+    const wrapped = Boolean(promptBaseHRef.current) && full > promptBaseHRef.current + 4;
+    setPromptTall(wrapped);
+    if (!slate && !wrapped) {
+      el.style.height = "";
+    } else {
+      el.style.height = `${Math.min(full, 128)}px`;
+    }
+  }, [prompt, slate]);
 
   const remarksBaseHRef = useRef(0);
+  useEffect(() => {
+    remarksBaseHRef.current = 0;
+  }, [slate]);
   useEffect(() => {
     const el = remarksRef.current;
     if (!el) return;
     el.style.height = "auto";
     const full = el.scrollHeight;
     if (full > 0 && !remarksBaseHRef.current) remarksBaseHRef.current = full;
-    el.style.height = `${Math.min(full, 128)}px`;
-    setRemarksTall(Boolean(remarksBaseHRef.current) && full > remarksBaseHRef.current + 4);
-  }, [remarks, lightbox, guestEdit]);
+    const wrapped = Boolean(remarksBaseHRef.current) && full > remarksBaseHRef.current + 4;
+    setRemarksTall(wrapped);
+    if (!slate && !wrapped) {
+      el.style.height = "";
+    } else {
+      el.style.height = `${Math.min(full, 128)}px`;
+    }
+  }, [remarks, lightbox, guestEdit, slate]);
 
   // Layout menu: click-away / Escape, matching the Home bar's popovers.
   useEffect(() => {
@@ -762,12 +819,19 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
         const res = await fetch(`${API_BASE_URL}/api/ai/imagine-image`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          signal: batchAbortRef.current.get(batch.id)?.signal,
           body: JSON.stringify({
             prompt: batch.prompt,
             aspectRatio: batch.aspectRatio === "1:1" ? undefined : batch.aspectRatio,
             referenceImages: references.length ? references : undefined,
             maskImage: batch.maskImage || undefined,
             deliverBytes: wantsBytes || undefined,
+            // A video pick must not reach the image endpoint — the image lane
+            // falls back to its Auto default (GPT Image 2 chain).
+            model: (() => {
+              const picked = resolveImageModel?.() || "";
+              return picked && !isImagineVideoModelId(picked) ? picked : undefined;
+            })(),
           }),
         });
         const data = await res.json().catch(() => null);
@@ -803,7 +867,11 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
             storagePath: typeof data.storagePath === "string" ? data.storagePath : undefined,
           });
         }
-      } catch {
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          patchSlot(batch.id, slot.id, { status: "error", error: stopLabelRef.current });
+          return;
+        }
         if (attempt + 1 < SLOT_MAX_ATTEMPTS) {
           await sleep(900 * (attempt + 1) + Math.floor(Math.random() * 400));
           return runSlot(batch, slot, attempt + 1);
@@ -811,7 +879,110 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
         patchSlot(batch.id, slot.id, { status: "error", error: "Network error" });
       }
     },
-    [patchSlot],
+    [patchSlot, resolveImageModel],
+  );
+
+  const runVideoSlot = useCallback(
+    async (batch: ImagineBatch, slot: ImagineSlot, attempt = 0) => {
+      try {
+        // Local vault: ask for raw MP4 bytes so the clip lands on this machine
+        // and never becomes a cloud storage object (mirrors runSlot's images).
+        const wantsBytes = isLocalVaultEnabled();
+        // The first reference (a picked generation or attachment) becomes the
+        // FIRST FRAME — Veo animates from those exact pixels.
+        const references = await imagineReferencePayload(batch.referenceUrls);
+        const res = await fetch(`${API_BASE_URL}/api/ai/imagine-video`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: batchAbortRef.current.get(batch.id)?.signal,
+          body: JSON.stringify({
+            prompt: batch.prompt,
+            aspectRatio: batch.aspectRatio,
+            referenceImage: references[0] || undefined,
+            deliverBytes: wantsBytes || undefined,
+            // Only a video pick rides through; anything else leaves the
+            // server on its Auto default (Veo 3.1 Fast via OpenRouter).
+            model: (() => {
+              const picked = resolveImageModel?.() || "";
+              return isImagineVideoModelId(picked) ? picked : undefined;
+            })(),
+          }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.ok || !(data.videoUrl || data.videoBase64)) {
+          const rawErr = String(data?.error || `http_${res.status}`);
+          // Clips are expensive — retry only clearly transient failures, once.
+          if (attempt < 1 && isTransientImagineFailure(rawErr, res.status)) {
+            await sleep(1500);
+            return runVideoSlot(batch, slot, attempt + 1);
+          }
+          patchSlot(batch.id, slot.id, {
+            status: "error",
+            error: friendlyError(rawErr, res.status),
+          });
+          return;
+        }
+        if (typeof data.videoBase64 === "string" && data.videoBase64) {
+          // Bytes never went to a bucket — this is the only copy, so a failed
+          // local write must surface as a failed slot rather than a blank tile.
+          const stored = await storeLocalGeneration({
+            base64: data.videoBase64,
+            mimeType: typeof data.mimeType === "string" ? data.mimeType : "video/mp4",
+          });
+          patchSlot(batch.id, slot.id, { status: "done", url: stored.url, video: true });
+        } else {
+          patchSlot(batch.id, slot.id, {
+            status: "done",
+            url: data.videoUrl,
+            storagePath: typeof data.storagePath === "string" ? data.storagePath : undefined,
+            video: true,
+          });
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          patchSlot(batch.id, slot.id, { status: "error", error: stopLabelRef.current });
+          return;
+        }
+        if (attempt < 1) {
+          await sleep(1500);
+          return runVideoSlot(batch, slot, attempt + 1);
+        }
+        patchSlot(batch.id, slot.id, { status: "error", error: "Network error" });
+      }
+    },
+    [patchSlot, resolveImageModel],
+  );
+
+  const startVideoBatch = useCallback(
+    (opts: { label: string; prompt: string; referenceUrls?: string[] }) => {
+      // Veo supports 16:9 and 9:16 — portrait-ish image layouts map to
+      // portrait video, everything else to landscape.
+      const portrait = /^(9:16|2:3|3:4|4:5)$/.test(aspect);
+      const batch: ImagineBatch = {
+        id: newId(),
+        label: opts.label,
+        prompt: opts.prompt,
+        concept: opts.label,
+        kind: "video",
+        referenceUrls: opts.referenceUrls,
+        aspectRatio: portrait ? "9:16" : "16:9",
+        slots: [{ id: newId(), status: "loading" as SlotStatus, video: true }],
+        createdAt: Date.now(),
+      };
+      setBatches((prev) => [...prev, batch]);
+      stopLabelRef.current = "Stopped";
+      batchAbortRef.current.set(batch.id, new AbortController());
+      markImagineUsed();
+      setImagineUsed(true);
+      // Same tick as send — the shared chat thread is the only place the
+      // prompt bubble and attached image show up in Studio.
+      emitBatchCommit(batch, true);
+      void runVideoSlot(batch, batch.slots[0]);
+      window.setTimeout(() => {
+        scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+      }, 60);
+    },
+    [aspect, runVideoSlot, emitBatchCommit],
   );
 
   const startBatch = useCallback(
@@ -840,6 +1011,8 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
         createdAt: Date.now(),
       };
       setBatches((prev) => [...prev, batch]);
+      stopLabelRef.current = "Stopped";
+      batchAbortRef.current.set(batch.id, new AbortController());
       markImagineUsed();
       setImagineUsed(true);
       // Same tick as send — don't wait for the batches effect or the
@@ -859,12 +1032,46 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
     [runSlot, emitBatchCommit],
   );
 
+  // Which lane a send runs in. An explicit ask wins both ways — "make me a
+  // video of X" is a video even when an image model is picked, and "make me
+  // an image of X" is a 4-up even when a video model is picked — otherwise
+  // the composer toggle decides. When the picked model sits in the other
+  // lane, the picker auto-switches to the user's preferred model for the
+  // asked lane (their last explicit pick there) or the LYKN default
+  // (GPT Image 2 / Veo 3.1 Fast), so the send, the picker and the toggle
+  // all agree on what actually ran.
+  const resolveSendLane = useCallback(
+    (text: string): "image" | "video" => {
+      const picked = resolveImageModel?.() || "";
+      const pickedIsVideo = isImagineVideoModelId(picked);
+      const lane: "image" | "video" = detectVideoAsk(text)
+        ? "video"
+        : detectImageAsk(text)
+          ? "image"
+          : mediaKind;
+      if (lane === "video" ? Boolean(picked) && !pickedIsVideo : pickedIsVideo) {
+        switchImagineLaneModel(lane);
+      }
+      if (mediaKind !== lane) setMediaKind(lane);
+      return lane;
+    },
+    [mediaKind, resolveImageModel],
+  );
+
   const handleSend = useCallback(() => {
     const text = prompt.trim();
     if (!text) return;
     const refs = imagineReferenceUrls(attachments);
     setPrompt("");
     setAttachments([]);
+    if (resolveSendLane(text) === "video") {
+      startVideoBatch({
+        label: text,
+        prompt: text,
+        referenceUrls: refs.length ? refs : undefined,
+      });
+      return;
+    }
     startBatch({
       label: text,
       prompt: buildImaginePrompt(text, attachments),
@@ -873,14 +1080,15 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
       referenceUrls: refs.length ? refs : undefined,
       aspectRatio: aspect,
     });
-  }, [prompt, aspect, attachments, startBatch]);
+  }, [prompt, aspect, attachments, resolveSendLane, startBatch, startVideoBatch]);
 
   const generate = useCallback(
     (input: ImagineGenerateInput) => {
       const text = String(input.text || "").trim();
       const refs = (input.referenceUrls || []).filter(Boolean);
       const docs = (input.documents || []).filter((d) => String(d.text || "").trim());
-      if (!text && !refs.length) return false;
+      const conversationBrief = String(input.conversationBrief || "").trim();
+      if (!text && !refs.length && !conversationBrief) return false;
       const atts: ImagineAttachment[] = [
         ...refs.map((url, i) => ({
           id: `r${i}-${Date.now()}`,
@@ -897,18 +1105,54 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
       ];
       const ratio = saveImagineAspect(input.aspectRatio || aspect);
       if (ratio !== aspect) setAspect(ratio);
+      // Shared-bar sends resolve their lane exactly like Imagine's own
+      // composer — explicit asks win, and a wrong-lane pick auto-switches.
+      if (resolveSendLane(text) === "video") {
+        startVideoBatch({
+          label: text,
+          prompt: text,
+          referenceUrls: refs.length ? refs : undefined,
+        });
+        return true;
+      }
+      const prompt = resolveImagineGenerationPrompt({
+        text: text || (refs.length ? "Generate an image from the reference." : ""),
+        conversationBrief,
+        attachments: atts,
+      });
       startBatch({
         label: text || "Image",
-        prompt: buildImaginePrompt(text || "Generate an image from the reference.", atts),
-        concept: text || "the reference image",
+        prompt,
+        concept: conversationBrief || text || "the reference image",
         kind: "generate",
         referenceUrls: refs.length ? refs : undefined,
         aspectRatio: ratio,
       });
       return true;
     },
-    [startBatch, aspect],
+    [startBatch, startVideoBatch, aspect, resolveSendLane],
   );
+
+  const stop = useCallback((label = "Stopped") => {
+    const error = String(label || "Stopped");
+    stopLabelRef.current = error;
+    for (const ac of batchAbortRef.current.values()) {
+      try {
+        ac.abort();
+      } catch {
+        /* ignore */
+      }
+    }
+    batchAbortRef.current.clear();
+    setBatches((prev) =>
+      prev.map((b) => ({
+        ...b,
+        slots: b.slots.map((s) =>
+          s.status === "loading" ? { ...s, status: "error" as const, error } : s,
+        ),
+      })),
+    );
+  }, []);
 
   // Imagine's "conversation under way" signal for the Studio shell — batches
   // rather than chat turns (the home desktop's rounded bar docks to the
@@ -1158,9 +1402,10 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
   const retrySlot = useCallback(
     (batch: ImagineBatch, slot: ImagineSlot) => {
       patchSlot(batch.id, slot.id, { status: "loading", error: undefined });
-      void runSlot(batch, slot);
+      if (batch.kind === "video") void runVideoSlot(batch, slot);
+      else void runSlot(batch, slot);
     },
-    [patchSlot, runSlot],
+    [patchSlot, runSlot, runVideoSlot],
   );
 
   const retrySlotAt = useCallback(
@@ -1264,7 +1509,7 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
     resetEditNotes();
   }, [resetEditNotes]);
 
-  useImperativeHandle(ref, () => ({ generate, openEdit, retrySlot: retrySlotAt }), [generate, openEdit, retrySlotAt]);
+  useImperativeHandle(ref, () => ({ generate, openEdit, retrySlot: retrySlotAt, stop }), [generate, openEdit, retrySlotAt, stop]);
 
   const lightboxGallery = useMemo(() => {
     if (guestEdit && !batches.some((b) => b.id === guestEdit.batch.id)) {
@@ -1392,34 +1637,28 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
       setDownloading(true);
       void (async () => {
         try {
-          let source: Blob;
-          if (isDeviceLocalUrl(url)) {
-            const read = await deviceLocalUrlToDataUrl(url, "download");
-            if (!read) throw new Error("read");
-            const res = await fetch(read.dataUrl);
-            if (!res.ok) throw new Error("read");
-            source = await res.blob();
-          } else {
-            const res = await fetch(url);
-            if (!res.ok) throw new Error("fetch");
-            source = await res.blob();
-          }
-          const encoded = await encodeImageToFormat(source, picked);
           const label = lightboxBatch?.concept || lightboxBatch?.label || "lykn-image";
-          const name = imagineDownloadFilename(label, picked);
-          const filters = imagineDownloadFilters(picked);
+          const prepared = await prepareImagineDownload({ url, format: picked, label });
           if (canSaveFileAs()) {
-            const saved = await saveFileToChosenFolder(encoded, name, encoded.type, { filters });
+            const saved = await saveFileToChosenFolder(
+              prepared.blob,
+              prepared.filename,
+              prepared.mime,
+              { filters: prepared.filters },
+            );
             if (saved) {
               setDownloadedFlash((p) => new Set(p).add(url));
               toast({ title: "Saved", description: saved });
             }
             return;
           }
-          await downloadToComputer(encoded, name, encoded.type);
+          await downloadToComputer(prepared.blob, prepared.filename, prepared.mime);
           setDownloadedFlash((p) => new Set(p).add(url));
-          toast({ title: "Downloaded", description: name });
-        } catch {
+          toast({ title: "Downloaded", description: prepared.filename });
+        } catch (err) {
+          if (import.meta.env.DEV) {
+            console.warn("[imagine] download failed", err);
+          }
           toast({
             title: "Couldn't download this",
             description: "The image couldn't be written. Try again in a moment.",
@@ -1477,10 +1716,6 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
     IMAGE_LAYOUT_OPTIONS.find((o) => o.value === aspect) || IMAGE_LAYOUT_OPTIONS[0];
   const ActiveLayoutIcon = activeLayout.icon;
   const barTall = promptTall || attachments.length > 0;
-  // Appearance › Chat bar shape. This bar is the desktop pill in another mode,
-  // so it wears the same class and answers the same choice — including Slate,
-  // which is a two-row layout rather than a radius.
-  const slate = useAppearance().chatBarShape === "slate";
 
   useLayoutEffect(() => {
     if (!addOpen && !layoutMenuOpen) return;
@@ -1551,13 +1786,20 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
         }
       }}
       rows={1}
-      placeholder="Describe the image you want…"
+      placeholder={mediaKind === "video" ? "Describe the video you want…" : "Describe the image you want…"}
       // flex-auto, not flex-1: the auto-grown height is the flex basis, so the
       // field fills the tall Slate shell and then pushes it taller. flex-1
       // would zero that basis and leave the bar stuck at its minimum.
-      className={`min-w-0 resize-none bg-transparent py-1 text-black/85 outline-none ring-0 placeholder:text-black/40 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 dark:text-white/90 dark:placeholder:text-white/40 ${
-        slate ? "w-full flex-auto px-2 text-[0.92rem]" : "flex-1 self-center text-[0.85rem]"
+      className={`min-w-0 lykn-home-chat-bar-input resize-none bg-transparent text-black/85 outline-none ring-0 placeholder:text-black/40 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 dark:text-white/90 dark:placeholder:text-white/40 ${
+        slate
+          ? "w-full flex-auto px-2 py-1 text-[0.92rem]"
+          : `flex-1 self-center text-[0.85rem] ${promptTall ? "py-1" : ""}`
       }`}
+      style={
+        !slate && !promptTall
+          ? { height: 32, maxHeight: 32, paddingTop: 13, paddingBottom: 1, lineHeight: "18px" }
+          : undefined
+      }
     />
   );
 
@@ -1585,13 +1827,34 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
     </div>
   );
 
+  const mediaKindButton = (
+    <button
+      type="button"
+      onClick={() => setMediaKind((k) => (k === "image" ? "video" : "image"))}
+      title={mediaKind === "video" ? "Switch to images" : "Switch to video"}
+      aria-label={mediaKind === "video" ? "Switch to images" : "Switch to video"}
+      className={`flex h-8 items-center gap-1 rounded-full px-2 text-[0.68rem] font-medium transition-colors ${
+        mediaKind === "video"
+          ? "bg-black/10 text-black/85 dark:bg-white/15 dark:text-white/90"
+          : "text-black/60 hover:bg-black/10 hover:text-black/85 dark:text-white/65 dark:hover:bg-white/15 dark:hover:text-white/90"
+      }`}
+    >
+      {mediaKind === "video" ? (
+        <Film className="h-3.5 w-3.5 shrink-0 opacity-70" />
+      ) : (
+        <ImageIcon className="h-3.5 w-3.5 shrink-0 opacity-70" />
+      )}
+      <span className="truncate">{mediaKind === "video" ? "Video" : "Image"}</span>
+    </button>
+  );
+
   const sendButton = (
     <button
       type="button"
       onClick={handleSend}
       disabled={!prompt.trim()}
-      title="Generate 4 images"
-      aria-label="Generate 4 images"
+      title={mediaKind === "video" ? "Generate a video" : "Generate 4 images"}
+      aria-label={mediaKind === "video" ? "Generate a video" : "Generate 4 images"}
       className={SEND_BTN}
     >
       {anyLoading ? (
@@ -1639,6 +1902,7 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
                 ? "gap-1 rounded-[1.6rem] py-2 pl-1.5 pr-1.5"
                 : "rounded-full py-1.5 pl-1.5 pr-1.5"
           } ${dropping || barDrop.hot ? "ring-2 ring-blue-400/60" : ""}`}
+          data-prompt-wrap={promptTall ? "true" : undefined}
         >
           {finderInput}
           {attachments.length > 0 ? (
@@ -1700,7 +1964,8 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
                   what acts on it on the right — same split as the chat pill. */}
               <div className="flex w-full items-center gap-1.5 px-0.5">
                 {addButton}
-                {layoutButton}
+                {mediaKindButton}
+                {mediaKind === "image" ? layoutButton : null}
                 <span className="flex-1" />
                 {sendButton}
               </div>
@@ -1709,7 +1974,8 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
             <div className="flex w-full items-center gap-1.5">
               {addButton}
               {field}
-              {layoutButton}
+              {mediaKindButton}
+              {mediaKind === "image" ? layoutButton : null}
               {sendButton}
             </div>
           )}
@@ -1806,7 +2072,16 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
                     className="group/img relative overflow-hidden rounded-xl bg-black/[0.04] dark:bg-white/[0.05]"
                     style={{ aspectRatio: cssAspect(b.aspectRatio) }}
                   >
-                    {s.status === "done" && s.url ? (
+                    {s.status === "done" && s.url && s.video ? (
+                      <video
+                        src={s.url}
+                        controls
+                        loop
+                        playsInline
+                        className="w-full object-cover"
+                        style={{ aspectRatio: cssAspect(b.aspectRatio) }}
+                      />
+                    ) : s.status === "done" && s.url ? (
                       <button
                         type="button"
                         onClick={() => openLightbox(b.id, i)}
@@ -1862,12 +2137,9 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
         <div className="pointer-events-none relative flex flex-1 flex-col overflow-hidden">
           <div className="lykn-imagine-empty pointer-events-none relative flex min-h-0 flex-1 justify-center overflow-hidden px-4 py-4">
             <div className="lykn-imagine-stack pointer-events-none mx-auto my-auto flex w-full max-w-2xl flex-col gap-8 sm:gap-10">
-              <div className="lykn-imagine-hero pointer-events-none space-y-2.5 text-center">
+              <div className="lykn-imagine-hero pointer-events-none text-center">
                 <p className="text-xl font-semibold tracking-tight text-black dark:text-white sm:text-3xl">
                   Generate any image
-                </p>
-                <p className="mx-auto max-w-lg text-[13px] leading-relaxed text-black/55 dark:text-white/50 sm:text-sm">
-                  Describe any image and LYKN generates a set of variations you can refine.
                 </p>
               </div>
               <div className="lykn-imagine-empty-bar pointer-events-none">{promptBar}</div>
@@ -1915,7 +2187,16 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
                         className="group/img relative overflow-hidden rounded-xl bg-black/[0.04] dark:bg-white/[0.05]"
                         style={{ aspectRatio: cssAspect(b.aspectRatio) }}
                       >
-                        {s.status === "done" && s.url ? (
+                        {s.status === "done" && s.url && s.video ? (
+                          <video
+                            src={s.url}
+                            controls
+                            loop
+                            playsInline
+                            className="w-full object-cover"
+                            style={{ aspectRatio: cssAspect(b.aspectRatio) }}
+                          />
+                        ) : s.status === "done" && s.url ? (
                           <button
                             type="button"
                             onClick={() => openLightbox(b.id, i)}
@@ -2075,6 +2356,7 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
                       ? "gap-1 rounded-[1.6rem] py-2 pl-1.5 pr-1.5"
                       : "rounded-full py-1.5 pl-1.5 pr-1.5"
                 }`}
+                data-prompt-wrap={remarksTall ? "true" : undefined}
               >
                 {slate ? (
                   <>
@@ -2120,7 +2402,14 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
                       }}
                       rows={1}
                       placeholder={hasMask ? "Describe the change..." : "Describe the edit or outline a region first"}
-                      className="lykn-home-chat-bar-input min-w-0 flex-1 self-center resize-none bg-transparent py-1 text-[0.85rem] text-black/85 outline-none ring-0 placeholder:text-black/40 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 dark:text-white/90 dark:placeholder:text-white/40"
+                      className={`lykn-home-chat-bar-input min-w-0 flex-1 self-center resize-none bg-transparent text-[0.85rem] text-black/85 outline-none ring-0 placeholder:text-black/40 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 dark:text-white/90 dark:placeholder:text-white/40 ${
+                        remarksTall ? "py-1" : ""
+                      }`}
+                      style={
+                        remarksTall
+                          ? undefined
+                          : { height: 32, maxHeight: 32, paddingTop: 13, paddingBottom: 1, lineHeight: "18px" }
+                      }
                     />
                     <button
                       type="button"

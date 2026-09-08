@@ -49,7 +49,7 @@ const TOPICS = [
   },
   {
     q: "Is my data used to train AI models?",
-    a: "LYKN does not put your chats into a shared training set for other customers. If you build a custom model, that path can use content you select and send it to Together AI. What OpenAI, Anthropic, Google, xAI, or others keep on their side is governed by their terms, not a flag we can fully control in the product today.",
+    a: "LYKN does not put your chats into a shared training set for other customers. What OpenAI, Anthropic, Google, xAI, or others keep on their side is governed by their terms, not a flag we can fully control in the product today.",
   },
   {
     q: "What can the desktop agent access?",
@@ -120,9 +120,9 @@ export default function Security() {
             </div>
           </header>
 
-          <ul className="lx-sec-grid">
+          <ul className="lx-sec-points">
             {POINTS.map((point) => (
-              <li key={point.title} className="lx-sec-card">
+              <li key={point.title}>
                 <h2>{point.title}</h2>
                 <p>{point.body}</p>
               </li>
@@ -145,20 +145,16 @@ export default function Security() {
           <section className="lx-sec-docs" aria-label="Security documents">
             <p className="lx-sec-kicker">Documents</p>
             <h2 className="lx-sec-docs-title">The policies, in full.</h2>
-            <p className="lx-sec-docs-lede">
-              Legal pages for privacy, processing, terms, and cookies.
-            </p>
-            <div className="lx-sec-grid">
+            <ul className="lx-sec-docs-list">
               {DOCS.map((doc) => (
-                <Link key={doc.to} to={doc.to} className="lx-sec-card lx-sec-doc">
-                  <h3>{doc.title}</h3>
-                  <p>{doc.body}</p>
-                  <span className="lx-sec-doc-go">
-                    Read <span aria-hidden="true">→</span>
-                  </span>
-                </Link>
+                <li key={doc.to}>
+                  <Link to={doc.to}>
+                    <span className="lx-sec-doc-name">{doc.title}</span>
+                    <span className="lx-sec-doc-body">{doc.body}</span>
+                  </Link>
+                </li>
               ))}
-            </div>
+            </ul>
           </section>
 
           <p className="lx-sec-contact">

@@ -5,6 +5,7 @@ import { createRequire } from 'module';
 import fetch from 'node-fetch';
 import crypto from 'crypto';
 import { searchWeb, formatSearchResultsForPrompt, extractSourcesFromSearchPrompt } from '../../lib/exterior/webSearch.js';
+import { extractSourcesFromWebToolResult, mergeCitationSources } from '../../lib/exterior/webCitations.js';
 import { runDeepResearchForPrompt } from '../../lib/exterior/deepResearch.js';
 import { fetchWebPage } from '../../lib/exterior/webFetch.js';
 import { persistCapabilityArtifact } from '../../lib/exterior/capabilityStorage.js';
@@ -63,15 +64,22 @@ import {
   getCustomModelStreamPersonaFull,
 } from '../../lib/modelBuilder/lyknCustomModelRuntimePersona.js';
 import { CHAT_TOOLS, buildChatToolCtx, providerForModel, resolveChatModelLabel, sanitizeLyknBots, supportsTools } from '../../mcp-tools/chatTools.js';
-import { LOCAL_TOOL_NAMES, looksLikeLocalSystemAsk, mightBeBrowserTaskAsk } from '../../mcp-tools/localTools.js';
+import { LOCAL_TOOL_NAMES } from '../../mcp-tools/localTools.js';
+import {
+  resolveDesktopMcpApps,
+  resolveDesktopMcpAvailable,
+  desktopMcpIntent,
+  desktopMcpConnectIntent,
+  armDesktopMcpTools,
+  withoutDesktopMcpTools,
+  buildDesktopMcpGuidance,
+} from './desktopMcpTurn.js';
+import { armBuildWorkspaceTools, buildWorkspaceGuidance, workspaceOwnsFreshBuild } from './buildWorkspaceTurn.js';
 import {
   AGENTS_APPS_CODE_INTENT_RE,
   messageWantsAgentTools,
   messageWantsBotAsk,
-  messageLooksLikeAttachedFileFollowUp,
-  conversationHasAttachedDesktopFolder,
-  conversationMentionedLocalFolder,
-  messageLooksLikeFolderInspectFollowUp,
+  turnWantsLocalFileTools,
   messageWantsPageFetch,
   messageWantsProjectContext,
   messageWantsSavedRecall,
@@ -80,7 +88,11 @@ import {
 import { resolveChatTurnDisclosure } from '../../mcp-tools/firstPartyCapabilities.js';
 import { buildSlimChatToolGuidance } from '../../mcp-tools/chatToolGuidance.js';
 import { getMcpManager } from '../routes/mcp.routes.js';
-import { resolveMcpToolsForTurn } from '../../lib/mcp/chatTurn.js';
+import {
+  attachConnectedAppsToStreamTurn,
+  loadConnectedAppRows,
+  publicConnectedApps,
+} from '../../lib/mcp/connectedStreamTurn.js';
 import {
   formatBoundProjectGuidance,
   loadWritableProject,
@@ -129,10 +141,21 @@ import {
   MAX_USER_INPUT_CHARS,
   compressConversation,
   buildAssistantIdentitySection,
+  buildAssistantModelSection,
+  CONVERSATION_PROMPT_HEADER,
+  IDENTITY_TURN_PROMPT,
+  PROMPT_LEAK_TURN_PROMPT,
+  messageWantsIdentityAnswer,
+  messageWantsPromptLeak,
   buildInstalledAppsSection,
   buildMacAppsSection,
+  buildAttachedAppsSection,
+  sanitizeAttachedApps,
+  attachedAppsHaystack,
   buildAiDriveSection,
   buildLyknBotsSection,
+  buildLocalModeGuidance,
+  buildAskBotGuidance,
 } from './chatGuidance.js';
 import {
   hasExplicitUrlScrapeIntent,
@@ -151,19 +174,23 @@ import {
 } from './webEnrichment.js';
 import { BROWSER_ASK_ONLY_PROMPT, isBrowserAskRequest } from '../../mcp-tools/browserAskSurface.js';
 import {
-  LOCAL_TOOL_WAIT_MS,
-  localToolStreams,
+  makeAwaitLocalTool,
+  makeRequestMcpApproval,
   registerLocalToolStream,
   releaseLocalToolStream,
   resolveLocalToolResult,
 } from './localToolBridge.js';
 import { localTimeContextLine } from './timeContext.js';
+import { buildReactSourceView } from './artifactTurn/artifactSourceView.js';
+import { buildAgentAttempts } from './artifactTurn/builderAttempts.js';
+import { makeArtifactProgressEmitter } from './artifactTurn/artifactStreamProgress.js';
 import { resolveUserPlan } from '../services/billingService.js';
 import {
   assertChatTurnBillable,
   chatRouteUsageMetadata,
   isAutoRoutedModelId,
   isBillableComputeTool,
+  isPhaticChatTurn,
   openaiReasoningPayload,
   resolveChatRoute,
 } from './chatRouting/index.js';
@@ -394,11 +421,12 @@ export function registerAiStreamRoutes(app, {
       }
       const hasActiveArtifactBody = !!activeArtifact && !activeArtifactDiscussOnly;
 
-      // Images are Imagine-only (or an explicit "+" / overlay "Create an image"
-      // arm). Regular chat used to auto-force lykn_generate_image from wording
-      // ("generate an image of a dog") and from follow-up tweaks — that raced
-      // the mode pills and skipped the "switch to Imagine" redirect. Mirror
-      // Create: never infer. Client-armed forceImage still generates.
+      // Images are Imagine-only. Regular chat used to auto-force
+      // lykn_generate_image from wording ("generate an image of a dog") and
+      // from follow-up tweaks — that raced the mode pills and skipped the
+      // "switch to Imagine" redirect. Now chat turns never register the
+      // generate tool at all; a client-armed forceImage (stale overlay build)
+      // degrades to a redirect reply. The logs below stay for diagnostics.
       const hasAttachedImage = Array.isArray(imageUrls) && imageUrls.length > 0;
       if (!forceImage) {
         const wouldHaveInferred =
@@ -419,22 +447,6 @@ export function registerAiStreamRoutes(app, {
           console.log(
             `🖼 Stream: image-ish message did NOT trip inference (forceArtifact=${forceArtifact}, activeArtifact=${hasActiveArtifactBody}) — text[0..160]=${JSON.stringify(String(text || '').slice(0, 160))}`,
           );
-        }
-      }
-      // Iterative image refinement: when this image turn follows a generated
-      // image, pull that image's URL out of the last assistant reply so the
-      // prompt can hand it to the model as an explicit pixel reference
-      // (reference_image_urls) — refinements stay grounded in the previous
-      // render instead of being regenerated from a fresh text description.
-      let imageFollowUpRefUrl = null;
-      if (forceImage && Array.isArray(conversation)) {
-        for (let i = conversation.length - 1; i >= 0 && !imageFollowUpRefUrl; i--) {
-          const m = conversation[i];
-          const role = m && typeof m === 'object' ? String(m.role || '') : '';
-          if (role !== 'assistant' && role !== 'model') continue;
-          const matches = [...String(m.content || '').matchAll(/!\[(?!lykn[-_]artifact:)[^\]]*\]\((https?:\/\/[^\s)]+)\)/gi)];
-          if (matches.length) imageFollowUpRefUrl = matches[matches.length - 1][1];
-          break; // only the LAST assistant turn counts — older images are stale context
         }
       }
       // Regular chat: never auto-infer Create from wording. Only forceArtifact
@@ -521,8 +533,9 @@ export function registerAiStreamRoutes(app, {
         artifactBuildIntent.isInsistFreshBuildAsk(askText);
       // "make the app darker" in an installed-app edit chat names THE
       // attached app — an edit, never a fresh commission (unless the user
-      // explicitly asks for another/different app). Keep in sync with
-      // src/lib/ai/artifactSendPlan.ts (typedDeliverableCommission).
+      // explicitly asks for another/different app). The client mirrors this
+      // in src/lib/ai/artifactSendPlan.ts from the SAME shared predicates
+      // (lib/artifactBuildIntent.cjs) — only the composition differs.
       const appEditReferenceAsk =
         appEditTurn &&
         artifactBuildIntent.isOpenArtifactReferenceAsk(askText) &&
@@ -552,24 +565,18 @@ export function registerAiStreamRoutes(app, {
       // fonts without being a full redesign — builders allow that signature
       // churn only when this is set.
       const styleChangeArtifactAsk =
-        /\b(?:font|typeface|typography|colou?r|theme|accent|palette|recolou?r|background|neutral|gr[ae]yscale|monochrome|dark\s*mode|light\s*mode|darken|brighten|dim(?:mer)?|muted?|opacity|red|orange|yellow|green|blue|purple|pink|black|white|gray|grey|amber|mustard)\b/i.test(
-          askText,
-        ) || redesignArtifactAsk;
-      // Edit/add asks against an open artifact — keep in sync with useChatEngine.
+        artifactBuildIntent.isStyleChangeAsk(askText) || redesignArtifactAsk;
+      // Edit/add asks against an open artifact. Wording comes from the shared
+      // predicate; the negations below are server-only (regularChatBuildAsk).
       const looksLikeSurgicalTweak =
-        askText.trim().length < 400 &&
-        /\b(?:fix|change|update|tweak|adjust|add|make|rename|remove|delete|patch|bug|typo|font|colou?r|theme|move|replace|swap|hide|show|enable|disable|increase|decrease|darken|brighten|dim|dimmer|mute|muted|darker|lighter|brighter|edit|improve|polish|wire|connect|implement|insert|extend|expand|shorten|widen|narrow|resize|restyle|reword|rewrite|correct|repair)\b/i.test(
-          askText,
-        ) &&
+        artifactBuildIntent.isSurgicalTweakAsk(askText) &&
         !redesignArtifactAsk &&
         !insistFreshBuildAsk &&
         !typedNewDeliverableAsk &&
         !regularChatBuildAsk;
       const referenceRebuildAsk =
         allowNewArtifactBuild &&
-        /\b(?:exact(?:ly)?\s+clone|identical|1\s*:\s*1|recreate|clone\s+(?:this|that|it)|(?:look|make)\s+(?:it\s+)?(?:just\s+)?like\s+this|full\s+rewrite)\b/i.test(
-          askText,
-        ) &&
+        artifactBuildIntent.isReferenceRebuildAsk(askText) &&
         (imageUrls.length > 0 || activeArtifactHasSource);
       const imageWebappAsk =
         allowNewArtifactBuild &&
@@ -607,13 +614,8 @@ export function registerAiStreamRoutes(app, {
         !!artifactToolName &&
         openBuilderTool === artifactToolName;
       const differentDeliverableAsk =
-        /\b(?:different|brand[- ]?new|entirely new|fresh|whole new|completely new)\s+(?:game|app|build|artifact|world|deck|site|page)\b/i.test(
-          askText,
-        );
-      const referencePhraseAsk =
-        /\b(?:like this|like that|from this|based on this|from the (?:image|screenshot|picture|reference)|as shown|in the (?:image|screenshot|picture))\b/i.test(
-          askText,
-        );
+        artifactBuildIntent.isDifferentDeliverableAsk(askText);
+      const referencePhraseAsk = artifactBuildIntent.isReferencePhraseAsk(askText);
       // With the same builder open, broad "make/build + game/app" must NOT force
       // a fresh rebuild ("make the game harder" is a refine). Only clear NEW
       // commissions / reference rebuilds / image webapp asks wipe the panel.
@@ -871,6 +873,30 @@ export function registerAiStreamRoutes(app, {
       // result. Ignored unless tools are on for the turn.
       const streamLocalMode = req.body?.localMode === true && !browserAsk;
       if (streamLocalMode) console.log('🖥️ Stream: Local Mode armed (desktop client)');
+      // Desktop MCP — MCP servers running on the user's own machine (Blender,
+      // Ableton, …), owned by the Electron local MCP host. Turn seams live in
+      // server/ai/desktopMcpTurn.js.
+      const streamDesktopMcpApps = resolveDesktopMcpApps(req.body, { browserAsk });
+      // Bridge presence ≠ connections: at zero connections the catalog and
+      // connect tools still work, which is how "connect to blender" succeeds
+      // on a fresh install without a trip to Settings.
+      const streamDesktopMcpAvailable = resolveDesktopMcpAvailable(req.body, { browserAsk });
+      // Build workspace — set by the desktop app on Studio Build turns. Arms
+      // the on-disk build tools (client-executed, scoped to ~/LYKN/Builds).
+      // Independent of Local Mode: its Electron gate confines every call.
+      const streamBuildWorkspace = req.body?.buildWorkspace === true && !browserAsk;
+      if (streamBuildWorkspace) console.log('🛠️ Stream: Build workspace armed (desktop client)');
+      // Build-surface precedence (see workspaceOwnsFreshBuild).
+      const streamWorkspaceOwnsBuild = workspaceOwnsFreshBuild({
+        buildWorkspace: streamBuildWorkspace,
+        artifactToolName,
+        activeArtifactEditable,
+      });
+      if (streamWorkspaceOwnsBuild) {
+        console.log('🛠️ Stream: workspace owns this fresh build — forced lykn_build_react_artifact cleared');
+        artifactBuildSpec = null;
+        artifactToolName = null;
+      }
       const streamAttachedFolders = Array.isArray(req.body?.attachedFolders)
         ? req.body.attachedFolders
             .map((f) => ({
@@ -883,6 +909,9 @@ export function registerAiStreamRoutes(app, {
       if (streamAttachedFolders.length) {
         console.log(`🖥️ Stream: ${streamAttachedFolders.length} attached desktop folder(s)`);
       }
+      const streamAttachedApps = sanitizeAttachedApps(req.body?.attachedApps);
+      const attachedAppNames = attachedAppsHaystack(streamAttachedApps);
+      const connectedResolveText = [String(text || ''), attachedAppNames].filter(Boolean).join('\n');
       /** True when first-party disclosure attached a small tool set (slim guidance). */
       let streamLeanToolSet = false;
       let streamDisclosure = null;
@@ -1083,174 +1112,13 @@ export function registerAiStreamRoutes(app, {
         !artifactToolName &&
         !activeArtifactEditable,
       );
-      if (!customToolsOff) {
-        const ceiling = Array.isArray(streamChatToolNames) ? [...streamChatToolNames] : null;
-        let connectedApps = [];
-        if (req.user?.id && !browserAsk) {
-          try {
-            const rows = await getMcpManager(supabaseAdmin).store.list(req.user.id);
-            connectedApps = (rows || [])
-              .filter((row) => row.status === 'connected')
-              .map((row) => ({
-                id: row.id,
-                name: row.name,
-                accountLabel: row.accountLabel,
-                accountIdentity: row.accountIdentity,
-                catalogId: row.catalogId,
-              }));
-          } catch {
-            connectedApps = [];
-          }
-        }
-        streamDisclosure = resolveChatTurnDisclosure({
-          message: String(text || ''),
-          conversation,
-          connectedApps,
-          hasConnectedApps: !browserAsk && connectedApps.length > 0,
-          exclusiveComposerMode,
-          deepResearch,
-          translateMode,
-          forceImage,
-          forceArtifact,
-          forceWebSearch,
-          forcePageFetch,
-          pageUrl: overlayPageUrl,
-          overlayAsk: !!overlayAsk,
-          browserAsk,
-          artifactToolName,
-          activeArtifactEditable,
-          activeArtifactTool: activeArtifact?.toolName,
-          inProject: Boolean(
-            scopedProjectId ||
-            String(projectId || '').trim() ||
-            readCustomModelLinkedProjectId(streamCustomModelCtx.customModel),
-          ),
-          localMode: streamLocalMode && !browserAsk,
-          lyknBots: browserAsk ? [] : sanitizeLyknBots(req.body?.lyknBots),
-          attachedFolders: streamAttachedFolders,
-          allowNewArtifactBuild: browserAsk ? false : allowNewArtifactBuild,
-          lockOutArtifactBuilds,
-          brainstormBuildMention,
-          vagueBuildAsk,
-          agentBrowser: Boolean(agentMode || toolDraft || req.body?.ownedBrowser === true),
-          ceilingToolNames: ceiling,
-        });
-        streamChatToolNames = streamDisclosure.firstPartyToolNames;
-        if (streamOrchestrationCtx?.isMainAgent && !browserAsk) {
-          for (const toolName of [
-            'lykn_delegate_to_sub_model',
-            'lykn_list_sub_model_tasks',
-            'lykn_get_sub_model_task',
-          ]) {
-            if (!streamChatToolNames.includes(toolName)) streamChatToolNames.push(toolName);
-          }
-        }
-        streamLeanToolSet = streamDisclosure.useSlimGuidance;
-        if (streamDisclosure.keepToolsOn) useTools = true;
-        if (browserAsk && !streamDisclosure.keepToolsOn) useTools = false;
-        if (streamDisclosure.exclusive && streamChatToolNames.length === 0) {
-          useTools = false;
-          console.log('🔒 Stream: exclusive mode — empty tool allowlist');
-        }
-        const inspect = streamDisclosure.inspect || {};
-        console.log(
-          `🧭 Stream: first-party disclosure forceArtifact=${forceArtifact} artifactTool=${artifactToolName || "none"} capabilities=${(streamDisclosure.capabilities || []).join(',') || '(none)'} ` +
-            `tools=${inspect.count ?? streamChatToolNames.length} bytes=${inspect.bytes ?? 0} ~${inspect.approxTokens ?? 0} tokens` +
-            (streamDisclosure.fallback && streamDisclosure.fallback !== 'none'
-              ? ` fallback=${streamDisclosure.fallback}`
-              : ''),
-        );
-      }
-
-      if (
-        req.user?.id &&
-        streamDisclosure &&
-        !browserAsk &&
-        !forceImage &&
-        !translateMode &&
-        exclusiveComposerMode !== 'image' &&
-        exclusiveComposerMode !== 'translate'
-      ) {
-        // Standing awareness of connected apps ([CONNECTED_TOOLS] +
-        // [CONNECTED_APPS — OAuth]). Without it the model only "sees" a
-        // connection on turns whose text happens to trigger tool disclosure
-        // — asked "can you see the tool I just connected?" it would deny
-        // the connection exists. 90s-cached per user, invalidated on
-        // connect/disconnect, so a fresh connect shows up immediately.
-        try {
-          const connectedSection = await fetchConnectedToolsSection(
-            req.headers?.authorization,
-            req.user.id,
-          );
-          if (connectedSection) {
-            // Prepended: context is budget-sliced from the front, so a large
-            // canvas context must not push this block off the end.
-            context = context ? `${connectedSection}\n\n${context}` : connectedSection;
-          }
-        } catch (e) {
-          console.warn('⚠️ connected tools section skipped:', e?.message || e);
-        }
-        try {
-          // Recent turns inform capability inference so follow-ups like
-          // "ok now send it" (after drafting an email) still disclose the
-          // app's tools even though the message itself never says "email".
-          const mcpContextText = (Array.isArray(conversation) ? conversation : [])
-            .slice(-6)
-            .map((m) => String(m?.content || '').slice(0, 400))
-            .filter(Boolean)
-            .join('\n');
-          mcpTurn = await resolveMcpToolsForTurn({
-            manager: getMcpManager(supabaseAdmin),
-            userId: req.user.id,
-            text: String(text || ''),
-            contextText: mcpContextText,
-            botConnectionIds: undefined,
-            connectionIds: undefined,
-          });
-          // Write tools withheld because several accounts could make the
-          // change: tell the model to ask which one instead of guessing (or
-          // worse, inventing a permissions story).
-          if (mcpTurn.resolution?.ambiguous && Array.isArray(mcpTurn.resolution.candidates) && mcpTurn.resolution.candidates.length) {
-            const names = mcpTurn.resolution.candidates
-              .map((c) => c.accountIdentity || c.accountLabel || c.connectionName)
-              .filter(Boolean)
-              .join(', ');
-            const note =
-              `[CONNECTED_APPS_NOTE]\nMore than one connected app could make the requested change (${names}). ` +
-              'Their write tools are withheld for this turn only because the target is ambiguous - NOT a permissions problem. ' +
-              'Ask the user which app to use; once they name it, the tools will be available.';
-            context = context ? `${context}\n\n${note}` : note;
-          }
-          // Do not dump a ranked 10-tool guess into the model. GitHub has
-          // 500 actions; the cap filled with GET_A_* variants and the model
-          // treated that as "all I can do". Every connected app uses the
-          // registry: search for the action, then call it.
-          if (mcpTurn.resolution?.reason !== 'no_connections') {
-            for (const name of ['lykn_search_connected_tools', 'lykn_call_connected_tool']) {
-              if (!streamChatToolNames.includes(name)) streamChatToolNames.push(name);
-            }
-            streamDisclosure = {
-              ...streamDisclosure,
-              keepToolsOn: true,
-              toolNames: streamChatToolNames,
-            };
-            useTools = true;
-            console.log(
-              '🔌 Stream: connected-app registry (search/call; ranked dump skipped)',
-            );
-          }
-        } catch (e) {
-          console.warn('⚠️ mcp turn resolve skipped:', e?.message || e);
-        }
-      }
-
       // Custom AI instructions are Studio+. Strip them for basic-tier callers.
       if (streamPlan.modelTier === 'basic' && userPrompt) {
         userPrompt = undefined;
         res.setHeader('X-Feature-Stripped', 'user_prompt');
       }
 
-      // ── Open the SSE response NOW, before any pre-flight work ─────────
+      // ── Open the SSE response NOW, before MCP list / connected-tools ──
       // Previously we delayed `res.writeHead`/`flushHeaders` until after
       // prompt construction + the enrichment Promise.all + the model
       // resolver. For a "no enrichment" turn that's fine, but the moment
@@ -1312,6 +1180,107 @@ export function registerAiStreamRoutes(app, {
         if (typeof res.flush === 'function') res.flush();
       } catch { /* socket closed before first write — handled by stallCheck/cleanup below */ }
       _ck('SSE headers flushed + Thinking heartbeat sent');
+
+      let connectedRows = [];
+      if (!customToolsOff) {
+        const ceiling = Array.isArray(streamChatToolNames) ? [...streamChatToolNames] : null;
+        let connectedApps = [];
+        if (req.user?.id && !browserAsk && !isPhaticChatTurn(String(text || ''))) {
+          connectedRows = await loadConnectedAppRows({
+            manager: getMcpManager(supabaseAdmin),
+            userId: req.user.id,
+          });
+          connectedApps = publicConnectedApps(connectedRows);
+        }
+        streamDisclosure = resolveChatTurnDisclosure({
+          message: connectedResolveText,
+          conversation,
+          connectedApps,
+          hasConnectedApps: !browserAsk && connectedApps.length > 0,
+          exclusiveComposerMode,
+          deepResearch,
+          translateMode,
+          forceImage,
+          forceArtifact,
+          forceWebSearch,
+          forcePageFetch,
+          pageUrl: overlayPageUrl,
+          overlayAsk: !!overlayAsk,
+          browserAsk,
+          artifactToolName,
+          activeArtifactEditable,
+          activeArtifactTool: activeArtifact?.toolName,
+          inProject: Boolean(
+            scopedProjectId ||
+            String(projectId || '').trim() ||
+            readCustomModelLinkedProjectId(streamCustomModelCtx.customModel),
+          ),
+          localMode: streamLocalMode && !browserAsk,
+          buildWorkspace: streamBuildWorkspace,
+          lyknBots: browserAsk ? [] : sanitizeLyknBots(req.body?.lyknBots),
+          attachedFolders: streamAttachedFolders,
+          allowNewArtifactBuild: browserAsk ? false : allowNewArtifactBuild,
+          lockOutArtifactBuilds,
+          brainstormBuildMention,
+          vagueBuildAsk,
+          agentBrowser: Boolean(agentMode || toolDraft || req.body?.ownedBrowser === true),
+          ceilingToolNames: ceiling,
+        });
+        streamChatToolNames = streamDisclosure.firstPartyToolNames;
+        if (streamOrchestrationCtx?.isMainAgent && !browserAsk) {
+          for (const toolName of [
+            'lykn_delegate_to_sub_model',
+            'lykn_list_sub_model_tasks',
+            'lykn_get_sub_model_task',
+          ]) {
+            if (!streamChatToolNames.includes(toolName)) streamChatToolNames.push(toolName);
+          }
+        }
+        streamLeanToolSet = streamDisclosure.useSlimGuidance;
+        if (streamDisclosure.keepToolsOn) useTools = true;
+        if (browserAsk && !streamDisclosure.keepToolsOn) useTools = false;
+        if (streamDisclosure.exclusive && streamChatToolNames.length === 0) {
+          useTools = false;
+          console.log('🔒 Stream: exclusive mode — empty tool allowlist');
+        }
+        const inspect = streamDisclosure.inspect || {};
+        console.log(
+          `🧭 Stream: first-party disclosure forceArtifact=${forceArtifact} artifactTool=${artifactToolName || "none"} capabilities=${(streamDisclosure.capabilities || []).join(',') || '(none)'} ` +
+            `tools=${inspect.count ?? streamChatToolNames.length} bytes=${inspect.bytes ?? 0} ~${inspect.approxTokens ?? 0} tokens` +
+            (streamDisclosure.fallback && streamDisclosure.fallback !== 'none'
+              ? ` fallback=${streamDisclosure.fallback}`
+              : ''),
+        );
+      }
+
+      if (
+        req.user?.id &&
+        streamDisclosure &&
+        !browserAsk &&
+        !forceImage &&
+        !translateMode &&
+        exclusiveComposerMode !== 'image' &&
+        exclusiveComposerMode !== 'translate'
+      ) {
+        const attached = await attachConnectedAppsToStreamTurn({
+          manager: getMcpManager(supabaseAdmin),
+          userId: req.user.id,
+          authHeader: req.headers?.authorization,
+          text: connectedResolveText,
+          conversation,
+          context,
+          streamDisclosure,
+          streamChatToolNames,
+          connectedApps: publicConnectedApps(connectedRows),
+          connectedRows,
+          fetchConnectedToolsSection,
+        });
+        context = attached.context;
+        streamDisclosure = attached.streamDisclosure;
+        streamChatToolNames = attached.streamChatToolNames;
+        mcpTurn = attached.mcpTurn;
+        if (attached.useTools) useTools = true;
+      }
 
       const streamUserText = String(text || prompt || '').trim();
       const streamPureUserMessage = extractPureUserMessage(text, prompt);
@@ -1393,6 +1362,9 @@ export function registerAiStreamRoutes(app, {
             : '';
 
         const assistantIdentitySection = buildAssistantIdentitySection(input?.aiName);
+        const assistantModelSection = buildAssistantModelSection(input?.requestedModel, {
+          customModel: Boolean(streamCustomModelCtx.customModel),
+        });
 
         // The apps the user built in LYKN. They live in the local store on the
         // user's machine, so this list is the only way the model knows they
@@ -1405,6 +1377,7 @@ export function registerAiStreamRoutes(app, {
         // What they have on their Mac — the difference between opening Spotify
         // and opening spotify.com.
         const macAppsSection = input?.browserAsk ? "" : buildMacAppsSection(input?.macApps);
+        const attachedAppsSection = input?.browserAsk ? "" : buildAttachedAppsSection(input?.attachedApps);
 
         // What LYKN has already built for them, in AI Drive. Same problem the
         // app list solves: they say "open the one you made me" and the model
@@ -1430,16 +1403,18 @@ export function registerAiStreamRoutes(app, {
 
           // Semi-stable prefix (cacheable): identity, prefs, inventory.
           assistantIdentitySection,
+          assistantModelSection,
           userPromptSection,
           responseLengthSection,
           activeModeSection,
           installedAppsSection,
           lyknBotsSection,
           macAppsSection,
+          attachedAppsSection,
           aiDriveSection,
           focusedBricksNote,
           imageNote,
-          convo ? `[CONVERSATION — each line shows role and (for assistant) which model wrote it. Prior assistant lines are from other models, not you.]\n${convo}` : "",
+          convo ? `${CONVERSATION_PROMPT_HEADER}\n${convo}` : "",
           conversationMemoryText
             ? `[CONVERSATION_MEMORY — past exchanges from other projects/vault]\n${sanitizeStaleSurfaceLanguage(conversationMemoryText)}`
             : '',
@@ -1473,44 +1448,31 @@ export function registerAiStreamRoutes(app, {
       const streamHasProjectWriteScope = Boolean(streamBoundProjectId || streamBoardProjectId);
       let streamEnrichTierEffective = streamEnrichTier;
 
-      // CASUAL-TURN TOOL GATE: on a 'none' tier (greetings, casual chitchat,
-      // identity-of-LYKN questions, single-word acks), turn off the agent
-      // loop entirely. Project tools are also stripped unless the chat is
-      // scoped or the user asked — but phatic turns still don't need any
-      // tools, so skip the loop entirely for a clean conversational reply.
-      //
-      // Exception: custom models linked to a project (or board-scoped chat)
-      // must keep tools enabled so lykn_pushProjectState can run on short
-      // confirmations ("yes", "ship it") — otherwise the project panel
-      // stays empty while the model claims it saved working memory.
-      // Local Mode asks ("what's in my downloads folder", "run npm install")
-      // don't look like agent-tool intent to the casual/lean heuristics below,
-      // but they need the tool loop so the local file/terminal tools get
-      // offered. Only computed when the desktop sent localMode: true.
+      // Casual 'none' turns skip the tool loop. Exceptions: project-linked
+      // custom models (lykn_pushProjectState on "yes"), and Local Mode file asks.
       const streamLocalAskText = streamPureUserMessage || text;
       const streamLyknBots = browserAsk ? [] : sanitizeLyknBots(req.body?.lyknBots);
       const streamBotIntent = !browserAsk && messageWantsBotAsk(streamLocalAskText, streamLyknBots);
-      const streamLocalIntent =
-        streamLocalMode &&
-        !browserAsk &&
-        (looksLikeLocalSystemAsk(streamLocalAskText) ||
-          // Browser-shaped asks must keep their tools too, so the MODEL gets to
-          // decide whether to call local_browser_agent. Loose on purpose — a
-          // false positive only means schemas ride along on one turn.
-          mightBeBrowserTaskAsk(streamLocalAskText) ||
-          // Dropped a Mac folder earlier in this chat, then asked about a file
-          // inside it ("what's in agents.md"). The listing turn already answered
-          // from the attachment; this follow-up needs local_read_file.
-          ((streamAttachedFolders.length > 0 ||
-            conversationHasAttachedDesktopFolder(conversation) ||
-            /Desktop folder "|Attached folder "|call local_list_dir or local_read_file/.test(
-              String(prompt || ''),
-            )) &&
-            messageLooksLikeAttachedFileFollowUp(streamLocalAskText)) ||
-          (conversationMentionedLocalFolder(conversation) &&
-            messageLooksLikeFolderInspectFollowUp(streamLocalAskText)));
+      const streamLocalIntent = turnWantsLocalFileTools({
+        localMode: streamLocalMode, browserAsk, message: streamLocalAskText,
+        attachedFolders: streamAttachedFolders, conversation,
+      });
       if (streamLocalIntent) {
         console.log('🖥️ Stream: local-mode ask detected — keeping tools on');
+      }
+      // Naming a connected desktop MCP app ("make a donut in blender") IS the
+      // action intent — keep tools on. So is asking to CONNECT a new one
+      // ("connect to blender") when the desktop bridge is present at all:
+      // that arms local_mcp_catalog/local_mcp_connect even at zero connections.
+      const streamDesktopMcpConnectIntent =
+        streamDesktopMcpAvailable && desktopMcpConnectIntent(streamLocalAskText);
+      if (streamDesktopMcpConnectIntent) {
+        console.log('🧩 Stream: desktop MCP connect intent — arming catalog/connect');
+      }
+      const streamDesktopMcpIntent =
+        desktopMcpIntent(streamLocalAskText, streamDesktopMcpApps) || streamDesktopMcpConnectIntent;
+      if (streamDesktopMcpIntent) {
+        console.log('🧩 Stream: desktop MCP app named — keeping tools on');
       }
       if (streamBotIntent) {
         console.log('🤝 Stream: bot-ask detected — keeping tools on');
@@ -1522,6 +1484,9 @@ export function registerAiStreamRoutes(app, {
         } else if (streamLocalIntent) {
           streamEnrichTierEffective = 'light';
           console.log('🖥️ Stream: local-mode ask — keeping tools on despite casual tier');
+        } else if (streamDesktopMcpIntent) {
+          streamEnrichTierEffective = 'light';
+          console.log('🧩 Stream: desktop MCP ask — keeping tools on despite casual tier');
         } else if (forceImage) {
           streamEnrichTierEffective = 'light';
           console.log('🖼 Stream: forced image generation — keeping tools on despite casual tier');
@@ -1585,6 +1550,7 @@ export function registerAiStreamRoutes(app, {
         useTools &&
         !streamActionIntent &&
         !streamLocalIntent &&
+        !streamDesktopMcpIntent &&
         !streamBotIntent &&
         !streamDisclosure?.keepToolsOn &&
         !forceImage &&
@@ -1604,6 +1570,13 @@ export function registerAiStreamRoutes(app, {
       ) {
         useTools = false;
         console.log('⚡ Stream: no disclosed tools — skipping agent loop');
+      }
+      // Build workspace sessions must never lose their tools to the casual /
+      // lean gates: a mid-build follow-up ("run it", "fix the tests") has no
+      // action keywords but is exactly when the agent needs the workspace.
+      if (streamBuildWorkspace && !useTools && req.body?.useTools === true && CHAT_TOOLS.length > 0) {
+        useTools = true;
+        console.log('🛠️ Stream: build workspace — keeping tools on despite casual tier');
       }
 
       const streamOverlayMsg = streamPureUserMessage || streamSearchText || '';
@@ -1653,6 +1626,10 @@ export function registerAiStreamRoutes(app, {
         streamWantsPureGreeting ||
         (!streamNeedsPersonalMemory && !streamWantsUserRecall);
 
+      // Set when the open artifact was too large to inline and the model got
+      // a structure map instead: it must call lykn_read_artifact_source before
+      // it can write a `find` that matches.
+      let artifactSourceOutlined = false;
       let chatRoute = null;
       if (!streamCustomModelCtx.customModel) {
         const turnPolicy = await loadTurnModelContext({ userId: req.user?.id, body: req.body });
@@ -1691,14 +1668,13 @@ export function registerAiStreamRoutes(app, {
             artifactToolName: artifactToolName || '',
           });
         }
-        // Billing preflight: a premium manual model (priced above the Auto
-        // advanced tier) meters the Usage Balance even on a paid plan, so an
+        // Billing preflight: every chat turn meters the Usage Balance, so an
         // empty balance blocks before any provider spend. SSE headers are
         // already flushed at this point, so the block rides an error event.
         const chatBilling = await assertChatTurnBillable({
           userId: req.user?.id,
           planId: streamPlan.planId,
-          chatRoute,
+          email: req.user?.email,
         });
         if (!chatBilling.allowed) {
           res.write(`data: ${JSON.stringify({
@@ -1732,10 +1708,12 @@ export function registerAiStreamRoutes(app, {
           fastLean: streamFastLean,
           forceImage: Boolean(forceImage) && !forceArtifact,
           modeInstructions: String(req.body?.modeInstructions || '').trim().slice(0, 2000),
+          requestedModel: model,
           // Desktop-only, and the model's only way to know these apps exist.
           installedApps: browserAsk ? undefined : req.body?.installedApps,
           lyknBots: browserAsk ? undefined : req.body?.lyknBots,
           macApps: browserAsk ? undefined : req.body?.macApps,
+          attachedApps: browserAsk ? undefined : streamAttachedApps,
           aiDrive: browserAsk ? undefined : req.body?.aiDrive,
           aiDriveTotals: browserAsk ? undefined : req.body?.aiDriveTotals,
         });
@@ -1977,34 +1955,22 @@ export function registerAiStreamRoutes(app, {
         const a = activeArtifact;
         const multiFiles = Array.isArray(a.files) ? a.files.filter((f) => f && typeof f.path === 'string') : [];
         const isMulti = multiFiles.length > 0;
-        let sourceBlock = '';
-        if (isMulti) {
-          const entryName = String(a.entry || 'App.jsx');
-          const listing = multiFiles.map((f) => `  - ${f.path} (${String(f.content || '').length} chars)`).join('\n');
-          // Cap total source shown — prefer entry + smaller modules first.
-          const sorted = [...multiFiles].sort((x, y) => {
-            if (x.path === entryName) return -1;
-            if (y.path === entryName) return 1;
-            return String(x.path).localeCompare(String(y.path));
-          });
-          let budget = 70000;
-          const parts = [];
-          for (const f of sorted) {
-            const body = String(f.content || '');
-            const slice = body.slice(0, Math.min(body.length, Math.max(2000, budget)));
-            budget -= slice.length;
-            parts.push(`—— ${f.path} ——\n\`\`\`jsx\n${slice}${slice.length < body.length ? '\n/* …truncated… */' : ''}\n\`\`\``);
-            if (budget <= 0) {
-              parts.push(`(/* ${sorted.length - parts.length} more files omitted — use path-scoped edits / file_ops */)`);
-              break;
-            }
-          }
-          sourceBlock =
-            `• multi-file project (entry: ${entryName}):\n${listing}\n` +
-            `• sources:\n${parts.join('\n')}\n`;
-        } else {
-          const codeSrc = String(a.code || '').slice(0, 60000);
-          sourceBlock = `• current component source (JSX):\n\`\`\`jsx\n${codeSrc}\n\`\`\`\n`;
+        // Small artifacts are inlined whole (unchanged); large ones get a
+        // structure map plus lykn_read_artifact_source, which is both cheaper
+        // and CORRECT — the old path hard-truncated at 60KB with no marker,
+        // so `find` snippets aimed past the cut could never match.
+        // See server/ai/artifactTurn/artifactSourceView.js.
+        const sourceView = buildReactSourceView({
+          code: a.code,
+          files: isMulti ? multiFiles : null,
+          entry: a.entry,
+        });
+        const sourceBlock = sourceView.block;
+        if (sourceView.mode === 'outline') {
+          artifactSourceOutlined = true;
+          console.log(
+            `🧑‍💻 Stream: ARTIFACT_OPEN outline view (${sourceView.totalChars} chars / ${sourceView.fileCount} file(s)) — model reads regions on demand`,
+          );
         }
         const todos = Array.isArray(a.todos) ? a.todos : [];
         const todosBlock = todos.length
@@ -2023,13 +1989,26 @@ export function registerAiStreamRoutes(app, {
           sourceBlock +
           todosBlock +
           runtimeBlock +
+          // Outline mode ships a structure map instead of the source, so the
+          // model MUST be told the reader exists — on both paths. Missing it
+          // on the installed-app branch left the model with a map, an
+          // instruction to "copy from [ARTIFACT_OPEN]", and nothing to copy.
+          (sourceView.mode === 'outline'
+            ? `THIS SOURCE WAS NOT INLINED — what you have above is a structure map, not the code. ` +
+              `Call lykn_read_artifact_source FIRST for every region you intend to change (by \`find\` ` +
+              `substring, or \`path\` + \`start_line\`/\`end_line\` from the map), then copy each \`find\` ` +
+              `verbatim out of what it returns. Reads do NOT count against the one-builder-call rule — ` +
+              `read as many times as you need, THEN send a single patch. Never write a \`find\` from the map or from memory. `
+            : '') +
           (appEditTurn
             ? `If the user's message asks to change, fix, add to, or otherwise edit THIS app, you MUST call lykn_build_react_artifact again with the same title (unless they ask to rename it). ` +
               `This is an installed-app edit, not a fresh commission — keep the existing source as the base. ` +
               `REQUIRED: patch in place with \`edits\` ({find, replace}${isMulti ? ', with path' : ''}) and/or \`file_ops\`; preserve every untouched line, component, behavior, and style. ` +
               `Changing a color, font, selected state, spacing value, label, or adding a localized feature is still a patch — never a reason to rewrite the app. ` +
               `Pass full \`files\` or \`code\` with full_rewrite: true ONLY when the user explicitly asks to redesign, rebuild, start over, or replace the app. Style and theme changes are allowed only to the exact extent requested. ` +
-              `ONE CALL PER TURN. ` +
+              `ONE lykn_build_react_artifact CALL PER TURN — batch every change into that single call. ` +
+              `(Reads via lykn_read_artifact_source are not builder calls and do not count.) ` +
+              `Ending your turn without calling lykn_build_react_artifact leaves the user with NO edit — never do that on an edit request. ` +
               `If the message is NOT about this app, ignore this and answer normally.]`
             : `If the user's message asks to change, fix, add to, shorten, expand, or otherwise refine THIS artifact, you MUST call lykn_build_react_artifact again with the same title (unless they ask to rename it). ` +
               `Build mode does NOT mean rebuild — with this popup open, add/edit/fix requests are ALWAYS in-place patches, never a new artifact from scratch. ` +
@@ -2038,8 +2017,9 @@ export function registerAiStreamRoutes(app, {
               (isMulti
                 ? `REQUIRED: call ONCE with \`edits\` ({path, find, replace}) and/or \`file_ops\` ({op:"write"|"delete", path, content?}) covering EVERY change in this message. The server REJECTS full \`files\`/\`code\` unless the user explicitly said redesign/rebuild/start over (then full_rewrite: true). `
                 : `REQUIRED: call ONCE with \`edits\` ONLY — an array of {find, replace} patches covering EVERY change in this message. Each \`find\` is an exact, unique snippet copied verbatim from the source above (whitespace included; replace: "" deletes) and each \`replace\` is the MINIMAL rewrite of just those lines. The server REJECTS full \`code\` and ignores full_rewrite unless the user explicitly said redesign/rebuild/start over. `) +
-              `Do NOT call this tool multiple times in one turn — batch all patches into that single call, then summarize. ` +
-              `If the tool returns compile_error / edits_required / edit_target_not_found, fix and retry silently before telling the user you're done — never leave them with a broken preview. ` +
+              `Do NOT call lykn_build_react_artifact multiple times in one turn — batch all patches into that single call, then summarize. ` +
+              `Ending your turn without calling it leaves the user with NO edit — never do that on an edit request. ` +
+              `If the tool returns compile_error / edits_required / edit_target_not_found, fix and retry silently before telling the user you're done — call lykn_read_artifact_source to see the real text rather than guessing again, and never fall back to a full rewrite. ` +
               `Never change THEME, colors, fonts, or layout on a refine. Update \`todos\` statuses on longer builds. ` +
               `If the message is NOT about the artifact, ignore this and answer normally.]`);
       } else if (activeArtifactEditable && activeArtifact.toolName === 'lykn_build_template') {
@@ -2120,6 +2100,11 @@ export function registerAiStreamRoutes(app, {
       }
       if (memorySection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(memorySection);
       if (messageIsHelloGreeting(streamMsgEarly) && !scopedProjectId) prompt += "\n\n" + GREETING_TURN_PROMPT;
+      else if (messageWantsPromptLeak(streamMsgEarly)) prompt += "\n\n" + PROMPT_LEAK_TURN_PROMPT;
+      else if (
+        messageWantsIdentityAnswer(streamMsgEarly)
+        && !streamCustomModelCtx.customModel
+      ) prompt += "\n\n" + IDENTITY_TURN_PROMPT;
       else if (streamWantsUserRecallDeepen) prompt += "\n\n" + USER_RECALL_DEEPEN_PROMPT;
       else if (streamWantsUserRecall) prompt += "\n\n" + USER_RECALL_TURN_PROMPT;
       if (streamCustomModelKnowledge) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(streamCustomModelKnowledge);
@@ -2203,7 +2188,14 @@ export function registerAiStreamRoutes(app, {
       // wording only. Extends the SSE ceiling and image-URL prompt blocks below.
       const videoRenderLikelyTurn =
         artifactToolName === 'lykn_render_video' || VIDEO_RENDER_INTENT_RE.test(String(text || ''));
-      actualModel = upgradeModelForCodedArtifact(actualModel, codedArtifactTurn);
+      // Workspace build sessions are coding turns even when conversational
+      // ("yes, build it all out" arms no artifact tool) — without this the
+      // follow-up that does the actual building runs on the routed chat model.
+      actualModel = upgradeModelForCodedArtifact(
+        actualModel,
+        codedArtifactTurn || streamBuildWorkspace,
+        { routingSource: chatRoute?.routingSource, customModel: streamCustomModelCtx.customModel },
+      );
       // grok-4.5 reproducibly truncates its stream (no finish_reason, no tool
       // call) whenever an IMAGE rides on a forced-tool request. Images reach a
       // build turn two ways, distinguished via the per-turn `attachments`
@@ -2319,6 +2311,10 @@ export function registerAiStreamRoutes(app, {
                 !brainstormBuildMention &&
                 (forceImage || artifactToolName),
             ),
+            // Workspace-owned build (incl. continuity turns): swap the artifact
+            // playbook + design brief for the workspace pointer. Never preempts
+            // a forced non-webapp builder (deck/chart/video) or an image turn.
+            buildWorkspace: Boolean(streamBuildWorkspace && !artifactToolName && !forceImage),
             editingArtifact: Boolean(activeArtifactEditable),
             appEdit: Boolean(appEditTurn),
             lockOutArtifactBuilds,
@@ -2333,26 +2329,16 @@ export function registerAiStreamRoutes(app, {
           });
         }
       }
-      // Image mode armed: the model has no other way to know the user flipped
-      // the "Generate image" toggle — without this it replies "arm image mode
-      // and I'll recreate it" WHILE the mode is on, or narrates a spec instead
-      // of generating. tool_choice forces the call regardless; this line makes
-      // the accompanying text match reality.
+      // Image mode armed by a stale client: generation now lives in Imagine
+      // only (lykn_generate_image is never registered on chat turns). Tell the
+      // model plainly so it redirects instead of narrating a spec or claiming
+      // it generated something.
       if (forceImage) {
         prompt +=
-          '\n\n[IMAGE_MODE - image generation is armed this turn. lykn_generate_image is available. ' +
-          'Attached images this turn are passed as pixel references.]';
-      }
-      // Iterative image refinement (see imageFollowUpRefUrl above): hand the
-      // previous render's URL to the model so it grounds the new generation in
-      // those pixels via reference_image_urls.
-      if (forceImage && imageFollowUpRefUrl) {
-        prompt +=
-          '\n\n[IMAGE_REFERENCE — this request refines an image you generated earlier (its markdown card is in the ' +
-          `conversation). When you call lykn_generate_image, pass reference_image_urls: ["${imageFollowUpRefUrl}"] ` +
-          'so the image model works from the ACTUAL previous pixels, and write the prompt as the CHANGE relative to ' +
-          'it ("same scene at night") — do not re-describe the whole image from scratch. Skip the reference only if ' +
-          'the user is clearly asking for a brand-new unrelated image.]';
+          '\n\n[IMAGE_MODE — the user armed image generation, but creating images now happens in ' +
+          'Imagine (the Imagine pill at the top of the Studio page, or the Imagine mode in the app). ' +
+          'You cannot generate images on this turn. Reply briefly telling them to switch to Imagine ' +
+          'and resend. lykn_process_image is still available for OCR / edits of an attached image.]';
       }
       // Reference-image builds: when a coded-artifact turn carries images the
       // user actually supplied (attachment metadata, or an overlay screenshot
@@ -2521,6 +2507,7 @@ export function registerAiStreamRoutes(app, {
       // the client can render an inline pill for each tool the agent loop
       // fires. Status moves running → done | error.
       let streamBillableCompute = false;
+      let streamCitationSources = [];
       let streamProviderUsage = {
         input_tokens: 0,
         output_tokens: 0,
@@ -2533,6 +2520,14 @@ export function registerAiStreamRoutes(app, {
           lastClientWriteAt = Date.now();
           res.write(`data: ${JSON.stringify({ tool_call: evt })}\n\n`);
           if (typeof res.flush === 'function') res.flush();
+        }
+        if (evt?.status === 'done') {
+          const extra = extractSourcesFromWebToolResult(evt.name, evt.result);
+          if (extra.length && !res.writableEnded) {
+            streamCitationSources = mergeCitationSources(streamCitationSources, extra);
+            res.write(`data: ${JSON.stringify({ sources: streamCitationSources })}\n\n`);
+            if (typeof res.flush === 'function') res.flush();
+          }
         }
         if (evt?.status === 'done' && isBillableComputeTool(evt.name)) {
           streamBillableCompute = true;
@@ -2557,6 +2552,16 @@ export function registerAiStreamRoutes(app, {
           if (typeof res.flush === 'function') res.flush();
         }
       };
+      // Live build progress frames (partial artifact source). Same socket,
+      // same stall-watchdog refresh as a status line.
+      const artifactProgress = makeArtifactProgressEmitter({
+        send: (payload) => {
+          if (res.writableEnded) return;
+          streamActivity = Date.now();
+          try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { /* socket closed */ }
+          if (typeof res.flush === 'function') res.flush();
+        },
+      });
       // Upstream-activity ping for the agent loop. Receiving ANY bytes from
       // the provider (text deltas, tool-call argument tokens, etc.) means the
       // stream is healthy even when we have nothing user-visible to forward
@@ -2644,7 +2649,15 @@ export function registerAiStreamRoutes(app, {
       // Deep research: evidence + long report write can pause between tokens
       // (and OpenAI's 16k clamp often needs a continue hop). Treat like builds
       // so the 90s stall watchdog doesn't kill a healthy mid-report stream.
-      const longToolTurn = codedArtifactTurn || videoRenderLikelyTurn || forceImage || deepResearch;
+      // Build-workspace turns count as long tool turns even when the composer
+      // was conversational ("yes, build it") — a real build installs deps and
+      // writes dozens of files, and the 5-minute default hard kill was
+      // executing healthy builds mid-flight.
+      // Desktop MCP intent turns (driving Blender-class apps) are long
+      // creative loops: many act→look cycles with slow app-side operations.
+      const longToolTurn =
+        codedArtifactTurn || videoRenderLikelyTurn || forceImage || deepResearch ||
+        streamBuildWorkspace || streamDesktopMcpIntent;
       const streamStallMs = longToolTurn ? 240000 : 90000;
       stallCheck = setInterval(() => {
         if (Date.now() - streamActivity > streamStallMs) {
@@ -2671,7 +2684,13 @@ export function registerAiStreamRoutes(app, {
       // Video-render turns get the same ceiling: composition streaming plus a
       // server-side Remotion render (bundle + headless-Chrome frames + encode)
       // can legitimately take several real minutes.
-      const hardKillMs = longToolTurn ? 600000 : 300000;
+      // Workspace builds and desktop-MCP creative work get 30min: scaffold +
+      // install + write + run + fix (or a full Blender build with dozens of
+      // modeling steps) is legitimately tens of minutes of continuous tool
+      // activity. The 240s stall watchdog still kills a wedged stream first.
+      const hardKillMs = (streamBuildWorkspace || streamDesktopMcpIntent)
+        ? 1800000
+        : (longToolTurn ? 600000 : 300000);
       hardKill = setTimeout(() => {
         if (!res.writableEnded) {
           console.error(`⏰ Hard timeout — SSE connection open > ${Math.round(hardKillMs / 60000)}min, killing`);
@@ -3407,15 +3426,36 @@ export function registerAiStreamRoutes(app, {
       // tools alongside the regular chat tools. They execute client-side; the
       // server only relays. Register a per-turn stream so the desktop can post
       // results back and match them to the awaiting call.
+      // Build workspace turns always carry the on-disk build tool set — see
+      // server/ai/buildWorkspaceTurn.js.
+      if (streamBuildWorkspace && useTools && toolProvider) {
+        streamChatToolNames = armBuildWorkspaceTools(streamChatToolNames);
+      }
+      // Desktop MCP registry tools ride the same client-executed lane as
+      // Local Mode tools, armed by the desktop's connected-servers report —
+      // the Vault Local Mode switch is a separate consent and does not gate them.
+      const streamDesktopMcpArmed =
+        useTools && !!toolProvider &&
+        (streamDesktopMcpApps.length > 0 || streamDesktopMcpConnectIntent);
+      if (streamDesktopMcpArmed) {
+        streamChatToolNames = armDesktopMcpTools(streamChatToolNames);
+      }
       const disclosedLocalToolNames = (Array.isArray(streamChatToolNames) ? streamChatToolNames : [])
         .filter((n) => LOCAL_TOOL_NAMES.includes(n));
+      // File/terminal locals only — desktop MCP names must not trigger Local
+      // Mode guidance.
+      const disclosedLocalSystemToolNames = withoutDesktopMcpTools(disclosedLocalToolNames);
       const streamLocalToolsEnabled =
-        useTools && !!toolProvider && streamLocalMode && disclosedLocalToolNames.length > 0;
+        useTools && !!toolProvider && streamLocalMode && disclosedLocalSystemToolNames.length > 0;
+      const streamWorkspaceToolsArmed =
+        useTools && !!toolProvider && streamBuildWorkspace &&
+        disclosedLocalToolNames.includes('local_build_workspace');
       const streamClientToolsEnabled =
         useTools &&
         !!toolProvider &&
         disclosedLocalToolNames.length > 0 &&
-        (streamLocalMode || disclosedLocalToolNames.includes('local_ask_bot'));
+        (streamLocalMode || streamWorkspaceToolsArmed || streamDesktopMcpArmed ||
+          disclosedLocalToolNames.includes('local_ask_bot'));
       const connectedRegistryOn = (Array.isArray(streamChatToolNames) ? streamChatToolNames : []).some(
         (n) => n === 'lykn_search_connected_tools' || n === 'lykn_call_connected_tool',
       );
@@ -3428,59 +3468,43 @@ export function registerAiStreamRoutes(app, {
       if (streamClientToolsEnabled) {
         effectiveChatToolNames = Array.isArray(streamChatToolNames) ? [...streamChatToolNames] : [];
       }
+      // A coded artifact open for editing always gets the source reader, even
+      // when the disclosure engine trimmed the allowlist. It is read-only, and
+      // it is the ONLY recovery path when a `find` misses — without it the
+      // model's only move is to guess again or dump the whole file.
+      if (
+        activeArtifactEditable &&
+        activeArtifact?.toolName === 'lykn_build_react_artifact'
+      ) {
+        const names = Array.isArray(effectiveChatToolNames) ? [...effectiveChatToolNames] : [];
+        if (!names.includes('lykn_read_artifact_source')) names.push('lykn_read_artifact_source');
+        effectiveChatToolNames = names;
+      }
+      // Workspace-owned build: drop the artifact builder (structural choice).
+      if (streamWorkspaceOwnsBuild && Array.isArray(effectiveChatToolNames)) {
+        effectiveChatToolNames = effectiveChatToolNames.filter((n) => n !== 'lykn_build_react_artifact');
+      }
       if (localToolStreamId && req.user?.id) {
         registerLocalToolStream(localToolStreamId, req.user.id);
       }
       if (useTools && toolProvider) {
         _ck(`entering agent loop (${toolProvider})`);
         const { system: rawAgentSys, user: agentUser } = splitPromptForProviderWithWeb(prompt);
-        // Local Mode system guidance. Without this the model has the local_*
-        // schemas but nothing in the prompt saying access is LIVE — and if an
-        // earlier turn errored (e.g. a declined permission prompt), the
-        // conversation history is full of its own "local access isn't enabled"
-        // claims, which it will keep parroting instead of retrying the tools.
-        const askBotGuidance = disclosedLocalToolNames.includes('local_ask_bot')
-          ? '\n\n[LYKN BOTS - ASK]\n' +
-            'You can talk to the user\'s bots with local_ask_bot. Send the question, wait for ' +
-            'their reply, and report it back. If they named a bot, call it immediately. Never ' +
-            'tell the user to open a bot\'s chat or paste the question themselves.'
-          : '';
-        const agentSys = (streamLocalToolsEnabled
-          ? rawAgentSys +
-            '\n\n[LOCAL MODE — ACTIVE]\n' +
-            'Local Mode is ON for this turn. You HAVE live access to the user\'s Mac through the ' +
-            `local_* tools disclosed this turn: ${disclosedLocalToolNames.join(', ')}. ` +
-            'Call only those tools. If a needed local action is not listed, say so rather than ' +
-            'inventing a tool name. ' +
-            (disclosedLocalToolNames.includes('local_edit_file')
-              ? 'To CHANGE a file the user already has, prefer local_edit_file — it replaces an ' +
-                'exact snippet and leaves the rest of the file untouched; read the file first so ' +
-                'oldText matches verbatim. Use local_write_file only for new files or full rewrites. '
-              : '') +
-            'Filesystem access is scoped to the folders the user synced with LYKN' +
-            (disclosedLocalToolNames.includes('local_synced_folders')
-              ? ' — call local_synced_folders first when you are unsure what you can reach.'
-              : '.') +
-            ' Reads, lists, searches, and ordinary writes run immediately. Only deletes and ' +
-            'downloads ask for approval. Earlier turns that said local access was off were transient errors. ' +
-            'When the ask targets a place on their MACHINE (Downloads, Desktop, Documents, a ' +
-            'named folder, a drive), use the local_* tools. If they name a folder without a path ' +
-            '("my LYKN folder"), call local_search_files with that name, then local_list_dir on the ' +
-            'match. Never ask them to open Finder or give you a path first. ' +
-            (disclosedLocalToolNames.includes('local_pull_file')
-              ? 'When local_pull_file succeeds, the file is shown automatically as a chat card.'
-              : '') +
-            (disclosedLocalToolNames.includes('local_browser_agent')
-              ? '\n\n[BROWSER AGENT — AVAILABLE]\n' +
-                'You also have local_browser_agent: it hands a task to LYKN\'s browser agent, which ' +
-                'opens a real tab on the user\'s desktop and operates websites while they watch. ' +
-                'Use it when the user asks you to go DO something on a website or in a web product. ' +
-                'Use lykn_web_search / lykn_web_fetch when you just need to read the web.'
-              : '')
-          : rawAgentSys) + askBotGuidance;
+        // Client-executed tool guidance (Local Mode, Build workspace, bots)
+        // lives with its owners: chatGuidance.js and buildWorkspaceTurn.js.
+        const agentSys =
+          rawAgentSys +
+          (streamLocalToolsEnabled ? buildLocalModeGuidance(disclosedLocalSystemToolNames) : '') +
+          (streamDesktopMcpArmed
+            ? buildDesktopMcpGuidance(streamDesktopMcpApps, {
+                connectArmed: streamDesktopMcpAvailable,
+              })
+            : '') +
+          (streamWorkspaceToolsArmed ? buildWorkspaceGuidance() : '') +
+          buildAskBotGuidance(disclosedLocalToolNames);
         if (streamLocalToolsEnabled) {
           console.log(
-            `🖥️ local tools offered: ${disclosedLocalToolNames.length}/${LOCAL_TOOL_NAMES.length}`,
+            `🖥️ local tools offered: ${disclosedLocalSystemToolNames.length}/${LOCAL_TOOL_NAMES.length}`,
           );
         }
 
@@ -3556,55 +3580,43 @@ export function registerAiStreamRoutes(app, {
             responseLength,
           }),
         });
-        // An editable artifact is only sent for an actual mutation turn (plain
-        // discussion uses a discussOnly stub), so require its builder just like
-        // a fresh Build/Create commission. Merely offering the one-tool
-        // allowlist lets a provider stream introductory prose and then fail with
-        // zero calls, leaving no preview or installable update.
-        const forcedToolNameForTurn = forceImage
-          ? 'lykn_generate_image'
-          : (artifactToolName ||
-            (activeArtifactEditable ? String(activeArtifact.toolName || '') : '') ||
-            undefined);
+        // An editable artifact only arrives on an actual mutation turn, so
+        // require its builder like a fresh commission — merely offering the
+        // allowlist lets a provider stream prose and fail with zero calls.
+        // streamWorkspaceTurn: fresh on-disk build, not an artifact edit.
+        const streamWorkspaceTurn = Boolean(streamWorkspaceToolsArmed && !activeArtifactEditable);
+        // forceImage no longer forces a tool — lykn_generate_image is not
+        // registered on chat turns (image generation is Imagine-only), so the
+        // turn proceeds as a normal reply that redirects the user to Imagine.
+        const forcedToolNameForTurn =
+          // Outline mode: the model has a map, not the source, so forcing the
+          // BUILDER on hop 0 would make it invent a `find`. Force the reader
+          // instead — the turn still can't end in prose-with-no-call, and the
+          // builder is reachable from hop 1 with real text in hand. Applies to
+          // installed-app edits too, armed builder or not.
+          (artifactSourceOutlined && activeArtifactEditable
+            ? 'lykn_read_artifact_source'
+            // Workspace-armed FRESH build: the model chooses between the
+            // artifact preview and a real on-disk project, so hop 0 must not
+            // be locked to the artifact builder. Edit turns above still force.
+            : (streamWorkspaceTurn
+              ? undefined
+              : (artifactToolName ||
+                (activeArtifactEditable ? String(activeArtifact.toolName || '') : '') ||
+                undefined)));
 
-        // Forced-tool turns (artifact builds, image gen) get a provider
-        // fallback chain: grok-4.5 reproducibly truncates its stream mid-
-        // reasoning on some forced-tool requests (every time an image is
-        // attached, intermittently otherwise), which used to end the turn
-        // "successfully" with no artifact and leave the user staring at
-        // nothing. When the forced tool never completes on the primary
-        // provider, the whole turn re-runs on the next available one.
-        const agentAttempts = [{ provider: toolProvider, model: agentModel }];
-        if (Array.isArray(chatRoute?.fallbackModelIds)) {
-          for (const id of chatRoute.fallbackModelIds) {
-            const p = providerForModel(id);
-            if (p && !agentAttempts.some((a) => a.model === id)) {
-              agentAttempts.push({ provider: p, model: id });
-            }
-          }
-        }
-        if (forcedToolNameForTurn) {
-          // Order matches the coded-artifact reroute preference: Opus 4.8 →
-          // GPT-5.6 → Gemini 3.1 Pro. When OpenRouter is the chat gateway,
-          // every fallback is the same OpenAI-compat transport.
-          const orReady = openRouterConfigured();
-          const fallbacks = orReady
-            ? [
-                { provider: 'openrouter', model: 'claude-opus-4-8', available: true },
-                { provider: 'openrouter', model: 'gpt-5.6-sol', available: true },
-                { provider: 'openrouter', model: 'gemini-3.1-pro-preview', available: true },
-              ]
-            : [
-                { provider: 'anthropic', model: 'claude-opus-4-8', available: !!process.env.ANTHROPIC_API_KEY },
-                { provider: 'openai', model: 'gpt-5.6-sol', available: !!process.env.OPENAI_API_KEY },
-                { provider: 'gemini', model: 'gemini-3.1-pro-preview', available: !!process.env.GOOGLE_API_KEY },
-              ];
-          for (const f of fallbacks) {
-            if (f.available && !agentAttempts.some((a) => a.model === f.model)) {
-              agentAttempts.push({ provider: f.provider, model: f.model });
-            }
-          }
-        }
+        // Forced-tool and workspace turns get a provider fallback chain — see
+        // server/ai/artifactTurn/builderAttempts.js for why and in what order.
+        const agentAttempts = buildAgentAttempts({
+          provider: toolProvider,
+          model: agentModel,
+          forcedToolName: forcedToolNameForTurn,
+          workspaceTurn: streamWorkspaceTurn,
+          routeFallbackModelIds: chatRoute?.fallbackModelIds,
+          providerForModel,
+          openRouterReady: openRouterConfigured(),
+          env: process.env,
+        });
 
         try {
           const runAttempt = async ({ provider: attemptProvider, model: attemptModel }, attemptSignal) => runAgentLoop({
@@ -3639,6 +3651,20 @@ export function registerAiStreamRoutes(app, {
             // Longer tool loops for fresh coded builds. Open-panel refine uses
             // the short edit hop cap instead (one batched patch, not 28 hops).
             codingMode: Boolean(codedArtifactTurn && !activeArtifactEditable),
+            // Build workspace turns: real engineering on disk (scaffold,
+            // install, run, test, fix) — the longest loop budget we have.
+            workspaceMode: streamWorkspaceTurn,
+            // Desktop MCP turns with explicit intent ("model a car in
+            // blender"): a big creative loop budget plus the finish-nudges —
+            // a COMPLETE build takes dozens of act→look cycles and the
+            // 6-hop chat budget was exactly why those turns died half-done.
+            desktopMcpMode: streamDesktopMcpArmed && streamDesktopMcpIntent,
+            // File investigation in chat: search + paginated reads, not 6 hops.
+            investigateMode: Boolean(
+              streamLocalIntent ||
+              (Array.isArray(effectiveChatToolNames) &&
+                effectiveChatToolNames.includes('local_read_file')),
+            ),
             // Research reports must finish embeds + Sources even when a
             // provider's per-call ceiling truncates mid-fence.
             continueIncompleteResearch: Boolean(deepResearch),
@@ -3731,91 +3757,26 @@ export function registerAiStreamRoutes(app, {
                   sendStatus(`Rendering video… ${Math.round((Number(progress) || 0) * 100)}%`);
                 }
               };
-              // Local Mode: mark the local tools so the loop hands them to the
-              // desktop client instead of executing them here, and provide the
-              // awaiter that ships the call out and waits for the posted result.
+              // Local Mode + desktop MCP: mark the client-executed tools so
+              // the loop hands them to the desktop instead of running them
+              // here. The awaiter/approval factories live with the pending-map
+              // owner in localToolBridge.js.
               if (streamClientToolsEnabled && localToolStreamId) {
                 base.localToolNames = disclosedLocalToolNames;
-                base.awaitLocalTool = (call, record) =>
-                  new Promise((resolve) => {
-                    const start = Date.now();
-                    const finish = (payload) => {
-                      const result = payload && typeof payload === 'object'
-                        ? payload
-                        : { ok: false, error: 'malformed local tool result' };
-                      const isError = result.ok === false;
-                      console.log(
-                        `🖥️ local tool ${call.name} ← ${isError ? `ERROR: ${String(result.error || '').slice(0, 120)}` : 'ok'} (${Date.now() - start}ms)`,
-                      );
-                      record({
-                        id: call.id,
-                        name: call.name,
-                        args: call.args,
-                        status: isError ? 'error' : 'done',
-                        result,
-                        latencyMs: Date.now() - start,
-                      });
-                      resolve({ payload: result, isError, latencyMs: Date.now() - start });
-                    };
-                    const entry = localToolStreams.get(localToolStreamId);
-                    if (!entry) {
-                      finish({ ok: false, error: 'Local mode session is no longer active.' });
-                      return;
-                    }
-                    // Tell the desktop client to run this tool now.
-                    console.log(`🖥️ local tool ${call.name} → awaiting desktop client`);
-                    record({
-                      id: call.id,
-                      name: call.name,
-                      args: call.args,
-                      status: 'awaiting_client',
-                      localStreamId: localToolStreamId,
-                    });
-                    noteStreamActivity();
-                    const timer = setTimeout(() => {
-                      entry.pending.delete(call.id);
-                      finish({ ok: false, error: 'The desktop app did not return a result in time.' });
-                    }, LOCAL_TOOL_WAIT_MS);
-                    entry.pending.set(call.id, (posted) => {
-                      clearTimeout(timer);
-                      finish(posted);
-                    });
-                  });
+                base.awaitLocalTool = makeAwaitLocalTool({
+                  streamId: localToolStreamId,
+                  noteStreamActivity,
+                });
               }
-              // Consequential MCP tools (send email, delete, share) pause
-              // for live approval. Ship the approval request to the chat
-              // client over the same result channel local tools use; the
-              // MCP handler retries with the minted token once approved.
+              // Consequential MCP tools (send email, delete, share) pause for
+              // live approval over the same result channel local tools use;
+              // the MCP handler retries with the minted token once approved.
               if (localToolStreamId && connectedRegistryOn) {
-                base.requestMcpApproval = ({ toolName, request } = {}) =>
-                  new Promise((resolve) => {
-                    const entry = localToolStreams.get(localToolStreamId);
-                    if (!entry) return resolve(false);
-                    const approvalCallId = `mcpapproval_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-                    console.log(`🔐 MCP approval → awaiting user (${toolName || 'tool'})`);
-                    sendToolCall({
-                      id: approvalCallId,
-                      name: 'mcp_approval',
-                      args: {},
-                      status: 'awaiting_approval',
-                      localStreamId: localToolStreamId,
-                      approval: request || { title: 'Allow this action in your connected app?' },
-                    });
-                    noteStreamActivity();
-                    const timer = setTimeout(() => {
-                      entry.pending.delete(approvalCallId);
-                      sendToolCall({ id: approvalCallId, name: 'mcp_approval', status: 'done', result: { approved: false, timedOut: true } });
-                      resolve(false);
-                    }, LOCAL_TOOL_WAIT_MS);
-                    entry.pending.set(approvalCallId, (posted) => {
-                      clearTimeout(timer);
-                      const approved = posted?.approved === true;
-                      console.log(`🔐 MCP approval ← ${approved ? 'approved' : 'declined'} (${toolName || 'tool'})`);
-                      sendToolCall({ id: approvalCallId, name: 'mcp_approval', status: 'done', result: { approved } });
-                      noteStreamActivity();
-                      resolve(approved);
-                    });
-                  });
+                base.requestMcpApproval = makeRequestMcpApproval({
+                  streamId: localToolStreamId,
+                  sendToolCall,
+                  noteStreamActivity,
+                });
               }
               if (!streamOrchestrationCtx?.isMainAgent) return base;
               const mainModelId = streamOrchestrationCtx.mainModelId;
@@ -3866,6 +3827,10 @@ export function registerAiStreamRoutes(app, {
             onTextChunk: (t) => sendChunk(t),
             onToolCall: (evt) => sendToolCall(evt),
             onStatus: (s) => sendStatus(s),
+            // Live build preview: stream the artifact source to the panel
+            // while the model is still writing it. Cosmetic — the finished
+            // artifact still arrives through the tool result.
+            onToolArgs: artifactProgress,
             onActivity: noteStreamActivity,
           });
 
@@ -3912,7 +3877,7 @@ export function registerAiStreamRoutes(app, {
             if (agentResult?.usage) {
               streamProviderUsage = mergeOpenRouterUsage(streamProviderUsage, agentResult.usage);
             }
-            _ck(`agent loop ${agentResult.reason} (provider=${attempt.provider}, model=${attempt.model}, tools=${agentResult.toolCalls.length}, hadText=${agentResult.hadText})`);
+            _ck(`agent loop ${agentResult.reason} (provider=${attempt.provider}, model=${attempt.model}, tools=${agentResult.toolCalls.length}, hadText=${agentResult.hadText}${agentResult.reason === 'error' && agentResult.errorMessage ? `, error=${String(agentResult.errorMessage).slice(0, 300)}` : ''})`);
 
             // Client already gone (disconnect, global stall, hard kill) —
             // don't waste another provider run on a dead socket.
@@ -3922,7 +3887,12 @@ export function registerAiStreamRoutes(app, {
             const forcedToolOk = !forcedToolNameForTurn || (agentResult.toolCalls || []).some(
               (tc) => tc && tc.name === forcedToolNameForTurn && tc.status === 'done' && tc.result?.ok !== false,
             );
-            if (agentResult.ok && forcedToolOk) break;
+            // Workspace build that produced NOTHING: re-run on the next coding
+            // model. Once tools executed, never re-run (writes not repeatable).
+            const workspaceFallback =
+              streamWorkspaceTurn && !agentResult.hadText &&
+              (agentResult.toolCalls || []).length === 0;
+            if (agentResult.ok && forcedToolOk && !workspaceFallback) break;
 
             // Transport-level failures ("fetch failed", SSL/TLS alerts, resets)
             // are one-provider problems just like rate limits — another provider
@@ -3932,16 +3902,17 @@ export function registerAiStreamRoutes(app, {
             const attemptErrMsg = String(agentResult.errorMessage || '');
             const isNetworkFetchError =
               /fetch failed|network|econn|etimedout|socket hang up|ssl|tls|eai_again|und_err|terminated|dns/i.test(attemptErrMsg);
-            const canFallback =
-              forcedToolNameForTurn && !forcedToolOk && ai + 1 < agentAttempts.length &&
+            const forcedToolFallback =
+              forcedToolNameForTurn && !forcedToolOk &&
               (attemptStalled ||
                agentResult.reason === 'forced_tool_incomplete' ||
                (agentResult.reason === 'error' &&
                 (isNetworkFetchError || isRetryableProviderError(attemptErrMsg))));
+            const canFallback = ai + 1 < agentAttempts.length && (forcedToolFallback || workspaceFallback);
             if (!canFallback) break;
 
             const next = agentAttempts[ai + 1];
-            console.warn(`[stream] forced tool never completed on ${attempt.provider}/${attempt.model} (${agentResult.reason}${attemptStalled ? ', attempt stalled' : ''}) — retrying turn on ${next.provider}/${next.model}`);
+            console.warn(`[stream] ${workspaceFallback ? 'workspace build died before any work' : 'forced tool never completed'} on ${attempt.provider}/${attempt.model} (${agentResult.reason}${attemptStalled ? ', attempt stalled' : ''}) — retrying turn on ${next.provider}/${next.model}`);
             sendStatus('Still working on it…');
           }
 
@@ -3972,6 +3943,12 @@ export function registerAiStreamRoutes(app, {
           // gracefully; otherwise fall through to the legacy non-tool
           // path so the user still gets an answer.
           if (agentResult.hadText) {
+            // Workspace turn that errored AFTER tools ran: ending silently
+            // reads as success. Say where it stopped; the next turn resumes.
+            if (streamWorkspaceTurn && (agentResult.toolCalls || []).length > 0) {
+              console.warn(`[stream] workspace turn died mid-work after ${(agentResult.toolCalls || []).length} tool call(s) (${agentResult.reason}): ${agentResult.errorMessage}`);
+              sendChunk('\n\nStopped early - the model connection dropped. Everything done so far is saved in the project. Say keep going and I will pick up there.');
+            }
             return sendDone();
           }
           console.warn(`[stream] agent loop failed (${toolProvider}, ${agentResult.reason}): ${agentResult.errorMessage}. Falling back to legacy stream.`);

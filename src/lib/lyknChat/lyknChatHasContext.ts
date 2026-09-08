@@ -122,8 +122,6 @@ export function filterLyknChatsWithContext<T extends LyknChatListRow>(
   return rows.filter((row) => {
     if (boardTitleLooksCustomized(row.title)) return true;
     const state = stateByChatId?.get(row.id) ?? stateFromBoardRow(row as Record<string, unknown>);
-    // Board row with no snapshot yet — user explicitly opened a new chat.
-    if (state == null) return true;
     return snapshotHasContext(state);
   });
 }

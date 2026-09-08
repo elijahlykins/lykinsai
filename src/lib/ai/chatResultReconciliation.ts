@@ -199,7 +199,8 @@ export async function postProcessResponse(
   servedModel: string | null = null,
   generatedImageUrl: string | null = null,
   streamedSources: { title: string; url: string }[] = [],
-): Promise<void> {
+  opts: { paint?: boolean } = {},
+): Promise<string> {
   const { state, typing, identity } = p;
 
   // Repair weak dangling tails and strip any self-emitted "_…response
@@ -290,23 +291,26 @@ export async function postProcessResponse(
   // breaking the prompt-level "hidden from user" contract.
   const finalDisplayText = mediaResult.cleanText !== textAfterYt ? mediaResult.cleanText : textAfterYt;
   const webLinks = extractWebLinksFromText(finalDisplayText);
-  // Cancel any pending rAF commit BEFORE we set the final text. Otherwise
-  // the queued frame fires with a stale `streamTargetTextRef` and overwrites
-  // our final commit with the pre-cleanup in-stream view (which is how a
-  // user sees "server finished but UI is cut off"). We also sync the target
-  // ref to the final text so any in-flight frame that already started can't
-  // introduce regressions.
-  if (p.streamRefs.streamTypingRafRef.current) {
-    clearTimeout(p.streamRefs.streamTypingRafRef.current);
-    p.streamRefs.streamTypingRafRef.current = null;
-  }
+  // Sync the target so Stop can snap the cleaned reply. When `paint` is
+  // false the typewriter still has to run — don't dump the full text (or
+  // kill a pending timer) here.
   p.streamRefs.streamTargetTextRef.current = finalDisplayText;
-  p.streamRefs.streamDisplayedLenRef.current = finalDisplayText.length;
-  const replyModel = servedModel || identity.selectedModel || null;
+  const paint = opts.paint !== false;
+  if (paint) {
+    if (p.streamRefs.streamTypingRafRef.current) {
+      clearTimeout(p.streamRefs.streamTypingRafRef.current);
+      p.streamRefs.streamTypingRafRef.current = null;
+    }
+    p.streamRefs.streamDisplayedLenRef.current = finalDisplayText.length;
+  }
+  // Product-facing identity for later turns. Auto LYKN routes to Terra/Luna/Sol
+  // under the hood; putting those ids on the thread makes the next turn invent
+  // a lab family or a model-swap essay. Keep the picker name the person chose.
+  const replyModel = identity.selectedModel || servedModel || null;
   const completedAt = new Date().toISOString();
   state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? {
     ...m,
-    aiResponse: finalDisplayText,
+    ...(paint ? { aiResponse: finalDisplayText } : {}),
     aiModel: replyModel || undefined,
     aiCompletedAt: completedAt,
     sources,
@@ -360,11 +364,14 @@ export async function postProcessResponse(
     userMessage: cappedText,
     assistantReply: finalDisplayText,
   });
-  state.setChatStatusText(mediaResult.pulled > 0 ? "Media added to board" : ytResult.urls.length ? "Video embedded" : aiConnections.length > 0 ? "Connection found" : "Answered");
+  if (paint) {
+    state.setChatStatusText(mediaResult.pulled > 0 ? "Media added to board" : ytResult.urls.length ? "Video embedded" : aiConnections.length > 0 ? "Connection found" : "Answered");
+  }
 
   // Persist the finished turn promptly so switching devices (phone → laptop)
   // doesn't depend on the 30s autosave interval or a tab-background event.
-  if (identity.userId) {
+  if (identity.userId && paint) {
     setTimeout(() => window.dispatchEvent(new Event("lyknchat_flush_save")), 300);
   }
+  return finalDisplayText;
 }

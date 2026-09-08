@@ -2,11 +2,10 @@ import { useEffect, useRef } from "react";
 import { markLykn } from "@/components/landing/LyknWordmark";
 
 const PARAS = [
-  "LYKN puts AI directly on your desktop.",
+  "LYKN puts any AI model directly on your desktop.",
   "Ask it anything from the chat bar. It can understand your files, search the web, browse for you, create documents, or hand a job to an agent, without making you jump between apps.",
-  "Your desktop stays yours - your files, wallpaper, and widgets are all still there. LYKN simply adds an intelligent layer on top.",
-  "And when you're inside another app, Glass brings LYKN with you.",
-  "One AI, available anywhere you work.",
+  "Sync your desktop with the click of a button and let LYKN do real work for you in any piece of software you connect. No technical setup required.",
+  "One AI software for your entire workload. Everything happens in LYKN.",
 ] as const;
 
 const HOVER_QUERY = "(hover: hover) and (pointer: fine)";

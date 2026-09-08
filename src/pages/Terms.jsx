@@ -300,7 +300,7 @@ export function TermsBody() {
             Pricing
           </Link>
           . A plan for teams is not available yet. New accounts start with a
-          one-time $10 Usage Balance grant — no card required. When it runs
+          one-time $20 Usage Balance grant — no card required. When it runs
           out, metered AI features stop until you top up or start a plan.
         </p>
         <p className="mt-3">

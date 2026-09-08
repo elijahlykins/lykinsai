@@ -46,6 +46,8 @@ let lastRouteBody = null;
 // Every "decide" call the Bot harness made — proof the browser verdict runs
 // the Bot's own loop instead of a separate pre-harness route.
 let harnessDecides = [];
+// Bodies sent to the harness's separate deliver stage.
+const harnessDelivers = [];
 test.before(async () => {
   server = http.createServer((req, res) => {
     if (req.url?.startsWith("/api/desktop/agent-model")) {
@@ -86,6 +88,28 @@ test.before(async () => {
                   },
             }),
           );
+          return;
+        }
+        // The harness writes its final message in its own `deliver` call now
+        // (the step decision no longer carries `answer`). Answer it here, or
+        // it falls through to the router branch below and is recorded as if
+        // the dispatcher had run.
+        if (body?.stage === "deliver") {
+          harnessDelivers.push(body);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              ok: true,
+              json: { answer: "I started the browser but the tab was not available." },
+            }),
+          );
+          return;
+        }
+        if (body?.stage && body.stage !== "route") {
+          // Any other stage is not the dispatcher — do not let it masquerade
+          // as one in `lastRouteBody`.
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, json: {} }));
           return;
         }
         lastRouteBody = body;

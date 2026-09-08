@@ -252,23 +252,34 @@ function registerOverlayShellIpc(d) {
       if (open) showStudioWindow();
       else hideStudioWindow();
     });
-    // Fullscreen toggle for the Studio window — plain native fullscreen; the
-    // enter/leave events broadcast the new state to the renderer. While the
-    // window is in SIMPLE fullscreen (no separate Space), exit that mode
-    // instead — setFullScreen(false) wouldn't touch it.
+    // Fullscreen toggle for the Studio window. On Mac the product uses SIMPLE
+    // fullscreen (fills the display, stays on the current Space). Exiting that
+    // mode has to call setSimpleFullScreen(false) — setFullScreen(false) would
+    // not touch it. Entering from a restored window must use the same mode.
     ipcMain.on("lykn:studio-fullscreen-set", (_e, { fullscreen } = {}) => {
       const win = studioWindowRef();
       if (!win) return;
+      const want = !!fullscreen;
       try {
-        if (typeof win.isSimpleFullScreen === "function" && win.isSimpleFullScreen()) {
-          if (!fullscreen) {
-            win.setSimpleFullScreen(false);
-            broadcastStudioFullscreen();
+        if (IS_MAC && typeof win.setSimpleFullScreen === "function") {
+          if (typeof win.isSimpleFullScreen === "function" && win.isSimpleFullScreen()) {
+            if (!want) {
+              win.setSimpleFullScreen(false);
+              if (typeof d.fitStudioWindowToWorkArea === "function") {
+                d.fitStudioWindowToWorkArea(win);
+              }
+              broadcastStudioFullscreen();
+            }
+            return;
           }
-          return;
+          if (want) {
+            win.setSimpleFullScreen(true);
+            broadcastStudioFullscreen();
+            return;
+          }
         }
       } catch (_) {}
-      win.setFullScreen(!!fullscreen);
+      win.setFullScreen(want);
     });
     ipcMain.handle("lykn:studio-fullscreen-get", () => ({
       fullscreen: studioFullscreenActive(),

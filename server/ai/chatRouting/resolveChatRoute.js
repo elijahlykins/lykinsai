@@ -15,7 +15,7 @@ import {
   ROUTING_SOURCES,
   isAutoRoutedModelId,
 } from './chatRoutingConfig.js';
-import { planHasUnlimitedNormalChat } from './chatBilling.js';
+import { isPaidPlan } from '../../../lib/billing/planCatalog.js';
 import {
   clampReasoningEffort,
   defaultReasoningForTier,
@@ -32,7 +32,7 @@ function inferTierFromModel(modelId) {
   if (id === CHAT_ROUTE_MODELS.fast || id.includes('luna') || id.includes('nano') || id.includes('flash')) {
     return CHAT_MODEL_TIERS.FAST;
   }
-  if (id === CHAT_ROUTE_MODELS.advanced || id === FRONTIER_OPENAI_ID || id.includes('sol') || id.includes('opus')) {
+  if (id === CHAT_ROUTE_MODELS.advanced || id === FRONTIER_OPENAI_ID || id.includes('sol') || id.includes('astra') || id.includes('opus') || id.includes('fable')) {
     return CHAT_MODEL_TIERS.ADVANCED;
   }
   return CHAT_MODEL_TIERS.STANDARD;
@@ -70,7 +70,8 @@ export function buildChatRouteDecision({
     reasoningEffort: effort,
     confidence: Number.isFinite(Number(confidence)) ? Number(confidence) : 0,
     reason: String(reason || '').slice(0, 240),
-    billableChatCredits: planHasUnlimitedNormalChat(planId) ? 0 : null,
+    // Paid-plan chat bills the dollar Usage Balance, never legacy credits.
+    billableChatCredits: isPaidPlan(planId) ? 0 : null,
     routingSource,
     planId: planId || null,
     routeId,
@@ -93,9 +94,8 @@ export function chatRouteUsageMetadata(route, extra = {}) {
     bot_id: extra.botId || null,
     selection_mode: route?.selectionMode || extra.selectionMode || null,
     fallback_model_ids: route?.fallbackModelIds || extra.fallbackModelIds || null,
-    // Billing inputs: a manual pick is only included chat while the model's
-    // registry pricing stays at or below the Auto advanced tier
-    // (lib/billing/usageEntitlements.js decides from these two fields).
+    // Recorded for analytics: which turns manually picked a model. All chat
+    // meters the Usage Balance regardless (lib/billing/usageEntitlements.js).
     explicit_model_override: routingSource === ROUTING_SOURCES.OVERRIDE,
     requested_model: route?.modelId || null,
   };

@@ -39,10 +39,11 @@ describe("buildAttachmentContext", () => {
     assert.match(ctx, /Desktop folder "Docs"/);
     assert.match(ctx, /file\.txt/);
     assert.match(ctx, /local_list_dir/);
-    assert.match(ctx, /Do not hand this off/);
+    assert.match(ctx, /directory listing, not file contents|shallow snapshot/);
+    assert.match(ctx, /Never say you only have the top-level listing|Do not hand this off/);
   });
 
-  it("carries a prior desktop folder onto the next turn", () => {
+  it("carries a prior desktop folder onto a related follow-up", () => {
     const folder = att({
       type: "folder",
       name: "Docs",
@@ -61,7 +62,43 @@ describe("buildAttachmentContext", () => {
     const prior = collectThreadFolderAttachments(messages, []);
     assert.equal(prior.length, 1);
     assert.equal(folderPathFromAttachment(prior[0]), "/Users/me/Docs");
-    const merged = attachmentsForPrompt([], messages);
+    const merged = attachmentsForPrompt([], messages, "what's in agents.md");
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].name, "Docs");
+    const nested = attachmentsForPrompt([], messages, "can you find where the build feature sits in this");
+    assert.equal(nested.length, 1);
+  });
+
+  it("does not re-attach a prior folder when the new prompt is unrelated", () => {
+    const folder = att({
+      type: "folder",
+      name: "Docs",
+      localPath: "/Users/me/Docs",
+      vaultContent: "Attached folder \"Docs\"\nPath: /Users/me/Docs\n  - agents.md",
+    });
+    const messages: PromptMessage[] = [
+      {
+        id: "1",
+        role: "user",
+        content: "what's in here",
+        kind: "prompt",
+        attachments: [folder],
+      },
+    ];
+    const merged = attachmentsForPrompt([], messages, "let's brainstorm a new onboarding flow");
+    assert.equal(merged.length, 0);
+    const empty = attachmentsForPrompt([], messages, "");
+    assert.equal(empty.length, 0);
+  });
+
+  it("keeps a folder attached on the send even if the prompt is casual", () => {
+    const folder = att({
+      type: "folder",
+      name: "Docs",
+      localPath: "/Users/me/Docs",
+      vaultContent: "file.txt",
+    });
+    const merged = attachmentsForPrompt([folder], [], "what do you think?");
     assert.equal(merged.length, 1);
     assert.equal(merged[0].name, "Docs");
   });
@@ -99,6 +136,30 @@ describe("buildAttachmentContext", () => {
     ]);
     assert.match(ctx, /Attached artifact "Super Coin Dash"/);
     assert.match(ctx, /build react artifact/);
+  });
+
+  it("names an attached app so the model prefers it", () => {
+    const connected = buildAttachmentContext([
+      att({ type: "app", name: "Gmail", appSource: "connected" }),
+    ]);
+    assert.match(connected, /connected app "Gmail"/);
+    const mac = buildAttachmentContext([
+      att({ type: "app", name: "Spotify", appSource: "mac" }),
+    ]);
+    assert.match(mac, /Mac app "Spotify"/);
+    assert.match(mac, /local_open_app/);
+  });
+
+  it("labels an attached STEP/STL with the engineering brief", () => {
+    const ctx = buildAttachmentContext([
+      att({
+        type: "file",
+        name: "bracket.step",
+        extractedText: "STEP CAD (B-rep)\nPRODUCT Housing",
+      }),
+    ]);
+    assert.match(ctx, /Engineering\/CAD file "bracket\.step"/);
+    assert.match(ctx, /PRODUCT Housing/);
   });
 });
 

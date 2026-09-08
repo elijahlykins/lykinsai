@@ -64,11 +64,8 @@ async function refreshState() {
   const stealthState = document.getElementById("stealth-state");
   stealthState.textContent = s.stealthState || (s.stealthOn ? "On" : "Off");
   stealthState.classList.toggle("on", !!s.stealthOn);
-  const imageState = document.getElementById("image-gen-state");
-  if (imageState) {
-    imageState.textContent = s.imageModeOn ? "On" : "Off";
-    imageState.classList.toggle("on", !!s.imageModeOn);
-  }
+  // ("Create an image" menu item retired — image generation lives in Studio
+  // Imagine, so there is no image-gen-state badge to sync anymore.)
   const buildState = document.getElementById("build-state");
   if (buildState) {
     buildState.textContent = s.buildModeOn ? "On" : "Off";

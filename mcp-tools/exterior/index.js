@@ -12,6 +12,7 @@ import { generateDiagram } from '../../lib/exterior/generateDiagram.js';
 import { getCurrentTime } from '../../lib/exterior/currentTime.js';
 import { runPythonSnippet } from '../../lib/exterior/runPython.js';
 import { generateChatImage } from '../../lib/exterior/generateImage.js';
+import { generate3dModel } from '../../lib/exterior/generate3dModel.js';
 import { authorizeImageUsage } from '../../lib/billing/usageBalance.js';
 import { logAiUsage } from '../../usageTracking.js';
 import { jsonContent, errorContent } from '../index.js';
@@ -28,8 +29,14 @@ export const webSearchTool = {
     '',
     'WHEN TO CALL:',
     '  • User explicitly asks to search / look up / google / research something online.',
+    '  • User asks what is in the news / for headlines. Search immediately.',
+    '    Do NOT say you lack live headlines. Do NOT ask them to pick a topic first.',
     '  • User names a publication (Fox News, CNN, NYT, BBC, …) or asks for its headlines.',
     '    Search "<outlet> top headlines" immediately. Do NOT ask for a URL or screenshot.',
+    '  • You are not sure of a checkable fact (official lists, spellings, "is this valid").',
+    '    Search instead of guessing.',
+    '  • User contradicts a factual claim, including by citing another AI. Search the',
+    '    disputed fact before reversing. Do not treat another model as evidence.',
     '  • User confirms a prior offer to search the web ("yes, search for that").',
     '  • The answer clearly requires live data you do not have (news, prices, latest models).',
     '  • Regular chat — no Web / Deep research mode required. Do not refuse for lack of a mode.',
@@ -373,6 +380,7 @@ export const generateImageTool = {
       aspectRatio: args.aspect_ratio,
       imageSize: args.image_size,
       referenceImages,
+      model: ctx?.imageModel,
       userId: ctx.userId,
       supabaseAdmin: ctx.supabaseAdmin,
       logUsage: (info) => logAiUsage(info),
@@ -390,6 +398,79 @@ export const generateImageTool = {
   },
 };
 
+export const generate3dModelTool = {
+  name: 'lykn_generate_3d_model',
+  title: 'Generate a 3D model (GLB) with AI',
+  scope: 'read',
+  description: [
+    'Generate a real, textured 3D model (GLB with PBR materials) from a text',
+    'prompt and/or a reference image, using a hosted 3D diffusion model',
+    '(Tripo/Meshy). This is how you get organic, complex shapes — cars,',
+    'characters, creatures, furniture, products — that procedural scripting',
+    '(Blender bpy, three.js primitives) can never sculpt convincingly.',
+    '',
+    'WHEN TO USE: any time a build needs a specific real-world or organic 3D',
+    'asset. Generate the base mesh here, then refine with the tools you have:',
+    'import into the workspace / Blender, fix materials with measured colors,',
+    'scale to true dimensions, and verify with renders.',
+    '',
+    'REFERENCE IMAGES drive likeness: when the user attached a photo of the',
+    'thing, pass its URL as image_url — image-to-3D matches the actual shape',
+    'far better than a text description. Use a hosted http(s) URL (user',
+    'attachment URLs and lykn_generate_image results both work).',
+    '',
+    'Takes 10–120 seconds; the call blocks until the model is ready. Returns:',
+    '  • model_url — TEMPORARY GLB download link (~24 hours, then deleted;',
+    '    the model belongs on the user\'s machine, not in cloud storage)',
+    '  • preview_image_url — a render of the result; LOOK at it to judge',
+    '    quality before building on the asset.',
+    'In a build workspace, curl model_url into the project IMMEDIATELY. In',
+    'plain chat, give the user model_url as a markdown download link and say',
+    'it expires within a day, so they should download it now.',
+    '',
+    'BILLING: on insufficient_usage_balance, tell the user honestly — never',
+    'pretend a model was created.',
+  ].join('\n'),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      prompt: {
+        type: 'string',
+        description:
+          'What to generate, concrete and physical: "a 1970s Porsche 911, silver, detailed wheels". ' +
+          'With image_url present, keep it short — the pixels carry the shape.',
+      },
+      image_url: {
+        type: 'string',
+        description:
+          'Optional http(s) URL of a reference photo — the generated mesh matches its shape and look. ' +
+          'Strongly preferred whenever the user showed you the thing they want.',
+      },
+    },
+    additionalProperties: false,
+  },
+  async handler(args = {}, ctx) {
+    if (!ctx?.userId || !ctx?.supabaseAdmin) {
+      return errorContent('Unauthorized — sign in to generate 3D models.');
+    }
+    const result = await generate3dModel({
+      prompt: args.prompt,
+      imageUrl: args.image_url,
+      userId: ctx.userId,
+      supabaseAdmin: ctx.supabaseAdmin,
+      logUsage: (info) => logAiUsage(info),
+      authorizeUsage: ({ actionType }) => authorizeImageUsage(ctx.userId, ctx.planId, actionType),
+    });
+    if (!result.ok) {
+      const msg = result.error === 'insufficient_usage_balance'
+        ? (result.message || 'Add funds to continue with this action.')
+        : (result.message || result.error || 'model3d_generation_failed');
+      return errorContent(result.hint ? `${msg} — ${result.hint}` : msg);
+    }
+    return jsonContent(result);
+  },
+};
+
 export const EXTERIOR_TOOLS = [
   webSearchTool,
   webFetchTool,
@@ -399,6 +480,7 @@ export const EXTERIOR_TOOLS = [
   getCurrentTimeTool,
   runPythonTool,
   generateImageTool,
+  generate3dModelTool,
   ...CAPABILITY_TOOLS,
 ];
 

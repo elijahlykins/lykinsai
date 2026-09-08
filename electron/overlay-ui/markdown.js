@@ -293,10 +293,11 @@ export function renderMarkdown(md) {
       } else if (isAllowedMediaUrl(mediaUrl)) {
         const safeUrl = escapeAttr(mediaUrl);
         const safeAlt = escapeAttr(altText);
+        // No "Edit" button: image generation/remixing lives in Studio Imagine,
+        // not Glass. Download keeps working for images already in the thread.
         html +=
           `<div class="md-img"><img src="${safeUrl}" alt="${safeAlt}" loading="lazy" />` +
           `<div class="md-img-actions">` +
-          `<button class="md-edit-image" type="button" data-url="${safeUrl}" data-title="${safeAlt || "Image"}">Edit</button>` +
           `<button class="md-dl md-img-dl" type="button" data-url="${safeUrl}" data-name="" data-title="${safeAlt || "Generated image"}">Download</button>` +
           `</div>` +
           `</div>`;

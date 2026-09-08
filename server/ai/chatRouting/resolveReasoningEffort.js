@@ -4,6 +4,7 @@ import {
   REASONING_EFFORTS,
 } from './chatRoutingConfig.js';
 
+const GPT6_ASTRA = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 const GPT56_BASE = Object.freeze(['none', 'low', 'medium', 'high', 'xhigh']);
 const GPT56_SOL = Object.freeze(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
 const GPT5_FAMILY = Object.freeze(['none', 'low', 'medium', 'high']);
@@ -12,6 +13,7 @@ const O_SERIES = Object.freeze(['low', 'medium', 'high']);
 export function supportedReasoningEfforts(modelId) {
   const model = String(modelId || '').toLowerCase();
   if (!model) return [];
+  if (model.startsWith('gpt-6')) return [...GPT6_ASTRA];
   if (model === 'gpt-5.6-sol') return [...GPT56_SOL];
   if (model.startsWith('gpt-5.6')) return [...GPT56_BASE];
   if (model.startsWith('gpt-5')) return [...GPT5_FAMILY];

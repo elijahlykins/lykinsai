@@ -1,9 +1,9 @@
 // Studio chat chrome: everything that turns the plain chat page into the
 // Studio glass experience — the StudioView mode model (Chat / Build / Imagine
 // / Research) with its per-mode system prompts, headlines and composer
-// placeholders, the floating mode pill, the quick-start chip strip, and the
-// Research sources sidebar. Extracted verbatim from src/pages/LyknChat.tsx
-// (LyknChat decomposition phase, see docs/REFACTOR_LOG.md).
+// placeholders, the floating mode pill, and the Research sources sidebar.
+// Extracted verbatim from src/pages/LyknChat.tsx (LyknChat decomposition
+// phase, see docs/REFACTOR_LOG.md).
 import React from "react";
 import {
   Code,
@@ -12,8 +12,10 @@ import {
   Save,
   SquarePen,
   Telescope,
+  X,
 } from "lucide-react";
 import { SiteFavicon } from "@/components/SiteFavicon";
+import { defaultComposerPlaceholder } from "@/lib/chat/composerHintPhrases";
 import { openInStudioBrowser, studioOpenChatOpts } from "@/lib/lyknChat/openInStudioBrowser";
 import type { ComposerMode } from "@/hooks/useChatEngine";
 
@@ -35,14 +37,6 @@ export const STUDIO_VIEW_HEADLINES: Record<Exclude<StudioView, "chat">, string> 
   build: "What would you like to build?",
   imagine: "Generate any image",
   research: "What should LYKN research?",
-};
-
-export const STUDIO_VIEW_SUBTITLES: Record<Exclude<StudioView, "chat">, string> = {
-  build:
-    "Pitch decks, presentations, and polished visual docs. Describe what you need and LYKN builds it live.",
-  imagine: "Describe any image and LYKN generates a set of variations you can refine.",
-  research:
-    "Give a topic or question and LYKN digs into current sources, then writes a structured research report.",
 };
 
 // Per-mode system prompt, injected server-side into the stream system prompt
@@ -179,76 +173,14 @@ export const StudioModePill = React.memo(function StudioModePill({
   );
 });
 
-// Per-mode composer identity: each Studio page gets its own placeholder and
-// a strip of quick-start chips above the chat bar, so the bar itself signals
-// which page you're on. (Imagine has its own dedicated bar and skips this.)
+// Per-mode composer identity. The first phrase is the static fallback;
+// HomeChatBar and Studio chat rotate the full set from composerHintPhrases.
 export const STUDIO_COMPOSER_PLACEHOLDERS: Record<StudioView, string> = {
-  chat: "Ask me anything...",
-  build: "Describe what you want to build...",
-  imagine: "Describe the image you want...",
-  research: "What should LYKN research?",
+  chat: defaultComposerPlaceholder("chat"),
+  build: defaultComposerPlaceholder("build"),
+  imagine: defaultComposerPlaceholder("imagine"),
+  research: defaultComposerPlaceholder("research"),
 };
-
-const STUDIO_COMPOSER_CHIPS: Record<
-  Exclude<StudioView, "imagine" | "chat">,
-  { label: string; insert: string }[]
-> = {
-  build: [
-    { label: "Pitch deck", insert: "Make a pitch deck about " },
-    { label: "Slide deck", insert: "Create a slide deck that covers " },
-    { label: "One-pager", insert: "Design a one-pager for " },
-    { label: "Investor deck", insert: "Build an investor deck for " },
-    { label: "App", insert: "Build me an app that " },
-    { label: "Game", insert: "Create an interactive game where " },
-    { label: "Study guide", insert: "Make a study guide for " },
-    { label: "Dashboard", insert: "Design a dashboard for " },
-  ],
-  research: [
-    {
-      label: "Tesla stock performance",
-      insert: "Research Tesla stock: recent performance, valuation, and analyst outlook",
-    },
-    {
-      label: "AI chip market",
-      insert: "Give me a market overview of the AI semiconductor industry in 2026",
-    },
-    {
-      label: "Sleep and memory",
-      insert: "Do an academic research report on how sleep affects memory consolidation, citing recent studies",
-    },
-    {
-      label: "Global EV trends",
-      insert: "Write a trend report on the global electric vehicle market",
-    },
-    {
-      label: "CRISPR research",
-      insert: "Research the latest advances and debates in CRISPR gene editing",
-    },
-  ],
-};
-
-export const StudioComposerStrip = React.memo(function StudioComposerStrip({
-  view,
-  onInsert,
-}: {
-  view: Exclude<StudioView, "imagine" | "chat">;
-  onInsert: (text: string) => void;
-}) {
-  return (
-    <div className="lykn-studio-chips mb-1 flex flex-nowrap items-center gap-1.5 overflow-x-auto px-1">
-      {STUDIO_COMPOSER_CHIPS[view].map((chip) => (
-        <button
-          key={chip.label}
-          type="button"
-          onClick={() => onInsert(chip.insert)}
-          className="shrink-0 whitespace-nowrap rounded-full border border-black/10 bg-white/40 px-2.5 py-1 text-[11px] font-medium text-black/55 backdrop-blur-sm transition-colors hover:bg-black/[0.06] hover:text-black/80 dark:border-white/12 dark:bg-white/[0.05] dark:text-white/55 dark:hover:bg-white/[0.1] dark:hover:text-white/85"
-        >
-          {chip.label}
-        </button>
-      ))}
-    </div>
-  );
-});
 
 // Studio Research page: right rail listing every link the deep-research
 // pipeline searched/read (streamed from the server before the report text),
@@ -267,6 +199,8 @@ export const StudioResearchSidebar = React.memo(function StudioResearchSidebar({
   canSave,
   saving,
   onSave,
+  title = "Research links",
+  onClose,
 }: {
   sources: { title: string; url: string }[];
   /** Owning conversation for in-chat research. Omit for marketing/demo rails. */
@@ -274,6 +208,8 @@ export const StudioResearchSidebar = React.memo(function StudioResearchSidebar({
   canSave: boolean;
   saving: boolean;
   onSave: () => void;
+  title?: string;
+  onClose?: () => void;
 }) {
   const openLink = (url: string) => {
     if (openInStudioBrowser(url, undefined, studioOpenChatOpts(chatId))) return;
@@ -286,13 +222,25 @@ export const StudioResearchSidebar = React.memo(function StudioResearchSidebar({
     <div className="lykn-studio-research-rail lg-desktop-surface flex h-full flex-col rounded-none">
       <div className="flex items-center justify-between px-4 pb-2.5">
         <p className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-black/55 dark:text-white/60">
-          Research links
+          {title}
         </p>
-        {sources.length > 0 && (
-          <span className="rounded-full border border-black/10 bg-black/[0.05] px-2 py-0.5 text-[0.62rem] font-medium text-black/65 dark:border-white/10 dark:bg-white/[0.07] dark:text-white/70">
-            {sources.length}
-          </span>
-        )}
+        <div className="flex items-center gap-1.5">
+          {sources.length > 0 && (
+            <span className="rounded-full border border-black/10 bg-black/[0.05] px-2 py-0.5 text-[0.62rem] font-medium text-black/65 dark:border-white/10 dark:bg-white/[0.07] dark:text-white/70">
+              {sources.length}
+            </span>
+          )}
+          {onClose ? (
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md p-1 text-black/40 transition-colors hover:bg-black/5 hover:text-black/70 dark:text-white/40 dark:hover:bg-white/10 dark:hover:text-white/70"
+              aria-label="Close sources"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
+        </div>
       </div>
       <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2 scrollbar-hide">
         {sources.length === 0 ? (
@@ -321,17 +269,19 @@ export const StudioResearchSidebar = React.memo(function StudioResearchSidebar({
           ))
         )}
       </div>
-      <div className="p-3">
-        <button
-          type="button"
-          onClick={onSave}
-          disabled={!canSave || saving}
-          className="flex w-full items-center justify-center gap-1.5 rounded-full bg-black/85 py-2 text-[0.75rem] font-semibold text-white shadow transition-opacity hover:bg-black/75 dark:bg-white dark:text-black dark:hover:bg-white/90 disabled:opacity-40"
-        >
-          <Save className="h-3.5 w-3.5" />
-          {saving ? "Saving…" : "Save report"}
-        </button>
-      </div>
+      {canSave ? (
+        <div className="p-3">
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={saving}
+            className="flex w-full items-center justify-center gap-1.5 rounded-full bg-black/85 py-2 text-[0.75rem] font-semibold text-white shadow transition-opacity hover:bg-black/75 dark:bg-white dark:text-black dark:hover:bg-white/90 disabled:opacity-40"
+          >
+            <Save className="h-3.5 w-3.5" />
+            {saving ? "Saving…" : "Save report"}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 });

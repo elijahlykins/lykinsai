@@ -114,6 +114,15 @@ export interface ChatSendStateCallbacks {
 }
 
 export interface ChatSendStreamRefs {
+  /**
+   * Live build preview. Fires with the artifact source the model has written
+   * so far, several times a second, while the build tool call is still
+   * streaming — then once with null when the turn ends. Cosmetic: the real
+   * artifact still arrives through the tool result.
+   */
+  onArtifactProgress?: (
+    progress: { tool: string; title: string; code: string; chars: number } | null,
+  ) => void;
   streamTargetTextRef: { current: string };
   streamDisplayedLenRef: { current: number };
   streamTypingRafRef: { current: number | null };
@@ -136,8 +145,14 @@ export interface ChatSendParams {
   /** Studio mode session (Build / Imagine / Research) system prompt — the
    *  server injects it into the stream system prompt as [ACTIVE_MODE]. */
   modeInstructions?: string;
+  /** Studio Build on the desktop shell: arms the on-disk build workspace
+   *  tools (~/LYKN/Builds) — files, shell, managed processes. Sent on every
+   *  Build-view turn, including conversational follow-ups. */
+  buildWorkspace?: boolean;
   /** Studio Research source focus (all / web / academic / news / social / finance). */
   researchSourcePref?: string;
+  /** Studio Imagine generator id (gpt-image-2, a Gemini image model, …). */
+  imageModel?: string;
   /**
    * Artifact currently open in the preview popup. When present with source, the
    * server forces surgical patches (edits / section_edits / cell_edits) instead
@@ -187,7 +202,12 @@ export interface ChatSendParams {
 /*  Main orchestrator                                                  */
 /* ------------------------------------------------------------------ */
 
-export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
+export type ChatSendResult = {
+  /** Finished stream text to type after thinking unmounts. Empty for invoke. */
+  typewriterText?: string;
+};
+
+export async function orchestrateChatSend(p: ChatSendParams): Promise<ChatSendResult> {
   const {
     text, promptId, sentAttachments, brickActionData,
     abortController, identity, youtube, state, streamRefs, typing,
@@ -208,7 +228,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   // prompt. Best-effort + degrade-safe — never blocks on failure.
   await ocrImageAttachments(sentAttachments, signal, state.setChatStatusText);
 
-  const promptAttachments = attachmentsForPrompt(sentAttachments, p.chatMessages);
+  const promptAttachments = attachmentsForPrompt(sentAttachments, p.chatMessages, p.text);
   const attachmentContext = buildAttachmentContext(promptAttachments);
 
   p.aiThread.push({
@@ -225,7 +245,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     );
     p.aiThread.push({ role: "assistant", content: msg });
     state.setChatStatusText("Sign in required");
-    return;
+    return {};
   }
 
   const history = buildThreadHistory(p.aiThread);
@@ -249,7 +269,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   });
 
   /* Phase 3: build request body */
-  if (signal.aborted) return;
+  if (signal.aborted) return {};
   state.setChatStatusText("");
   state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)));
 
@@ -316,7 +336,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     p.aiThread.push({ role: "assistant", content: finalText });
     if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);
     state.setChatStatusText("Answered");
-    return;
+    return {};
   }
 
   if (streamResponse) {
@@ -338,15 +358,14 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
       accumulated = streamResult.accumulated;
     }
 
-    if (streamRefs.streamTypingRafRef.current) { clearTimeout(streamRefs.streamTypingRafRef.current); streamRefs.streamTypingRafRef.current = null; }
-    if (streamRefs.streamPromptIdRef.current && streamRefs.streamDisplayedLenRef.current < streamRefs.streamTargetTextRef.current.length) {
-      state.setChatMessages((prev) => prev.map((m) => (m.id === streamRefs.streamPromptIdRef.current ? { ...m, aiResponse: streamRefs.streamTargetTextRef.current } : m)));
+    if (streamRefs.streamTypingRafRef.current) {
+      clearTimeout(streamRefs.streamTypingRafRef.current);
+      streamRefs.streamTypingRafRef.current = null;
     }
-    streamRefs.streamTargetTextRef.current = "";
     streamRefs.streamDisplayedLenRef.current = 0;
-    streamRefs.streamPromptIdRef.current = null;
+    streamRefs.streamPromptIdRef.current = promptId;
 
-    await postProcessResponse(
+    const typewriterText = await postProcessResponse(
       p,
       accumulated,
       promptId,
@@ -356,7 +375,9 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
       streamResult.servedModel,
       streamResult.generatedImageUrl,
       streamResult.streamedSources,
+      { paint: false },
     );
+    return { typewriterText };
   } else {
     /* Non-streaming invoke fallback */
     const invokeTimeout = setTimeout(() => abortController.abort(), 120000);
@@ -375,7 +396,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
       p.aiThread.push({ role: "assistant", content: finalText });
       if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);
       state.setChatStatusText("Answered");
-      return;
+      return {};
     }
     const invokeAiText = String(data?.response || data?.answer || data?.text || "").trim();
     await typing.typeResponseIntoChat(promptId, invokeAiText || "I'm not sure how to answer that. Could you rephrase?");
@@ -388,5 +409,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
       cappedText,
       identity.selectedModel,
     );
+    return {};
   }
+  return {};
 }

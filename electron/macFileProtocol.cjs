@@ -75,23 +75,43 @@ function pathFromUrl(requestUrl) {
 
 async function handleRequest(request) {
   const absolute = pathFromUrl(request?.url);
-  if (!absolute) return new Response("Bad file URL", { status: 400 });
-  if (!macFiles.canRead(absolute)) return new Response("Forbidden", { status: 403 });
+  if (!absolute) {
+    return new Response("Bad file URL", {
+      status: 400,
+      headers: blobProtocol.webAccessHeaders(request),
+    });
+  }
+  if (!macFiles.canRead(absolute)) {
+    return new Response("Forbidden", {
+      status: 403,
+      headers: blobProtocol.webAccessHeaders(request),
+    });
+  }
 
   let info;
   try {
     info = await fsp.stat(absolute);
-    if (!info.isFile()) return new Response("Not found", { status: 404 });
+    if (!info.isFile()) {
+      return new Response("Not found", {
+        status: 404,
+        headers: blobProtocol.webAccessHeaders(request),
+      });
+    }
   } catch {
-    return new Response("Not found", { status: 404 });
+    return new Response("Not found", {
+      status: 404,
+      headers: blobProtocol.webAccessHeaders(request),
+    });
   }
 
+  const type = blobProtocol.contentType(absolute);
   const headers = {
-    "Content-Type": blobProtocol.contentType(absolute),
+    "Content-Type": type,
     // Unlike vault blobs, a path on the user's disk can be overwritten in
     // place, so this must revalidate rather than cache forever.
     "Cache-Control": "no-cache",
     "Accept-Ranges": "bytes",
+    ...blobProtocol.webAccessHeaders(request),
   };
 
   const rangeHeader =
@@ -114,6 +134,14 @@ async function handleRequest(request) {
         "Content-Range": `bytes ${range.start}-${range.end}/${info.size}`,
         "Content-Length": String(range.end - range.start + 1),
       },
+    });
+  }
+
+  if (String(type).startsWith("image/")) {
+    const buf = await fsp.readFile(absolute);
+    return new Response(buf, {
+      status: 200,
+      headers: { ...headers, "Content-Length": String(buf.length) },
     });
   }
 

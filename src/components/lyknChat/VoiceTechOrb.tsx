@@ -92,7 +92,7 @@ export default function VoiceTechOrb({ state, micLevel = 0, size = 320, appearan
     const targetFor = (st: RealtimeVoiceState): { intensity: number; spin: number; activity: number } => {
       switch (st) {
         case "speaking": return { intensity: 1, spin: 0.34, activity: 1 };
-        case "thinking": return { intensity: 0.78, spin: 0.6, activity: 0.55 };
+        case "thinking": return { intensity: 0.9, spin: 0.92, activity: 0.82 };
         case "listening": return { intensity: 0.72, spin: 0.22, activity: 0.45 };
         case "connecting": return { intensity: 0.55, spin: 0.4, activity: 0.3 };
         case "error": return { intensity: 0.3, spin: 0.1, activity: 0.05 };
@@ -123,6 +123,7 @@ export default function VoiceTechOrb({ state, micLevel = 0, size = 320, appearan
       // Whole-sphere pulse: gentle idle breath; stronger when talking.
       let pulse = 1 + Math.sin(tsec * 1.4) * 0.015;
       if (st === "speaking") pulse = 1 + Math.sin(tsec * 6.5) * 0.05;
+      else if (st === "thinking") pulse = 1 + Math.sin(tsec * 3.4) * 0.035;
       else if (st === "listening") pulse = 1 + mic * 0.18;
       const Reff = R * pulse;
 
@@ -181,6 +182,11 @@ export default function VoiceTechOrb({ state, micLevel = 0, size = 320, appearan
         const aFloor = isDark ? 0.18 : 0.34;
         const aSpan = isDark ? 0.82 : 0.66;
         let a = (aFloor + depth * aSpan) * intensity;
+        if (st === "thinking") {
+          const sweep = (Math.atan2(x1, z2) / (Math.PI * 2) + 1 + tsec * 0.7) % 1;
+          const band = Math.max(0, 1 - Math.abs(sweep - 0.5) * 4.6);
+          a *= 0.62 + band * 0.7;
+        }
         if (a > 1) a = 1;
 
         const r = n.size * (0.5 + depth * 0.55);

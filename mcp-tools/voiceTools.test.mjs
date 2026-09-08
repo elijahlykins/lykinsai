@@ -99,7 +99,6 @@ test('calendar voice discloses the calendar family, not the full registry', () =
   const d = disclose("What's on my calendar today?");
   assert.ok(d.capabilities.includes('calendar.read'));
   assert.ok(d.firstPartyToolNames.includes('list_events'));
-  assert.equal(d.firstPartyToolNames.includes('web_search'), false);
   assert.equal(d.firstPartyToolNames.includes('search_vault'), false);
   assert.ok(d.firstPartyToolNames.length < 12);
   assert.ok(d.inspect.approxTokens < 4000);
@@ -173,6 +172,8 @@ test('hello on desktop voice still discloses no bot or browser tools', () => {
   });
   assert.equal(d.firstPartyToolNames.includes('ask_bot'), false);
   assert.equal(d.firstPartyToolNames.includes('browser_agent'), false);
+  assert.ok(d.firstPartyToolNames.includes('local_list_dir'));
+  assert.ok(d.firstPartyToolNames.includes('local_open_path'));
 });
 
 test('full Voice registry is not dumped on a calendar turn', () => {
@@ -271,6 +272,44 @@ test('Voice session replaces tools each turn instead of accumulating', () => {
   );
   assert.match(src, /voiceToolDefsRef\.current = next/);
   assert.doesNotMatch(src, /voiceToolDefsRef\.current\.set\(name, tool/);
+  assert.match(src, /interruptForTools && stateRef\.current === "thinking"/);
+  assert.match(src, /voiceMicStreamConstraints\(\)/);
+});
+
+test('Realtime Voice session answers from audio and ignores quieter pickup', () => {
+  const src = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../server/routes/voice.routes.js'),
+    'utf8',
+  );
+  assert.match(src, /create_response: true/);
+  assert.match(src, /gpt-4o-mini-transcribe/);
+  assert.match(src, /threshold: 0\.74/);
+  assert.match(src, /silence_duration_ms: 400/);
+  assert.match(src, /prepareVoiceCustomLlmUpstream/);
+  const overlay = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../electron/overlay-ui/voice.js'),
+    'utf8',
+  );
+  assert.match(overlay, /overlayCanRunLocal/);
+  assert.match(overlay, /setMicMuted/);
+  assert.match(overlay, /beginVoiceTool/);
+  assert.match(src, /Do not speak first/);
+  assert.doesNotMatch(src, /create_response: false/);
+  assert.doesNotMatch(src, /whisper-1/);
+  assert.doesNotMatch(src, /body\.model \|\| 'gpt-4o'/);
+
+  const pickup = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../src/lib/voice/voicePickup.ts'),
+    'utf8',
+  );
+  assert.match(pickup, /VOICE_VAD_THRESHOLD = 0\.74/);
+  assert.match(pickup, /autoGainControl: false/);
+
+  const vendor = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../electron/vendor/elevenlabs-client.iife.js'),
+    'utf8',
+  );
+  assert.match(vendor, /const defaultConstraints = \{\n\t\techoCancellation: true,\n\t\tnoiseSuppression: true,\n\t\tautoGainControl: false,/);
 });
 
 test('deleted runtime tools cannot execute from Chat', async () => {

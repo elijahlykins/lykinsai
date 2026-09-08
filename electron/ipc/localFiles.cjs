@@ -3,6 +3,20 @@
 const { bindOverlayIpcContext } = require("./overlayIpcContext.cjs");
 const { untrustedSenderResult, trustedLyknIpcOpts } = require("../trustedIpcSender.cjs");
 
+/** Renderer TypedArrays survive IPC as a view, a Buffer, or a `{type:'Buffer'}` clone. */
+function bytesFromIpc(bytes) {
+  if (!bytes) return Buffer.alloc(0);
+  if (Buffer.isBuffer(bytes)) return bytes;
+  if (bytes instanceof ArrayBuffer) return Buffer.from(bytes);
+  if (ArrayBuffer.isView(bytes)) {
+    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  }
+  if (bytes.type === "Buffer" && Array.isArray(bytes.data)) {
+    return Buffer.from(bytes.data);
+  }
+  return Buffer.from(bytes);
+}
+
 function registerLocalFilesIpc(d) {
   const {
     app,
@@ -199,6 +213,16 @@ function registerLocalFilesIpc(d) {
     return handler(e, ...args);
   };
 
+  // Local-mode config → the payload useMacSync reads. `ok` is what the
+  // renderer's first fetch checks; the rest mirrors the persisted allowlist.
+  const macSyncState = (cfg) => ({
+    ok: true,
+    enabled: cfg?.enabled === true,
+    syncAll: cfg?.syncAll === true,
+    syncedFolders: Array.isArray(cfg?.syncedFolders) ? cfg.syncedFolders : [],
+    excludedFolders: Array.isArray(cfg?.excludedFolders) ? cfg.excludedFolders : [],
+  });
+
     ipcMain.handle("lykn:mac-sync-get", () =>
       macSyncState(localSystem.readLocalMode(app.getPath("userData")))
     );
@@ -265,6 +289,7 @@ function registerLocalFilesIpc(d) {
     // editing operations, and a watcher so the view tracks the real disk. Each
     // op re-checks Local Mode and the allowlist inside macFiles itself.
     ipcMain.handle("lykn:files-list", requireTrusted((_e, args = {}) => macFiles.list(args)));
+    ipcMain.handle("lykn:files-search", requireTrusted((_e, args = {}) => macFiles.search(args)));
     ipcMain.handle("lykn:files-thumbnail", requireTrusted((_e, args = {}) => macFiles.thumbnail(args)));
     ipcMain.handle("lykn:files-roots", requireTrusted(() => macFiles.roots()));
     const teachFileOperation = (action, operation) => requireTrusted(async (_e, args = {}) => {
@@ -300,7 +325,7 @@ function registerLocalFilesIpc(d) {
      */
     ipcMain.handle("lykn:save-to-downloads", requireTrusted(async (_e, { name, bytes } = {}) => {
       try {
-        const buf = Buffer.from(bytes || []);
+        const buf = bytesFromIpc(bytes);
         if (!buf.length) return { ok: false, error: "empty" };
         const target = uniqueDownloadPath(name);
         await fs.writeFile(target, buf);
@@ -318,7 +343,7 @@ function registerLocalFilesIpc(d) {
      */
     ipcMain.handle("lykn:save-file-as", requireTrusted(async (e, { name, bytes, filters } = {}) => {
       try {
-        const buf = Buffer.from(bytes || []);
+        const buf = bytesFromIpc(bytes);
         if (!buf.length) return { ok: false, error: "empty" };
         const parent =
           BrowserWindow.fromWebContents(e.sender) ||

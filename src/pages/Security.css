@@ -1,4 +1,4 @@
-/* Security page: same mist, type, and white cards as the rest of the landing. */
+/* Security page: one narrow column, hairlines, no bulky cards. */
 
 .lx-sec-page {
   background: var(--gl-mist, #dde2ee);
@@ -7,44 +7,39 @@
 .lx-sec {
   position: relative;
   z-index: 1;
-  padding: clamp(7.5rem, 16vh, 10rem) clamp(1.4rem, 6vw, 5rem)
+  padding: clamp(7.5rem, 16vh, 10rem) clamp(1.25rem, 5vw, 2.5rem)
     clamp(4rem, 10vh, 7rem);
 }
 
 .lx-sec-inner {
-  max-width: 68rem;
+  max-width: 40rem;
   margin: 0 auto;
 }
 
-.lx-sec-hero {
-  max-width: 38rem;
-}
-
 .lx-sec-kicker {
-  margin: 0 0 0.85rem;
-  font-size: 0.75rem;
+  margin: 0 0 0.7rem;
+  font-size: 0.72rem;
   font-weight: 650;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--gl-navy, #0968c4);
 }
 
 .lx-sec-title {
   margin: 0;
-  font-size: clamp(2.4rem, 4.6vw, 3.8rem);
-  font-weight: 700;
-  letter-spacing: -0.04em;
-  line-height: 1.08;
+  font-size: clamp(2rem, 4.2vw, 2.8rem);
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  line-height: 1.1;
   color: #111;
 }
 
 .lx-sec-lede,
-.lx-sec-docs-lede,
 .lx-sec-contact {
-  margin: 1.15rem 0 0;
-  font-size: clamp(1.02rem, 1.4vw, 1.16rem);
-  line-height: 1.6;
-  font-weight: 500;
+  margin: 1rem 0 0;
+  font-size: 1.02rem;
+  line-height: 1.55;
+  font-weight: 450;
   color: #64748b;
 }
 
@@ -52,7 +47,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
-  margin-top: clamp(1.6rem, 3.5vh, 2.25rem);
+  margin-top: 1.5rem;
 }
 
 .lx-sec-ctas .lkn-nav-signup {
@@ -60,111 +55,116 @@
   align-items: baseline;
 }
 
-.lx-sec-grid {
-  margin: clamp(2.4rem, 5vw, 3.6rem) 0 0;
+.lx-sec-points {
+  margin: clamp(2.4rem, 5vw, 3.2rem) 0 0;
   padding: 0;
   list-style: none;
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: clamp(1rem, 2vw, 1.5rem);
+  border-top: 1px solid rgba(15, 23, 42, 0.1);
 }
 
-.lx-sec-card {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  height: 100%;
-  padding: clamp(1.5rem, 2.6vw, 2.1rem);
-  border-radius: 28px;
-  background: #fff;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  box-shadow: 0 24px 60px -48px rgba(15, 23, 42, 0.4);
-  text-decoration: none;
-  color: inherit;
-  transition:
-    transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 0.35s ease;
+.lx-sec-points li {
+  padding: 1.15rem 0;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.1);
 }
 
-a.lx-sec-doc:hover {
-  transform: translateY(-6px);
-  box-shadow: 0 36px 72px -44px rgba(15, 23, 42, 0.45);
-}
-
-.lx-sec-card h2,
-.lx-sec-card h3 {
+.lx-sec-points h2 {
   margin: 0;
-  font-size: clamp(1.25rem, 2vw, 1.55rem);
-  font-weight: 700;
+  font-size: 1.02rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: #111;
+}
+
+.lx-sec-points p {
+  margin: 0.35rem 0 0;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+.lx-sec-topics,
+.lx-sec-docs {
+  margin-top: clamp(3rem, 7vw, 4.5rem);
+}
+
+.lx-sec-docs-title {
+  margin: 0;
+  font-size: clamp(1.45rem, 2.6vw, 1.75rem);
+  font-weight: 650;
   letter-spacing: -0.03em;
   color: #111;
 }
 
-.lx-sec-card p {
-  margin: 0.55rem 0 0;
-  font-size: 0.98rem;
-  line-height: 1.55;
-  font-weight: 500;
-  color: #64748b;
-}
-
-.lx-sec-doc-go {
-  margin-top: auto;
-  padding-top: 1.1rem;
-  font-size: 0.88rem;
-  font-weight: 650;
-  color: var(--gl-navy, #0968c4);
-}
-
-.lx-sec-topics {
-  margin-top: clamp(3.5rem, 8vw, 5.5rem);
-}
-
 .lx-sec-qa {
-  margin: clamp(1.8rem, 4vw, 2.6rem) 0 0;
+  margin: 1.4rem 0 0;
   display: flex;
   flex-direction: column;
-  gap: 1.35rem;
 }
 
 .lx-sec-qa-item {
-  max-width: 42rem;
+  padding: 1.1rem 0;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.1);
+}
+
+.lx-sec-qa-item:first-child {
+  border-top: 1px solid rgba(15, 23, 42, 0.1);
 }
 
 .lx-sec-qa dt {
   margin: 0;
-  font-size: 1.12rem;
-  font-weight: 700;
+  font-size: 1.02rem;
+  font-weight: 650;
   letter-spacing: -0.02em;
   color: #111;
 }
 
 .lx-sec-qa dd {
-  margin: 0.4rem 0 0;
-  font-size: 0.98rem;
-  line-height: 1.55;
-  font-weight: 500;
+  margin: 0.35rem 0 0;
+  font-size: 0.92rem;
+  line-height: 1.5;
   color: #64748b;
 }
 
-.lx-sec-docs {
-  margin-top: clamp(3.5rem, 8vw, 5.5rem);
+.lx-sec-docs-list {
+  margin: 1.15rem 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid rgba(15, 23, 42, 0.1);
 }
 
-.lx-sec-docs-title {
-  margin: 0;
-  font-size: clamp(2rem, 4vw, 3rem);
-  font-weight: 700;
-  letter-spacing: -0.035em;
+.lx-sec-docs-list li {
+  border-bottom: 1px solid rgba(15, 23, 42, 0.1);
+}
+
+.lx-sec-docs-list a {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.95rem 0;
+  text-decoration: none;
+  color: inherit;
+}
+
+.lx-sec-docs-list a:hover .lx-sec-doc-name {
+  color: #0968c4;
+}
+
+.lx-sec-doc-name {
+  font-size: 1.02rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
   color: #111;
+  transition: color 160ms ease;
 }
 
-.lx-sec-docs .lx-sec-grid {
-  margin-top: clamp(1.8rem, 4vw, 2.6rem);
+.lx-sec-doc-body {
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: #64748b;
 }
 
 .lx-sec-contact {
-  margin-top: clamp(2.5rem, 5vw, 3.5rem);
+  margin-top: clamp(2.2rem, 5vw, 3rem);
 }
 
 .lx-sec-contact a {
@@ -176,16 +176,4 @@ a.lx-sec-doc:hover {
 .lx-sec-contact a:hover {
   text-decoration: underline;
   text-underline-offset: 0.18em;
-}
-
-@media (max-width: 860px) {
-  .lx-sec-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  a.lx-sec-doc:hover {
-    transform: none;
-  }
 }

@@ -3023,9 +3023,73 @@
 /* ── Plan cards ─────────────────────────────────────────── */
 .lkn-pricing-plans {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.5rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
   align-items: stretch;
+  max-width: 46rem;
+  margin: 0 auto;
+}
+
+.lkn-paid-tiers {
+  display: flex;
+  flex-direction: column;
+  margin: 1.15rem 0 0.15rem;
+  padding: 0;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.lkn-paid-tier {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  width: 100%;
+  padding: 0.72rem 0.9rem;
+  border: none;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: #111;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.lkn-paid-tier:last-child {
+  border-bottom: none;
+}
+
+.lkn-paid-tier:hover {
+  background: #f6f7f9;
+}
+
+.lkn-paid-tier.is-active {
+  background: #eef4fb;
+  color: #0968c4;
+}
+
+.lkn-paid-tier-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.lkn-paid-tier-price {
+  font-size: 0.84rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: inherit;
+}
+
+.lkn-paid-tier-price span {
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: #666;
+}
+
+.lkn-paid-tier.is-active .lkn-paid-tier-price span {
+  color: rgba(9, 104, 196, 0.7);
 }
 
 .lkn-plan-card {
@@ -3326,13 +3390,7 @@
   color: #475569;
 }
 
-@media (max-width: 1100px) {
-  .lkn-pricing-plans {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 640px) {
+@media (max-width: 720px) {
   .lkn-pricing-plans {
     grid-template-columns: 1fr;
     max-width: 30rem;

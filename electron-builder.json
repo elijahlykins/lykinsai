@@ -12,6 +12,8 @@
     "electron/**/*",
     "lib/browserScreen.cjs",
     "lib/webSearchIntent.cjs",
+    "lib/engineering/**",
+    "lib/chatWorkReplyGate.js",
     "package.json",
     "!**/node_modules/**",
     "node_modules/electron-updater/**",
@@ -72,6 +74,12 @@
     "node_modules/esbuild/**",
     "node_modules/@esbuild/**",
 
+    "node_modules/@nut-tree-fork/libnut-darwin/**",
+    "node_modules/@nut-tree-fork/libnut-win32/**",
+    "node_modules/@nut-tree-fork/node-mac-permissions/**",
+    "node_modules/bindings/**",
+    "node_modules/file-uri-to-path/**",
+
     "!node_modules/onnxruntime-web/**",
     "!node_modules/onnxruntime-node/bin/napi-v6/linux/**",
     "!node_modules/onnxruntime-node/bin/napi-v6/win32/**",
@@ -82,7 +90,8 @@
     "**/node_modules/onnxruntime-node/bin/**",
     "**/node_modules/sharp/**",
     "**/node_modules/@img/**",
-    "**/node_modules/@esbuild/**"
+    "**/node_modules/@esbuild/**",
+    "**/node_modules/@nut-tree-fork/**"
   ],
   "extraResources": [
     {
@@ -110,6 +119,7 @@
     }
   ],
   "mac": {
+    "files": ["!node_modules/@nut-tree-fork/libnut-win32/**"],
     "category": "public.app-category.productivity",
     "icon": "electron/resources/icon-rounded.png",
     "target": [
@@ -143,6 +153,10 @@
     ]
   },
   "win": {
+    "files": [
+      "!node_modules/@nut-tree-fork/libnut-darwin/**",
+      "!node_modules/@nut-tree-fork/node-mac-permissions/**"
+    ],
     "icon": "electron/resources/icon.ico",
     "target": [
       { "target": "nsis", "arch": ["x64"] }

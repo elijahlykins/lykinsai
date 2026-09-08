@@ -225,8 +225,11 @@ test("extracted hosts require the bindings they lost in the Electron split", () 
     path.resolve(__dirname, "..", "..", "src/lib/ai/browserAgentLaunch.ts"),
     "utf8",
   );
-  assert.match(executor, /sourceChatId: chatId/);
-  assert.match(executor, /task: \{ chatId \}/);
+  // Separation contract (see browserAgentLaunch.ts header): the launching
+  // chat's id is deliberately NOT stamped onto the agent tab — no renderer
+  // bind, no main-process sourceChatId, no task.chatId lineage.
+  assert.doesNotMatch(executor, /sourceChatId: chatId/);
+  assert.doesNotMatch(executor, /task: \{ chatId \}/);
   assert.match(host, /async function openUrlPreferAgentBrowser\(url, \{ title, sourceChatId \}/);
   assert.match(agentBridge, /ipcMain.handle\("lykn:studio-open-url", async \(e,/);
 });

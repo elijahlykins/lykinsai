@@ -1,5 +1,7 @@
 // Overlay live-voice session: ElevenLabs transport, screen push, tool bridge.
 
+import { voiceToolStatus } from "./voiceActivity.js";
+
 export function attachVoice(host) {
   const voiceEl = document.getElementById("voice");
   const VOICE_TOOL_NAMES = [
@@ -22,7 +24,7 @@ export function attachVoice(host) {
     "local_list_dir", "local_read_file", "local_search_files", "local_pull_file",
     "local_write_file", "local_edit_file", "local_run_command", "local_synced_folders",
     "local_running_apps", "local_read_app", "local_open_app", "local_open_path",
-    "local_organize_desktop",
+    "local_organize_desktop", "local_mcp_search_tools", "local_mcp_call_tool",
   ];
   let voiceConvo = null;
   let voiceConnected = false;
@@ -32,6 +34,8 @@ export function attachVoice(host) {
   // what keeps the on/off state honest when the user toggles mid-connect.
   let voiceGen = 0;
   let voiceConnectTimer = null;
+  let voiceToolsInFlight = 0;
+  let voiceSpeaking = false;
 
   function clearVoiceTimer() {
     if (voiceConnectTimer) {
@@ -112,10 +116,37 @@ export function attachVoice(host) {
     }
   }
 
+  function holdVoiceMic(hold) {
+    try {
+      if (voiceConvo && typeof voiceConvo.setMicMuted === "function") {
+        voiceConvo.setMicMuted(Boolean(hold));
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  function syncVoiceMic() {
+    holdVoiceMic(voiceToolsInFlight > 0 || voiceSpeaking);
+  }
+
+  function beginVoiceTool(name) {
+    voiceToolsInFlight += 1;
+    syncVoiceMic();
+    setVoiceUi("thinking");
+    if (!host.currentAnswerEl) host.startTurn("LYKN");
+    host.setThinkingStatus(voiceToolStatus(name));
+  }
+
+  function endVoiceTool() {
+    voiceToolsInFlight = Math.max(0, voiceToolsInFlight - 1);
+    if (voiceToolsInFlight === 0 && !voiceSpeaking) setVoiceUi("listening");
+    syncVoiceMic();
+  }
+
   function buildVoiceTools() {
     const tools = {};
     for (const name of VOICE_TOOL_NAMES) {
       tools[name] = async (params) => {
+        beginVoiceTool(name);
         try {
           if (name.startsWith("local_")) {
             const run = window.lyknOverlay?.localToolRun;
@@ -133,15 +164,25 @@ export function attachVoice(host) {
           return JSON.stringify(data);
         } catch (_) {
           return JSON.stringify({ ok: false, error: "tool_request_failed" });
+        } finally {
+          endVoiceTool();
         }
       };
     }
     // Local-only voice-instruction tuning isn't managed by the overlay; ack it.
     tools["update_voice_instructions"] = async () => JSON.stringify({ ok: true });
-    tools.browser_agent = async (params) => JSON.stringify(await startOverlayBrowserAgent(params));
+    tools.browser_agent = async (params) => {
+      beginVoiceTool("browser_agent");
+      try { return JSON.stringify(await startOverlayBrowserAgent(params)); }
+      finally { endVoiceTool(); }
+    };
     // Overlay has no bot roster. Send the same work to the browser agent so
     // "send a bot to this site" still starts the job.
-    tools.ask_bot = async (params) => JSON.stringify(await startOverlayBrowserAgent(params));
+    tools.ask_bot = async (params) => {
+      beginVoiceTool("ask_bot");
+      try { return JSON.stringify(await startOverlayBrowserAgent(params)); }
+      finally { endVoiceTool(); }
+    };
     return tools;
   }
 
@@ -155,6 +196,9 @@ export function attachVoice(host) {
     host.micEl.classList.toggle("voice-active", on);
     if (voicePillEl) voicePillEl.hidden = !on;
     host.dotEl.classList.toggle("busy", on && state !== "listening");
+    document.documentElement.dataset.voiceState = on ? state : "off";
+    if (voicePillEl) voicePillEl.dataset.voiceState = on ? state : "off";
+    host.micEl.dataset.voiceState = on ? state : "off";
     voiceEl.title = on ? "Stop voice mode" : "Voice mode";
     const voiceLabel = document.getElementById("voice-label");
     if (voiceLabel) voiceLabel.textContent = on ? "Stop voice mode" : "Voice mode";
@@ -319,11 +363,12 @@ export function attachVoice(host) {
         return null;
       }
     })();
-    let localModeOn = false;
+    const overlayCanRunLocal = typeof window.lyknOverlay?.localToolRun === "function";
+    let localModeOn = overlayCanRunLocal;
     try {
       const lm = await window.lyknOverlay.localModeGet();
-      localModeOn = lm && lm.enabled === true;
-    } catch (_) { /* Local Mode stays off */ }
+      if (lm && lm.enabled === true) localModeOn = true;
+    } catch (_) { /* overlay can still disclose local tools */ }
     const screenInstructions =
       "You are LYKN running inside an on-screen overlay on the user's Mac, and you CAN see " +
       "the user's screen. The current screen contents are continuously provided to you as " +
@@ -376,6 +421,8 @@ export function attachVoice(host) {
         host.voiceActive = false;
         host.voiceStarting = false;
         voiceConnected = false;
+        voiceToolsInFlight = 0;
+        voiceSpeaking = false;
         voiceConvo = null;
         host.voiceSessionToken = "";
         setVoiceUi("off");
@@ -388,6 +435,8 @@ export function attachVoice(host) {
         host.voiceActive = false;
         host.voiceStarting = false;
         voiceConnected = false;
+        voiceToolsInFlight = 0;
+        voiceSpeaking = false;
         voiceConvo = null;
         host.voiceSessionToken = "";
         setVoiceUi("off");
@@ -396,10 +445,16 @@ export function attachVoice(host) {
       },
       onModeChange: ({ mode }) => {
         if (cancelled()) return;
-        setVoiceUi(mode === "speaking" ? "speaking" : "listening");
+        voiceSpeaking = mode === "speaking";
+        if (voiceToolsInFlight > 0) {
+          setVoiceUi("thinking");
+        } else {
+          setVoiceUi(voiceSpeaking ? "speaking" : "listening");
+        }
+        syncVoiceMic();
         // Returning to listening = the user is about to speak; refresh the screen
         // context (throttled) so their next question reflects what's on screen now.
-        if (mode !== "speaking") void pushScreenContext(false);
+        if (!voiceSpeaking && voiceToolsInFlight === 0) void pushScreenContext(false);
       },
       onMessage: (m) => {
         if (cancelled()) return;
@@ -480,6 +535,9 @@ export function attachVoice(host) {
     host.voiceStarting = false;
     host.voiceActive = false;
     voiceConnected = false;
+    voiceToolsInFlight = 0;
+    voiceSpeaking = false;
+    holdVoiceMic(false);
     host.voiceSessionToken = "";
     const c = voiceConvo;
     voiceConvo = null;

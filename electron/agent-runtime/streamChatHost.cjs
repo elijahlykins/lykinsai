@@ -465,6 +465,18 @@ function createStreamChatHost(host) {
                   forceWebSearch: false,
                   deepResearch: false,
                 }
+          : skill === "web-search"
+            ? {
+                // Look it up and answer. The middle rung the Bot was missing:
+                // "check the news" used to mean opening a real browser and
+                // driving it, because search-and-summarise was not something
+                // the planner could pick. No deep-research crawl either —
+                // this is the quick, grounded answer.
+                skipWebSearch: false,
+                forceWebSearch: true,
+                deepResearch: false,
+                useTools: false,
+              }
           : skill === "browse-summary"
             ? {
                 // Owned-tab summary only — no Serper "sources" that look like a fake browse.

@@ -196,11 +196,15 @@ function registerLocalModeIpc(d) {
       broadcastToAllWindows("lykn:local-mode-changed", { enabled: next.enabled });
       return { ok: true, enabled: next.enabled };
     });
-    ipcMain.handle("lykn:local-tool-run", async (e, { name, args, approvalToken } = {}) => {
+    ipcMain.handle("lykn:local-tool-run", async (e, { name, args, approvalToken, workspace } = {}) => {
       const denied = untrustedSenderResult(e, senderOpts);
       if (denied) return denied;
       const { enabled } = localSystem.readLocalMode(app.getPath("userData"));
-      if (!enabled) {
+      // Build-workspace sessions may run WITHOUT Local Mode: execution is then
+      // confined to ~/LYKN/Builds (workspaceOnly) inside localSystem. Local
+      // Mode on grants the user's full sync allowlist as before.
+      const workspaceOnly = !enabled && workspace === true;
+      if (!enabled && !workspaceOnly) {
         return { ok: false, error: "Local mode is off. Enable it in the Vault first." };
       }
       const toolName = String(name || "");
@@ -213,6 +217,7 @@ function registerLocalModeIpc(d) {
       const result = await localSystem.run(toolName, toolArgs, {
         approved,
         userDataPath: app.getPath("userData"),
+        workspaceOnly,
       });
       // First pass on a risky action: main's own classifier asked for approval.
       // Mint a token so the approval UI can re-invoke the SAME action once the
@@ -220,6 +225,24 @@ function registerLocalModeIpc(d) {
       // only authorize this action.
       if (result && result.needsApproval === true) {
         result.approvalToken = localApprovals.issue(toolName, toolArgs);
+      }
+      // A dock install from the agent changes the installed-apps list the same
+      // way a renderer-initiated install does, so the dock must hear about it —
+      // and the app opens on screen right away (reloading if a stale window is
+      // already up), so "install it" visibly ends with the app in front of the
+      // user instead of a dock icon they have to discover.
+      if (toolName === "local_install_app" && result?.ok && result.appId) {
+        broadcastToAllWindows("lykn:apps-changed", {
+          id: String(result.appId),
+          action: result.updated ? "update" : "install",
+        });
+        try {
+          const appHost = require("../appHost.cjs");
+          const opened = appHost.openApp(String(result.appId), { reload: true });
+          result.opened = opened?.ok === true;
+        } catch (err) {
+          console.warn("[localMode] could not open installed app:", err?.message || err);
+        }
       }
       return result;
     });

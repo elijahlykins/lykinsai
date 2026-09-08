@@ -84,6 +84,11 @@ import {
 import HomeChatBar from "@/components/macdesktop/HomeChatBar";
 import StudioPop from "@/components/macdesktop/StudioPop";
 import StudioSplit from "@/components/macdesktop/StudioSplit";
+import StudioWindowControls from "@/components/macdesktop/StudioWindowControls";
+import {
+  studioFullscreenTrafficVisible,
+  studioSurfaceFullscreen,
+} from "@/components/macdesktop/studioWindowChrome";
 import StudioUpdateBanners from "@/components/desktop/StudioUpdateBanners";
 import MacDesktopMirror from "@/components/macdesktop/MacDesktopMirror";
 import WidgetCanvas from "@/components/macdesktop/WidgetCanvas";
@@ -308,6 +313,9 @@ export default function Studio() {
   // report in here so the window layer can sit above the bottom bar.
   const [dockCover, setDockCover] = useState({});
   const coveringZoom = Object.values(dockCover).some(Boolean);
+  // Green-button zoomed windows that currently fill the desktop. LYKN's
+  // hover traffic lights hide until these are restored, minimized, or closed.
+  const [zoomedWins, setZoomedWins] = useState({});
   // Clicking the bare wallpaper sweeps every window off the sides to reveal the
   // desktop, macOS style; clicking it again brings them all back.
   const [desktopPeek, setDesktopPeek] = useState(false);
@@ -320,7 +328,10 @@ export default function Studio() {
   const [bgImage, setBgImage] = useState("");
   // Wallpaper choice + dim/blur from Settings › Appearance.
   const [appearance, setAppearance] = useState(readAppearance);
-  const [fullscreen, setFullscreen] = useState(false);
+  const [fullscreen, setFullscreen] = useState(desktop);
+  const [htmlFullscreen, setHtmlFullscreen] = useState(
+    () => typeof document !== "undefined" && !!document.fullscreenElement,
+  );
   const [settingsView, setSettingsView] = useState("account");
   const settingsControls = useRef(null);
   // Dock chats popover — the LYKN icon in the bottom dock opens a panel with
@@ -361,8 +372,8 @@ export default function Studio() {
     });
   }, [queryClient, user?.id]);
 
-  // Same behavior as the in-app sidebar's New chat: create the chat row
-  // immediately, then open it (here: deep-link the embedded chat frame).
+  // Same as in-app New chat: mint an id and open it. The board row is
+  // created on the first real save, so empty composers stay out of history.
   const startNewChat = async () => {
     if (!user?.id) return;
     try {
@@ -399,9 +410,9 @@ export default function Studio() {
   }, []);
 
   // Fullscreen — Studio takes over the whole UI, so the glass window can fill
-  // the screen. Toggled from outside the page (native traffic lights, the app
-  // menu, the OS); tracked here because the layout has to clear the notch and
-  // run the panes to the window's edges.
+  // the screen. Native traffic lights do not appear in simple fullscreen, so
+  // Home draws an in-page cluster on hover at the top of the display, except
+  // while a hosted app is already filling that corner with its own lights.
   // Measure before paint so the Chat / Build / Imagine / Research pill
   // starts below the camera instead of jumping after first frame.
   useLayoutEffect(() => {
@@ -438,6 +449,12 @@ export default function Studio() {
       document.removeEventListener("fullscreenchange", onChange);
     };
   }, []);
+  useEffect(() => {
+    const sync = () => setHtmlFullscreen(!!document.fullscreenElement);
+    sync();
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
 
   // The agent browser is native Electron views, not a web page, so the main
   // process docks them over the body of the floating Browser window (left of
@@ -471,6 +488,18 @@ export default function Studio() {
   // unmount, and the checks below bring the dock back for minimize/peek,
   // where the user needs it to get the window back.
   const [browserZoomed, setBrowserZoomed] = useState(false);
+  const onWindowZoomChange = useCallback((id, on, app) => {
+    setZoomedWins((m) => (m[id] === on ? m : { ...m, [id]: on }));
+    if (app?.native) setBrowserZoomed(on);
+    else if (app?.installed || app?.file || id === "projects") {
+      setDockCover((m) => (m[id] === on ? m : { ...m, [id]: on }));
+    }
+  }, []);
+  const surfaceFullscreen = studioSurfaceFullscreen({
+    zoomedWins,
+    split,
+    htmlFullscreen,
+  });
   const dockHidden =
     browserZoomed &&
     (splitHasBrowser || browserOpen) &&
@@ -1297,6 +1326,11 @@ export default function Studio() {
       className="fixed inset-0 overflow-hidden font-sans text-black/85 dark:text-white/85"
     >
       <StudioHoverTips rootRef={studioRootRef} />
+      {studioFullscreenTrafficVisible({
+        desktop,
+        fullscreen,
+        surfaceFullscreen,
+      }) && <StudioWindowControls fullscreen={fullscreen} />}
       {/* Backdrop: the wallpaper picked in Settings › Appearance — one of
           Apple's, or any photo — else the app's own. A wallpaper carries a
           scrim (Appearance › Dim) so the chrome stays readable, and an optional
@@ -1345,20 +1379,17 @@ export default function Studio() {
       <div
         // Padding snaps with the window resize — animating it against
         // macOS simple-fullscreen makes chrome lag behind the frame.
-        className={`relative z-10 flex h-full flex-col items-center ${
+        className={`relative z-10 flex h-full w-full flex-col items-center px-2 pb-2 ${
           // Fullscreen covers the whole display, so the top row must clear
           // the camera notch / menu-bar strip for this display
           // (`--lykn-display-top-inset`, measured from the work area).
-          // Split View hides the dock and runs panes to the bottom edge.
-          fullscreen ? "lykn-studio-fs-pad px-2 pb-2" : split ? "px-5 pb-2 pt-4" : "px-5 pb-4 pt-4"
+          // Windowed Studio fills the window the same way, with a short top
+          // inset so native traffic lights still have room.
+          fullscreen ? "lykn-studio-fs-pad" : "pt-2"
         }`}
       >
         {/* ── Main glass panel ── */}
-        <div
-          className={`flex w-full flex-1 min-h-0 items-stretch ${
-            fullscreen ? "max-w-full" : "max-w-[1240px]"
-          }`}
-        >
+        <div className="flex w-full min-h-0 flex-1 items-stretch">
           {/* Center panel. On Home it's fully transparent — a blank macOS-style
               desktop where only the wallpaper shows through. Every other tab
               gets the frost card; embedded section frames paint their own
@@ -1410,9 +1441,6 @@ export default function Studio() {
                     </span>
                   </div>
                 )}
-                <StudioUpdateBanners
-                  onOpenAccount={() => openTab("settings", "account")}
-                />
                 </DesktopSelectProvider>
                 </DesktopLayerProvider>
             </div>
@@ -1551,16 +1579,7 @@ export default function Studio() {
                   zoomCoversDock={
                     !!(app.native || app.installed || app.file || id === "projects")
                   }
-                  onZoomChange={
-                    app.native
-                      ? setBrowserZoomed
-                      : app.installed || app.file || id === "projects"
-                        ? (on) =>
-                            setDockCover((m) =>
-                              m[id] === on ? m : { ...m, [id]: on },
-                            )
-                        : undefined
-                  }
+                  onZoomChange={(on) => onWindowZoomChange(id, on, app)}
                   // Dragging moves the native browser views with the frame.
                   onGeometry={app.native ? reportBrowserBounds : undefined}
                   // …and the frame's open/close/minimize animations park them
@@ -1680,16 +1699,19 @@ export default function Studio() {
         {/* Rounded chat bar + idle mode pill — window-anchored siblings of
             the chat layer so idle and live states line up exactly. Voice
             Mode is a popup, so this bar stays put. Imagine shares this
-            bar with the other modes so typed text and attachments stay. */}
-        {tab === "dashboard" &&
-          !split &&
-          !coveringZoom && (
+            bar with the other modes so typed text and attachments stay.
+            A zoomed file/image window paints over this strip (z-35) but
+            the bar stays mounted so "Ask LYKN" / Chat can land a chip
+            before the preview closes — unmounting it parked the file on
+            the CSS-hidden in-page composer instead. */}
+        {tab === "dashboard" && !split && (
           <HomeChatBar
             active={homeChat}
             live={homeChatLive}
             surfaceView={homeView}
             onOpen={openTab}
             name={user ? firstName : ""}
+            covered={coveringZoom}
           />
         )}
 
@@ -1722,6 +1744,9 @@ export default function Studio() {
           minimizedFileWins={minimizedFileWins}
         />
       </div>
+      <StudioUpdateBanners
+        onOpenAccount={() => openTab("settings", "account")}
+      />
     </div>
   );
 }

@@ -162,9 +162,8 @@ async function fetchBoardListRows(
 }
 
 /**
- * Fetches recent chats that have real content, a custom title, or were
- * explicitly opened (board row exists but no snapshot yet). Empty login
- * shells that never got a row stay out of sidebars.
+ * Fetches recent chats that have real content or a custom title. Empty
+ * composers never get a row, and leftover empty shells stay out of sidebars.
  */
 export async function fetchLyknChatsWithContext(
   userId: string,

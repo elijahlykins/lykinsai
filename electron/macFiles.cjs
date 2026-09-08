@@ -246,6 +246,199 @@ async function list(args = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Name search (slash-path autocomplete)
+// ---------------------------------------------------------------------------
+//
+// Listing a folder only sees its children. Typing `/specificfolderexample`
+// has to find that folder wherever it lives inside Local Mode's allowlist.
+// Walk stays inside those roots; Spotlight is a faster extra pass on macOS
+// and is allowed to miss (tests against temp dirs are not indexed).
+
+const SEARCH_SKIP_DIRS = new Set([
+  "node_modules",
+  ".git",
+  "Library",
+  ".Trash",
+  ".cache",
+  ".npm",
+  "dist",
+  "build",
+  ".next",
+  "venv",
+  ".venv",
+  "__pycache__",
+  "DerivedData",
+  ".Spotlight-V100",
+]);
+const SEARCH_MAX_RESULTS = 40;
+const SEARCH_MAX_SCAN = 40000;
+const SEARCH_MAX_DEPTH = 12;
+const SEARCH_MIN_QUERY = 2;
+
+function searchRoots(config) {
+  const roots = [];
+  const seen = new Set();
+  const add = (dir) => {
+    const abs = resolve(dir);
+    if (!abs || seen.has(abs) || !localSystem.isAllowedPath(abs, config)) return;
+    seen.add(abs);
+    roots.push(abs);
+  };
+  if (config.syncAll !== false) add(os.homedir());
+  for (const folder of config.syncedFolders || []) add(folder);
+  return roots;
+}
+
+function nameSearchHit(name, queryLower) {
+  return String(name || "").toLowerCase().includes(queryLower);
+}
+
+function searchEntry(full, dirent) {
+  const name = dirent.name;
+  const ext = extOf(name);
+  const isDir = dirent.isDirectory() && !PACKAGE_EXTS.has(ext);
+  return {
+    name,
+    path: full,
+    ext,
+    hidden: name.startsWith("."),
+    type: isDir ? "dir" : "file",
+    package: isDir ? false : PACKAGE_EXTS.has(ext),
+  };
+}
+
+async function walkNameSearch(roots, queryLower, limit, config) {
+  const results = [];
+  const seen = new Set();
+  for (const root of roots) {
+    const stack = [{ dir: root, depth: 0 }];
+    let scanned = 0;
+    while (stack.length && results.length < limit && scanned < SEARCH_MAX_SCAN) {
+      const { dir, depth } = stack.pop();
+      let dirents;
+      try {
+        dirents = await fsp.readdir(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const dirent of dirents) {
+        scanned += 1;
+        const name = dirent.name;
+        if (!name || name.startsWith(".")) continue;
+        if (SEARCH_SKIP_DIRS.has(name)) continue;
+        const full = path.join(dir, name);
+        if (!localSystem.isAllowedPath(full, config)) continue;
+        if (nameSearchHit(name, queryLower) && !seen.has(full)) {
+          seen.add(full);
+          results.push(searchEntry(full, dirent));
+          if (results.length >= limit) break;
+        }
+        const descend =
+          dirent.isDirectory() &&
+          !dirent.isSymbolicLink() &&
+          !PACKAGE_EXTS.has(extOf(name)) &&
+          depth < SEARCH_MAX_DEPTH;
+        if (descend) stack.push({ dir: full, depth: depth + 1 });
+      }
+    }
+    if (results.length >= limit) break;
+  }
+  return results;
+}
+
+function mdfindSafeQuery(raw) {
+  const s = String(raw || "").trim();
+  if (s.length < SEARCH_MIN_QUERY || s.length > 80) return "";
+  if (!/^[\w .+'@-]+$/u.test(s)) return "";
+  return s;
+}
+
+async function mdfindNameSearch(roots, query, limit, config) {
+  if (process.platform !== "darwin") return { attempted: false, entries: [] };
+  const tmp = os.tmpdir();
+  const liveRoots = roots.filter((root) => root && !String(root).startsWith(tmp));
+  if (!liveRoots.length) return { attempted: false, entries: [] };
+  const safe = mdfindSafeQuery(query);
+  if (!safe) return { attempted: false, entries: [] };
+  const folderPred = `kMDItemFSName == "*${safe}*"c && kMDItemContentTypeTree == "public.folder"`;
+  const filePred = `kMDItemFSName == "*${safe}*"c && kMDItemContentTypeTree != "public.folder"`;
+
+  async function mdfindPaths(root, predicate) {
+    try {
+      const result = await execFileAsync("mdfind", ["-onlyin", root, predicate], {
+        timeout: 400,
+        maxBuffer: 512 * 1024,
+      });
+      return String(result.stdout || "")
+        .split("\n")
+        .map((line) => String(line || "").trim())
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  const seen = new Set();
+  function toEntries(paths, kind) {
+    const entries = [];
+    for (const full of paths) {
+      if (!full || seen.has(full)) continue;
+      if (!localSystem.isAllowedPath(full, config)) continue;
+      const parts = full.split(path.sep);
+      if (parts.some((part) => SEARCH_SKIP_DIRS.has(part))) continue;
+      const name = path.basename(full);
+      if (!name || name.startsWith(".")) continue;
+      seen.add(full);
+      entries.push({
+        name,
+        path: full,
+        ext: extOf(name),
+        hidden: false,
+        type: kind,
+        package: PACKAGE_EXTS.has(extOf(name)),
+      });
+      if (entries.length >= limit) break;
+    }
+    return entries;
+  }
+
+  const [folderPaths, filePaths] = await Promise.all([
+    Promise.all(liveRoots.map((root) => mdfindPaths(root, folderPred))),
+    Promise.all(liveRoots.map((root) => mdfindPaths(root, filePred))),
+  ]);
+  const folders = toEntries(folderPaths.flat(), "dir");
+  const files = folders.length >= limit ? [] : toEntries(filePaths.flat(), "file");
+  return { attempted: true, entries: folders.concat(files).slice(0, limit) };
+}
+
+async function search(args = {}) {
+  const config = readConfig();
+  if (!config.enabled) return { ok: false, error: "local_mode_off" };
+
+  const query = String(args.query || "").trim();
+  if (query.length < SEARCH_MIN_QUERY) {
+    return { ok: true, query, entries: [] };
+  }
+
+  const limit = Math.min(Math.max(Number(args.limit) || SEARCH_MAX_RESULTS, 1), 80);
+  const roots = searchRoots(config);
+  if (!roots.length) return { ok: false, error: "not_synced", entries: [] };
+
+  const queryLower = query.toLowerCase();
+  const spotlight = await mdfindNameSearch(roots, query, limit, config);
+  if (spotlight.attempted) {
+    return {
+      ok: true,
+      query,
+      entries: spotlight.entries,
+      truncated: spotlight.entries.length >= limit,
+    };
+  }
+  const walked = await walkNameSearch(roots, queryLower, limit, config);
+  return { ok: true, query, entries: walked, truncated: walked.length >= limit };
+}
+
+// ---------------------------------------------------------------------------
 // Thumbnails
 // ---------------------------------------------------------------------------
 //
@@ -762,6 +955,7 @@ module.exports = {
   configure,
   canRead,
   list,
+  search,
   thumbnail,
   roots,
   mkdir,

@@ -17,6 +17,7 @@ import {
   orchestrateChatSend,
   buildAttachmentContext,
 } from "@/lib/ai/chatSendOrchestrator";
+import { typeStreamReply } from "@/lib/ai/chatStreamRunner";
 import type {
   PromptMessage,
   FocusedChatAttachment,
@@ -26,12 +27,13 @@ import type {
 import type { CachedYouTubeTranscript } from "@/lib/ai/chatTranscription";
 import { type ChatArtifact, toArtifactEditContext, editTargetFromArtifact } from "@/lib/ai/chatArtifacts";
 import { resolveArtifactSendPlan } from "@/lib/ai/artifactSendPlan";
+import { isWorkspaceChat, markWorkspaceChat } from "@/lib/ai/buildWorkspaceChats";
+import { isLocalModeAvailable } from "@/lib/localMode";
 import {
   artifactFromAttachment,
   pickEditArtifact,
 } from "@/lib/lyknChat/artifactChatAttach";
 import { homeChatArtifactKey, unstageHomeChatArtifact } from "@/lib/homeChatFiles";
-import { detectImageAsk, imagineSwitchNotice } from "@/lib/ai/studioModeIntent";
 import { resolveChatSendTarget, type ChatSendOpts } from "@/lib/ai/chatSendTarget";
 import { hydrateThreadSnapshot } from "@/lib/lyknChat/hydrateThreadSnapshot";
 import { persistOffRouteThread } from "@/lib/lyknChat/persistThreadChat";
@@ -50,6 +52,10 @@ import {
   registerStreamAbortController,
 } from "@/lib/chat/chatThreadRuntime";
 import { stopBotsWorkingOnChat } from "@/lib/bots/botsClient";
+import {
+  enqueuePrompt,
+  runNextQueuedPrompt,
+} from "@/lib/chat/promptQueue";
 
 export type { PromptMessage, FocusedChatAttachment, CreateAction, OrchestratorResult };
 
@@ -102,6 +108,15 @@ export interface UseChatEngineDeps {
   studioModeInstructionsRef?: React.MutableRefObject<string>;
   /** Studio Research source dropdown — read at send-time. */
   researchSourcePrefsRef?: React.MutableRefObject<string>;
+  /** Studio Build / Research / Chat page LLM pick: the model id to send as
+   *  `model` for this turn, or "" for no override. Read at send-time so the
+   *  name under the chat bar always wins over the memoized send handler.
+   *  See src/hooks/useBuildModelSelection.ts. */
+  buildTurnModelRef?: React.MutableRefObject<string>;
+  /** Studio Imagine page image/video generator id, or "". */
+  imagineModelRef?: React.MutableRefObject<string>;
+  /** Fresh read of the under-bar picker (storage) at send time. */
+  resolveStudioSendModels?: () => { llmOverride: string; imageModel: string };
 }
 
 /* ------------------------------------------------------------------ */
@@ -118,6 +133,20 @@ export interface UseChatEngineReturn {
   handleChatInputChange: (value: string) => void;
   isChatLoading: boolean;
   setIsChatLoading: Dispatch<SetStateAction<boolean>>;
+  /**
+   * An ARTIFACT build/refine is running this turn (keeps the build thinking
+   * lane on). Deliberately false for workspace turns: those say "Thinking…"
+   * until real tool statuses stream in.
+   */
+  inFlightBuild: boolean;
+  /**
+   * A workspace (on-disk) build turn is running. Keeps the thinking indicator
+   * visible through gaps between tool calls without arming the build-phrase
+   * lane — the live tool statuses are the workspace animation.
+   */
+  inFlightWorkspace: boolean;
+  /** Artifact source streamed so far this turn, or null when nothing is building. */
+  buildProgress: { tool: string; title: string; code: string; chars: number } | null;
   chatFlowMode: "idle" | "clarifying" | "generating";
   chatStatusText: string;
   setChatStatusText: Dispatch<SetStateAction<string>>;
@@ -159,6 +188,7 @@ export interface UseChatEngineReturn {
 
   /* Callbacks */
   handleChatSend: (opts?: ChatSendOpts) => Promise<void>;
+  drainPromptQueue: (targetChatId?: string) => void;
   handleStopAi: (targetChatId?: string) => void;
   handleDictateToggle: () => void;
   /* Voice Mode controls. */
@@ -202,6 +232,9 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     setShowAttachMenu,
     studioModeInstructionsRef,
     researchSourcePrefsRef,
+    buildTurnModelRef,
+    imagineModelRef,
+    resolveStudioSendModels,
   } = deps;
 
   /* ---------- State (hook-local) ---------- */
@@ -209,6 +242,16 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const [chatInputHasText, setChatInputHasText] = useState(false);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [inFlightBuild, setInFlightBuild] = useState(false);
+  const [inFlightWorkspace, setInFlightWorkspace] = useState(false);
+  // Live build preview: the artifact source the model has written so far on
+  // this turn. Null whenever no build is streaming. Cosmetic — the finished
+  // artifact still arrives through the tool result.
+  const [buildProgress, setBuildProgress] = useState<{
+    tool: string;
+    title: string;
+    code: string;
+    chars: number;
+  } | null>(null);
   const [chatFlowMode, setChatFlowMode] = useState<"idle" | "clarifying" | "generating">("idle");
   const [chatStatusText, setChatStatusText] = useState("");
   const [expandedAiMsgIds, setExpandedAiMsgIds] = useState<Set<string>>(new Set());
@@ -270,6 +313,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const activeAiAbortRef = useRef<AbortController | null>(null);
   const streamChatIdRef = useRef<string | null>(null);
   const isSendingRef = useRef(false);
+  const handleChatSendRef = useRef<(opts?: ChatSendOpts) => Promise<void>>(async () => {});
   // Per-board concurrency tracking so chats in a thread can stream
   // independently without sharing a single send-lock or stream cursor.
   const sendingBoardsRef = useRef<Set<string>>(new Set());
@@ -461,6 +505,22 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
 
   const getKnowledgeBaseContext = useCallback(() => getCachedKbText(), [getCachedKbText]);
 
+  const drainPromptQueue = useCallback((targetChatId?: string) => {
+    runNextQueuedPrompt(
+      targetChatId || getActiveThreadChatId() || chatId || routeChatId,
+      (item) => {
+        void handleChatSendRef.current({
+          chatId: item.chatId,
+          text: item.text,
+          attachments: item.attachments,
+          composerMode: item.composerMode,
+          surfaceContext: item.surfaceContext,
+          fromQueue: true,
+        });
+      },
+    );
+  }, [chatId, routeChatId]);
+
   /* ---------- handleChatSend (delegates to orchestrator) ---------- */
 
   const handleChatSend = useCallback(async (opts?: ChatSendOpts) => {
@@ -468,19 +528,56 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     const { streamChatId, browserSend, offRoute } = target;
     if (browserSend && !target.explicitChatId) return;
     const text = String(opts?.text ?? chatInputRef.current).trim();
-    const railAttachments = browserSend ? (opts?.attachments || []) : [];
-    const hasAttachment = browserSend
-      ? railAttachments.length > 0
-      : focusedChatAttachments.length > 0 ||
-        Boolean(pendingBrickActionDataRef.current?.videoId);
+    const sendAttachments = (browserSend || opts?.attachments != null)
+      ? [...(opts?.attachments || [])]
+      : [...focusedChatAttachments];
+    const hasAttachment = sendAttachments.length > 0 ||
+      (!browserSend && !opts?.fromQueue && Boolean(pendingBrickActionDataRef.current?.videoId));
     if (!text && !hasAttachment) return;
     if (!streamChatId) return;
 
-    const sendMode = browserSend ? "none" : composerModeRef.current;
+    const sendMode = (opts?.composerMode as ComposerMode | undefined)
+      || (browserSend ? "none" : composerModeRef.current);
+    const busy = sendingBoardsRef.current.has(streamChatId)
+      || !!getThreadSnapshot(streamChatId)?.isChatLoading;
+    if (busy) {
+      enqueuePrompt({
+        chatId: streamChatId,
+        text,
+        attachments: sendAttachments,
+        composerMode: sendMode,
+        kind: "chat",
+        surfaceContext: opts?.surfaceContext,
+        prepend: !!opts?.fromQueue,
+        ...(opts?.fromQueue ? { id: undefined } : {}),
+      });
+      if (!browserSend && !opts?.fromQueue) {
+        setChatInput("");
+        setFocusedChatAttachments([]);
+      }
+      return;
+    }
+
     if (streamChatId) await hydrateThreadSnapshot(streamChatId, user?.id);
-    if (sendingBoardsRef.current.has(streamChatId)) return;
-    const targetSnap = streamChatId ? getThreadSnapshot(streamChatId) : null;
-    if (targetSnap?.isChatLoading) return;
+    if (
+      sendingBoardsRef.current.has(streamChatId) ||
+      !!getThreadSnapshot(streamChatId)?.isChatLoading
+    ) {
+      enqueuePrompt({
+        chatId: streamChatId,
+        text,
+        attachments: sendAttachments,
+        composerMode: sendMode,
+        kind: "chat",
+        surfaceContext: opts?.surfaceContext,
+        prepend: !!opts?.fromQueue,
+      });
+      if (!browserSend && !opts?.fromQueue) {
+        setChatInput("");
+        setFocusedChatAttachments([]);
+      }
+      return;
+    }
 
     chatUserScrolledUpRef.current = false;
     if (!browserSend) {
@@ -488,43 +585,17 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     }
     const now = Date.now();
     const sig = `${streamChatId}|${text.length > 100 ? text.slice(0, 100) : text}|${
-      browserSend ? railAttachments.length : focusedChatAttachments.length
+      sendAttachments.length
     }`;
-    if (lastSendSigRef.current.text === sig && now - lastSendSigRef.current.at < 900) return;
+    if (!opts?.fromQueue && lastSendSigRef.current.text === sig && now - lastSendSigRef.current.at < 900) return;
     lastSendSigRef.current = { text: sig, at: now };
 
     // Browser work is the MODEL's call now, not a classifier's. The model sees
     // local_browser_agent (name + description) in its tool schemas and decides
     // for itself when a task belongs in the browser — no pre-send intercept,
     // no keyword walls, no offer round-trip. Chat answers everything else.
-
-    // Chat (and any non-Imagine send) must not generate images. Instant
-    // redirect so "make me a logo" never reaches the stream — Imagine
-    // is the only lane that arms lykn_generate_image / the batch canvas.
-    if (sendMode !== "image" && detectImageAsk(text)) {
-      const notice = imagineSwitchNotice();
-      if (!browserSend) setChatInput("");
-      bindThreadStateCallbacks(streamChatId, {
-        setChatStatusText,
-        setChatMessages,
-        setIsChatLoading,
-        setChatFlowMode,
-      }).setChatMessages((prev): PromptMessage[] => [...prev, {
-        id: `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
-        role: "user",
-        content: text,
-        kind: "prompt",
-        createdAt: new Date().toISOString(),
-        aiResponse: notice,
-      }]);
-      try {
-        const snap = ensureThreadSnapshot(streamChatId);
-        snap.aiThread.push({ role: "user", content: text });
-        snap.aiThread.push({ role: "assistant", content: notice });
-        if (snap.aiThread.length > 40) snap.aiThread.splice(0, snap.aiThread.length - 40);
-      } catch { /* the thread is a convenience; never fail a send over it */ }
-      return;
-    }
+    // Studio mode is the same: the selected pill owns the send. A Build
+    // brief that mentions "graphics" must not bounce to Imagine.
 
     streamChatIdRef.current = streamChatId;
     const priorSnap = getThreadSnapshot(streamChatId);
@@ -553,13 +624,13 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     });
     isSendingRef.current = true;
     sendingBoardsRef.current.add(streamChatId);
-    const sentAttachments = browserSend ? [...railAttachments] : [...focusedChatAttachments];
-    const brickActionData = browserSend ? null : pendingBrickActionDataRef.current;
-    if (!browserSend) pendingBrickActionDataRef.current = null;
+    const sentAttachments = [...sendAttachments];
+    const brickActionData = browserSend || opts?.fromQueue ? null : pendingBrickActionDataRef.current;
+    if (!browserSend && !opts?.fromQueue) pendingBrickActionDataRef.current = null;
     if (brickActionData?.videoId && !sentAttachments.some((a: any) => a.videoId === brickActionData.videoId)) {
       sentAttachments.push({ type: "youtube", videoId: brickActionData.videoId, url: `https://www.youtube.com/watch?v=${brickActionData.videoId}`, name: `YouTube ${brickActionData.videoId}` } as any);
     }
-    if (!browserSend) {
+    if (!browserSend && !opts?.fromQueue) {
       setChatInput("");
       setComposerMode("none");
       setFocusedChatAttachments([]);
@@ -646,6 +717,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     const sendSnap = ensureThreadSnapshot(streamChatId);
     if (!offRoute) chatMessagesRef.current = sendSnap.chatMessages;
 
+    let typewriterText = "";
     try {
       // Build/refine/discuss intent classification lives in
       // src/lib/ai/artifactSendPlan.ts (pure; extracted verbatim from this
@@ -670,7 +742,24 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         aiThread: sendSnap.aiThread,
         linkedAppId: artifactAppRef.current.get(thisChatId),
       });
-      setInFlightBuild(Boolean(createArmed || refiningOpenArtifact));
+      // Workspace continuity: Build mode arms the workspace this turn, and a
+      // chat that has EVER built in the workspace stays armed on follow-ups —
+      // "add a level" after a reload must land in the same on-disk project,
+      // not fall back to an in-chat artifact because the composer chip reset.
+      const buildWorkspaceArmed =
+        !browserSend &&
+        isLocalModeAvailable() &&
+        (sendMode === "create:webapp" || isWorkspaceChat(thisChatId));
+      if (buildWorkspaceArmed && sendMode === "create:webapp") {
+        markWorkspaceChat(thisChatId);
+      }
+      // Workspace turns say "Thinking…" until real tool activity streams in —
+      // the build-phrase lane ("Writing the components…") would claim file
+      // work before any has happened, and the live tool statuses are the
+      // animation for that. Artifact turns still stream code from the first
+      // token, so their build lane stays armed at send time.
+      setInFlightBuild(Boolean(refiningOpenArtifact || (createArmed && !buildWorkspaceArmed)));
+      setInFlightWorkspace(buildWorkspaceArmed);
       if ((refiningOpenArtifact || attachedArtifact) && editTarget) {
         threadState.setChatMessages((prev) =>
           prev.map((m) => (m.id === promptId ? { ...m, editTarget } : m)),
@@ -695,12 +784,21 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           `🧑‍💻 Create/Build: starting fresh (ignoring open "${String(editArtifact.title || "").slice(0, 60)}")`,
         );
       }
-      await orchestrateChatSend({
+      const studioModels = resolveStudioSendModels?.() || {
+        llmOverride: String(buildTurnModelRef?.current || "").trim(),
+        imageModel: String(imagineModelRef?.current || "").trim(),
+      };
+      const sendResult = await orchestrateChatSend({
         text,
         promptId,
         composerMode: browserSend ? "none" : effectiveComposerMode,
+        // Studio Build session (sticky view mode, not the per-turn effective
+        // mode): arm the desktop build workspace even on conversational
+        // follow-ups like "now run the tests".
+        buildWorkspace: buildWorkspaceArmed,
         modeInstructions: browserSend ? undefined : (studioModeInstructionsRef?.current || undefined),
         researchSourcePref: researchSourcePrefsRef?.current || undefined,
+        imageModel: studioModels.imageModel || undefined,
         // Thread the open panel for surgical edits while Create/Build is armed,
         // including clear follow-up mutations in a sticky Build session. Chat
         // mode sends a discuss-only stub so discussion cannot patch it.
@@ -729,7 +827,14 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         conversationSummary: sendSnap.convoSummary,
         abortController: sendAbort,
         identity: {
-          selectedModel,
+          // Build page: the coding-model pill under the chat bar overrides
+          // the global chat model for the whole Build session (not just the
+          // tool turn) — a mid-conversation model swap would also drop the
+          // provider prompt cache, which is the expensive part of an edit
+          // loop. Browser-surface sends keep the global model.
+          selectedModel:
+            (!browserSend && studioModels.llmOverride) ||
+            selectedModel,
           customModelId: customModelId ?? null,
           chatId: streamChatId,
           routeChatId: streamChatId,
@@ -755,25 +860,63 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           setSelectedMediaIds,
           setShowMediaSuggestion,
         },
-        streamRefs: { ...sendStreamRefs, chatScrollRef, chatUserScrolledUpRef, chatProgrammaticScrollRef },
+        streamRefs: {
+          ...sendStreamRefs,
+          chatScrollRef,
+          chatUserScrolledUpRef,
+          chatProgrammaticScrollRef,
+          // Only the board the user is looking at drives the preview panel;
+          // a background board's build must not hijack it.
+          onArtifactProgress: offRoute ? undefined : setBuildProgress,
+        },
         typing: {
           typeResponseIntoChat: (pid: string, full: string) => typeResponseIntoChat(pid, full, streamChatId),
           maybeRunConversationSummary: () => maybeRunConversationSummary(streamChatId),
         },
         surfaceContext: browserSend ? opts?.surfaceContext : undefined,
       });
+      typewriterText = String(sendResult?.typewriterText || "");
     } catch (err: any) {
-      if (err?.name === "AbortError" && sendAbort !== activeAiAbortRef.current) { threadState.setChatStatusText(""); return; }
-      threadState.setChatFlowMode("idle");
-      const errMsg = user?.id
-        ? AI_TEMPORARY_FAILURE_TEXT
-        : AI_GUEST_TEMPORARY_FAILURE_TEXT;
-      threadState.setChatStatusText(errMsg);
-      threadState.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: errMsg } : m)));
+      if (err?.name === "AbortError") {
+        /* Stop / Paused already wrote the status for this board. */
+      } else {
+        threadState.setChatFlowMode("idle");
+        const errMsg = user?.id
+          ? AI_TEMPORARY_FAILURE_TEXT
+          : AI_GUEST_TEMPORARY_FAILURE_TEXT;
+        threadState.setChatStatusText(errMsg);
+        threadState.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: errMsg } : m)));
+      }
     } finally {
-      const stillOwnsGlobalAbort = !activeAiAbortRef.current || activeAiAbortRef.current === sendAbort;
       threadState.setIsChatLoading(false);
       setInFlightBuild(false);
+      setInFlightWorkspace(false);
+      setBuildProgress(null);
+      patchThreadSnapshot(streamChatId, { isChatLoading: false });
+    }
+    try {
+      if (typewriterText && !sendAbort.signal.aborted) {
+        await typeStreamReply(
+          {
+            state: threadState,
+            streamRefs: {
+              ...sendStreamRefs,
+              chatScrollRef,
+              chatUserScrolledUpRef,
+              chatProgrammaticScrollRef,
+            },
+            abortController: sendAbort,
+          },
+          promptId,
+          typewriterText,
+        );
+        threadState.setChatStatusText("Answered");
+        if (user?.id) {
+          window.setTimeout(() => window.dispatchEvent(new Event("lyknchat_flush_save")), 300);
+        }
+      }
+    } finally {
+      const stillOwnsGlobalAbort = !activeAiAbortRef.current || activeAiAbortRef.current === sendAbort;
       patchThreadSnapshot(streamChatId, { abortController: null, isChatLoading: false });
       sendingBoardsRef.current.delete(streamChatId);
       streamRuntimeRef.current.delete(streamChatId);
@@ -781,8 +924,6 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       threadState.setChatFlowMode("idle");
       if (offRoute) {
         void persistOffRouteThread(streamChatId, user?.id);
-      } else if (user?.id && stillOwnsGlobalAbort) {
-        setTimeout(() => window.dispatchEvent(new Event("lyknchat_flush_save")), 300);
       }
       if (stillOwnsGlobalAbort && !browserSend) {
         window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
@@ -790,13 +931,15 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       if (stillOwnsGlobalAbort && activeAiAbortRef.current === sendAbort) {
         activeAiAbortRef.current = null;
       }
+      queueMicrotask(() => drainPromptQueue(streamChatId));
     }
   }, [
     focusedChatAttachments, setFocusedChatAttachments, selectedModel, customModelId, chatId, routeChatId, projectId, scopedProjectId, scopedProjectName, user?.id, user?.token, setChatInput, setComposerMode,
     getKnowledgeBaseContext, getCachedWorkspaceSummary,
     setConnectionCards, setShowConnectionCard, setMediaSuggestions, setSelectedMediaIds, setShowMediaSuggestion,
-    typeResponseIntoChat, maybeRunConversationSummary,
+    typeResponseIntoChat, maybeRunConversationSummary, resolveStudioSendModels, drainPromptQueue,
   ]);
+  handleChatSendRef.current = handleChatSend;
 
   const handleStopAi = useCallback((targetChatId?: string) => {
     const mounted = String(getActiveThreadChatId() || chatId || routeChatId || "");
@@ -829,6 +972,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     if (!bid || bid === mounted) {
       setIsChatLoading(false);
       setInFlightBuild(false);
+      setInFlightWorkspace(false);
       setChatFlowMode("idle");
       setChatStatusText("Stopped");
     }
@@ -873,6 +1017,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     chatInputRef, chatInputHasText, setChatInput, handleChatInputChange,
     isChatLoading, setIsChatLoading,
     inFlightBuild,
+    inFlightWorkspace,
+    buildProgress,
     chatFlowMode, chatStatusText, setChatStatusText,
     focusedChatAttachments, setFocusedChatAttachments,
     expandedAiMsgIds, expandedUserPromptIds, chatReactions, setChatReactions,
@@ -887,7 +1033,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     chatUserScrolledUpRef, chatProgrammaticScrollRef,
     pendingAiBrickActionRef, pendingBrickActionDataRef,
     youtubeTranscriptCacheRef,
-    handleChatSend, handleStopAi, handleDictateToggle,
+    handleChatSend, drainPromptQueue, handleStopAi, handleDictateToggle,
     toggleVoiceMode, setVoiceMode,
     handleChatPaste, handleOpenAttachments,
     removeFocusedAttachment, addFocusedAttachment, updateFocusedAttachment,

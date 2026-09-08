@@ -12,6 +12,7 @@ import {
   resolveExternalTools,
   executeMcpTool,
   resolveHttpMcpCallAuthority,
+  resolutionWithExplicitTool,
   searchMcpCatalog,
   MCP_TRUST_LEVELS,
   MCP_STATUSES,
@@ -368,12 +369,13 @@ export function registerMcpRoutes(app, { requireAuth, supabaseAdmin, PORT }) {
       );
       const incoming = task && typeof task === 'object' ? task : {};
       const authority = resolveHttpMcpCallAuthority({ incoming, connectionId, body: req.body });
-      const resolution = resolveExternalTools({
+      const ranked = resolveExternalTools({
         task: task || { objective: toolName, capabilities: authority.capabilities },
         connections,
         classifiedByConnectionId,
         botConnectionIds: authority.botConnectionIds,
       });
+      const resolution = resolutionWithExplicitTool(ranked, { connection: owned, toolName });
       const executed = await executeMcpTool({
         userId,
         approvalToken: req.body?.approvalToken,

@@ -50,13 +50,23 @@ const MIME_BY_EXT = {
   css: "text/css; charset=utf-8",
   html: "text/html; charset=utf-8",
   json: "application/json; charset=utf-8",
+  webmanifest: "application/manifest+json; charset=utf-8",
+  map: "application/json; charset=utf-8",
   svg: "image/svg+xml",
   png: "image/png",
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
   webp: "image/webp",
   gif: "image/gif",
+  ico: "image/x-icon",
+  woff: "font/woff",
   woff2: "font/woff2",
+  ttf: "font/ttf",
+  otf: "font/otf",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  mp4: "video/mp4",
+  wasm: "application/wasm",
   txt: "text/plain; charset=utf-8",
 };
 
@@ -187,6 +197,30 @@ async function serveVendor(filePath) {
   }
 }
 
+/** An app installed from a production build, served as-is — no shell, no compile. */
+function isStaticApp(app) {
+  return String(app?.entry || "") === "index.html";
+}
+
+/**
+ * Serve a static app's stored files verbatim. Binary assets come back as
+ * decoded bytes; a path with no extension falls back to index.html so a
+ * client-side router's routes survive a reload.
+ */
+function serveStaticFile(appId, filePath) {
+  const wanted = filePath || "index.html";
+  let entry = apps.readFileEntry(appId, wanted);
+  if (!entry && !wanted.includes(".")) entry = apps.readFileEntry(appId, "index.html");
+  if (!entry) return new Response("Not found", { status: 404 });
+
+  const body =
+    entry.encoding === "base64" ? Buffer.from(entry.content, "base64") : entry.content;
+  return new Response(body, {
+    status: 200,
+    headers: { "Content-Type": contentType(wanted.includes(".") ? wanted : "index.html"), ...NO_STORE },
+  });
+}
+
 /** Exported separately from the Electron wiring so tests can drive it directly. */
 async function handleRequest(request) {
   const parsed = parseRequestUrl(request?.url);
@@ -198,6 +232,10 @@ async function handleRequest(request) {
 
   const app = apps.getApp(appId);
   if (!app || app.deleted_at) return new Response("App not found", { status: 404 });
+
+  // Static apps own their whole path space — including index.html and any
+  // app.js their build emitted — so this branches before the JSX-app routes.
+  if (isStaticApp(app)) return serveStaticFile(appId, filePath);
 
   if (!filePath || filePath === "index.html") {
     return textResponse(buildAppShellHtml(app, vendorRuntime()), MIME_BY_EXT.html);
@@ -249,6 +287,7 @@ module.exports = {
   parseRequestUrl,
   handleRequest,
   invalidateBundle,
+  isStaticApp,
   schemeRegistration,
   bind,
 };

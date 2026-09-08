@@ -247,9 +247,9 @@ const BOT_ROUTE_SCHEMA = {
   properties: {
     tool: {
       type: "string",
-      enum: ["chat", "image", "build", "research", "local", "browser", "routine"],
+      enum: ["chat", "web", "image", "build", "research", "local", "browser", "routine"],
       description:
-        "chat = reply directly. image = generate a picture. build = build an app/site/tool artifact. research = an in-depth researched report. local = act on the user's own computer. browser = open the teammate's real browser and operate a live website or the user's online account (send, buy, book, post, check their mail). routine = set up standing or recurring work this teammate will run on its own later (a schedule, inbox watch, or file/page watch). Creating a routine does not run the work now.",
+        "chat = reply directly from what it already knows. web = look it up on the live web and answer (news, prices, current facts) - no browser window. image = generate a picture. build = build an app/site/tool artifact. research = an in-depth researched report. local = act on the user's own computer. browser = open the teammate's real browser and operate a live website or the user's online account (send, buy, book, post, check their mail). routine = set up standing or recurring work this teammate will run on its own later (a schedule, inbox watch, or file/page watch). Creating a routine does not run the work now.",
     },
     reason: { type: "string", description: "One short sentence, for the trace." },
   },
@@ -318,6 +318,8 @@ function normalizeAnswerOptions(raw) {
 
 /** No single model call should ever be able to wedge a run indefinitely. */
 const CALL_TIMEOUT_MS = 90000;
+/** How long a fetched auth token is reused across calls in one turn. */
+const AUTH_TOKEN_TTL_MS = 30_000;
 
 /** Transient upstream conditions worth one more attempt before giving up. */
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
@@ -361,14 +363,50 @@ function composeSignals(signal, timeout) {
   return signal || timeout || undefined;
 }
 
-function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage = null, timeoutMs = CALL_TIMEOUT_MS } = {}) {
+function createAgentModel({
+  apiBase,
+  getAuthToken,
+  fetchImpl,
+  arm = "",
+  onUsage = null,
+  timeoutMs = CALL_TIMEOUT_MS,
+  /**
+   * A Bot pinned to a specific model (Bots → model picker). Sent with every
+   * stage call; the server validates it against the catalog and the user's
+   * plan and applies it only to the stages that are the agent reasoning.
+   * Empty means the stage defaults stand, which is what every bot does until
+   * its owner changes the picker.
+   */
+  botModelId = "",
+} = {}) {
   const doFetch = fetchImpl || fetch;
 
-  async function call(stage, { system, user, imageUrl, schema, maxTokens = 900, signal = null }) {
+  // getAuthToken() reads live from the renderer over IPC on every call. A Bot
+  // turn makes three to five model calls, so that IPC round-trip was being
+  // paid three to five times before any request left the machine. Access
+  // tokens are valid for far longer than this window, so a short cache is
+  // safe; a 401 clears it and the next call reads live again.
+  let cachedToken = "";
+  let cachedTokenAt = 0;
+  async function authToken({ fresh = false } = {}) {
+    if (!fresh && cachedToken && Date.now() - cachedTokenAt < AUTH_TOKEN_TTL_MS) {
+      return cachedToken;
+    }
     const token = await getAuthToken?.().catch(() => null);
+    cachedToken = token || "";
+    cachedTokenAt = token ? Date.now() : 0;
+    return token;
+  }
+
+  async function call(stage, { system, user, imageUrl, schema, maxTokens = 900, signal = null }) {
+    const token = await authToken();
     if (!token) throw new AgentModelUnavailableError("not signed in");
 
-    const body = JSON.stringify({ stage, system, user, imageUrl, schema, maxTokens, ...(arm ? { arm } : {}) });
+    const body = JSON.stringify({
+      stage, system, user, imageUrl, schema, maxTokens,
+      ...(arm ? { arm } : {}),
+      ...(botModelId ? { botModelId } : {}),
+    });
     let res;
     let lastError = "";
     // One retry. Two calls to a struggling upstream is help; five is a
@@ -400,6 +438,12 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
       await sleep(res.status === 429 ? 1500 : 600, signal);
     }
 
+    if (res.status === 401 || res.status === 403) {
+      // Cached token is stale or was revoked — drop it so the next call reads
+      // live rather than replaying the dead one for the whole TTL.
+      cachedToken = "";
+      cachedTokenAt = 0;
+    }
     if (!res.ok && UNAVAILABLE_STATUSES.has(res.status)) {
       // Not signed in, rate limited, or the service is down - all recoverable
       // by falling back, none of them a reason to fail the user's task with
@@ -544,6 +588,7 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
           'The teammate really can do all of this. In particular it can open a real browser signed in to the user\'s own accounts and operate it - send mail, buy, book, post, fill and submit forms. Answering "browser" is exactly what makes that happen (the teammate starts the browser immediately). It can also set a standing routine it will run later. Never answer "chat" because a task seems beyond a chat assistant - whether something is possible is not your call.',
           "",
           '"chat" - questions, opinions, explanations, WRITING or editing text (including drafting an email or message the user has not asked to send), math, brainstorming, advice, summaries of the conversation. A message that merely MENTIONS a website, app, or product is still chat.',
+          '"web" when the user wants something looked up on the public web: the news, headlines, prices, scores, release dates, "what is happening with X", "is Y still true", a quick check on a company or person, or any fact that has to be current. This searches and answers without opening a browser window. Reading PUBLIC information is "web"; it only becomes "browser" when the answer is behind the user\'s own login or when something has to be clicked, filled, sent, or bought.',
           '"image" only when the user asks to generate, draw, or design a picture: art, a logo, a photo, a visual.',
           '"build" only when the user asks to build a working deliverable: an app, website, page, game, or interactive tool.',
           '"research" only when the user asks for a deep, sourced report or thorough investigation - not for a quick factual answer.',
@@ -566,7 +611,9 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
         maxTokens: 120,
         signal,
       });
-      const tool = ["chat", "image", "build", "research", "local", "browser", "routine"].includes(out.tool)
+      const tool = ["chat", "web", "image", "build", "research", "local", "browser", "routine"].includes(
+        out.tool,
+      )
         ? out.tool
         : "chat";
       return {

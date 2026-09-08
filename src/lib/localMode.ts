@@ -30,7 +30,7 @@ type LocalBridge = {
   localToolRun: (
     name: string,
     args: Record<string, unknown>,
-    opts?: { approvalToken?: string },
+    opts?: { approvalToken?: string; workspace?: boolean },
   ) => Promise<LocalToolResult>;
 };
 
@@ -139,7 +139,7 @@ export function subscribeLocalMode(cb: (enabled: boolean) => void): () => void {
 export async function runLocalTool(
   name: string,
   args: Record<string, unknown>,
-  opts: { approvalToken?: string } = {},
+  opts: { approvalToken?: string; workspace?: boolean } = {},
 ): Promise<LocalToolResult> {
   const bridge = getBridge();
   if (!bridge) {
@@ -148,6 +148,10 @@ export async function runLocalTool(
   try {
     return await bridge.localToolRun(name, args || {}, {
       approvalToken: typeof opts.approvalToken === "string" ? opts.approvalToken : "",
+      // Build workspace opt-in: when Local Mode is off, main confines the run
+      // to ~/LYKN/Builds instead of refusing it. Always requested — main owns
+      // the actual scoping decision.
+      workspace: opts.workspace !== false,
     });
   } catch (e) {
     return { ok: false, error: (e as Error)?.message || "Local tool failed" };

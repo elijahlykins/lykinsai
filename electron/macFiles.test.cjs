@@ -364,3 +364,30 @@ test("keeps watching until the last viewer leaves", async () => {
   await new Promise((r) => setTimeout(r, 400));
   assert.deepEqual(seen, []);
 });
+
+test("search finds a nested folder by name inside the allowlist", async () => {
+  fs.mkdirSync(path.join(root, "Projects", "specificfolderexample"), { recursive: true });
+  fs.writeFileSync(path.join(root, "Projects", "notes.txt"), "x");
+
+  const result = await macFiles.search({ query: "specificfolderexample" });
+
+  assert.equal(result.ok, true);
+  const hit = result.entries.find((e) => e.name === "specificfolderexample");
+  assert.ok(hit);
+  assert.equal(hit.type, "dir");
+  assert.equal(hit.path, path.join(root, "Projects", "specificfolderexample"));
+});
+
+test("search does not return paths outside the synced folders", async () => {
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "lykn-files-out-"));
+  fs.mkdirSync(path.join(outside, "specificfolderexample"));
+  fs.mkdirSync(path.join(root, "inside-only"));
+
+  const result = await macFiles.search({ query: "specificfolderexample" });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.entries.some((e) => String(e.path).startsWith(outside)),
+    false,
+  );
+});

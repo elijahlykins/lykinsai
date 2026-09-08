@@ -7,7 +7,6 @@ import { toast } from "@/components/ui/use-toast";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useUserPlan } from "@/lib/useUserPlan";
 import { API_BASE_URL } from "@/lib/api-config";
-import { fetchUsageDaily } from "@/lib/models/modelPlatformClient";
 import {
   BILLING_PERIODS,
   PLANS,
@@ -15,6 +14,7 @@ import {
   getDisplayPrice,
   isStudentEmail,
   planLabel,
+  plansForPicker,
 } from "@/lib/pricing-config";
 import { centsToMicros, formatUsd } from "../../../lib/billing/money.js";
 import { LG_FIELD } from "@/components/settings/glassTokens";
@@ -30,35 +30,7 @@ const GROUP = "lykn-settings-group overflow-hidden rounded-[14px]";
 const DIVIDE = "divide-y divide-black/[0.06] dark:divide-white/[0.08]";
 const MUTED = "text-[11px] leading-snug text-black/45 dark:text-white/40";
 
-// Chart palette — product categories only, never models or providers.
-const SPEND_ORDER = ["chat", "images", "agents", "other"];
-const SPEND_COLORS = {
-  chat: "#f97316",
-  images: "#8b5cf6",
-  agents: "#3b82f6",
-  other: "#9ca3af",
-};
-const SPEND_LABELS = {
-  chat: "Chat",
-  images: "Images",
-  agents: "Agents & tools",
-  other: "Other",
-};
-
 const fmt = (n) => Number(n || 0).toLocaleString();
-
-/** `image_gen` → `Image gen`. Action types come straight from the ledger. */
-function actionLabel(actionType) {
-  const words = String(actionType || "").replace(/_/g, " ").trim();
-  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Other";
-}
-
-/** $12.34 for small amounts, $1,234 once cents stop mattering. */
-function usdShort(micros) {
-  const dollars = Number(micros || 0) / 1_000_000;
-  if (dollars >= 100) return `$${Math.round(dollars).toLocaleString()}`;
-  return `$${dollars.toFixed(2)}`;
-}
 
 async function postBilling(path, body) {
   const res = await fetch(`${API_BASE_URL}${path}`, {
@@ -181,98 +153,6 @@ function UsageBarRow({ label, sublabel, right, percent, caption, showBar = true 
 }
 
 /**
- * 30-day stacked daily-spend chart. Pure divs on purpose: no chart library in
- * the settings chunk, and full control over light/dark styling. Categories
- * only — the payload carries no model or provider names.
- */
-function DailySpendChart({ daily }) {
-  const days = daily?.days || [];
-  const maxMicros = Math.max(1, ...days.map((d) => Number(d.total_micros) || 0));
-  // Round the axis ceiling up to a clean dollar step so gridlines read nicely.
-  const niceMax = (() => {
-    const dollars = maxMicros / 1_000_000;
-    const steps = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
-    const top = steps.find((s) => s >= dollars) || Math.ceil(dollars / 1000) * 1000;
-    return top * 1_000_000;
-  })();
-
-  const tick = (d) =>
-    new Date(`${d.date}T00:00:00Z`).toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric",
-      timeZone: "UTC",
-    });
-
-  return (
-    <div>
-      <div className="relative mt-1 h-40">
-        {[1, 0.5].map((f) => (
-          <div
-            key={f}
-            className="absolute inset-x-0 flex items-center gap-2"
-            style={{ bottom: `${f * 100}%` }}
-          >
-            <span className="w-10 shrink-0 text-right text-[10px] tabular-nums text-black/35 dark:text-white/30">
-              {usdShort(niceMax * f)}
-            </span>
-            <span className="h-px flex-1 bg-black/[0.06] dark:bg-white/[0.08]" />
-          </div>
-        ))}
-        <div className="absolute inset-x-0 bottom-0 flex items-center gap-2">
-          <span className="w-10 shrink-0 text-right text-[10px] tabular-nums text-black/35 dark:text-white/30">
-            $0
-          </span>
-          <span className="h-px flex-1 bg-black/[0.1] dark:bg-white/[0.12]" />
-        </div>
-        <div className="absolute bottom-0 left-12 right-0 top-0 flex items-end gap-[3px]">
-          {days.map((day) => (
-            <div
-              key={day.date}
-              className="flex h-full flex-1 flex-col justify-end"
-              title={`${tick(day)} · ${day.total_usd}`}
-            >
-              <div className="flex flex-col-reverse overflow-hidden rounded-[3px]">
-                {SPEND_ORDER.map((cat) => {
-                  const micros = Number(day.categories?.[cat]) || 0;
-                  if (micros <= 0) return null;
-                  return (
-                    <div
-                      key={cat}
-                      style={{
-                        height: `${(micros / niceMax) * 160}px`,
-                        background: SPEND_COLORS[cat],
-                      }}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-      {days.length > 1 ? (
-        <div className="mt-1.5 flex justify-between pl-12 text-[10px] text-black/35 dark:text-white/30">
-          <span>{tick(days[0])}</span>
-          <span>{tick(days[Math.floor(days.length / 2)])}</span>
-          <span>{tick(days[days.length - 1])}</span>
-        </div>
-      ) : null}
-      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 pl-1">
-        {SPEND_ORDER.map((cat) => (
-          <span key={cat} className="inline-flex items-center gap-1.5 text-[11px] text-black/55 dark:text-white/50">
-            <span
-              className="h-2 w-2 rounded-[2px]"
-              style={{ background: SPEND_COLORS[cat] }}
-            />
-            {SPEND_LABELS[cat]}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/**
  * Settings → Billing. Usage, add funds, and plan switching live here.
  * The marketing page at /billing is still the place to compare every feature.
  */
@@ -306,23 +186,10 @@ export default function BillingSettings({ initialTab = "usage", onNavigateAway }
     refetchOnWindowFocus: true,
   });
 
-  const { data: daily } = useQuery({
-    queryKey: ["usage-daily", user?.id || "guest"],
-    queryFn: () => fetchUsageDaily(30),
-    enabled: Boolean(user?.id),
-    staleTime: 60_000,
-  });
-
   const legacyCredits = data?.legacy_credits || null;
-  const includedChat = Boolean(data?.included_chat);
-  const usage = data?.usage || {
-    available_usd: "$0.00",
-    this_month_spent_usd: "$0.00",
-    recent: [],
-  };
+  const usage = data?.usage || { available_usd: "$0.00" };
   const breakdown = data?.bucket_breakdown || null;
   const funding = data?.funding || { presets: [], min_cents: 500, max_cents: 50000, custom: true };
-  const recent = usage.recent || [];
 
   const planName = planLabel(planId);
   const planDef = PLANS.find((p) => p.id === planId) || null;
@@ -515,29 +382,13 @@ export default function BillingSettings({ initialTab = "usage", onNavigateAway }
               <div className="space-y-1.5">
                 <GroupLabel>Included in {planName}</GroupLabel>
                 <div className={cn(GROUP, DIVIDE)}>
-                  {includedChat ? (
-                    <div className="flex items-center gap-3 px-4 py-3">
-                      <div className="min-w-0 flex-1">
-                        <p className="text-[13px] font-medium leading-snug text-black dark:text-white">
-                          Chat
-                        </p>
-                        <p className={cn("mt-0.5", MUTED)}>
-                          Standard chat is included with {planName} and never draws from your usage.
-                        </p>
-                      </div>
-                      <GlassBadge>
-                        <Check className="h-3 w-3" />
-                        Included
-                      </GlassBadge>
-                    </div>
-                  ) : null}
                   {planIncluded ? (
                     <UsageBarRow
-                      label="Included usage"
-                      sublabel="images, agents, premium models"
+                      label="Monthly usage"
+                      sublabel="chat, images, agents, premium models"
                       right={`${planIncluded.usedUsd} / ${planIncluded.grantedUsd} · ${planIncluded.percent}% used`}
                       percent={planIncluded.percent}
-                      caption={`Everything outside chat draws from this first. Beyond it, bonus and top-up balance take over.${periodEndLabel ? ` Resets ${periodEndLabel}.` : ""}`}
+                      caption={`Everything you do draws from this first. Beyond it, bonus and top-up balance take over.${periodEndLabel ? ` Resets ${periodEndLabel}.` : ""}`}
                     />
                   ) : null}
                   {promoBucket && promoBucket.granted_micros > 0 ? (
@@ -548,12 +399,11 @@ export default function BillingSettings({ initialTab = "usage", onNavigateAway }
                       caption="Promotional usage, like your signup bonus. Used after monthly usage runs out."
                     />
                   ) : null}
-                  {!includedChat
-                    && !planIncluded
+                  {!planIncluded
                     && !(promoBucket && promoBucket.granted_micros > 0) ? (
                     <div className="px-4 py-3">
                       <p className={MUTED}>
-                        Nothing included yet. Upgrade to a plan for included chat and monthly usage.
+                        Nothing included yet. Upgrade to a plan for monthly usage.
                       </p>
                     </div>
                   ) : null}
@@ -637,65 +487,6 @@ export default function BillingSettings({ initialTab = "usage", onNavigateAway }
                   ) : null}
                 </div>
               </div>
-
-              {/* ── Daily spend ──────────────────────────────────────────── */}
-              <div className="space-y-1.5">
-                <GroupLabel>Daily spend</GroupLabel>
-                <div className={cn(GROUP, "px-4 pb-4 pt-3.5")}>
-                  <div className="flex items-baseline justify-between gap-3">
-                    <p className="text-[13px] font-medium text-black dark:text-white">
-                      Last 30 days
-                    </p>
-                    <p className={MUTED}>Usage drawn from your balance</p>
-                  </div>
-                  <div className="mt-3 grid grid-cols-3 divide-x divide-black/[0.06] rounded-[10px] border border-black/[0.06] dark:divide-white/[0.08] dark:border-white/[0.08]">
-                    {[
-                      { label: "Total spend", value: daily?.total_usd || "$0.00" },
-                      { label: "Daily average", value: daily?.daily_average_usd || "$0.00" },
-                      { label: "Top category", value: daily?.top_category_label || "—" },
-                    ].map((stat) => (
-                      <div key={stat.label} className="px-3 py-2.5">
-                        <p className="text-[10.5px] uppercase tracking-[0.04em] text-black/40 dark:text-white/35">
-                          {stat.label}
-                        </p>
-                        <p className="mt-1 truncate text-[15px] font-semibold tabular-nums text-black dark:text-white">
-                          {stat.value}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-4">
-                    <DailySpendChart daily={daily} />
-                  </div>
-                </div>
-              </div>
-
-              {/* ── Recent activity (no models, no per-model cost) ───────── */}
-              {recent.length > 0 ? (
-                <div className="space-y-1.5">
-                  <GroupLabel>Recent activity</GroupLabel>
-                  <div className={cn(GROUP, DIVIDE)}>
-                    {recent.slice(0, 8).map((row) => (
-                      <div key={row.id} className="flex items-center gap-3 px-4 py-[11px]">
-                        <p className="min-w-0 flex-1 truncate text-[13px] text-black dark:text-white">
-                          {actionLabel(row.action)}
-                        </p>
-                        <p className="shrink-0 text-[11px] text-black/45 dark:text-white/40">
-                          {row.created_at
-                            ? new Date(row.created_at).toLocaleDateString(undefined, {
-                                month: "short",
-                                day: "numeric",
-                              })
-                            : ""}
-                        </p>
-                        <p className="w-16 shrink-0 text-right text-[13px] tabular-nums text-black dark:text-white">
-                          {row.signed_usd || row.amount_usd}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
             </div>
           ) : tab === "topup" ? (
             <div className="space-y-5">
@@ -812,7 +603,7 @@ export default function BillingSettings({ initialTab = "usage", onNavigateAway }
               />
 
               <div className="space-y-2">
-                {PLANS.filter((p) => p.checkout !== false || p.comingSoon).map((plan) => {
+                {plansForPicker(planId).filter((p) => p.checkout !== false || p.comingSoon).map((plan) => {
                   const isCurrent = plan.id === planId;
                   const price = getDisplayPrice(plan, period);
                   const savings = period === BILLING_PERIODS.ANNUAL ? getAnnualSavings(plan) : 0;

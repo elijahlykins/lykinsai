@@ -1,11 +1,8 @@
 /**
- * Cross-mode ask detection for the Studio's sticky mode pages (Chat /
- * Build / Imagine / Research). Explicit deliverable requests route down
- * the active page's pipeline, so a clearly out-of-lane commission
- * ("generate an image of a dog" on Chat or Research) must be caught
- * BEFORE dispatch. Ordinary questions remain conversational in every
- * mode. Phrase lists are trimmed-down mirrors of lib/imageGenIntent.cjs
- * and lib/artifactBuildIntent.cjs.
+ * Cross-mode ask detection for Studio (Chat / Build / Imagine / Research).
+ * Phrase lists remain for tests and for Imagine's own generate-vs-discuss
+ * signals. They must not hop the user to another mode — the selected pill
+ * owns the send, and the model reads the full prompt.
  */
 
 export type StudioStickyMode = "chat" | "build" | "imagine" | "research";
@@ -75,6 +72,39 @@ function commissioned(text: string, nounRe: RegExp): boolean {
   return false;
 }
 
+const VIDEO_NOUN = String.raw`(?:videos?|clips?|animations?|movies?|films?|reels?|time[- ]?lapses?|b[- ]?rolls?)`;
+/**
+ * Compound nouns where "video"/"film"/... is a modifier, not the deliverable:
+ * "video game screenshot", "movie poster", "film noir portrait", "clip art".
+ * Those are image asks and must not divert to the video lane.
+ */
+const VIDEO_COMPOUND_GUARD = String.raw`(?!\s*(?:games?|posters?|thumbnails?|scripts?|titles?|ideas?|stills?|storyboards?|calls?|art\b|cameras?|editors?|essays?|reviews?|summar\w*|transcripts?|covers?|noir))`;
+const VIDEO_ADJ = String.raw`(?:(?:short|quick|little|small|cool|epic|funny|cinematic|animated|looping|vertical|horizontal|\d+\s*-?\s*sec(?:ond)?s?)\s+){0,3}`;
+const VIDEO_NOUN_RE = new RegExp(String.raw`^${VIDEO_ADJ}${VIDEO_NOUN}\b${VIDEO_COMPOUND_GUARD}`, "i");
+/** Bare video prompt: "a video of a porsche drifting", "clip of rain on glass". */
+const VIDEO_NOUN_PROMPT_RE = new RegExp(
+  String.raw`^(?:(?:a|an|the|some)\s+)?${VIDEO_ADJ}${VIDEO_NOUN}\b${VIDEO_COMPOUND_GUARD}\s+(?:of|for|with|showing|depicting|where|about)\b`,
+  "i",
+);
+/** "animate this photo", "animate my logo" — motion is the whole ask. */
+const ANIMATE_VERB_RE = /\banimate\b(?:\s+(?:me|us))?\s+(?:a|an|the|this|that|these|those|my|it)\b/i;
+
+/**
+ * Does this prompt commission a VIDEO? Imagine uses it to divert a send to
+ * the video lane (one clip on the default video model) even when the
+ * composer toggle was left on images — "make me a video of X" must never
+ * come back as four stills. Same discuss-vs-generate guards as images:
+ * questions about videos and "summarize this video" stay conversational.
+ */
+export function detectVideoAsk(text: string): boolean {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (IMAGE_ANALYSIS_LEAD_RE.test(t)) return false;
+  if (QUESTION_LEAD_RE.test(t)) return false;
+  if (commissioned(t, VIDEO_NOUN_RE) || VIDEO_NOUN_PROMPT_RE.test(t)) return true;
+  return ANIMATE_VERB_RE.test(t);
+}
+
 export function detectImageAsk(text: string): boolean {
   const t = String(text || "").trim();
   if (!t) return false;
@@ -94,44 +124,14 @@ export function detectResearchAsk(text: string): boolean {
 }
 
 /**
- * Given the active sticky mode and the typed message, decide whether the ask
- * clearly belongs to a DIFFERENT mode. Conservative by design: any in-lane
- * signal wins (no redirect), so ambiguous asks keep today's behavior.
+ * Keyword mode-hops are retired. The selected Studio pill owns the send;
+ * the model reads the full prompt and can advise a switch. Kept as a stub
+ * so older tests and callers fail closed (never bounce).
  */
 export function detectStudioModeRedirect(
-  text: string,
-  mode: StudioStickyMode,
+  _text: string,
+  _mode: StudioStickyMode,
 ): { target: Exclude<StudioStickyMode, "chat">; label: string } | null {
-  const t = String(text || "").trim();
-  if (!t || t.length > 600) return null;
-
-  const wantsImage = detectImageAsk(t);
-  const wantsBuild = detectBuildAsk(t);
-  const wantsResearch = detectResearchAsk(t);
-
-  if (mode === "chat") {
-    if (wantsImage) return { target: "imagine", label: "Imagine" };
-    return null;
-  }
-  if (mode === "imagine") {
-    if (wantsImage) return null;
-    if (wantsBuild) return { target: "build", label: "Build" };
-    if (wantsResearch) return { target: "research", label: "Research" };
-    return null;
-  }
-  if (mode === "research") {
-    if (wantsResearch) return null;
-    if (wantsImage) return { target: "imagine", label: "Imagine" };
-    if (wantsBuild) return { target: "build", label: "Build" };
-    return null;
-  }
-  // build — Build also produces documents/reports as artifacts, so only an
-  // explicit research mention redirects out of it.
-  if (wantsBuild) return null;
-  if (wantsImage) return { target: "imagine", label: "Imagine" };
-  if (/\bresearch\b/i.test(t) && wantsResearch) {
-    return { target: "research", label: "Research" };
-  }
   return null;
 }
 

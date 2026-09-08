@@ -12,9 +12,9 @@
 // syncSubscriptionToBilling), requireAppAccess, and checkAiUsageLimit use
 // the same helpers/caches (userPlanCache, appAccessGrace never moved):
 // - stripe / supabaseAdmin / requireAuth are bootstrap singletons.
-// - PLAN_LIMITS / creditPackById come from src/lib/pricing-config.js —
-//   passed via deps so the frontend-config import edge stays in server.js
-//   only (cross-boundary config ownership is a later phase, not this Wave).
+// - creditPackById comes from src/lib/pricing-config.js — passed via deps
+//   so the frontend-config import edge stays in server.js only
+//   (cross-boundary config ownership is a later phase, not this Wave).
 // - getCreditWallet (lib/billing/creditWallet.js) is a stateless module
 //   function; ESM module cache preserves identity, direct import.
 // - isCompedProEmail / COMPED_PRO_PLAN_ID implement the comped-email
@@ -23,15 +23,15 @@ import { z, validate } from '../../validation.js';
 import { getCreditWallet } from '../../lib/billing/creditWallet.js';
 import {
   customerUsagePayload,
-  ensureSignupGrant,
   getUsageBalance,
-  listUsageHistory,
-  monthUsageSpent,
   usageBucketBreakdown,
 } from '../../lib/billing/usageBalance.js';
+import { applySignupGrant } from '../../lib/billing/applySignupGrant.js';
+import { SIGNUP_GRANT_USD } from '../../lib/billing/planCatalog.js';
 import { normalizeUsageFundRequest, usageFundingPresets } from '../../lib/billing/usageFunding.js';
 import { assertProCheckoutPriceNotLegacy } from '../../lib/billing/stripePriceConfig.js';
 import { USAGE_FUNDING } from '../../lib/billing/usagePricing.js';
+import { isUnlimitedUsageEmail } from '../../lib/billing/internalAccounts.js';
 export function registerBillingRoutes(app, deps) {
   const {
     requireAuth,
@@ -51,7 +51,6 @@ export function registerBillingRoutes(app, deps) {
     COMPED_PRO_PLAN_ID,
     PLAN_IDS,
     BILLING_PERIODS,
-    PLAN_LIMITS,
     creditPackById,
     availableCreditPacks,
     STRIPE_PRICE_MAP,
@@ -82,25 +81,34 @@ export function registerBillingRoutes(app, deps) {
             has_active_subscription: true,
             needs_trial_checkout: false,
             comped: true,
+            unlimited_usage: isUnlimitedUsageEmail(req.user?.email),
+            out_of_usage: false,
           }),
         );
       }
 
       const row = await loadBillingRow(userId);
       const payload = billingMePayload(row);
-      // Free accounts run on the dollar Usage Balance. Make sure the one-time
-      // $10 signup grant exists (idempotent no-op afterwards), then let a
-      // positive balance satisfy the client gate — no forced card wall.
-      if (payload.needs_trial_checkout) {
-        await ensureSignupGrant(userId).catch(() => {});
-        const usage = await getUsageBalance(userId);
+      // Every account gets the one-time $20 signup grant (ledger idempotency).
+      // The notice flag is set only on the first grant so existing accounts
+      // do not suddenly see a welcome card.
+      const applied = await applySignupGrant({ userId, supabaseAdmin }).catch((err) => {
+        console.warn('⚠️ ensureSignupGrant failed:', err?.message || err);
+        return null;
+      });
+      const usage = await getUsageBalance(userId).catch(() => null);
+      if (usage) {
         payload.usage_balance = {
-          available_micros: usage?.available || 0,
-          available_usd: usage?.display || '$0.00',
+          available_micros: usage.available || 0,
+          available_usd: usage.display || '$0.00',
         };
-        if ((usage?.available || 0) > 0) {
-          payload.needs_trial_checkout = false;
-        }
+      }
+      payload.signup_grant_usd = applied?.amountUsd || SIGNUP_GRANT_USD;
+      payload.signup_grant_notice = Boolean(applied?.notice);
+      // Free accounts run on the dollar Usage Balance. A positive balance
+      // satisfies the client gate — no forced card wall.
+      if (payload.needs_trial_checkout && (usage?.available || 0) > 0) {
+        payload.needs_trial_checkout = false;
       }
       // Leftover purchased legacy credits keep access until the migration
       // converts them to Usage dollars.
@@ -112,7 +120,13 @@ export function registerBillingRoutes(app, deps) {
       }
       payload.out_of_usage = payload.needs_trial_checkout;
       payload.needs_trial_checkout = false;
-      if (payload.out_of_usage) payload.add_funds = true;
+      if (isUnlimitedUsageEmail(req.user?.email)) {
+        payload.out_of_usage = false;
+        payload.unlimited_usage = true;
+        delete payload.add_funds;
+      } else if (payload.out_of_usage) {
+        payload.add_funds = true;
+      }
       return res.json(payload);
     } catch (err) {
       console.error('❌ /api/billing/me error:', err);
@@ -259,8 +273,8 @@ export function registerBillingRoutes(app, deps) {
 
   // ── /api/billing/credits ────────────────────────────────────────────────────
   // Everything the billing settings screen needs: plan, dollar Usage Balance
-  // with its bucket breakdown, recent activity, and the top-up options. Kept
-  // off /api/billing/me because that route runs on every app load.
+  // with its bucket breakdown, and the top-up options. Kept off
+  // /api/billing/me because that route runs on every app load.
   //
   // The path keeps its historical name for client compatibility; the payload
   // is Usage Balance, not credits. Legacy wallet balances only appear while a
@@ -271,22 +285,16 @@ export function registerBillingRoutes(app, deps) {
       if (!userId) return res.status(401).json({ error: 'Not authenticated' });
 
       const { planId } = await resolveUserPlan(userId, req.user?.email);
-      const includedChat = Boolean(PLAN_LIMITS[planId]?.unlimitedNormalChat);
 
-      const [wallet, usage, history] = await Promise.all([
+      const [wallet, usage] = await Promise.all([
         getCreditWallet(userId),
         getUsageBalance(userId),
-        listUsageHistory(userId, 20),
       ]);
-      const [month, breakdown] = await Promise.all([
-        monthUsageSpent(userId, history),
-        usageBucketBreakdown(userId, usage),
-      ]);
+      const breakdown = await usageBucketBreakdown(userId, usage);
 
       return res.json({
         plan: planId,
-        included_chat: includedChat,
-        usage: customerUsagePayload(usage, history, month),
+        usage: customerUsagePayload(usage),
         bucket_breakdown: breakdown,
         funding: {
           presets: usageFundingPresets(),

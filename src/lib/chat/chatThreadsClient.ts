@@ -1,6 +1,6 @@
 import { supabase } from "@/lib/supabase";
 import { filterLyknChatsWithContext, type LyknChatListRow } from "@/lib/lyknChat/lyknChatHasContext";
-import { setPendingBoardThread } from "@/lib/chat/chatThreadAssign";
+import { consumePendingBoardThread, setPendingBoardThread } from "@/lib/chat/chatThreadAssign";
 
 export type ChatThreadRow = {
   id: string;
@@ -34,29 +34,52 @@ async function insertChatBoardRow(
   userId: string,
   chatId: string,
   threadId: string | null,
+  title = "New Chat",
 ): Promise<void> {
+  const savedTitle = String(title || "New Chat").trim() || "New Chat";
   const payload: Record<string, string> = {
     id: chatId,
     user_id: userId,
-    title: "New Chat",
+    title: savedTitle,
   };
   if (threadId) payload.thread_id = threadId;
 
   const { error } = await supabase.from("lykn_chats").insert(payload);
   if (!error) return;
-  if (error.code === "23505") return;
+  if (error.code === "23505") {
+    if (threadId) {
+      const { error: linkErr } = await supabase
+        .from("lykn_chats")
+        .update({ thread_id: threadId })
+        .eq("id", chatId)
+        .eq("user_id", userId)
+        .is("thread_id", null);
+      if (linkErr && !isMissingThreadSchema(linkErr)) throw linkErr;
+    }
+    return;
+  }
 
   if (threadId && isMissingThreadSchema(error)) {
     const { error: retryErr } = await supabase.from("lykn_chats").insert({
       id: chatId,
       user_id: userId,
-      title: "New Chat",
+      title: savedTitle,
     });
     if (!retryErr || retryErr.code === "23505") return;
     throw retryErr;
   }
 
   throw error;
+}
+
+/** Create the `lykn_chats` row on first real save, not when the composer opens. */
+export async function ensureChatBoardRow(
+  userId: string,
+  chatId: string,
+  title = "New Chat",
+): Promise<void> {
+  const threadId = consumePendingBoardThread(chatId);
+  await insertChatBoardRow(userId, chatId, threadId, title);
 }
 
 export async function fetchChatThreadsWithBoards(userId: string): Promise<ChatThreadWithBoards[]> {
@@ -243,11 +266,12 @@ export async function ensureBoardThread(
   return threadId;
 }
 
-/** Plain new chat — no thread until the user opts in from the chat UI. */
+/** Plain new chat — mint an id only. The `lykn_chats` row is created on first save. */
 export async function createNewChat(userId: string): Promise<{ chatId: string }> {
-  const chatId = crypto.randomUUID();
-  await insertChatBoardRow(userId, chatId, null);
-  return { chatId };
+  if (!String(userId || "").trim()) {
+    throw new Error("signed-in user required");
+  }
+  return { chatId: crypto.randomUUID() };
 }
 
 /** Link the current chat to a new sibling chat (creates the thread on first use). */
@@ -283,8 +307,6 @@ export async function beginThreadFromBoard(
     .eq("user_id", userId);
   if (linkErr && !isMissingThreadSchema(linkErr)) throw linkErr;
 
-  await insertChatBoardRow(userId, chatId, linkThreadId);
-
   if (linkThreadId) {
     await supabase
       .from("lykn_chat_threads")
@@ -300,17 +322,11 @@ export async function createChatInThread(
   userId: string,
   threadId: string,
 ): Promise<{ chatId: string }> {
+  if (!String(userId || "").trim()) {
+    throw new Error("signed-in user required");
+  }
   const chatId = crypto.randomUUID();
   setPendingBoardThread(chatId, threadId);
-
-  await supabase
-    .from("lykn_chat_threads")
-    .update({ updated_at: new Date().toISOString() })
-    .eq("id", threadId)
-    .eq("user_id", userId);
-
-  await insertChatBoardRow(userId, chatId, threadId);
-
   return { chatId };
 }
 

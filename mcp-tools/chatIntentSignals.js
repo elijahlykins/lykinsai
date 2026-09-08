@@ -377,13 +377,65 @@ export function conversationHasAttachedDesktopFolder(conversation) {
   return conversation.some((m) => DESKTOP_FOLDER_MARKERS.test(String(m?.content || '')));
 }
 
+/** True when this turn already has a dropped Mac folder (body, history, or prompt). */
+export function turnHasAttachedDesktopFolder({ attachedFolders, conversation, prompt } = {}) {
+  if (Array.isArray(attachedFolders) && attachedFolders.some((f) => f && (f.path || f.name))) {
+    return true;
+  }
+  if (conversationHasAttachedDesktopFolder(conversation)) return true;
+  return DESKTOP_FOLDER_MARKERS.test(String(prompt || ''));
+}
+
 /** Follow-up that wants a file from a folder already on the thread. */
 export function messageLooksLikeAttachedFileFollowUp(msg) {
   const t = String(msg || '').toLowerCase();
   if (!t.trim()) return false;
   if (LOCAL_NAMED_FILE_RE.test(t)) return true;
-  if (/\b(this|that|the)\s+(file|folder|directory|listing)\b/.test(t)) return true;
-  if (/\b(what.?s in|what is in|read|open|show|look (?:at|inside)|check|list)\b/.test(t)) return true;
+  if (/\b(this|that|the)\s+(file|folder|directory|listing|repo|codebase)\b/.test(t)) return true;
+  if (/\b(attached folder|that folder|this folder|the folder you)\b/.test(t)) return true;
+  if (/\b(find|locate|where (is|does)|sits)\b/.test(t) && /\b(in this|in here)\b/.test(t)) return true;
+  if (/\b(what.?s in|what is in)\b/.test(t)) return true;
+  if (
+    /\b(read|open|show|check|list|look (?:at|inside)|analy[sz]e|summar(?:y|ise|ize)|review|inspect|go through|look through)\b/.test(t) &&
+    /\b(file|files|folder|folders|directory|listing|repo|codebase|in (this|here|it|them|those))\b/.test(t)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Current text is about a Mac folder/file already on this thread. */
+export function messageWantsAttachedFolderContext(msg) {
+  return (
+    looksLikeLocalSystemAsk(msg) ||
+    messageLooksLikeAttachedFileFollowUp(msg) ||
+    messageLooksLikeFolderInspectFollowUp(msg) ||
+    messageWantsLocalFolderPeek(msg)
+  );
+}
+
+/** Keep Local file tools on for this turn — not because a folder exists
+ *  somewhere in history, but because this send dropped one or the text is
+ *  actually about it. */
+export function turnWantsLocalFileTools({
+  localMode,
+  browserAsk,
+  message,
+  attachedFolders,
+  conversation,
+} = {}) {
+  if (!localMode || browserAsk) return false;
+  const t = String(message || '');
+  if (looksLikeLocalSystemAsk(t) || mightBeBrowserTaskAsk(t)) return true;
+  if (Array.isArray(attachedFolders) && attachedFolders.some((f) => f && (f.path || f.name))) {
+    return true;
+  }
+  if (conversationHasAttachedDesktopFolder(conversation) && messageWantsAttachedFolderContext(t)) {
+    return true;
+  }
+  if (conversationMentionedLocalFolder(conversation) && messageLooksLikeFolderInspectFollowUp(t)) {
+    return true;
+  }
   return false;
 }
 
@@ -431,6 +483,43 @@ export function messageWantsLocalDesktop(msg) {
   return (
     /\b(organi[sz]e|tidy|clean\s*up|arrange|straighten|line\s*up|sort)\b[^.?!]*\bdesktop\b/.test(t) ||
     /\bdesktop\b[^.?!]*\b(into|in|on)\s+(a\s+)?grid\b/.test(t)
+  );
+}
+
+/**
+ * Does this message ask LYKN to physically operate the Mac — look at the
+ * screen, click, type, drive a native app? Arms local_desktop_look/act.
+ * Deliberately needs app/screen context: a bare "click submit" in a coding
+ * chat is about the user's own page, not about driving their desktop.
+ */
+export function messageWantsDesktopControl(msg) {
+  const t = String(msg || '').toLowerCase();
+  return (
+    // "control/operate/drive Blender / the app / my mac for me"
+    /\b(control|operate|drive|take over)\b[^.?!]{0,60}\b(app|apps|blender|finder|mac|computer|mouse|keyboard|screen)\b/.test(t) ||
+    // "click/press/type ... on my screen / in the app / in blender's window"
+    /\b(click|press|type|drag|scroll)\b[^.?!]{0,60}\b(on (?:my|the) screen|in (?:the |that )?(?:app|window)|for me in)\b/.test(t) ||
+    // "screenshot / look at / see / what's on my screen"
+    /\b(screenshot|look at|see|watch|read)\b[^.?!]{0,40}\bmy (screen|monitor|display)\b/.test(t) ||
+    /\bwhat(?:'s| is)\s+(?:on\s+)?my screen\b/.test(t) ||
+    // "open <app> and (make|do|click|build)…" — operate a NATIVE app end-to-end
+    /\bopen\b[^.?!]{0,40}\b(and|then)\b[^.?!]{0,60}\b(click|make|create|build|edit|set up|do)\b/.test(t)
+  );
+}
+
+/**
+ * Does this message want an actual 3D asset generated — a mesh/GLB the user
+ * can use, not a picture of one? Arms lykn_generate_3d_model. Deliberately
+ * needs 3D vocabulary: "model" alone is ambiguous (AI models, fashion
+ * models), so the signal is "3D + asset-shaped noun" or a mesh file format.
+ */
+export function messageWants3dModel(msg) {
+  const t = String(msg || '').toLowerCase();
+  return (
+    /\b3\s*-?\s*d\b[^.?!]{0,60}\b(model|asset|mesh|character|object|prop|scan)\b/.test(t) ||
+    /\b(model|asset|mesh|character|object|prop)\b[^.?!]{0,40}\bin\s+3\s*-?\s*d\b/.test(t) ||
+    /\b(glb|gltf|obj file|fbx|usdz)\b/.test(t) ||
+    /\b(generate|create|make|build)\b[^.?!]{0,40}\b(3d printable|printable model)\b/.test(t)
   );
 }
 
@@ -501,14 +590,16 @@ export function resolveIntentChatToolNames(msg, opts = {}) {
   if (opts.translateMode || opts.exclusiveComposerMode === 'translate') {
     return [];
   }
+  // Image generation is Imagine-only — the armed-image lane keeps only the
+  // edit/OCR tool so stale clients degrade to a "switch to Imagine" reply.
   if ((opts.forceImage && !opts.forceArtifact) || opts.exclusiveComposerMode === 'image') {
-    return ['lykn_generate_image', 'lykn_process_image'];
+    return ['lykn_process_image'];
   }
   if (opts.exclusiveComposerMode === 'web') {
     return ['lykn_web_search', 'lykn_web_fetch'];
   }
 
-  if (opts.forceImage) add('lykn_generate_image', 'lykn_process_image');
+  if (opts.forceImage) add('lykn_process_image');
   if (opts.artifactToolName) add(opts.artifactToolName);
   if (opts.activeArtifactEditable && opts.activeArtifactTool) {
     add(opts.activeArtifactTool);
@@ -522,7 +613,7 @@ export function resolveIntentChatToolNames(msg, opts = {}) {
   const wantsWeb =
     opts.forceWebSearch ||
     opts.deepResearch ||
-    messageWantsWebTools(t, { conversation: opts.conversation });
+    messageWantsWebTools(t);
   const wantsPageFetch =
     opts.forcePageFetch ||
     messageWantsPageFetch(t) ||
@@ -577,7 +668,8 @@ export function resolveIntentChatToolNames(msg, opts = {}) {
 
 /**
  * True when this turn actually needs the agent tool loop.
- * Ordinary Q&A stays lean (0 schemas).
+ * Greetings stay lean (0 schemas). Real questions keep search tools so
+ * the model can decide whether to look something up.
  */
 export function messageWantsAgentTools(msg, opts = {}) {
   if (opts.forceImage || opts.artifactToolName || opts.activeArtifactEditable) return true;
@@ -590,7 +682,7 @@ export function messageWantsAgentTools(msg, opts = {}) {
   if (messageWantsSavedRecall(t)) return true;
   if (messageWantsProjectContext(t)) return true;
   if (opts.inProject && /\b(?:save|update|add|push|note|remember|write)\b/i.test(t)) return true;
-  if (messageWantsWebTools(t, { conversation: opts.conversation })) return true;
+  if (messageWantsWebTools(t)) return true;
   if (opts.forcePageFetch || messageWantsPageFetch(t) || messageWantsUrlFetch(t)) return true;
   if (messageWantsCalc(t)) return true;
   if (messageWantsVaultWrite(t)) return true;

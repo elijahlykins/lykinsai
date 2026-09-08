@@ -94,7 +94,13 @@ export type PromptMessage = {
    * the durable half — signed urls expire, and reSignChatAttachments mints a
    * fresh one from the path when the chat is loaded again.
    */
-  aiImages?: { url: string; storagePath?: string }[];
+  aiImages?: {
+    url: string;
+    storagePath?: string;
+    video?: boolean;
+    status?: "loading" | "done" | "error";
+    error?: string;
+  }[];
   /**
    * What Imagine needs to rebuild its canvas from this turn: the ratio the
    * grid draws at, whether this was a fresh generation or an edit of an
@@ -102,7 +108,7 @@ export type PromptMessage = {
    */
   imagine?: {
     aspect: string;
-    kind: "generate" | "refine" | "variations";
+    kind: "generate" | "refine" | "variations" | "video";
     concept?: string;
     batchId?: string;
     pending?: boolean;
@@ -282,8 +288,13 @@ export type FocusedChatAttachment = {
    *  be recovered and the image renders as "couldn't load image". */
   storagePath?: string;
   storageBucket?: string;
-  /** Absolute Mac path for a dragged-in desktop folder. */
+  /** Absolute Mac path for a dragged-in desktop folder, or a Mac app bundle. */
   localPath?: string;
+  /** `/app` chip: connected tool vs installed Mac application. */
+  appSource?: "connected" | "mac";
+  appId?: string;
+  catalogId?: string;
+  logoUrl?: string;
   /** Open Graph metadata for `link`/`bookmark` attachments, populated by
    *  the /api/unfurl endpoint so the chat renders the same rich
    *  LinkPreview card the Vault shows (hero image, site name, title,

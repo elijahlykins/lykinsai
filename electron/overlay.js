@@ -10,9 +10,19 @@ import {
   attachStatusRotation,
 } from "./overlay-ui/statusRotation.js";
 import { attachSidePanel } from "./overlay-ui/sidePanel.js";
+import { attachSourcesPill } from "./overlay-ui/sourcesPill.js";
 import { attachVoice } from "./overlay-ui/voice.js";
 import { attachListenMeeting } from "./overlay-ui/listenMeeting.js";
 import { attachAppUpdate } from "./overlay-ui/appUpdate.js";
+import { createAnswerTypewriter } from "./overlay-ui/answerTypewriter.js";
+import { attachSlashPath } from "./overlay-ui/slashPath.js";
+import { attachSlashModel } from "./overlay-ui/slashModel.js";
+import { attachSlashApp } from "./overlay-ui/slashApp.js";
+import { attachPlaceholderRotation } from "./overlay-ui/placeholderRotation.js";
+import { attachPromptQueue } from "./overlay-ui/promptQueue.js";
+import { createThinkingTimeline, thinkingMarkup } from "./overlay-ui/thinkingTimeline.js";
+import { pauseOverlayTurn } from "./overlay-ui/workPause.js";
+import { isEngineeringPath, summarizeEngineeringFile } from "../lib/engineering/readEngineeringFile.js";
 
 // Glass-bar overlay renderer. The user types a question; the main process
 // silently captures the screen, sends it to LYKN, and streams the answer back
@@ -25,10 +35,12 @@ if (window.lyknOverlay?.platform && window.lyknOverlay.platform !== "darwin") {
 
 const askEl = document.getElementById("ask");
 const sendEl = document.getElementById("send");
+const stopEl = document.getElementById("stop");
 const threadEl = document.getElementById("thread");
 const dotEl = document.getElementById("dot");
 
 let busy = false;
+let promptQueue = null;
 // The answer element of the turn currently streaming, so deltas land in the
 // right place even after older turns have been collapsed.
 let currentAnswerEl = null;
@@ -50,23 +62,23 @@ const CHEVRON_SVG =
   '<path d="m6 9 6 6 6-6" /></svg>';
 
 
-function thinkingHTML(status) {
-  return (
-    '<div class="thinking">' +
-    '<svg class="lykn-outline-spinner" width="24" height="24" viewBox="0 0 204.29 204.29" ' +
-    'fill="none" role="img" aria-label="Loading">' +
-    '<path d="' + SPINNER_PATH + '" pathLength="1" fill="currentColor" stroke="currentColor" ' +
-    'stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />' +
-    "</svg>" +
-    '<span class="thinking-text"></span>' +
-    "</div>"
-  );
+function thinkingHTML() {
+  return thinkingMarkup(SPINNER_PATH);
 }
 
+const thinkingTimeline = createThinkingTimeline({
+  onPaint: ({ steps }) => {
+    if (steps > 0) reportHeight();
+  },
+});
+
 let stopStatusRotation, maybeRotateFromStatus, shouldKeepBuildingUnder, applyRotatedStatus, startStatusRotation;
-let showSide, clearSide, resetSideForNewTurn, setSidePanelView, renderSidePanel, renderWatchSidePanel, refreshSidePanelFromLiveNotes, requestSuggestions, mergeSourceLinks, setPanelPickerOpen, syncSidePickerState, updateSidePickerLabel, applyLiveWatchLayout, applyLiveNotesLayout, startWatchConnPoll, stopWatchConnPoll, ARROW_ICON_SVG;
+let showSide, clearSide, resetSideForNewTurn, setSidePanelView, renderSidePanel, renderWatchSidePanel, refreshSidePanelFromLiveNotes, requestSuggestions, mergeSourceLinks, setPanelPickerOpen, syncSidePickerState, updateSidePickerLabel, applyLiveWatchLayout, applyLiveNotesLayout, startWatchConnPoll, stopWatchConnPoll, ARROW_ICON_SVG, renderAnswerSourcesPill;
 let stopVoice, startVoice, sendTextToVoice, pushScreenContext;
 let pushLiveState, startListen, stopListen, closeLive;
+let slashPathHandleKeyDown, slashPathClose, slashPathIsOpen;
+let slashModelHandleKeyDown, slashModelClose, slashModelIsOpen, slashModelSelected;
+let slashAppHandleKeyDown, slashAppClose, slashAppIsOpen;
 
 let statusRotateLane = "think";
 let statusRotateActive = false;
@@ -181,11 +193,20 @@ function reportHeight() {
   });
 }
 
-function setBusy(on) {
+function setBusy(on, opts = {}) {
+  const was = busy;
   busy = on;
   dotEl.classList.toggle("busy", on);
-  sendEl.classList.toggle("busy", on);
-  sendEl.disabled = on;
+  sendEl.classList.toggle("busy", false);
+  sendEl.disabled = false;
+  sendEl.title = on ? "Queue prompt" : "Send";
+  sendEl.setAttribute("aria-label", on ? "Queue prompt" : "Send");
+  if (stopEl) {
+    stopEl.hidden = !on;
+  }
+  if (was && !on && !opts.keepQueue) {
+    queueMicrotask(() => promptQueue?.drain());
+  }
 }
 
 // Type the newest step explanation instead of flashing the whole paragraph.
@@ -203,7 +224,9 @@ function stopStepNoteTyping() {
 function startTurn(question, opts = {}) {
   // A new question is pending — reset sources side data but keep live watch panel open.
   stopStatusRotation();
+  thinkingTimeline.reset();
   stopStepNoteTyping();
+  stopAnswerTyping();
   stepNoteType = { timer: null, key: "", shown: "", target: "" };
   // A new turn supersedes any parked wait from the previous one.
   pendingAgentWaiting = null;
@@ -253,7 +276,7 @@ function startTurn(question, opts = {}) {
   return a;
 }
 
-function renderHistoricTurn(question, answer, collapsed) {
+function renderHistoricTurn(question, answer, collapsed, sources) {
   const item = document.createElement("div");
   item.className = "chat" + (collapsed ? " collapsed" : "");
 
@@ -283,6 +306,9 @@ function renderHistoricTurn(question, answer, collapsed) {
   item.appendChild(q);
   item.appendChild(a);
   threadEl.appendChild(item);
+  if (Array.isArray(sources) && sources.length && typeof renderAnswerSourcesPill === "function") {
+    renderAnswerSourcesPill(a, sources);
+  }
   return item;
 }
 
@@ -307,13 +333,13 @@ function rebuildThreadFromHistory(openLast) {
   for (const m of history) {
     if (m.role === "user") pendingQ = m.content;
     else if (m.role === "assistant" && pendingQ != null) {
-      pairs.push({ q: pendingQ, a: m.content });
+      pairs.push({ q: pendingQ, a: m.content, sources: m.sources });
       pendingQ = null;
     }
   }
   pairs.forEach((p, i) => {
     const isLast = i === pairs.length - 1;
-    renderHistoricTurn(p.q, p.a, openLast ? !isLast : true);
+    renderHistoricTurn(p.q, p.a, openLast ? !isLast : true, p.sources);
   });
   threadEl.classList.toggle("show", pairs.length > 0);
   reportHeight();
@@ -396,6 +422,12 @@ async function startNewOverlayChat() {
 // description after each markdown rewrite (updateAnswer replaces innerHTML).
 let lastThinkingStatus = "Thinking…";
 let answerStillWorking = false;
+let answerTyper = null;
+
+function stopAnswerTyping() {
+  answerTyper?.stop();
+  answerTyper = null;
+}
 
 function ensureBuildingUnder(status) {
   if (!currentAnswerEl || !currentHasText) return;
@@ -408,7 +440,8 @@ function ensureBuildingUnder(status) {
     body.appendChild(wrap);
   }
   const el = wrap.querySelector(".thinking-text");
-  if (el) el.textContent = status || lastThinkingStatus || "Building…";
+  if (el && !thinkingTimeline.hasSteps()) el.textContent = status || lastThinkingStatus || "Building…";
+  thinkingTimeline.paint(wrap);
 }
 
 function clearBuildingUnder() {
@@ -426,6 +459,8 @@ function setThinkingStatus(text) {
   const next = text || "Thinking…";
   lastThinkingStatus = next;
   maybeRotateFromStatus(next);
+  thinkingTimeline.ingest(next);
+  thinkingTimeline.paint(currentAnswerEl);
   // If rotation claimed this status, it already painted via applyRotatedStatus.
   if (statusRotateActive && (GENERIC_BUILD_RE.test(next) || GENERIC_THINK_RE.test(next))) {
     threadEl.scrollTop = threadEl.scrollHeight;
@@ -433,7 +468,7 @@ function setThinkingStatus(text) {
   }
   if (!currentHasText) {
     const el = currentAnswerEl.querySelector(".thinking-text");
-    if (el) el.textContent = lastThinkingStatus;
+    if (el && !thinkingTimeline.hasSteps()) el.textContent = lastThinkingStatus;
   } else if (shouldKeepBuildingUnder()) {
     ensureBuildingUnder(lastThinkingStatus);
   }
@@ -522,7 +557,51 @@ function typeNewestStepNote(bodyEl) {
   stepNoteType.timer = setTimeout(tick, stepMs);
 }
 
-function updateAnswer(text) {
+function updateAnswer(text, opts = {}) {
+  if (!currentAnswerEl) return;
+  const trimmed = (text || "").replace(/\s+$/, "");
+  const isStepTranscript = /lykn-agent-step:\/\//i.test(trimmed);
+  if (opts.type && !isStepTranscript) {
+    if (!answerTyper) {
+      answerTyper = createAnswerTypewriter({ paint: paintAnswerNow });
+    }
+    answerTyper.setTarget(trimmed);
+    return;
+  }
+  stopAnswerTyping();
+  paintAnswerNow(trimmed);
+}
+
+/** Pull thinking/building chrome out of the answer body so a markdown rewrite
+ *  can reuse the same SVG. Recreating it restarts the outline draw. */
+function takeThinkingChrome(bodyEl) {
+  const nodes = [];
+  if (!bodyEl) return nodes;
+  const under = bodyEl.querySelector(":scope > .building-under");
+  if (under) nodes.push(under);
+  const thinking = bodyEl.querySelector(":scope > .thinking");
+  if (thinking) nodes.push(thinking);
+  for (const n of nodes) n.remove();
+  return nodes;
+}
+
+function restoreThinkingChrome(bodyEl, nodes) {
+  if (!bodyEl || !answerStillWorking) return;
+  for (const n of nodes) {
+    if (n.classList.contains("thinking")) {
+      const wrap = document.createElement("div");
+      wrap.className = "building-under";
+      wrap.appendChild(n);
+      bodyEl.appendChild(wrap);
+    } else {
+      bodyEl.appendChild(n);
+    }
+  }
+  if (!bodyEl.querySelector(".thinking")) ensureBuildingUnder(lastThinkingStatus);
+  else thinkingTimeline.paint(bodyEl);
+}
+
+function paintAnswerNow(text) {
   if (!currentAnswerEl) return;
   const bodyEl = ensureAnswerChrome(currentAnswerEl);
   if (!bodyEl) return;
@@ -533,6 +612,7 @@ function updateAnswer(text) {
   currentHasText = true;
   currentAnswerEl.classList.add("has-md");
   currentAnswerEl.dataset.raw = trimmed;
+  const thinkingChrome = takeThinkingChrome(bodyEl);
   bodyEl.innerHTML = renderMarkdown(trimmed);
   const hasLiveStep = /lykn-agent-step:\/\/[^)\s]+\/live\b/i.test(trimmed);
   const shouldTypeNotes =
@@ -541,12 +621,10 @@ function updateAnswer(text) {
   else stopStepNoteTyping();
   const actions = currentAnswerEl.querySelector(":scope > .chat-a-actions");
   if (actions) actions.hidden = !trimmed;
-  // Build mode: description lands first, then the tool runs for a while with
-  // no more text — put the thinking animation under the description so it's
-  // obvious LYKN is still working. Regular chat drops the spinner as soon as
-  // the reply text is on screen so it doesn't keep looping after the model
-  // has finished saying what it was going to say.
-  if (shouldKeepBuildingUnder()) ensureBuildingUnder(lastThinkingStatus);
+  // Keep the same spinner node looping until the turn is actually done.
+  // Rewriting innerHTML used to recreate it on every typewriter tick, so the
+  // outline draw started, vanished, and started again.
+  if (answerStillWorking) restoreThinkingChrome(bodyEl, thinkingChrome);
   else if (statusRotateLane !== "build") stopStatusRotation();
   // Generated images / artifact iframes load async — resize once they settle,
   // or the bubble stays sized for text only and the preview gets clipped.
@@ -746,11 +824,9 @@ async function resolveAgentChoiceClick(choiceId, buttonId, rowEl) {
 
 const DEFAULT_ASK_PLACEHOLDER = "Ask LYKN about your screen…";
 let browserActArmed = false;
-// Image generation is explicit-opt-in (menu → "Create an image"), mirroring
-// the web app's "+" → Generate image mode. STICKY: once armed, every send is
-// an image prompt (forceImage rides along to the server, which forces GPT
-// Image 2) until the user switches back to chat mode — via the composer's
-// mode pill ✕, the menu toggle, or starting a new chat.
+// Image generation was removed from Glass — it lives in Studio Imagine only.
+// imageGenArmed stays as a constant false so the ask-routing chains below keep
+// their shape (COMPOSER_MODES no longer has an "image" entry to arm it).
 let imageGenArmed = false;
 // Build mode (menu → "Build mode"): sends ask LYKN to CODE the thing out — a
 // live React artifact (landing page, dashboard, mini-tool…) rendered inline,
@@ -790,10 +866,8 @@ const MODE_ICON_SVG = {
 };
 const COMPOSER_MODES = {
   chat: { placeholder: DEFAULT_ASK_PLACEHOLDER, title: "" },
-  image: {
-    placeholder: "Describe the image to create, then Send…",
-    title: "Image mode, click to exit",
-  },
+  // "image" mode retired — image generation lives in Studio Imagine only.
+  // setComposerMode("image") from any stale path coerces to "chat".
   build: {
     placeholder: "Describe what to build, then Send…",
     title: "Build mode, click to exit",
@@ -1033,7 +1107,6 @@ function setComposerMode(mode) {
       if (translateLangBtnEl) translateLangBtnEl.setAttribute("aria-expanded", "false");
     }
   }
-  renderModeBadge("image-gen-state", composerMode === "image");
   renderModeBadge("build-state", composerMode === "build");
   renderModeBadge("agent-state", composerMode === "agent");
   renderModeBadge("research-state", composerMode === "research");
@@ -1146,14 +1219,23 @@ function ensureAnswerChrome(answerEl) {
     body.className = "chat-a-body";
     const keep = [];
     while (el.firstChild) keep.push(el.removeChild(el.firstChild));
+    const FOOTER_CHROME = new Set([
+      "chat-a-actions",
+      "chat-sources-pill",
+      "agent-waiting-row",
+      "agent-choice-row",
+    ]);
+    const footers = [];
     for (const node of keep) {
-      if (node.classList && node.classList.contains("chat-a-actions")) {
-        actions = node;
+      if (node.classList && [...node.classList].some((c) => FOOTER_CHROME.has(c))) {
+        if (node.classList.contains("chat-a-actions")) actions = node;
+        footers.push(node);
       } else {
         body.appendChild(node);
       }
     }
     el.appendChild(body);
+    for (const node of footers) el.appendChild(node);
   }
   if (!actions) {
     actions = document.createElement("div");
@@ -1728,6 +1810,119 @@ function looksLikeBuildCommission(text) {
   );
 }
 
+function clearComposerField() {
+  askEl.value = "";
+  askEl.style.height = "52px";
+  attachments.length = 0;
+  attachmentsEl.innerHTML = "";
+  attachmentsEl.classList.remove("show");
+}
+
+function buildAskPayload() {
+  const qRaw = askEl.value.trim();
+  if (agentModeArmed) {
+    if (!qRaw && attachments.length === 0) return null;
+    return {
+      agent: true,
+      q: qRaw,
+      attachments: attachments.slice(),
+      label: qRaw || `Sent ${attachments.length} attachment(s)`,
+    };
+  }
+  const imageAsk = imageGenArmed && (!!qRaw || attachments.length > 0);
+  const buildAsk = !imageAsk && buildModeArmed && (!!qRaw || attachments.length > 0);
+  const researchAsk = !imageAsk && !buildAsk && researchModeArmed && !!qRaw;
+  const translateAsk = !imageAsk && !buildAsk && !researchAsk && translateModeArmed;
+  if (!qRaw && attachments.length === 0 && !translateAsk) return null;
+  const appAtts = attachments.filter((a) => a.kind === "app");
+  const q =
+    qRaw ||
+    (appAtts.length
+      ? appAtts.length > 1
+        ? `Use ${appAtts.map((a) => a.name).join(" and ")}.`
+        : `Use ${appAtts[0].name}.`
+      : translateAsk && attachments.length === 0
+        ? `Translate what's on my screen into ${getTranslateTargetLang()}`
+        : "");
+  const askOpts = {
+    ...(imageAsk
+      ? { forceImage: true, imageModel: slashModelSelected?.() }
+      : { model: slashModelSelected?.() }),
+    ...(buildAsk ? { buildMode: true } : {}),
+    ...(researchAsk ? { deepResearch: true } : {}),
+    ...(translateAsk
+      ? { translateMode: true, translateTargetLang: getTranslateTargetLang() }
+      : {}),
+    ...(scopedProject?.id
+      ? { scopedProjectId: scopedProject.id, scopedProjectName: scopedProject.name }
+      : {}),
+  };
+  return {
+    agent: false,
+    q,
+    attachments: attachments.slice(),
+    askOpts: Object.keys(askOpts).length ? askOpts : undefined,
+    label: q || (attachments.length ? `Sent ${attachments.length} attachment(s)` : ""),
+    buildAsk,
+  };
+}
+
+function queuePendingAsk() {
+  const item = buildAskPayload();
+  if (!item || !promptQueue?.enqueue(item)) return false;
+  clearComposerField();
+  reportHeight();
+  return true;
+}
+
+function submitQueued(item) {
+  if (!item) return;
+  if (item.agent) {
+    void askAgent(item.q, item.attachments);
+    return;
+  }
+  setBusy(true);
+  startTurn(item.label, { build: item.buildAsk });
+  history.push({ role: "user", content: item.q, at: new Date().toISOString() });
+  window.lyknOverlay.ask(item.q, history, item.attachments, item.askOpts);
+}
+
+function stopWorking() {
+  if (!busy && !answerStillWorking) return;
+  if (agentModeArmed && activeAgentId) {
+    void window.lyknOverlay.agentStop?.(activeAgentId);
+  } else {
+    window.lyknOverlay.askCancel?.();
+  }
+  answerStillWorking = false;
+  clearBuildingUnder();
+  if (!currentHasText && currentAnswerEl) updateAnswer("Stopped.");
+  setBusy(false);
+}
+
+function pauseWorking() {
+  if (!busy && !answerStillWorking) return;
+  const paused = pauseOverlayTurn({
+    busy: true,
+    answerStillWorking: true,
+    currentHasText,
+    currentAnswerEl,
+    updateAnswer,
+    setBusy,
+    stopStatusRotation,
+    clearBuildingUnder,
+    thinkingTimeline,
+  });
+  if (!paused) return;
+  answerStillWorking = false;
+  if (agentModeArmed && activeAgentId) {
+    void window.lyknOverlay.agentStop?.(activeAgentId);
+  } else {
+    window.lyknOverlay.askCancel?.();
+  }
+  void persistCurrentSession();
+}
+
 function ask() {
   const qRaw = askEl.value.trim();
   if (browserActArmed) {
@@ -1738,15 +1933,19 @@ function ask() {
   // Agent Mode: per-agent streams (parallel) — never share lykn:ask abort.
   if (agentModeArmed) {
     if (!qRaw && attachments.length === 0) return;
-    if (busy) return;
+    if (busy) {
+      queuePendingAsk();
+      return;
+    }
     void askAgent(qRaw);
     return;
   }
-  if (busy) return;
-  // Image mode armed (menu → "Create an image"): this send is an image
-  // prompt — skip the watch/save/voice shortcut heuristics and route it to
-  // the streamed chat with forceImage so the server forces GPT Image 2.
-  // Attachment-only sends count too ("remix this picture" with no caption).
+  if (busy) {
+    queuePendingAsk();
+    return;
+  }
+  // imageAsk is always false now (image mode retired — see imageGenArmed);
+  // kept so the buildAsk/researchAsk/translateAsk chains read unchanged.
   const imageAsk = imageGenArmed && (!!qRaw || attachments.length > 0);
   if (!imageAsk && !buildModeArmed && looksLikeBuildCommission(qRaw)) {
     setComposerMode("build");
@@ -1756,11 +1955,16 @@ function ask() {
   // Translate mode: empty send = translate what's on screen into the target lang.
   const translateAsk = !imageAsk && !buildAsk && !researchAsk && translateModeArmed;
   if (!qRaw && attachments.length === 0 && !translateAsk) return;
+  const appAtts = attachments.filter((a) => a.kind === "app");
   const q =
     qRaw ||
-    (translateAsk && attachments.length === 0
-      ? `Translate what's on my screen into ${getTranslateTargetLang()}`
-      : "");
+    (appAtts.length
+      ? appAtts.length > 1
+        ? `Use ${appAtts.map((a) => a.name).join(" and ")}.`
+        : `Use ${appAtts[0].name}.`
+      : translateAsk && attachments.length === 0
+        ? `Translate what's on my screen into ${getTranslateTargetLang()}`
+        : "");
   // Modes are STICKY — they stay armed across sends (follow-up edits are the
   // normal flow: "same but darker", "now add a header…"). The user leaves a
   // mode via the composer pill's ✕, the menu toggle, or a new chat.
@@ -1804,7 +2008,9 @@ function ask() {
   startTurn(label, { build: buildAsk });
   history.push({ role: "user", content: q, at: new Date().toISOString() });
   const askOpts = {
-    ...(imageAsk ? { forceImage: true } : {}),
+    ...(imageAsk
+      ? { forceImage: true, imageModel: slashModelSelected?.() }
+      : { model: slashModelSelected?.() }),
     ...(buildAsk ? { buildMode: true } : {}),
     ...(researchAsk ? { deepResearch: true } : {}),
     ...(translateAsk
@@ -1847,14 +2053,18 @@ async function ensureActiveAgentId(goal) {
   return null;
 }
 
-async function askAgent(qRaw) {
+async function askAgent(qRaw, queuedAttachments) {
   const q = String(qRaw || "").trim();
-  const sentAttachments = attachments.slice();
-  askEl.value = "";
-  askEl.style.height = "52px";
-  attachments.length = 0;
-  attachmentsEl.innerHTML = "";
-  attachmentsEl.classList.remove("show");
+  const sentAttachments = Array.isArray(queuedAttachments)
+    ? queuedAttachments.slice()
+    : attachments.slice();
+  if (!Array.isArray(queuedAttachments)) {
+    askEl.value = "";
+    askEl.style.height = "52px";
+    attachments.length = 0;
+    attachmentsEl.innerHTML = "";
+    attachmentsEl.classList.remove("show");
+  }
   setBusy(true);
   const label = q || (sentAttachments.length ? `Sent ${sentAttachments.length} attachment(s)` : "");
   startTurn(label);
@@ -2115,41 +2325,8 @@ threadEl.addEventListener("click", (e) => {
     })();
     return;
   }
-  // Edit on an image → Image mode with that image attached as the reference.
-  const editImgBtn = e.target.closest(".md-edit-image");
-  if (editImgBtn) {
-    e.preventDefault();
-    e.stopPropagation();
-    const url = editImgBtn.getAttribute("data-url") || "";
-    const title = editImgBtn.getAttribute("data-title") || "Image";
-    if (!url) return;
-    editImgBtn.disabled = true;
-    const orig = editImgBtn.textContent;
-    editImgBtn.textContent = "…";
-    void (async () => {
-      let dataUrl = "";
-      try {
-        const res = await window.lyknOverlay.fetchAsDataUrl?.(url);
-        if (res && res.ok && res.dataUrl) dataUrl = res.dataUrl;
-      } catch (_) {}
-      if (dataUrl) {
-        clearAttachments();
-        addAttachmentObjects([
-          {
-            kind: "image",
-            name: `${String(title).replace(/[^\w.-]+/g, "-").slice(0, 40) || "image"}.png`,
-            dataUrl,
-          },
-        ]);
-      }
-      setComposerMode("image");
-      askEl.focus();
-      editImgBtn.textContent = orig;
-      editImgBtn.disabled = false;
-      reportHeight();
-    })();
-    return;
-  }
+  // (The image "Edit" affordance is gone — image generation/remixing lives in
+  // Studio Imagine, not Glass. Download below still works on old image cards.)
   // Download buttons on generated images / Build-mode artifacts: save the
   // file into ~/Downloads via the main process (revealed in Finder) AND into
   // the user's Vault as a rich card.
@@ -2223,13 +2400,14 @@ threadEl.addEventListener("keydown", (e) => {
 let streamingText = "";
 window.lyknOverlay.onStatus((p) => {
   if (agentModeArmed) return;
+  if (!busy && !answerStillWorking) return;
   setThinkingStatus((p && p.status) || "Thinking…");
 });
 window.lyknOverlay.onSources((p) => {
   const list = Array.isArray(p?.sources) ? p.sources : [];
-  researchSources = list.filter((s) => s && s.url).slice(0, 40);
-  if (!researchSources.length) return;
-  // New research results replace the Sources list for this turn.
+  const incoming = list.filter((s) => s && s.url).slice(0, 40);
+  if (!incoming.length) return;
+  researchSources = mergeSourceLinks(researchSources, incoming);
   sideContext = {
     pageSource:
       (currentPageSource && currentPageSource.url && currentPageSource) ||
@@ -2239,24 +2417,40 @@ window.lyknOverlay.onSources((p) => {
     followups: (sideContext && sideContext.followups) || [],
   };
   syncSidePickerState();
+  renderAnswerSourcesPill?.(currentAnswerEl, researchSources);
   if (sidePanelView === "sources" || sidePanelView === "all") renderSidePanel();
 });
 window.lyknOverlay.onDelta((p) => {
   if (agentModeArmed) return;
   streamingText = p && p.text ? p.text : streamingText;
-  updateAnswer(streamingText);
+  // Hold the typewriter until onDone. Painting on every token tore down the
+  // thinking animation (and then restarted it) each time the stream paused.
 });
 window.lyknOverlay.onDone((p) => {
   if (agentModeArmed) return;
+  if (!busy && !answerStillWorking) return;
   answerStillWorking = false;
   const finalText = (p && p.text) || streamingText;
   if (finalText) {
-    updateAnswer(finalText);
+    updateAnswer(finalText, { type: true });
     clearBuildingUnder();
-    history.push({ role: "assistant", content: finalText, at: new Date().toISOString() });
+    history.push({
+      role: "assistant",
+      content: finalText,
+      at: new Date().toISOString(),
+      sources: Array.isArray(researchSources) ? researchSources.slice() : [],
+    });
     void persistCurrentSession();
     // Populate the left panel with sources, follow-ups, and options.
-    void requestSuggestions(currentQuestion, finalText);
+    void Promise.resolve(requestSuggestions(currentQuestion, finalText)).then(() => {
+      const links = (sideContext && sideContext.links) || researchSources;
+      renderAnswerSourcesPill?.(currentAnswerEl, links);
+      const last = history[history.length - 1];
+      if (last && last.role === "assistant" && Array.isArray(links) && links.length) {
+        last.sources = links.slice();
+        void persistCurrentSession();
+      }
+    });
   } else if (!currentHasText && currentAnswerEl) {
     // Nothing came back — clear the spinner instead of leaving it spinning.
     currentHasText = true;
@@ -2271,6 +2465,7 @@ window.lyknOverlay.onDone((p) => {
 });
 window.lyknOverlay.onError((p) => {
   if (agentModeArmed) return;
+  if (!busy && !answerStillWorking) return;
   answerStillWorking = false;
   updateAnswer((p && p.message) || "Something went wrong.");
   clearBuildingUnder();
@@ -2278,6 +2473,10 @@ window.lyknOverlay.onError((p) => {
   setBusy(false);
   reportHeight();
 });
+
+if (typeof window.lyknOverlay.onWorkPaused === "function") {
+  window.lyknOverlay.onWorkPaused(() => pauseWorking());
+}
 
 // Agent Mode streams — scoped by agentId; only the active agent paints Glass.
 window.lyknOverlay.onAgentSwitched((p) => {
@@ -2320,7 +2519,7 @@ window.lyknOverlay.onAgentDelta((p) => {
   // streamed wrap-up, or final summary. Status/writing only drive the spinner.
   if (text) {
     agentStreamingText = text;
-    updateAnswer(text);
+    updateAnswer(text, { type: true });
     // Final when marked, or when the transcript is only finished step boxes.
     const looksFinal =
       !!p?.final ||
@@ -2378,6 +2577,7 @@ window.lyknOverlay.onAgentWaiting?.((p) => {
 });
 window.lyknOverlay.onAgentDone((p) => {
   if (!agentModeArmed || (p?.agentId && p.agentId !== activeAgentId)) return;
+  if (!busy && !answerStillWorking) return;
   answerStillWorking = false;
   const finalText = (p && p.text) || agentStreamingText;
   if (!currentAnswerEl && finalText) {
@@ -2385,7 +2585,7 @@ window.lyknOverlay.onAgentDone((p) => {
     startTurn(lastUser?.content || "Done");
   }
   if (finalText) {
-    updateAnswer(finalText);
+    updateAnswer(finalText, { type: true });
     clearBuildingUnder();
     // History is owned by main agent registry; keep local transcript in sync.
     const last = history[history.length - 1];
@@ -2453,6 +2653,7 @@ window.lyknOverlay.onAgentChoice((p) => {
 });
 window.lyknOverlay.onAgentError((p) => {
   if (!agentModeArmed || (p?.agentId && p.agentId !== activeAgentId)) return;
+  if (!busy && !answerStillWorking) return;
   answerStillWorking = false;
   if (!currentAnswerEl) {
     const lastUser = [...history].reverse().find((m) => m.role === "user");
@@ -2854,6 +3055,11 @@ const FILE_ICON_SVG =
   'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
   '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />' +
   '<path d="M14 2v5h5" /></svg>';
+const APP_ICON_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<rect x="3" y="4" width="18" height="16" rx="2" />' +
+  '<path d="M8 4v16" /><path d="M3 10h18" /></svg>';
 const X_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" ' +
   'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
@@ -2873,7 +3079,14 @@ function renderAttachments() {
     } else {
       const ico = document.createElement("span");
       ico.className = "chip-ico";
-      ico.innerHTML = FILE_ICON_SVG;
+      if (a.kind === "app" && a.logoUrl) {
+        const img = document.createElement("img");
+        img.src = a.logoUrl;
+        img.alt = "";
+        ico.appendChild(img);
+      } else {
+        ico.innerHTML = a.kind === "app" ? APP_ICON_SVG : FILE_ICON_SVG;
+      }
       chip.appendChild(ico);
     }
     const name = document.createElement("span");
@@ -2931,7 +3144,22 @@ function readAsText(file) {
 function addAttachmentObjects(list) {
   for (const a of list || []) {
     if (attachments.length >= 6) break;
-    if (!a || (a.kind === "image" && !a.dataUrl) || (a.kind === "text" && !a.text)) continue;
+    if (!a) continue;
+    if (a.kind === "app" && a.name) {
+      if (attachments.some((it) => it.kind === "app" && it.appId === a.appId)) continue;
+      attachments.push({
+        id: ++attachSeq,
+        kind: "app",
+        name: a.name,
+        source: a.source === "mac" ? "mac" : "connected",
+        appId: a.appId || a.name,
+        path: a.path || "",
+        catalogId: a.catalogId || "",
+        logoUrl: a.logoUrl || "",
+      });
+      continue;
+    }
+    if ((a.kind === "image" && !a.dataUrl) || (a.kind === "text" && !a.text)) continue;
     attachments.push({ id: ++attachSeq, kind: a.kind, name: a.name, dataUrl: a.dataUrl, text: a.text });
   }
   renderAttachments();
@@ -2946,6 +3174,11 @@ async function addFiles(fileList) {
       if (file.type.startsWith("image/")) {
         const dataUrl = await readAsDataURL(file);
         attachments.push({ id: ++attachSeq, kind: "image", name: file.name, dataUrl });
+      } else if (isEngineeringPath(file.name)) {
+        const text = await summarizeEngineeringFile(file).catch(
+          () => `Engineering file "${file.name}" (${Math.round((file.size || 0) / 1024)} KB).`,
+        );
+        attachments.push({ id: ++attachSeq, kind: "text", name: file.name, text });
       } else if (isTextFile(file)) {
         const text = await readAsText(file);
         attachments.push({ id: ++attachSeq, kind: "text", name: file.name, text });
@@ -3015,13 +3248,7 @@ window.__lyknMenuCmd = (name, arg) => {
       if (b) b.click();
       break;
     }
-    case "menu-image-gen": {
-      // Clicks the hidden drawer button, which arms image mode — see its
-      // listener below. (Never auto-sends; the user presses Send.)
-      const b = document.getElementById("menu-image-gen");
-      if (b) b.click();
-      break;
-    }
+    // ("menu-image-gen" retired — image generation lives in Studio Imagine.)
     case "menu-build": {
       const b = document.getElementById("menu-build");
       if (b) b.click();
@@ -3301,19 +3528,6 @@ if (attachBtn) attachBtn.addEventListener("click", () => void openFilePicker());
 // Toolbar snip button — capture a screen region straight into the bar.
 const snipBtn = document.getElementById("snip");
 if (snipBtn) snipBtn.addEventListener("click", () => void snipFromScreen());
-
-// Menu → "Create an image": switch the composer into image mode — every send
-// generates a picture (GPT Image 2) until the user switches back to chat.
-// Clicking it again while already in image mode toggles back to chat. Never
-// auto-send on switch — the user may still be mid-prompt; they press Send.
-const menuImageGenEl = document.getElementById("menu-image-gen");
-if (menuImageGenEl) {
-  menuImageGenEl.addEventListener("click", () => {
-    setMenuOpen(false);
-    setComposerMode(composerMode === "image" ? "chat" : "image");
-    askEl.focus();
-  });
-}
 
 // Menu → "Build mode": switch the composer into build mode — sends have LYKN
 // code the thing out as a live React artifact ("make me a landing page",
@@ -3641,6 +3855,18 @@ function handleOverlayEscape(e) {
     return true;
   }
 
+  if (slashModelIsOpen?.() || slashPathIsOpen?.()) {
+    escapeHandledAt = now;
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    slashModelClose?.();
+    slashAppClose?.();
+    slashPathClose?.();
+    return true;
+  }
+
   if (voiceActive || voiceStarting) {
     escapeHandledAt = now;
     if (e) {
@@ -3744,11 +3970,15 @@ const overlayHost = {
   get micEl() { return micEl; },
   get listenEl() { return listenEl; },
   get COMPOSER_MODES() { return COMPOSER_MODES; },
+  get composerMode() { return composerMode; },
+  get getComposerMode() { return () => composerMode; },
   get ARROW_ICON_SVG() { return ARROW_ICON_SVG; },
   get ask() { return ask; },
   get startTurn() { return startTurn; },
   get updateAnswer() { return updateAnswer; },
   get reportHeight() { return reportHeight; },
+  get autoGrowAsk() { return autoGrowAsk; },
+  get addAttachmentObjects() { return addAttachmentObjects; },
   get persistCurrentSession() { return persistCurrentSession; },
   get setThinkingStatus() { return setThinkingStatus; },
   get clearBuildingUnder() { return clearBuildingUnder; },
@@ -3824,6 +4054,9 @@ const overlayHost = {
   set watchSuggestTimer(v) { watchSuggestTimer = v; },
   get lastWatchSuggestKey() { return lastWatchSuggestKey; },
   set lastWatchSuggestKey(v) { lastWatchSuggestKey = v; },
+  get setSidePanelView() { return setSidePanelView; },
+  get mergeSourceLinks() { return mergeSourceLinks; },
+  get syncSidePickerState() { return syncSidePickerState; },
   get researchSources() { return researchSources; },
   set researchSources(v) { researchSources = v; },
   get liveNotesOpen() { return liveNotesOpen; },
@@ -3863,6 +4096,9 @@ function bindOverlayModules() {
   startWatchConnPoll = side.startWatchConnPoll;
   stopWatchConnPoll = side.stopWatchConnPoll;
 
+  const sourcesUi = attachSourcesPill(overlayHost);
+  renderAnswerSourcesPill = sourcesUi.renderAnswerSourcesPill;
+
   attachAppUpdate({ reportHeight });
 
   const voice = attachVoice(overlayHost);
@@ -3876,6 +4112,24 @@ function bindOverlayModules() {
   startListen = listen.startListen;
   stopListen = listen.stopListen;
   closeLive = listen.closeLive;
+
+  const slashModel = attachSlashModel(overlayHost);
+  slashModelHandleKeyDown = slashModel.handleKeyDown;
+  slashModelClose = slashModel.close;
+  slashModelIsOpen = slashModel.isOpen;
+  slashModelSelected = slashModel.selectedModel;
+
+  const slashApp = attachSlashApp(overlayHost);
+  slashAppHandleKeyDown = slashApp.handleKeyDown;
+  slashAppClose = slashApp.close;
+  slashAppIsOpen = slashApp.isOpen;
+
+  const slash = attachSlashPath(overlayHost);
+  slashPathHandleKeyDown = slash.handleKeyDown;
+  slashPathClose = slash.close;
+  slashPathIsOpen = slash.isOpen;
+
+  attachPlaceholderRotation(overlayHost);
 }
 
 
@@ -3942,6 +4196,12 @@ for (const target of [document, window, document.body]) {
 }
 
 sendEl.addEventListener("click", ask);
+if (stopEl) stopEl.addEventListener("click", stopWorking);
+promptQueue = attachPromptQueue({
+  get busy() { return busy; },
+  reportHeight,
+  submitQueued,
+});
 // Grow the prompt field to fit its content (capped by CSS max-height, after
 // which it scrolls), then report the new size so the window grows with it.
 function autoGrowAsk() {
@@ -3953,6 +4213,9 @@ function autoGrowAsk() {
 askEl.addEventListener("input", autoGrowAsk);
 
 askEl.addEventListener("keydown", (e) => {
+  if (slashModelHandleKeyDown?.(e)) return;
+  if (slashAppHandleKeyDown?.(e)) return;
+  if (slashPathHandleKeyDown?.(e)) return;
   if (e.key === "Enter" && !e.shiftKey) {
     // Enter sends; Shift+Enter inserts a newline (handled by default).
     e.preventDefault();

@@ -19,12 +19,31 @@ const fsp = require("fs/promises");
 const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
+const buildWorkspace = require("./build-workspace/workspace.cjs");
+const processManager = require("./build-workspace/processManager.cjs");
+const distFiles = require("./build-workspace/distFiles.cjs");
 
 const COMMAND_TIMEOUT_MS = 60_000;
+// Commands may raise their own timeout (installs, builds), but must stay
+// under the server's 5-minute local-tool wait. Anything longer belongs in a
+// managed process (local_start_process + local_process_status polling).
+const MAX_COMMAND_TIMEOUT_MS = 240_000;
 const OUTPUT_CAP_BYTES = 50 * 1024;
-const READ_CAP_BYTES = 200 * 1024;
-const MAX_SEARCH_RESULTS = 200;
+const DEFAULT_READ_LINES = 400;
+const MAX_READ_LINES = 2000;
+const READ_WINDOW_CHARS = 24_000;
+const MAX_SEARCH_RESULTS = 80;
 const MAX_LIST_ENTRIES = 500;
+const SEARCH_TIME_MS = 8_000;
+const SEARCH_FILE_BYTES = 256 * 1024;
+const SKIP_SEARCH_EXT = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".ico", ".bmp",
+  ".mp4", ".mov", ".webm", ".mp3", ".wav", ".m4a", ".aac",
+  ".zip", ".gz", ".bz2", ".dmg", ".iso",
+  ".woff", ".woff2", ".ttf", ".otf", ".eot",
+  ".bin", ".exe", ".dll", ".so", ".dylib", ".wasm",
+  ".lock", ".map",
+]);
 
 // ---------------------------------------------------------------------------
 // Local-mode setting (device-level)
@@ -178,12 +197,19 @@ const LOCAL_TOOL_NAMES = [
   "local_write_file",
   "local_edit_file",
   "local_run_command",
+  "local_build_workspace",
+  "local_start_process",
+  "local_process_status",
+  "local_stop_process",
+  "local_install_app",
   "local_synced_folders",
   "local_running_apps",
   "local_read_app",
   "local_open_app",
   "local_open_path",
   "local_organize_desktop",
+  "local_desktop_look",
+  "local_desktop_act",
 ];
 
 // local_pull_file ships the raw bytes to the renderer for upload, so the cap
@@ -257,6 +283,21 @@ const CONSEQUENTIAL_COMMAND_PATTERNS = [
 ];
 
 /**
+ * True when a shell command is fully scoped to the Build workspace: its cwd
+ * and every filesystem path it names live under the workspace root. Such
+ * commands are normal development work — deletes, downloads, and clones run
+ * without a human pause (the always-confirm list above still applies).
+ */
+function commandScopedToWorkspace(command, cwd) {
+  const root = cwd ? resolveUserPath(cwd) : homeDir();
+  if (!buildWorkspace.isWorkspacePath(root)) return false;
+  for (const target of commandPathTargets(String(command || ""), root)) {
+    if (!buildWorkspace.isWorkspacePath(target)) return false;
+  }
+  return true;
+}
+
+/**
  * Read-only command prefixes: what `local.shell.read` may run, and what a
  * task with no shell capability can never be tricked into exceeding.
  */
@@ -283,6 +324,11 @@ function classifyCommandConsequence(command, cwd) {
   const readOnly = SAFE_COMMAND_PREFIXES.some((p) => lower === p || lower.startsWith(p + " "));
   const matched = CONSEQUENTIAL_COMMAND_PATTERNS.find((re) => re.test(cmd));
   if (matched) {
+    // Deletes/downloads/clones fully inside the Build workspace are routine
+    // development work, not consequential actions on the user's own files.
+    if (commandScopedToWorkspace(cmd, cwd)) {
+      return { tier: "routine", readOnly: false, reason: "" };
+    }
     return { tier: "consequential", readOnly: false, reason: `matches ${matched}` };
   }
   return { tier: "routine", readOnly, reason: "" };
@@ -362,6 +408,9 @@ function coverDepth(absPath, folders) {
  */
 function isAllowedPath(absPath, config) {
   if (!absPath) return false;
+  // The Build workspace (~/LYKN/Builds) is LYKN's own directory and is always
+  // accessible, independent of the user's Vault sync allowlist.
+  if (buildWorkspace.isWorkspacePath(absPath)) return true;
   if (!config) return true;
   const target = canonicalPath(absPath);
   const excluded = coverDepth(target, config.excludedFolders);
@@ -382,6 +431,10 @@ function isDevicePath(absPath) {
     p === "/dev/stderr" ||
     p === "/dev/tty" ||
     p.startsWith("/dev/fd/") ||
+    // bash/zsh virtual TCP redirections (exec 3<>/dev/tcp/host/port) —
+    // network sockets, not files.
+    p.startsWith("/dev/tcp/") ||
+    p.startsWith("/dev/udp/") ||
     p === "/dev/random" ||
     p === "/dev/urandom"
   );
@@ -443,7 +496,11 @@ function commandPathTargets(command, cwd) {
   };
   for (const tok of tokenizeShell(command)) {
     if (looksLikeUserPath(tok)) add(resolveCommandPath(tok, root));
-    const inner = String(tok).match(/(?:~|\/|\.\.\/|\.\/)[^\s"'`;|&<>)]+/g) || [];
+    // URLs are network targets, not filesystem paths — their path portion
+    // (http://localhost:8000/index.html → /index.html) must never be treated
+    // as a local absolute path. Strip them before extracting inner pieces.
+    const cleaned = String(tok).replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`;|&<>)]+/gi, " ");
+    const inner = cleaned.match(/(?:~|\/|\.\.\/|\.\/)[^\s"'`;|&<>)]+/g) || [];
     for (const piece of inner) {
       if (/^(https?:|git@|ssh:|file:)/i.test(piece)) continue;
       add(resolveCommandPath(piece, root));
@@ -477,9 +534,11 @@ function checkToolAccess(name, args = {}, config) {
     case "local_write_file":
     case "local_edit_file":
     case "local_open_path":
+    case "local_install_app":
       paths.push(resolveUserPath(args.path));
       break;
-    case "local_run_command": {
+    case "local_run_command":
+    case "local_start_process": {
       const cwd = args.cwd ? resolveUserPath(args.cwd) : homeDir();
       paths.push(cwd);
       for (const p of commandPathTargets(String(args.command || ""), cwd)) {
@@ -518,7 +577,29 @@ function classifyRisk(name, args = {}) {
     // Only moves icons around on LYKN's own desktop. Nothing on disk changes,
     // and the user can drag them back.
     case "local_organize_desktop":
+    // Workspace info + process status/stop are reads and cleanup of the
+    // agent's OWN managed processes — never a pause.
+    case "local_build_workspace":
+    case "local_process_status":
+    case "local_stop_process":
+    // Installing a workspace build into LYKN's own app store — the whole
+    // point is one-click delivery, and the user can uninstall from Settings.
+    case "local_install_app":
+    // A screenshot observes; it changes nothing.
+    case "local_desktop_look":
       return { risky: false, summary: "" };
+    // Physical mouse/keyboard control: ONE approval arms the whole session —
+    // a 30-click task cannot ask 30 times, and per-click consent teaches the
+    // user to click "allow" without reading. The user can still watch every
+    // action happen on screen.
+    case "local_desktop_act": {
+      const control = require("./desktop-agent/desktopControl.cjs");
+      if (control.sessionArmed()) return { risky: false, summary: "" };
+      return {
+        risky: true,
+        summary: "Let LYKN control this Mac's mouse and keyboard for this session",
+      };
+    }
     case "local_pull_file": {
       const target = resolveUserPath(args.path);
       return {
@@ -526,7 +607,8 @@ function classifyRisk(name, args = {}) {
         summary: `Download ${target || "(unknown path)"} into this chat`,
       };
     }
-    case "local_run_command": {
+    case "local_run_command":
+    case "local_start_process": {
       const cmd = String(args.command || "").trim();
       const consequence = classifyCommandConsequence(cmd, args.cwd);
       const risky = consequence.tier === "consequential";
@@ -551,6 +633,69 @@ function capText(text, cap = OUTPUT_CAP_BYTES) {
   if (Buffer.byteLength(s, "utf8") <= cap) return { text: s, truncated: false };
   const buf = Buffer.from(s, "utf8").subarray(0, cap);
   return { text: buf.toString("utf8") + "\n…[output truncated]", truncated: true };
+}
+
+function parsePositiveInt(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 1) return null;
+  return Math.floor(n);
+}
+
+/**
+ * Page a text file the way a coding agent does: a line window plus a
+ * nextOffset so the caller can keep reading instead of guessing from a stub.
+ */
+function sliceTextWindow(text, args = {}) {
+  const raw = String(text ?? "");
+  const lines = raw.split("\n");
+  const totalLines = lines.length;
+  if (totalLines === 0) {
+    return { content: "", startLine: 1, endLine: 0, totalLines: 0, truncated: false };
+  }
+  const startLine = Math.min(parsePositiveInt(args.offset) || 1, totalLines);
+  const lineLimit = Math.min(parsePositiveInt(args.limit) || DEFAULT_READ_LINES, MAX_READ_LINES);
+  const slice = [];
+  let chars = 0;
+  let endLine = startLine - 1;
+  for (let i = startLine - 1; i < totalLines && slice.length < lineLimit; i++) {
+    const line = lines[i];
+    const add = (slice.length ? 1 : 0) + line.length;
+    if (slice.length > 0 && chars + add > READ_WINDOW_CHARS) break;
+    if (slice.length === 0 && line.length > READ_WINDOW_CHARS) {
+      return {
+        content: line.slice(0, READ_WINDOW_CHARS),
+        startLine,
+        endLine: startLine,
+        totalLines,
+        truncated: true,
+        nextOffset: startLine + 1,
+      };
+    }
+    slice.push(line);
+    chars += add;
+    endLine = i + 1;
+  }
+  const truncated = endLine < totalLines;
+  return {
+    content: slice.join("\n"),
+    startLine,
+    endLine,
+    totalLines,
+    truncated,
+    ...(truncated ? { nextOffset: endLine + 1 } : {}),
+  };
+}
+
+function withReadWindow(base, args) {
+  const window = sliceTextWindow(base.content, args);
+  const hint = window.truncated
+    ? `Read lines ${window.startLine}-${window.endLine} of ${window.totalLines}. Call again with offset: ${window.nextOffset} to continue.`
+    : undefined;
+  return {
+    ...base,
+    ...window,
+    ...(hint ? { hint } : {}),
+  };
 }
 
 async function listDir(args = {}) {
@@ -590,7 +735,14 @@ async function readFileTool(args = {}) {
   if (st.isDirectory()) return { ok: false, error: `${file} is a directory — use local_list_dir` };
   const mediaReader = require("./mediaReader.cjs");
   const isMedia = mediaReader.isReadableMediaPath(file);
-  const sizeCap = isMedia ? MEDIA_READ_CAP_BYTES : 10 * 1024 * 1024;
+  let engineering = null;
+  try {
+    engineering = await import("../lib/engineering/readEngineeringFile.js");
+  } catch {
+    engineering = null;
+  }
+  const isEngineering = !!engineering?.isEngineeringPath?.(file);
+  const sizeCap = isMedia ? MEDIA_READ_CAP_BYTES : isEngineering ? 32 * 1024 * 1024 : 10 * 1024 * 1024;
   if (st.size > sizeCap) {
     return { ok: false, error: `File too large to read (${Math.round(st.size / 1024 / 1024)} MB)` };
   }
@@ -598,7 +750,9 @@ async function readFileTool(args = {}) {
   // same reader the overlay uses for the frontmost document. Before this they
   // hit the binary sniff below and the agent was told to give up.
   if (RICH_DOC_RE.test(file)) {
-    return readDocumentFile(file, st);
+    const out = await readDocumentFile(file, st);
+    if (!out.ok) return out;
+    return withReadWindow(out, args);
   }
   // Images and recordings go through vision the same way documents go through
   // text extraction. Refusing them as binary left every agent blind.
@@ -606,12 +760,17 @@ async function readFileTool(args = {}) {
     return readMediaFile(file, st, mediaReader);
   }
   const buf = await fsp.readFile(file);
+  if (isEngineering && engineering?.summarizeEngineeringBuffer) {
+    const slice = buf.byteLength > 8 * 1024 * 1024 ? buf.subarray(0, 8 * 1024 * 1024) : buf;
+    const content = engineering.summarizeEngineeringBuffer(slice, file);
+    return withReadWindow({ ok: true, path: file, size: st.size, content }, args);
+  }
   // Cheap binary sniff: NUL byte in the first 8KB.
   if (buf.subarray(0, 8192).includes(0)) {
     return { ok: false, error: `${file} looks like a binary file (${st.size} bytes)` };
   }
-  const { text, truncated } = capText(buf.toString("utf8"), READ_CAP_BYTES);
-  return { ok: true, path: file, size: st.size, content: text, truncated };
+  const text = buf.toString("utf8");
+  return withReadWindow({ ok: true, path: file, size: st.size, content: text }, args);
 }
 
 async function readDocumentFile(file, st) {
@@ -679,6 +838,108 @@ async function readMediaFile(file, st, mediaReader) {
   };
 }
 
+const SEARCH_SKIP_DIRS = new Set([
+  "node_modules", ".git", "Library", ".Trash", ".cache", ".npm",
+  "dist", "build", ".next", "venv", ".venv", "__pycache__",
+  "Applications", "Movies", "Pictures", "Music",
+]);
+
+function globToNameRe(namePattern) {
+  if (!namePattern) return null;
+  return new RegExp(
+    "^" +
+      namePattern
+        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replace(/\*/g, ".*")
+        .replace(/\?/g, ".") +
+      "$",
+    "i",
+  );
+}
+
+function searchEnv() {
+  const extra = "/opt/homebrew/bin:/usr/local/bin";
+  return { ...process.env, PATH: `${process.env.PATH || ""}:${extra}` };
+}
+
+function parseRgJsonLine(line) {
+  let evt;
+  try {
+    evt = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (evt?.type !== "match" || !evt.data) return null;
+  const filePath = evt.data.path?.text;
+  const lineNo = evt.data.line_number;
+  const match = String(evt.data.lines?.text || "").replace(/\n$/, "").slice(0, 300);
+  if (!filePath || !lineNo) return null;
+  return { path: filePath, line: lineNo, match };
+}
+
+function searchContentWithRg(root, namePattern, query, deadline) {
+  return new Promise((resolve) => {
+    const args = [
+      "--json",
+      "--max-count", "8",
+      "--max-filesize", "512K",
+      "-g", "!node_modules",
+      "-g", "!.git",
+      "-g", "!Library",
+      "-g", "!dist",
+      "-g", "!build",
+      "-g", "!.next",
+      "-g", "!venv",
+      "-g", "!.venv",
+    ];
+    if (namePattern) args.push("-g", namePattern);
+    args.push("--", query, root);
+    let child;
+    try {
+      child = spawn("rg", args, { env: searchEnv() });
+    } catch {
+      resolve(null);
+      return;
+    }
+    let buf = "";
+    let settled = false;
+    let timer = null;
+    const results = [];
+    const finish = (out) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+      resolve(out);
+    };
+    timer = setTimeout(
+      () => finish({ results, truncated: true, engine: "rg" }),
+      Math.max(50, deadline - Date.now()),
+    );
+    child.on("error", () => finish(null));
+    child.stdout.on("data", (chunk) => {
+      buf += chunk.toString("utf8");
+      const lines = buf.split("\n");
+      buf = lines.pop() || "";
+      for (const line of lines) {
+        const hit = parseRgJsonLine(line);
+        if (!hit) continue;
+        results.push(hit);
+        if (results.length >= MAX_SEARCH_RESULTS) {
+          finish({ results, truncated: true, engine: "rg" });
+          return;
+        }
+      }
+    });
+    child.on("close", () => {
+      if (settled) return;
+      const hit = parseRgJsonLine(buf);
+      if (hit && results.length < MAX_SEARCH_RESULTS) results.push(hit);
+      finish({ results, truncated: results.length >= MAX_SEARCH_RESULTS, engine: "rg" });
+    });
+  });
+}
+
 async function searchFiles(args = {}) {
   const root = resolveUserPath(args.path || "~");
   const namePattern = String(args.namePattern || "").trim();
@@ -686,26 +947,25 @@ async function searchFiles(args = {}) {
   if (!namePattern && !query) {
     return { ok: false, error: "Provide namePattern (glob-ish) and/or query (text to find)" };
   }
-  const nameRe = namePattern
-    ? new RegExp(
-        "^" +
-          namePattern
-            .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-            .replace(/\*/g, ".*")
-            .replace(/\?/g, ".") +
-          "$",
-        "i"
-      )
-    : null;
+  const deadline = Date.now() + SEARCH_TIME_MS;
+  if (query) {
+    const rg = await searchContentWithRg(root, namePattern, query, deadline);
+    if (rg) {
+      return {
+        ok: true,
+        root,
+        results: rg.results,
+        truncated: rg.truncated === true,
+      };
+    }
+  }
+  const nameRe = globToNameRe(namePattern);
   const queryLower = query.toLowerCase();
-  const skipDirs = new Set([
-    "node_modules", ".git", "Library", ".Trash", ".cache", ".npm",
-    "dist", "build", ".next", "venv", ".venv", "__pycache__",
-  ]);
   const results = [];
   const stack = [{ dir: root, depth: 0 }];
   let scanned = 0;
-  while (stack.length && results.length < MAX_SEARCH_RESULTS && scanned < 20_000) {
+  while (stack.length && results.length < MAX_SEARCH_RESULTS && scanned < 8_000) {
+    if (Date.now() > deadline) break;
     const { dir, depth } = stack.pop();
     let entries;
     try {
@@ -721,7 +981,7 @@ async function searchFiles(args = {}) {
           results.push({ path: full, type: "dir" });
           if (results.length >= MAX_SEARCH_RESULTS) break;
         }
-        if (depth < 8 && !skipDirs.has(ent.name) && !ent.name.startsWith(".")) {
+        if (depth < 8 && !SEARCH_SKIP_DIRS.has(ent.name) && !ent.name.startsWith(".")) {
           stack.push({ dir: full, depth: depth + 1 });
         }
         continue;
@@ -732,9 +992,11 @@ async function searchFiles(args = {}) {
         results.push({ path: full, type: "file" });
         continue;
       }
+      const ext = path.extname(ent.name).toLowerCase();
+      if (SKIP_SEARCH_EXT.has(ext)) continue;
       try {
         const st = await fsp.stat(full);
-        if (st.size > 2 * 1024 * 1024) continue;
+        if (st.size > SEARCH_FILE_BYTES) continue;
         const buf = await fsp.readFile(full);
         if (buf.subarray(0, 8192).includes(0)) continue;
         const text = buf.toString("utf8");
@@ -754,7 +1016,7 @@ async function searchFiles(args = {}) {
     ok: true,
     root,
     results,
-    truncated: results.length >= MAX_SEARCH_RESULTS,
+    truncated: results.length >= MAX_SEARCH_RESULTS || Date.now() > deadline,
   };
 }
 
@@ -868,6 +1130,29 @@ async function editFileTool(args = {}) {
   };
 }
 
+/**
+ * When command output overflows the in-context cap, persist the FULL output
+ * to a log file under the workspace so the agent can grep/tail the rest
+ * instead of losing it. Best-effort — failures just skip the file.
+ */
+function writeOverflowLog(command, fullOutput) {
+  try {
+    const dir = buildWorkspace.logsDir();
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const file = path.join(dir, `cmd-${stamp}.log`);
+    fs.writeFileSync(file, `# ${command}\n${fullOutput}`);
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+function commandTimeoutMs(args) {
+  const sec = Number(args?.timeoutSec);
+  if (!Number.isFinite(sec) || sec <= 0) return COMMAND_TIMEOUT_MS;
+  return Math.min(Math.floor(sec) * 1000, MAX_COMMAND_TIMEOUT_MS);
+}
+
 function runCommand(args = {}, { signal } = {}) {
   const command = String(args.command || "").trim();
   if (!command) return Promise.resolve({ ok: false, error: "command is required" });
@@ -875,13 +1160,22 @@ function runCommand(args = {}, { signal } = {}) {
     return Promise.resolve({ ok: false, command, error: "aborted", aborted: true });
   }
   const cwd = args.cwd ? resolveUserPath(args.cwd) : homeDir();
+  const timeoutMs = commandTimeoutMs(args);
   return new Promise((resolve) => {
     let out = "";
+    let fullOut = "";
+    let fullBytes = 0;
     let outBytes = 0;
     let settled = false;
     const child = spawn("/bin/zsh", ["-lc", command], {
       cwd,
-      env: { ...process.env, LYKN_LOCAL_MODE: "1" },
+      env: {
+        ...process.env,
+        LYKN_LOCAL_MODE: "1",
+        // Dev tools commonly live in Homebrew paths that a non-login shell
+        // misses; zsh -lc usually fixes this, but be deterministic.
+        PATH: `${process.env.PATH || ""}:/opt/homebrew/bin:/usr/local/bin`,
+      },
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });
@@ -900,9 +1194,16 @@ function runCommand(args = {}, { signal } = {}) {
         /* already dead */
       }
     };
+    // Keep the full output (capped at 4 MB) alongside the in-context window
+    // so a truncated result can still be recovered from a log file.
+    const FULL_OUT_CAP = 4 * 1024 * 1024;
     const append = (chunk) => {
-      if (outBytes >= OUTPUT_CAP_BYTES) return;
       const s = chunk.toString("utf8");
+      if (fullBytes < FULL_OUT_CAP) {
+        fullBytes += Buffer.byteLength(s, "utf8");
+        fullOut += s;
+      }
+      if (outBytes >= OUTPUT_CAP_BYTES) return;
       outBytes += Buffer.byteLength(s, "utf8");
       out += s;
     };
@@ -936,10 +1237,12 @@ function runCommand(args = {}, { signal } = {}) {
         ok: false,
         command,
         cwd,
-        error: `Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s`,
+        error:
+          `Command timed out after ${timeoutMs / 1000}s. For servers/watchers use ` +
+          "local_start_process; for slow one-shot commands pass a larger timeoutSec (max 240).",
         output: capText(out).text,
       });
-    }, COMMAND_TIMEOUT_MS);
+    }, timeoutMs);
     try {
       signal?.addEventListener?.("abort", onAbort, { once: true });
     } catch {
@@ -961,9 +1264,135 @@ function runCommand(args = {}, { signal } = {}) {
         return;
       }
       const { text, truncated } = capText(out);
-      finish({ ok: code === 0, command, cwd, exitCode: code, output: text, truncated });
+      const result = { ok: code === 0, command, cwd, exitCode: code, output: text, truncated };
+      if (truncated) {
+        const logFile = writeOverflowLog(command, fullOut);
+        if (logFile) {
+          result.fullOutputPath = logFile;
+          result.hint =
+            `Output was truncated. The complete output is in ${logFile} — ` +
+            "grep or tail it with local_run_command if you need the rest.";
+        }
+      }
+      finish(result);
     });
   });
+}
+
+/**
+ * local_build_workspace — anchor the Build agent: where its workspace lives
+ * and which projects already exist there. Creates the root on first use.
+ */
+async function buildWorkspaceTool() {
+  const root = buildWorkspace.ensureWorkspaceRoot();
+  const projects = await buildWorkspace.listProjects();
+  return {
+    ok: true,
+    root,
+    projects: projects.map((p) => ({ name: p.name, path: p.path })),
+    note:
+      `Your build workspace is ${root}. Create each project in its own subfolder ` +
+      `(e.g. ${path.join(root, "my-project")}). Everything inside the workspace is fully ` +
+      "accessible: reads, writes, deletes, git clone, curl, and package installs run " +
+      "without approval prompts. Existing projects above can be reopened and continued.",
+  };
+}
+
+/**
+ * local_start_process — spawn a managed background process (dev server,
+ * watcher, long install) inside the workspace/allowed roots.
+ */
+async function startProcessTool(args = {}) {
+  const cwd = args.cwd ? resolveUserPath(args.cwd) : buildWorkspace.ensureWorkspaceRoot();
+  let logFile = null;
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    logFile = path.join(buildWorkspace.logsDir(), `proc-${stamp}.log`);
+  } catch {
+    /* log file is best-effort */
+  }
+  return processManager.startProcess({
+    command: args.command,
+    cwd,
+    name: args.name,
+    waitMs: args.waitMs,
+    logFile,
+  });
+}
+
+/**
+ * local_install_app — put a finished Build-workspace project in the user's
+ * dock as a real installed app.
+ *
+ * Takes the project's production build output (dist/build/out, or a root
+ * index.html for plain sites) and installs it into the app host as a static
+ * app: its own lykn-app:// origin, an icon in the dock, opens in its own
+ * window with no dev server. `.lykn-app.json` in the project ties the folder
+ * to the installed app id, so rebuilding and reinstalling updates in place
+ * and keeps everything the user saved inside the app.
+ */
+async function installAppTool(args = {}) {
+  const projectPath = buildWorkspace.canonicalPath(resolveUserPath(String(args.path || "")));
+  if (!projectPath || !buildWorkspace.isWorkspacePath(projectPath)) {
+    return {
+      ok: false,
+      error:
+        "path must be a project folder inside the Build workspace (~/LYKN/Builds). " +
+        "Only workspace projects can be installed as apps.",
+    };
+  }
+
+  const distDir = distFiles.findDistDir(projectPath);
+  if (!distDir) {
+    return {
+      ok: false,
+      error: "no_build_output",
+      hint:
+        "No index.html found in dist/, build/, out/, or the project root. Run the " +
+        "project's production build first (e.g. `npm run build`), then install again.",
+    };
+  }
+
+  const collected = distFiles.collectDistFiles(distDir);
+  if (!collected.ok) return collected;
+
+  // The app host needs the Electron runtime and its open local store. The
+  // check is on the runtime, not the require: the `electron` npm package
+  // resolves in plain Node too, it just exports nothing usable.
+  if (!process.versions.electron) {
+    return { ok: false, error: "App install is only available in the desktop app." };
+  }
+  const appHost = require("./appHost.cjs");
+
+  const fallbackName = path
+    .basename(projectPath)
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+  const name = String(args.name || "").trim() || fallbackName;
+
+  const existingId = distFiles.readInstalledAppId(projectPath);
+  const res = appHost.installStaticApp({
+    id: existingId,
+    title: name,
+    files: collected.files,
+    icon: args.icon || null,
+    description: args.description || null,
+  });
+  if (!res.ok) return res;
+
+  distFiles.writeInstalledAppId(projectPath, res.app.id);
+  const updated = Boolean(existingId && existingId === res.app.id);
+  return {
+    ok: true,
+    appId: res.app.id,
+    name: res.app.name,
+    files: collected.files.length,
+    updated,
+    note: updated
+      ? `Updated "${res.app.name}" in the user's LYKN dock. Everything they saved in the app is preserved.`
+      : `Installed "${res.app.name}" to the user's LYKN dock. It now opens from the dock ` +
+        "like any app — no dev server or terminal needed. Tell the user to look for it in their dock.",
+  };
 }
 
 function syncedFoldersTool(config) {
@@ -991,6 +1420,12 @@ async function runningAppsTool() {
   // module stays loadable in contexts without Electron.
   const appDock = require("./appDock.cjs");
   return appDock.getRunningAppsResult();
+}
+
+/** Raw { ok, frontmost, running } reader for the desktop-control frame guard. */
+async function desktopRunningApps() {
+  const appDock = require("./appDock.cjs");
+  return appDock.getRunningApps();
 }
 
 // ---------------------------------------------------------------------------
@@ -1365,9 +1800,19 @@ async function readAppTool(args = {}) {
  *  - { needsApproval: true, summary } if the action is risky and not approved
  *  - a tool result object (always has ok: boolean)
  */
-async function run(name, args = {}, { approved = false, userDataPath = "", signal = null } = {}) {
+async function run(
+  name,
+  args = {},
+  { approved = false, userDataPath = "", signal = null, workspaceOnly = false } = {},
+) {
   if (!isLocalToolName(name)) {
     return { ok: false, error: `Unknown local tool: ${name}` };
+  }
+  // Build-workspace-only sessions (Local Mode off): every tool is confined to
+  // ~/LYKN/Builds. Filesystem defaults point there, the allowlist is exactly
+  // the workspace, and Mac-wide tools (apps, desktop) are refused.
+  if (workspaceOnly) {
+    return runWorkspaceOnly(name, args, { approved, signal });
   }
   const config = readLocalMode(userDataPath || defaultUserDataPath);
   const approvedRoot = (config.syncedFolders || [])[0] || "";
@@ -1428,6 +1873,76 @@ async function run(name, args = {}, { approved = false, userDataPath = "", signa
   if (risk.risky && !approved) {
     return { needsApproval: true, summary: risk.summary, tool: name };
   }
+  return dispatchTool(name, args, { signal, config });
+}
+
+/**
+ * Workspace-only execution: Local Mode is off, but the Build agent may work
+ * inside ~/LYKN/Builds. Access checks run against a synthetic config whose
+ * only root is the workspace; risk classification is unchanged (workspace-
+ * scoped commands are routine, the always-confirm list still holds).
+ */
+async function runWorkspaceOnly(name, args = {}, { approved = false, signal = null } = {}) {
+  const WORKSPACE_BLOCKED = new Set([
+    "local_running_apps",
+    "local_read_app",
+    "local_open_app",
+    "local_organize_desktop",
+    "local_synced_folders",
+    "local_pull_file",
+    // Physical control of the Mac needs full Local Mode consent, not the
+    // implicit workspace grant.
+    "local_desktop_look",
+    "local_desktop_act",
+  ]);
+  if (WORKSPACE_BLOCKED.has(name)) {
+    return {
+      ok: false,
+      error:
+        `${name} is not available in this session — only the Build workspace is accessible. ` +
+        "It becomes available when the user enables Local Mode in the Vault.",
+    };
+  }
+  const root = buildWorkspace.ensureWorkspaceRoot();
+  const config = { syncAll: false, syncedFolders: [root], excludedFolders: [] };
+  let scoped = args;
+  if (
+    (name === "local_run_command" || name === "local_start_process") &&
+    !args.cwd
+  ) {
+    scoped = { ...args, cwd: root };
+  }
+  if ((name === "local_list_dir" || name === "local_search_files") && !args.path) {
+    scoped = { ...args, path: root };
+  }
+  // Relative paths mean "inside the workspace" here, not "inside ~". A model
+  // writing `my-app/index.html` on its first call must land in the workspace,
+  // not bounce off the allowlist because ~ resolved outside it.
+  const rebase = (p) => {
+    const raw = String(p || "").trim();
+    if (!raw || raw === "~" || raw.startsWith("~/") || path.isAbsolute(raw)) return p;
+    return path.join(root, raw);
+  };
+  if (typeof scoped.path === "string") scoped = { ...scoped, path: rebase(scoped.path) };
+  if (typeof scoped.cwd === "string") scoped = { ...scoped, cwd: rebase(scoped.cwd) };
+  const access = checkToolAccess(name, scoped, config);
+  if (!access.allowed) {
+    return {
+      ok: false,
+      code: "workspace_path_denied",
+      error:
+        `Path outside the Build workspace: ${access.blockedPath}. This session can only ` +
+        `access ${root}. Ask the user to enable Local Mode (Vault → Local) for broader access.`,
+    };
+  }
+  const risk = classifyRisk(name, scoped);
+  if (risk.risky && !approved) {
+    return { needsApproval: true, summary: risk.summary, tool: name };
+  }
+  return dispatchTool(name, scoped, { signal, config });
+}
+
+async function dispatchTool(name, args, { signal, config }) {
   try {
     switch (name) {
       case "local_list_dir":
@@ -1444,6 +1959,16 @@ async function run(name, args = {}, { approved = false, userDataPath = "", signa
         return await editFileTool(args);
       case "local_run_command":
         return await runCommand(args, { signal });
+      case "local_build_workspace":
+        return await buildWorkspaceTool();
+      case "local_start_process":
+        return await startProcessTool(args);
+      case "local_process_status":
+        return processManager.processStatus(args);
+      case "local_stop_process":
+        return await processManager.stopProcess(args);
+      case "local_install_app":
+        return await installAppTool(args);
       case "local_synced_folders":
         return syncedFoldersTool(config);
       case "local_running_apps":
@@ -1456,6 +1981,17 @@ async function run(name, args = {}, { approved = false, userDataPath = "", signa
         return await openPathTool(args);
       case "local_organize_desktop":
         return organizeDesktopTool(args);
+      case "local_desktop_look": {
+        const control = require("./desktop-agent/desktopControl.cjs");
+        return await control.getDesktopControl({ getRunningApps: desktopRunningApps }).look(args);
+      }
+      case "local_desktop_act": {
+        const control = require("./desktop-agent/desktopControl.cjs");
+        // Reaching dispatch means the approval gate passed (or the session was
+        // already armed) — remember it so the next act flows without a pause.
+        control.armSession();
+        return await control.getDesktopControl({ getRunningApps: desktopRunningApps }).act(args);
+      }
       default:
         return { ok: false, error: `Unknown local tool: ${name}` };
     }
@@ -1469,6 +2005,7 @@ module.exports = {
   isLocalToolName,
   classifyRisk,
   classifyCommandConsequence,
+  commandScopedToWorkspace,
   configure,
   configureExtraction,
   readLocalMode,
@@ -1481,4 +2018,5 @@ module.exports = {
   checkToolAccess,
   commandPathTargets,
   inferSyncAll,
+  stopAllManagedProcesses: processManager.stopAll,
 };

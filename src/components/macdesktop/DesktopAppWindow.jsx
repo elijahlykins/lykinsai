@@ -7,6 +7,7 @@ import {
   prefersReducedMotion,
 } from "@/components/macdesktop/StudioPop";
 import TrafficLights from "@/components/macdesktop/TrafficLights";
+import { studioWindowFillsDesktop } from "@/components/macdesktop/studioWindowChrome";
 
 // ────────────────────────────────────────────────────────────────────────
 // DesktopAppWindow — a macOS-style floating window for a LYKN page that
@@ -151,12 +152,11 @@ export default function DesktopAppWindow({
   // Browser (native views already paint above the dock) and by installed apps
   // (the host raises this window above the dock while it's zoomed).
   zoomCoversDock = false,
-  // Fired with true/false as the window zooms and restores (and false on
-  // unmount). The Studio uses it to hide the dock while the Browser is
-  // full-screen — the native page covers the strip, but the React parts of
-  // the window (the agent rail) sit under the dock's z-30 and had it poking
-  // through them. Installed apps / file windows use the same hook to lift
-  // the window layer over the strip.
+  // Fired with true/false while this window is zoomed and actually filling
+  // the desktop (and false on minimize, peek, hide, close, and unmount).
+  // Studio hides the LYKN hover traffic lights so they don't stack on this
+  // window's own cluster, hides the dock under a full-screen Browser, and
+  // lifts covering windows over the strip.
   onZoomChange,
   // Exit Split View by filling this window — zoom it to the desktop as soon
   // as it's shown again.
@@ -365,15 +365,22 @@ export default function DesktopAppWindow({
     return () => clearTimeout(t);
   }, [stage]);
 
-  // Zoom state is this component's own; anything outside that reacts to it
-  // (the dock hiding under a full-screen Browser) hears about it here — and
-  // hears "restored" when the window unmounts, so a close while zoomed can
-  // never leave the dock hidden.
+  // Zoomed-and-visible is this component's own; anything outside that reacts to
+  // it (LYKN traffic lights, the dock under a full-screen Browser) hears
+  // about it here — and hears "restored" when the window unmounts, so a close
+  // while zoomed can never leave those surfaces stuck.
+  const filling = studioWindowFillsDesktop({
+    zoomed,
+    hidden,
+    minimized,
+    closing,
+    peeked,
+  });
   const zoomChangeRef = useRef(onZoomChange);
   zoomChangeRef.current = onZoomChange;
   useEffect(() => {
-    zoomChangeRef.current?.(zoomed);
-  }, [zoomed]);
+    zoomChangeRef.current?.(filling);
+  }, [filling]);
   useEffect(() => () => zoomChangeRef.current?.(false), []);
 
   // Anything the desktop anchors to this frame from outside the DOM has to sit
@@ -386,15 +393,6 @@ export default function DesktopAppWindow({
     animatingRef.current?.(busy);
   }, [busy]);
   useEffect(() => () => animatingRef.current?.(false), []);
-
-  const zoomCbRef = useRef(onZoomChange);
-  zoomCbRef.current = onZoomChange;
-  const covering =
-    zoomCoversDock && zoomed && !hidden && !minimized && !closing && !peeked;
-  useEffect(() => {
-    zoomCbRef.current?.(covering);
-  }, [covering]);
-  useEffect(() => () => zoomCbRef.current?.(false), []);
 
   const clearSnapHold = () => {
     clearTimeout(snapHoldTimer.current);

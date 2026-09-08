@@ -120,6 +120,12 @@ import {
   MAX_USER_INPUT_CHARS,
   compressConversation,
   buildAssistantIdentitySection,
+  buildAssistantModelSection,
+  CONVERSATION_PROMPT_HEADER,
+  IDENTITY_TURN_PROMPT,
+  PROMPT_LEAK_TURN_PROMPT,
+  messageWantsIdentityAnswer,
+  messageWantsPromptLeak,
   buildInstalledAppsSection,
   buildMacAppsSection,
   buildAiDriveSection,
@@ -586,6 +592,9 @@ export function registerAiInvokeRoute(app, {
           : "";
 
         const assistantIdentitySection = buildAssistantIdentitySection(aiName);
+        const assistantModelSection = buildAssistantModelSection(model, {
+          customModel: Boolean(customModelCtx.customModel),
+        });
 
         const staticPersona = customModelCtx.customModel
           ? getCustomModelChatPersonaStatic()
@@ -598,12 +607,13 @@ export function registerAiInvokeRoute(app, {
 
           // Semi-stable prefix (cacheable): identity, prefs, intent, project id.
           assistantIdentitySection,
+          assistantModelSection,
           userPromptSection,
           `[INTENT]\n${String(input?.intent || "ask").trim().toLowerCase() || "ask"}`,
           input?.projectId ? `[PROJECT_ID]\n${String(input.projectId)}` : "",
           responseLengthNote,
           focusedBricksNote,
-          convo ? `[CONVERSATION — each line shows role and (for assistant) which model wrote it. Prior assistant lines are from other models, not you.]\n${convo}` : "",
+          convo ? `${CONVERSATION_PROMPT_HEADER}\n${convo}` : "",
           conversationMemory
             ? `[CONVERSATION_MEMORY — past exchanges from other projects/vault]\n${sanitizeStaleSurfaceLanguage(String(conversationMemory).slice(0, conversationMemoryBudget(input?.modelTier || 'standard')))}`
             : "",
@@ -918,13 +928,12 @@ export function registerAiInvokeRoute(app, {
           modelPolicy: turnPolicy.policy,
           resolvedRoute: turnPolicy.resolvedRoute,
         });
-        // Billing preflight: a premium manual model (priced above the Auto
-        // advanced tier) meters the Usage Balance even on a paid plan, so an
+        // Billing preflight: every chat turn meters the Usage Balance, so an
         // empty balance blocks before any provider spend.
         const chatBilling = await assertChatTurnBillable({
           userId: req.user?.id,
           planId: invokePlan.planId,
-          chatRoute,
+          email: req.user?.email,
         });
         if (!chatBilling.allowed) {
           return res.status(chatBilling.status).json(chatBilling.body);
@@ -1072,6 +1081,8 @@ export function registerAiInvokeRoute(app, {
       }
       if (memorySection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(memorySection);
       if (messageIsHelloGreeting(invokeMsg)) prompt += "\n\n" + GREETING_TURN_PROMPT;
+      else if (messageWantsPromptLeak(invokeMsg)) prompt += "\n\n" + PROMPT_LEAK_TURN_PROMPT;
+      else if (messageWantsIdentityAnswer(invokeMsg) && !customModelCtx.customModel) prompt += "\n\n" + IDENTITY_TURN_PROMPT;
       else if (wantsUserRecallDeepen) prompt += "\n\n" + USER_RECALL_DEEPEN_PROMPT;
       else if (wantsUserRecall) prompt += "\n\n" + USER_RECALL_TURN_PROMPT;
       if (customModelKnowledge) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(customModelKnowledge);

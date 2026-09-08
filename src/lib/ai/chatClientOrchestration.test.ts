@@ -11,6 +11,12 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import { buildAttachmentContext } from "./chatTurnPreparation";
+import { messageWantsDeviceInventory } from "./deviceInventoryIntent";
+import {
+  createStreamTypewriter,
+  streamTypewriterStep,
+  STREAM_TYPEWRITER_MAX_STEP,
+} from "./streamTypewriter";
 import { fetchYouTubeTranscriptWithWhisperRetry } from "./chatTranscription";
 import { editTargetFromArtifact } from "./chatArtifacts";
 import type { FocusedChatAttachment } from "@/lib/lyknChat/chatTurnTypes";
@@ -41,9 +47,11 @@ describe("send pipeline stage modules", () => {
     assert.match(runner, /executeAwaitingLocalTool\(/);
     assert.match(runner, /identity\?\.routeChatId \|\| p\.identity\?\.chatId/);
     assert.doesNotMatch(runner, /chatId:\s*tc\.args/);
+    // Browser agent launches are their OWN conversation: no renderer bind,
+    // no sourceChatId lineage, and no chatId from model args or the host.
     const launch = src("src/lib/ai/browserAgentLaunch.ts");
-    assert.match(launch, /hostChatId\(host\)/);
-    assert.match(launch, /Model args\.chatId is ignored/);
+    assert.doesNotMatch(launch, /bindBrowserTabChat/);
+    assert.doesNotMatch(launch, /sourceChatId:/);
     assert.doesNotMatch(launch, /const chatId = String\(args\.chatId/);
     assert.doesNotMatch(launch, /getActiveThreadChatId/);
     const executor = src("src/lib/ai/localToolExecutor.ts");
@@ -95,6 +103,78 @@ describe("single engine / stream owner", () => {
     const projection = src("src/hooks/useChatThreadProjection.ts");
     assert.doesNotMatch(projection, /orchestrateChatSend/);
     assert.doesNotMatch(projection, /new AbortController/);
+  });
+
+  it("background board patches never hijack the active board's React ref", () => {
+    // chatMessagesRef mirrors the ACTIVE board only. If patchThreadMessages
+    // reassigned it for a background board (browser-rail chat streaming while
+    // another chat is mounted), the board-switch effect would persist that
+    // board's messages into the outgoing board's snapshot — cross-chat mix.
+    const projection = src("src/hooks/useChatThreadProjection.ts");
+    assert.match(
+      projection,
+      /setChatMessages\(\(\) => snap\.chatMessages\);\s*\n\s*chatMessagesRef\.current = snap\.chatMessages;\s*\n\s*\}/,
+    );
+    assert.doesNotMatch(
+      projection,
+      /\}\s*\n\s*chatMessagesRef\.current = snap\.chatMessages;/,
+    );
+  });
+});
+
+describe("device inventory gating", () => {
+  it("skips Drive and Mac apps on ordinary questions", () => {
+    assert.equal(messageWantsDeviceInventory("what is photosynthesis"), false);
+    assert.equal(messageWantsDeviceInventory("hello"), false);
+    assert.equal(messageWantsDeviceInventory("I'm open to suggestions"), false);
+    assert.match(src("src/lib/ai/chatRequestBuilder.ts"), /Promise\.all\(/);
+    assert.match(src("src/lib/ai/chatRequestBuilder.ts"), /wantsInventory/);
+  });
+
+  it("loads inventory for open / launch / Drive asks", () => {
+    assert.equal(messageWantsDeviceInventory("open Spotify"), true);
+    assert.equal(messageWantsDeviceInventory("pull up the dashboard I made"), true);
+    assert.equal(messageWantsDeviceInventory("what's on my AI Drive"), true);
+  });
+});
+
+describe("stream typewriter catch-up", () => {
+  it("keeps a small step for the first words", () => {
+    assert.equal(streamTypewriterStep(12), 2);
+    assert.ok(streamTypewriterStep(40) <= 6);
+  });
+
+  it("never dumps the whole remainder in one tick", () => {
+    assert.ok(streamTypewriterStep(400) <= STREAM_TYPEWRITER_MAX_STEP);
+    assert.match(src("src/lib/ai/chatStreamRunner.ts"), /streamTypewriterStep\(behind\)/);
+    assert.match(src("src/lib/ai/chatStreamRunner.ts"), /export function typeStreamReply/);
+    assert.match(src("src/hooks/useChatEngine.ts"), /typeStreamReply\(/);
+    assert.match(src("src/hooks/useBotChatBridge.ts"), /createStreamTypewriter/);
+  });
+
+  it("holds stream painting until the turn is finished", () => {
+    const runner = src("src/lib/ai/chatStreamRunner.ts");
+    assert.match(runner, /Buffer the live target only/);
+    assert.match(src("src/lib/ai/chatSendOrchestrator.ts"), /paint:\s*false/);
+    assert.match(src("electron/overlay.js"), /Hold the typewriter until onDone/);
+  });
+
+  it("types toward the target instead of painting it all at once", () => {
+    const paints: string[] = [];
+    const queued: Array<() => void> = [];
+    const tw = createStreamTypewriter({
+      onPaint: (partial) => paints.push(partial),
+      schedule: (fn) => {
+        queued.push(fn);
+        return queued.length;
+      },
+      clear: () => {},
+    });
+    tw.setTarget("Hello there, teammate.");
+    while (queued.length) queued.shift()!();
+    assert.ok(paints.length > 1);
+    assert.ok(paints[0]!.length < "Hello there, teammate.".length);
+    assert.equal(paints.at(-1), "Hello there, teammate.");
   });
 });
 

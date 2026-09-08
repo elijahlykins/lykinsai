@@ -150,7 +150,7 @@ function SwatchPicker({ value, hue, onChange }) {
             />
             {selected ? (
               <span
-                className="absolute top-[31px] whitespace-nowrap text-[11.5px] font-medium"
+                className="absolute top-full mt-2 whitespace-nowrap text-[11.5px] font-medium"
                 style={{ color: 'hsl(var(--lykn-accent))' }}
               >
                 {accent.name}
@@ -186,7 +186,7 @@ function InkPicker({ value, hue, appearance, dark, onChange }) {
             />
             {selected ? (
               <span
-                className="absolute top-[31px] whitespace-nowrap text-[11.5px] font-medium"
+                className="absolute top-full mt-2 whitespace-nowrap text-[11.5px] font-medium"
                 style={{ color: 'hsl(var(--lykn-accent))' }}
               >
                 {ink.name}

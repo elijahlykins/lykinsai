@@ -2,6 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   IMAGINE_DOWNLOAD_FORMAT_KEY,
+  encodeImageToFormat,
+  formatFromMime,
   imagineDownloadFilename,
   imagineDownloadFilters,
   imagineDownloadOption,
@@ -69,6 +71,31 @@ describe("imagineDownloadFilters", () => {
     assert.deepEqual(imagineDownloadFilters("jpeg"), [
       { name: "JPEG", extensions: ["jpg", "jpeg"] },
     ]);
+  });
+});
+
+describe("formatFromMime", () => {
+  it("maps image content types onto download formats", () => {
+    assert.equal(formatFromMime("image/png"), "png");
+    assert.equal(formatFromMime("image/jpeg; charset=binary"), "jpeg");
+    assert.equal(formatFromMime("image/webp"), "webp");
+    assert.equal(formatFromMime("text/html"), null);
+  });
+});
+
+describe("encodeImageToFormat", () => {
+  it("returns the same bytes when the file is already that type", async () => {
+    const png = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+    const out = await encodeImageToFormat(png, "png");
+    assert.equal(out, png);
+    assert.equal(out.type, "image/png");
+  });
+
+  it("normalizes image/jpg to image/jpeg without decoding", async () => {
+    const jpg = new Blob([new Uint8Array([1, 2, 3])], { type: "image/jpg" });
+    const out = await encodeImageToFormat(jpg, "jpeg");
+    assert.equal(out.type, "image/jpeg");
+    assert.equal(out.size, 3);
   });
 });
 

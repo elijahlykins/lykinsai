@@ -861,11 +861,11 @@ test('MCP failure never falls back to connectors, Vault mirror, or lykn_call_app
   }
 
   const streamSrc = fs.readFileSync(path.join(ROOT, 'server/ai/chatStream.routes.js'), 'utf8');
-  const mcpBlock = streamSrc.slice(
-    streamSrc.indexOf('const mcpTurn = await resolveMcpToolsForTurn') >= 0
-      ? streamSrc.indexOf('mcpTurn = await resolveMcpToolsForTurn')
-      : streamSrc.indexOf('await resolveMcpToolsForTurn'),
-    streamSrc.indexOf('mcp turn resolve skipped') + 80,
+  const connectedTurnSrc = fs.readFileSync(path.join(ROOT, 'lib/mcp/connectedStreamTurn.js'), 'utf8');
+  assert.match(streamSrc, /attachConnectedAppsToStreamTurn\(/);
+  const mcpBlock = connectedTurnSrc.slice(
+    connectedTurnSrc.indexOf('await resolveMcpToolsForTurn'),
+    connectedTurnSrc.indexOf('mcp turn resolve skipped') + 80,
   );
   assert.ok(mcpBlock.includes('catch'));
   assert.equal(mcpBlock.includes('runSync'), false);

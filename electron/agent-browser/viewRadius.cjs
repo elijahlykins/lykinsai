@@ -50,10 +50,11 @@ function fallbackUniformRadius(radius) {
 }
 
 /** Live page under the tab strip. Electron 42 only clips with one integer, so
- *  a 14px page would round the seam with the chrome. Bottom corners follow the
- *  window frame; the visible join with the tabs stays square. */
-function pageClipRadius() {
-  return 0;
+ *  this also rounds the seam with the chrome. CSS overflow cannot clip a
+ *  native WebContentsView: a 0 here leaves the window's bottom square.
+ *  Chrome sits behind the top rounding and fills it with the tab-strip color. */
+function pageClipRadius(containerRadius) {
+  return fallbackUniformRadius(containerRadius);
 }
 
 function applyViewRadius(view, radius) {

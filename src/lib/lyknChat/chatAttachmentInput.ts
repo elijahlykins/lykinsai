@@ -5,6 +5,7 @@
 // (LyknChat decomposition phase, see docs/REFACTOR_LOG.md).
 import type { ImagineGenerateInput } from "@/components/lyknChat/StudioImagineMode";
 import type { FocusedChatAttachment } from "@/lib/lyknChat/chatTurnTypes";
+import { ENGINEERING_EXT_SET } from "../../../lib/engineering/readEngineeringFile.js";
 
 export const isYouTubeUrl = (url = "") =>
   /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\//i.test(String(url).trim());
@@ -32,6 +33,7 @@ export const inferUrlAttachmentType = (url = "") => {
   if (["mp3", "wav", "m4a", "ogg", "aac", "flac"].includes(ext)) return "audio";
   if (ext === "pdf") return "pdf";
   if (DOCUMENT_EXTS.has(ext)) return "document";
+  if (ENGINEERING_EXT_SET.has(ext)) return "file";
   return "link";
 };
 

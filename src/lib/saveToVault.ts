@@ -550,9 +550,9 @@ function generatedImageFilename(id: string, ext: string): string {
  * Keep the caption short — the full Imagine batch prompt is shared by all four
  * slots and must not make this card look like a batch dump.
  */
-function generatedImageCaption(promptText?: string): string {
+function generatedImageCaption(promptText?: string, kind: "image" | "video" = "image"): string {
   const caption = String(promptText || "").trim().slice(0, 120);
-  return caption ? `AI-generated image: "${caption}"` : "AI-generated image";
+  return caption ? `AI-generated ${kind}: "${caption}"` : `AI-generated ${kind}`;
 }
 
 function extFromMime(mimeType: string, fallback = "jpg"): string {
@@ -560,7 +560,15 @@ function extFromMime(mimeType: string, fallback = "jpg"): string {
   if (mime.includes("png")) return "png";
   if (mime.includes("webp")) return "webp";
   if (mime.includes("jpeg") || mime.includes("jpg")) return "jpg";
+  // Imagine video clips ride the same save path as images.
+  if (mime.includes("webm")) return "webm";
+  if (mime.startsWith("video/")) return "mp4";
   return fallback;
+}
+
+/** "video" for Imagine clips, "image" otherwise — drives card type and tags. */
+function generatedKindFromMime(mimeType: string): "image" | "video" {
+  return String(mimeType || "").toLowerCase().startsWith("video/") ? "video" : "image";
 }
 
 /**
@@ -613,13 +621,14 @@ export async function saveGeneratedImageToVault(
     if (localSource) {
       const generation = await readLocalGeneration(localSource.itemId);
       if (generation) {
+        const kind = generatedKindFromMime(generation.mimeType);
         return await saveFileToVault({
           userId,
           filename: generatedImageFilename(
             generation.id,
             extFromMime(generation.mimeType, "png"),
           ),
-          fileType: "image",
+          fileType: kind,
           fileUrl: generation.url,
           noteId: generation.id,
           storagePath: generation.path,
@@ -628,8 +637,8 @@ export async function saveGeneratedImageToVault(
           mimeType: generation.mimeType,
           source,
           folder,
-          tags: ["image", "ai-generated", "generated"],
-          contentPrefix: generatedImageCaption(promptText),
+          tags: [kind, "ai-generated", "generated"],
+          contentPrefix: generatedImageCaption(promptText, kind),
         });
       }
     }
@@ -655,6 +664,10 @@ export async function saveGeneratedImageToVault(
           mimeType =
             ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
         }
+      } else if (pathExt === "mp4" || pathExt === "webm") {
+        // Imagine video clips: keep the container and mark the card as video.
+        ext = pathExt;
+        if (!opts.mimeType) mimeType = pathExt === "webm" ? "video/webm" : "video/mp4";
       }
     }
 
@@ -718,10 +731,11 @@ export async function saveGeneratedImageToVault(
       fileUrl = signedData?.signedUrl || imageUrl;
     }
 
+    const kind = generatedKindFromMime(mimeType);
     return await saveFileToVault({
       userId,
       filename,
-      fileType: "image",
+      fileType: kind,
       fileUrl,
       noteId,
       storagePath,
@@ -730,8 +744,8 @@ export async function saveGeneratedImageToVault(
       mimeType,
       source,
       folder,
-      tags: ["image", "ai-generated", "generated"],
-      contentPrefix: generatedImageCaption(promptText),
+      tags: [kind, "ai-generated", "generated"],
+      contentPrefix: generatedImageCaption(promptText, kind),
     });
   } catch (err) {
     if (import.meta.env.DEV) {

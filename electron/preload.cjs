@@ -377,12 +377,25 @@ contextBridge.exposeInMainWorld("lykn", {
     ipcRenderer.on("lykn:local-mode-changed", fn);
     return () => ipcRenderer.removeListener("lykn:local-mode-changed", fn);
   },
+  // Desktop MCP — servers that run on THIS machine (Blender, Ableton, any
+  // stdio MCP server). Managed by the local MCP host in main; the cloud
+  // never sees these processes. `approvalToken` follows the same main-issued
+  // single-use contract as localToolRun.
+  desktopMcpRun: (op, args = {}, opts = {}) =>
+    ipcRenderer.invoke("lykn:desktop-mcp", {
+      op: String(op || ""),
+      args: args || {},
+      ...(opts.approvalToken ? { approvalToken: String(opts.approvalToken) } : {}),
+    }),
   localToolRun: (name, args, opts = {}) =>
     ipcRenderer.invoke("lykn:local-tool-run", {
       name: String(name || ""),
       args: args || {},
       // Approval is a main-issued token, not a renderer-asserted boolean.
       approvalToken: typeof opts?.approvalToken === "string" ? opts.approvalToken : "",
+      // Build workspace sessions run confined to ~/LYKN/Builds when Local
+      // Mode is off; main decides the actual scope, this only opts in.
+      workspace: opts?.workspace === true,
     }),
   // Local store — the device-side home for vault items, chat threads,
   // artifacts, and the retrieval index. Every call resolves to
@@ -570,6 +583,11 @@ contextBridge.exposeInMainWorld("lykn", {
     ipcRenderer.on("lykn:mac-sync-changed", fn);
     return () => ipcRenderer.removeListener("lykn:mac-sync-changed", fn);
   },
+  // Builds drive — the AI Drive's Builds folder lists Build-workspace
+  // projects (~/LYKN/Builds) and opens one in Finder. Not gated on Local
+  // Mode: the Build workspace is its own always-allowed domain.
+  buildsList: () => ipcRenderer.invoke("lykn:builds-list"),
+  buildsOpen: (path) => ipcRenderer.invoke("lykn:builds-open", { path }),
   // Mac Files browser — list synced directories and open items natively.
   macFsList: (path) => ipcRenderer.invoke("lykn:mac-fs-list", { path }),
   macFsOpen: (path, opts = {}) =>
@@ -586,6 +604,7 @@ contextBridge.exposeInMainWorld("lykn", {
   // per-folder watch so the view follows what actually happens on disk.
   files: {
     list: (args = {}) => ipcRenderer.invoke("lykn:files-list", args),
+    search: (args = {}) => ipcRenderer.invoke("lykn:files-search", args),
     // A QuickLook preview (PDF page, video frame, app icon) as a data URL.
     thumbnail: (path, size) => ipcRenderer.invoke("lykn:files-thumbnail", { path, size }),
     roots: () => ipcRenderer.invoke("lykn:files-roots"),
@@ -679,6 +698,14 @@ contextBridge.exposeInMainWorld("lykn", {
       pendingAuthTokens = null;
       authTokensCallback(tokens);
     }
+  },
+  // Display can sleep; full system sleep/shutdown pauses in-flight work.
+  workHold: (source) => ipcRenderer.send("lykn:work-hold", String(source || "ui")),
+  workRelease: (source) => ipcRenderer.send("lykn:work-release", String(source || "ui")),
+  onWorkPaused: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:work-paused", fn);
+    return () => ipcRenderer.removeListener("lykn:work-paused", fn);
   },
 });
 

@@ -34,15 +34,15 @@ function readDismissed() {
  * for the session; the server-side 402 still backstops at exactly zero.
  */
 export default function UsageNudge() {
-  const { isGuest, hasActiveSubscription, usageBalance, outOfUsage, loading } = useUserPlan();
+  const { isGuest, usageBalance, outOfUsage, loading } = useUserPlan();
   const location = useLocation();
   const navigate = useNavigate();
   const [dismissed, setDismissed] = useState(readDismissed);
 
   if (loading || isGuest || dismissed) return null;
   if (HIDDEN_PATHS.has(location.pathname)) return null;
-  // Subscribers have included chat plus monthly usage; don't nag them here.
-  if (hasActiveSubscription) return null;
+  // Chat meters the balance on every plan now, so subscribers get the
+  // low-balance warning too (their balance also refills at renewal).
   if (!usageBalance) return null;
 
   const available = Number(usageBalance.available_micros || 0);

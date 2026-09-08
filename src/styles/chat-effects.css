@@ -159,6 +159,172 @@
   }
 }
 
+/* ── Thinking timeline: LYKN mark on top, activity steps underneath ── */
+.lykn-thinking {
+  --lykn-thinking-mark: 24px;
+  --lykn-thinking-icon: 14px;
+  --lykn-thinking-gap: 6px;
+  --lykn-thinking-lead: 2px;
+  --lykn-thinking-line: rgba(0, 0, 0, 0.12);
+  --lykn-thinking-line-x: 11.5px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.lykn-thinking--compact {
+  --lykn-thinking-mark: 16px;
+  --lykn-thinking-icon: 12px;
+  --lykn-thinking-gap: 4px;
+  --lykn-thinking-lead: 1px;
+  --lykn-thinking-line-x: 7.5px;
+}
+
+.dark .lykn-thinking,
+.lykn-mark-inherit {
+  --lykn-thinking-line: rgba(255, 255, 255, 0.14);
+}
+
+.lykn-thinking__row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: start;
+  position: relative;
+  z-index: 1;
+}
+
+.lykn-thinking--compact .lykn-thinking__row {
+  grid-template-columns: 16px minmax(0, 1fr);
+  column-gap: 8px;
+}
+
+.lykn-thinking__mark {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  min-height: 24px;
+  flex-shrink: 0;
+}
+
+.lykn-thinking--compact .lykn-thinking__mark {
+  width: 16px;
+  min-height: 16px;
+}
+
+.lykn-thinking__head .lykn-thinking__mark {
+  min-height: 24px;
+}
+
+.lykn-thinking--compact .lykn-thinking__head .lykn-thinking__mark {
+  min-height: 16px;
+}
+
+/* One segment per hop: stop at the next icon, then resume under it.
+   A single full-height rule used to run straight through every glyph. */
+.lykn-thinking--steps .lykn-thinking__head::after,
+.lykn-thinking__step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: var(--lykn-thinking-line-x);
+  width: 1px;
+  background: var(--lykn-thinking-line);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.lykn-thinking--steps .lykn-thinking__head::after {
+  top: var(--lykn-thinking-mark);
+  bottom: calc(
+    -1 * var(--lykn-thinking-lead) - (var(--lykn-thinking-mark) - var(--lykn-thinking-icon)) / 2
+  );
+}
+
+.lykn-thinking__step:not(:last-child)::after {
+  top: calc((var(--lykn-thinking-mark) + var(--lykn-thinking-icon)) / 2);
+  bottom: calc(
+    -1 * var(--lykn-thinking-gap) - (var(--lykn-thinking-mark) - var(--lykn-thinking-icon)) / 2
+  );
+}
+
+.lykn-thinking__steps {
+  list-style: none;
+  margin: var(--lykn-thinking-lead) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--lykn-thinking-gap);
+}
+
+.lykn-thinking__step {
+  animation: lykn-thinking-step-in 220ms ease-out both;
+}
+
+.lykn-thinking__label {
+  min-width: 0;
+  padding-top: 3px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: rgba(0, 0, 0, 0.48);
+}
+
+.lykn-thinking__label--head {
+  padding-top: 3px;
+  color: rgba(0, 0, 0, 0.62);
+}
+
+.lykn-thinking__step--live .lykn-thinking__label {
+  color: rgba(0, 0, 0, 0.58);
+}
+
+.dark .lykn-thinking__label,
+.lykn-mark-inherit .lykn-thinking__label {
+  color: rgba(255, 255, 255, 0.42);
+}
+
+.dark .lykn-thinking__label--head,
+.lykn-mark-inherit .lykn-thinking__label--head {
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.dark .lykn-thinking__step--live .lykn-thinking__label,
+.lykn-mark-inherit .lykn-thinking__step--live .lykn-thinking__label {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.lykn-thinking--compact .lykn-thinking__label,
+.lykn-thinking--compact .lykn-thinking__label--head {
+  padding-top: 1px;
+  font-size: 12px;
+}
+
+.lykn-thinking__glyph {
+  color: rgba(0, 0, 0, 0.34);
+}
+
+.dark .lykn-thinking__glyph,
+.lykn-mark-inherit .lykn-thinking__glyph {
+  color: rgba(255, 255, 255, 0.38);
+}
+
+@keyframes lykn-thinking-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lykn-thinking__step {
+    animation: none;
+  }
+}
+
 /* ── Marquee drag-select rectangle ─────────────────────────────────── */
 .lykn-chat-marquee-select {
   border: 1.5px solid rgba(59, 130, 246, 0.7);

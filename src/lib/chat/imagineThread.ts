@@ -15,47 +15,66 @@ export type ImagineThreadImage = {
   storagePath?: string;
   status?: ImagineThreadSlotStatus;
   error?: string;
+  /** True for MP4 clips from the Imagine video lane. */
+  video?: boolean;
 };
+
+export type ImagineThreadKind = "generate" | "refine" | "variations" | "video";
 
 export type ImagineThreadCommit = {
   id: string;
   prompt: string;
   concept?: string;
-  kind?: "generate" | "refine" | "variations";
+  kind?: ImagineThreadKind;
   aspectRatio?: string;
-  images: { url: string; storagePath?: string }[];
+  images: { url: string; storagePath?: string; video?: boolean }[];
   pending?: boolean;
   slots?: Array<{
     status: ImagineThreadSlotStatus;
     url?: string;
     storagePath?: string;
     error?: string;
+    video?: boolean;
   }>;
   referenceUrls?: string[];
 };
+
+export function imagineImageIsVideo(
+  img?: { url?: string; video?: boolean } | null,
+  kind?: string,
+): boolean {
+  if (kind === "video" || img?.video) return true;
+  const url = String(img?.url || "").toLowerCase();
+  return /\.(mp4|webm|mov)(?:\?|#|$)/.test(url);
+}
 
 export function imagesFromImagineCommit(
   commit: ImagineThreadCommit,
   batchSize = IMAGINE_BATCH_SIZE,
 ): ImagineThreadImage[] {
+  const asVideo = commit.kind === "video";
   if (commit.slots?.length) {
     return commit.slots.map((s) => ({
       url: s.url || "",
       storagePath: s.storagePath,
       status: s.status,
       error: s.error,
+      video: s.video || asVideo,
     }));
   }
   if (commit.images.length) {
     return commit.images.map((img) => ({
       ...img,
       status: "done" as const,
+      video: img.video || asVideo,
     }));
   }
   if (commit.pending) {
-    return Array.from({ length: batchSize }, () => ({
+    const count = asVideo ? 1 : batchSize;
+    return Array.from({ length: count }, () => ({
       url: "",
       status: "loading" as const,
+      video: asVideo,
     }));
   }
   return [];
@@ -71,8 +90,13 @@ export function findImagineTurnIndex(
 }
 
 export function imagineTurnNote(commit: ImagineThreadCommit): string {
-  if (commit.pending) return "Generating images.";
+  if (commit.pending) {
+    return commit.kind === "video" ? "Generating video." : "Generating images.";
+  }
   const count = commit.images.filter((i) => i?.url).length;
+  if (commit.kind === "video") {
+    return `Generated ${count} video${count === 1 ? "" : "s"}.`;
+  }
   const verb =
     commit.kind === "refine" ? "Refined" : commit.kind === "variations" ? "Varied" : "Generated";
   return `${verb} ${count} image${count === 1 ? "" : "s"}.`;
@@ -110,8 +134,15 @@ export function sanitizeImagineTurnForPersist<T extends {
   const next = { ...msg, imagine: imagineRest };
   if (imgs.length) {
     next.aiImages = imgs;
-    if (!next.aiResponse || next.aiResponse === "Generating images.") {
-      next.aiResponse = `Generated ${imgs.length} image${imgs.length === 1 ? "" : "s"}.`;
+    if (
+      !next.aiResponse ||
+      next.aiResponse === "Generating images." ||
+      next.aiResponse === "Generating video."
+    ) {
+      const video = imgs.some((i) => i.video) || msg.imagine?.kind === "video";
+      next.aiResponse = video
+        ? `Generated ${imgs.length} video${imgs.length === 1 ? "" : "s"}.`
+        : `Generated ${imgs.length} image${imgs.length === 1 ? "" : "s"}.`;
     }
   } else {
     delete next.aiImages;
@@ -144,6 +175,7 @@ export function imagineTurnUnchanged(
     if ((a?.storagePath || "") !== (b?.storagePath || "")) return false;
     if ((a?.status || "") !== (b?.status || "")) return false;
     if ((a?.error || "") !== (b?.error || "")) return false;
+    if (!!a?.video !== !!b?.video) return false;
   }
   return true;
 }

@@ -408,7 +408,7 @@ export function MonthCalendarWidget({ size = "small", onOpen }) {
               {day !== null && (
                 <span className="relative block" style={{ width: px, height: px }}>
                   {isToday && (
-                    <span aria-hidden className="absolute inset-0 translate-x-[0.5px] translate-y-px rounded-full bg-red-500" />
+                    <span aria-hidden className="absolute inset-0 rounded-full bg-red-500" />
                   )}
                   <span
                     className={`absolute inset-0 flex items-center justify-center tabular-nums ${

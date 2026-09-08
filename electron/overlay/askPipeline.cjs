@@ -87,6 +87,26 @@ function stripHiddenTags(s) {
     .replace(/!\[(?:LYKN|lykn)[-_](artifact|video|vault):/gi, (_, kind) => `![lykn_${String(kind).toLowerCase()}:`);
 }
 
+function sourcesFromWebTool(tc) {
+  if (!tc || tc.status !== "done") return [];
+  const name = String(tc.name || "");
+  if (!/web_search|web_fetch/.test(name)) return [];
+  const r = tc.result;
+  if (!r || r.ok === false) return [];
+  const out = [];
+  const seen = new Set();
+  const add = (title, url) => {
+    const u = String(url || "").trim();
+    if (!u || seen.has(u)) return;
+    seen.add(u);
+    out.push({ title: String(title || "Source").trim().slice(0, 160) || "Source", url: u });
+  };
+  if (Array.isArray(r.results)) for (const hit of r.results) add(hit?.title, hit?.url);
+  if (Array.isArray(r.pages)) for (const page of r.pages) add(page?.title, page?.url);
+  if (r.url) add(r.title, r.url);
+  return out.slice(0, 40);
+}
+
 function parseVaultAttachmentsFromContent(content) {
   const MARKER = "[ATTACHMENTS_JSON:";
   const raw = String(content || "");
@@ -877,6 +897,10 @@ async function readOverlayStreamResponse(res, send, opts = {}) {
           });
         } else if (j.tool_call && typeof j.tool_call === "object") {
           const tc = j.tool_call;
+          if (tc.status === "done") {
+            const harvested = sourcesFromWebTool(tc);
+            if (harvested.length) send("lykn:answer-sources", { sources: harvested });
+          }
           maybeNotifyProjectsChangedFromTool(tc.name, tc.status, tc.result);
           if (
             tc.status === "awaiting_client" &&
@@ -1504,6 +1528,14 @@ async function gatherOverlayPageContext({
   return { pageContext, pastPageSection };
 }
 
+function overlayAskModelId(raw) {
+  const id = String(raw || "").trim();
+  if (!id || id === "auto") return "lykn";
+  if (id.length > 180) return "lykn";
+  if (!/^[a-zA-Z0-9._:/-]+$/.test(id)) return "lykn";
+  return id;
+}
+
 async function streamScreenAnswer(event, {
   text,
   history,
@@ -1516,6 +1548,7 @@ async function streamScreenAnswer(event, {
   transcribeVideo,
   scopedProjectId,
   scopedProjectName,
+  model,
 }) {
   const targetLang = String(translateTargetLang || "").trim().slice(0, 64);
   const wc = event.sender;
@@ -1529,6 +1562,9 @@ async function streamScreenAnswer(event, {
   }
   d.overlayAskAbort = new AbortController();
   const askSignal = d.overlayAskAbort.signal;
+  const askHoldKey = `overlay-ask:${askGen}`;
+  d.workKeepAlive?.hold(askHoldKey);
+  try {
 
   const send = (channel, payload) => {
     if (askGen !== d.overlayAskGeneration) return;
@@ -1541,6 +1577,16 @@ async function streamScreenAnswer(event, {
   const atts = Array.isArray(attachments) ? attachments : [];
   let imageAtts = atts.filter((a) => a && a.kind === "image" && a.dataUrl);
   const textAtts = atts.filter((a) => a && a.kind === "text" && a.text);
+  const attachedApps = atts
+    .filter((a) => a && a.kind === "app" && a.name)
+    .slice(0, 8)
+    .map((a) => ({
+      name: String(a.name).trim().slice(0, 80),
+      source: a.source === "mac" ? "mac" : "connected",
+      id: String(a.appId || a.name).trim().slice(0, 180),
+      ...(a.catalogId ? { catalogId: String(a.catalogId).trim().slice(0, 80) } : {}),
+      ...(a.path && a.source === "mac" ? { path: String(a.path).trim().slice(0, 500) } : {}),
+    }));
   // Image mode with no attach: use the last vault/generated image shown in Glass
   // so the user can enter Image mode and edit that thing directly.
   if (
@@ -1887,7 +1933,7 @@ async function streamScreenAnswer(event, {
   }));
 
   const body = {
-    model: "lykn",
+    model: overlayAskModelId(model),
     intent: "ask",
     text: String(text || "").slice(0, 4000),
     prompt,
@@ -1977,6 +2023,7 @@ async function streamScreenAnswer(event, {
         }
       : {}),
     ...(attachmentsMeta.length ? { attachments: attachmentsMeta } : {}),
+    ...(attachedApps.length ? { attachedApps } : {}),
     ...(Array.isArray(history) && history.length ? { conversation: history.slice(-8) } : {}),
   };
 
@@ -2053,6 +2100,10 @@ async function streamScreenAnswer(event, {
     send("lykn:answer-error", {
       message: humanizeStreamError(e, { forceImage: !!forceImage }),
     });
+  }
+  } finally {
+    d.workKeepAlive?.release(askHoldKey);
+    if (askGen === d.overlayAskGeneration) d.overlayAskAbort = null;
   }
 }
 
@@ -2278,6 +2329,22 @@ function pickArtifactUrl(result) {
   d.saveBufferToVault = saveBufferToVault;
   d.saveUrlToVault = saveUrlToVault;
   d.pickArtifactUrl = pickArtifactUrl;
+
+  function cancelOverlayAsk() {
+    d.overlayAskGeneration = (d.overlayAskGeneration || 0) + 1;
+    if (d.overlayAskAbort) {
+      try {
+        d.overlayAskAbort.abort();
+      } catch {
+        /* ignore */
+      }
+      d.overlayAskAbort = null;
+    }
+  }
+  d.cancelOverlayAsk = cancelOverlayAsk;
+  ipcMain.on("lykn:ask-cancel", () => {
+    cancelOverlayAsk();
+  });
 }
 
 module.exports = { attachAskPipeline };

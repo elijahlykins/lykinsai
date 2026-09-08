@@ -9,7 +9,7 @@
  *                                     custom-LLM endpoint; NOT localhost)
  *   ELEVENLABS_LLM_SECRET=...        (required — shared secret the agent sends
  *                                     to our custom-LLM endpoint as a bearer)
- *   ELEVENLABS_LLM_MODEL=gpt-4o      (optional)
+ *   ELEVENLABS_LLM_MODEL=gpt-4.1-mini  (optional)
  *   ELEVENLABS_VOICE_ID=...          (optional — defaults to a male voice)
  *
  *   node scripts/create-elevenlabs-agent.mjs
@@ -30,7 +30,7 @@ const API = 'https://api.elevenlabs.io/v1/convai/agents/create';
 const apiKey = process.env.ELEVENLABS_API_KEY;
 const publicUrl = (process.env.PUBLIC_SERVER_URL || process.env.FRONTEND_URL || '').replace(/\/+$/, '');
 const llmSecret = process.env.ELEVENLABS_LLM_SECRET;
-const llmModel = process.env.ELEVENLABS_LLM_MODEL || 'gpt-4o';
+const llmModel = process.env.ELEVENLABS_LLM_MODEL || 'gpt-4.1-mini';
 // Default male voice — "Adam" is a long-standing, widely available ElevenLabs
 // voice id. Override with ELEVENLABS_VOICE_ID once you've browsed the library.
 const voiceId = process.env.ELEVENLABS_VOICE_ID || 'pNInz6obpgDQGcFmaJgB';

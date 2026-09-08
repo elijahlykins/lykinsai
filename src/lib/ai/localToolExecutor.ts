@@ -8,6 +8,7 @@
  */
 
 import { runLocalTool, type LocalToolResult } from "@/lib/localMode";
+import { desktopMcpRun, invalidateDesktopMcpSummary } from "@/lib/mcp/desktopMcpBridge";
 import { requestLocalApproval, type McpApprovalDetail } from "@/lib/ai/localToolApproval";
 import { supabase } from "@/lib/supabase";
 import { uploadFileToStorage } from "@/lib/vault/uploadFileToStorage";
@@ -108,6 +109,23 @@ async function uploadPulledFile(result: LocalToolResult): Promise<LocalToolResul
   }
 }
 
+/**
+ * A build's dev server just came up — put the app on the user's screen.
+ *
+ * The person who asked for "a copy of Notion" is not going to copy a
+ * localhost URL out of a chat message and paste it into a browser; the built
+ * thing appearing is what "it's done" means to them. Only local addresses
+ * qualify: the url field comes from the process manager's port detection, and
+ * anything else has no business auto-opening a window.
+ */
+function openStartedAppResult(result: LocalToolResult): void {
+  if (!result.ok) return;
+  const url = typeof result.url === "string" ? result.url : "";
+  if (!/^http:\/\/(?:localhost|127\.0\.0\.1):\d+/i.test(url)) return;
+  const lykn = (window as { lykn?: { openExternal?: (url: string) => void } }).lykn;
+  lykn?.openExternal?.(url);
+}
+
 function openLocalPathResult(result: LocalToolResult): void {
   if (!result.ok || typeof result.path !== "string" || !result.path) return;
   const type = result.type === "dir" ? "dir" : "file";
@@ -148,6 +166,73 @@ function organizeDesktopResult(result: LocalToolResult): LocalToolResult {
  * Run one Local Mode tool in the desktop renderer. Voice calls this directly
  * (no chat stream id). Chat posts the same result back to the server.
  */
+/**
+ * Desktop MCP registry tools (search / call against Blender-class servers
+ * running on this machine). Executed by the local MCP host in Electron main;
+ * consequential calls follow the same main-issued approval-token contract as
+ * file/terminal tools, and the first approval of a tool is remembered.
+ */
+async function runDesktopMcpChatTool(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<LocalToolResult> {
+  if (name === "local_mcp_search_tools") {
+    const res = await desktopMcpRun("search", { query: args.query, app: args.app });
+    return res as LocalToolResult;
+  }
+  if (name === "local_mcp_catalog") {
+    const res = await desktopMcpRun("catalog", { query: args.query });
+    return res as LocalToolResult;
+  }
+  if (name === "local_mcp_connect") {
+    // Same one-shot token contract as consequential calls, but the approval
+    // card carries the exact command line that will run — connecting a server
+    // IS running code on this machine.
+    const connectArgs = {
+      app: args.app,
+      commandLine: args.commandLine,
+      name: args.name,
+      env: (args.env as Record<string, unknown>) || undefined,
+    };
+    let result = (await desktopMcpRun("connect", connectArgs)) as LocalToolResult;
+    if (result?.needsApproval === true) {
+      const approved = await requestLocalApproval({
+        tool: name,
+        summary: String(result.summary || "Connect this app to LYKN?"),
+        args: { command: (result as { command?: string }).command || "" },
+      });
+      if (approved) {
+        const approvalToken = typeof result.approvalToken === "string" ? result.approvalToken : "";
+        result = (await desktopMcpRun("connect", connectArgs, { approvalToken })) as LocalToolResult;
+      } else {
+        result = { ok: false, error: "You declined connecting this app." };
+      }
+    }
+    if (result?.ok) invalidateDesktopMcpSummary();
+    return result;
+  }
+  const callArgs = {
+    app: args.app,
+    tool: args.tool,
+    args: (args.args as Record<string, unknown>) || {},
+  };
+  let result = (await desktopMcpRun("call", callArgs)) as LocalToolResult;
+  if (result?.needsApproval === true) {
+    const approved = await requestLocalApproval({
+      tool: name,
+      summary: String(result.summary || `Allow this action in ${String(args.app || "the app")}?`),
+      args: callArgs.args,
+    });
+    if (approved) {
+      const approvalToken = typeof result.approvalToken === "string" ? result.approvalToken : "";
+      result = (await desktopMcpRun("call", callArgs, { approvalToken })) as LocalToolResult;
+    } else {
+      result = { ok: false, error: "You declined this action." };
+    }
+  }
+  return result;
+}
+
 export async function runLocalToolNow(
   name: string,
   args: Record<string, unknown>,
@@ -155,6 +240,14 @@ export async function runLocalToolNow(
 ): Promise<LocalToolResult> {
   if (name === "local_browser_agent") return startBrowserAgentTask(args, host);
   if (name === "local_ask_bot") return askBot(args);
+  if (
+    name === "local_mcp_search_tools" ||
+    name === "local_mcp_call_tool" ||
+    name === "local_mcp_catalog" ||
+    name === "local_mcp_connect"
+  ) {
+    return runDesktopMcpChatTool(name, args);
+  }
 
   let result: LocalToolResult = await runLocalTool(name, args);
 
@@ -174,13 +267,14 @@ export async function runLocalToolNow(
     });
     if (approved) {
       const approvalToken = typeof result.approvalToken === "string" ? result.approvalToken : "";
-      result = await runLocalTool(name, args, { approvalToken });
+      result = await runLocalTool(name, args, { approvalToken, workspace: true });
     } else {
       result = { ok: false, error: "You declined this action." };
     }
   }
 
   if (name === "local_open_path") openLocalPathResult(result);
+  if (name === "local_start_process") openStartedAppResult(result);
   return result;
 }
 

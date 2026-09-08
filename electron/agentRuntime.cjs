@@ -34,6 +34,10 @@ const { BrowserExecutor } = require("./task-runtime/executors/browserExecutor.cj
 const { classifyOptInReply } = require("./task-runtime/executors/browserOptInChoice.cjs");
 const desktopMcp = require("./mcp/desktopMcpClient.cjs");
 const connectedAppsTool = require("./bot-harness/runtime/connectedAppsTool.cjs");
+/** Connected-app names shown to the Bot planner. Cheap, cached, best-effort. */
+const CONNECTED_APPS_TTL_MS = 60_000;
+const CONNECTED_APPS_LOOKUP_TIMEOUT_MS = 1500;
+let connectedAppsPlannerCache = { at: 0, apps: [] };
 const { looksLikeCreateRoutineAsk } = require("./bot-routines/nlRoutine.cjs");
 const {
   looksLikeInboxWatch,
@@ -1870,7 +1874,31 @@ function createAgentRuntime(deps) {
       .map(publicAgent);
   }
 
+  function syncAgentWorkHold() {
+    const keep = deps.workKeepAlive;
+    if (!keep) return;
+    const working = [...agents.values()].some(
+      (a) => a && (a.busy || a.status === "running") && a.status !== "waiting",
+    );
+    if (working) keep.hold("agents");
+    else keep.release("agents");
+  }
+
+  function pauseForPower() {
+    let any = false;
+    for (const a of agents.values()) {
+      if (!a) continue;
+      if (a.busy || a.status === "running") {
+        abortAgent(a, "paused");
+        a.step = "Paused";
+        any = true;
+      }
+    }
+    if (any) emitList();
+  }
+
   function emitList() {
+    syncAgentWorkHold();
     emit("lykn:agent-list", {
       agents: listPublic(),
       activeAgentId,
@@ -2850,6 +2878,7 @@ function createAgentRuntime(deps) {
   // Browser is allowed separately once the Bot's own loop starts it.
   const HEADLESS_SKILLS = new Set([
     "general",
+    "web-search",
     "build",
     "image",
     "research",
@@ -2949,7 +2978,17 @@ function createAgentRuntime(deps) {
     // different thing after drafting an email than after a joke. Keying only
     // on the ask would pin a follow-up's verdict to whichever context asked
     // it first.
-    const key = `${ask.slice(0, 300)}|${recent.slice(-200)}|${localOn ? 1 : 0}`;
+    // Normalised: case, punctuation and whitespace do not change which tool
+    // carries an ask, and the raw key almost never hit ("Check the news" and
+    // "check the news!" were two entries), so every repeat paid the full
+    // round-trip again.
+    const norm = (v) =>
+      String(v || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    const key = `${norm(ask).slice(0, 300)}|${norm(recent).slice(-200)}|${localOn ? 1 : 0}`;
     if (botToolCache.has(key)) return botToolCache.get(key);
     let tool = "";
     try {
@@ -4865,7 +4904,19 @@ function createAgentRuntime(deps) {
   // reply-only branch. TaskRuntime remains the terminal authority.
 
   /** Routing verdicts / legacy skills → the harness tool whose doc preloads. */
+  /**
+   * The model this bot's owner pinned in the Bots page, or "" for the default.
+   * Only `mode: "model"` names a model — "lykn" and "my_setup" are routing
+   * modes the server resolves per turn, not a fixed id.
+   */
+  function botPinnedModelId(agent) {
+    const policy = agent?.botProfile?.modelPolicy;
+    if (!policy || policy.mode !== "model") return "";
+    return String(policy.modelId || "").trim();
+  }
+
   const BOT_SKILL_TO_TOOL = {
+    "web-search": "web_search",
     build: "build_artifact",
     image: "generate_image",
     research: "research_report",
@@ -4883,6 +4934,7 @@ function createAgentRuntime(deps) {
   /** What the user reads while the harness works — one line per phase. */
   const BOT_TOOL_ACTING_STATUS = {
     reply: "Writing my reply…",
+    web_search: "Searching the web…",
     write_document: "Writing it out…",
     research_report: "Researching…",
     edit_report: "Revising the report…",
@@ -5025,6 +5077,9 @@ function createAgentRuntime(deps) {
     const model = browserAgent.createAgentModel({
       apiBase,
       getAuthToken,
+      // The bot's own model pick, when its owner set one. Default ("lykn")
+      // sends nothing and the stage defaults stand.
+      botModelId: botPinnedModelId(agent),
       onUsage: (usage) => {
         modelUsage.calls += 1;
         modelUsage.inputTokens += usage.inputTokens || 0;
@@ -5108,6 +5163,31 @@ function createAgentRuntime(deps) {
       });
       return toHarnessResult(out);
     };
+    // Connected-app names for the planner's per-round context. One network
+    // call per TTL for the whole app, never on the critical path: if it is
+    // slow or fails we hand back nothing and the model can still discover
+    // connections by calling connected_apps.
+    const listConnectedAppsForPlanner = async () => {
+      const now = Date.now();
+      if (connectedAppsPlannerCache.at && now - connectedAppsPlannerCache.at < CONNECTED_APPS_TTL_MS) {
+        return connectedAppsPlannerCache.apps;
+      }
+      try {
+        const conns = await Promise.race([
+          desktopMcp.listConnections({ apiBase, getAuthToken }),
+          new Promise((resolve) => setTimeout(() => resolve(null), CONNECTED_APPS_LOOKUP_TIMEOUT_MS)),
+        ]);
+        if (!Array.isArray(conns)) return connectedAppsPlannerCache.apps;
+        const apps = conns
+          .filter((c) => c && c.status === "connected")
+          .map((c) => ({ id: c.id, name: c.name }))
+          .filter((c) => c.name);
+        connectedAppsPlannerCache = { at: now, apps };
+        return apps;
+      } catch {
+        return connectedAppsPlannerCache.apps;
+      }
+    };
     const connectedAppsChild = async ({ instruction, signal }) =>
       connectedAppsTool.createConnectedAppsTool({ mcpClient: desktopMcp, apiBase, getAuthToken }).execute({
         instruction,
@@ -5116,6 +5196,9 @@ function createAgentRuntime(deps) {
       });
     const executors = {
       reply: streamTool("general"),
+      // Search-and-answer: the rung between answering from memory and driving
+      // a real browser. Without it "check the news" had to open the browser.
+      web_search: streamTool("web-search"),
       write_document: writeDocumentExecutor,
       // Report and build results become persistent chat cards, and the
       // report is remembered on the agent so a same-task build_artifact
@@ -5131,6 +5214,21 @@ function createAgentRuntime(deps) {
       browser: browserChild,
     };
 
+    // One line per turn, so "bots are slow" becomes a measurement instead of a
+    // feeling: total wall clock, when the user first saw anything, how much
+    // was the provider generating vs our own overhead, and every phase.
+    const reportTurnTimings = (exec) => {
+      const t = exec?.result?.timings || exec?.timings;
+      if (!t) return;
+      const spans = (t.spans || [])
+        .map((x) => `${x.phase}${x.detail ? `:${x.detail}` : ""}=${x.ms}ms`)
+        .join(" ");
+      console.log(
+        `[bot-timing] task=${String(t.taskId || "").slice(0, 8)} total=${t.totalMs}ms ` +
+          `firstOutput=${t.firstOutputMs || "n/a"}ms calls=${modelUsage.calls} ` +
+          `upstream=${modelUsage.upstreamMs}ms overhead=${Math.max(0, t.overheadMs || 0)}ms | ${spans}`,
+      );
+    };
     agent.lastBotModelUsage = modelUsage;
     const execution = await taskRuntime.execute(canonicalTask.id, botExecutor, {
       executorName: "bot",
@@ -5138,6 +5236,10 @@ function createAgentRuntime(deps) {
       executors,
       conversationHistory: historyForPlanner(agent),
       attachmentsNote,
+      // What the user already has connected. Cached and best-effort: a slow
+      // or failing connections lookup must never delay or fail a task, it
+      // just means the model falls back to asking connected_apps itself.
+      connectedApps: await listConnectedAppsForPlanner(),
       localMode: localModeEnabled(),
       primaryTool,
       onApproval: ({ question }) => awaitBrowseApproval(agent, { question }),
@@ -5156,6 +5258,7 @@ function createAgentRuntime(deps) {
         emitProgress(agent.id, { status: "running", step: agent.step, skill: agent.skill });
       },
     });
+    reportTurnTimings(execution);
     const res = execution.result || {
       status: execution.task?.status || "failed",
       answer: execution.task?.completion?.output || "",
@@ -6511,7 +6614,7 @@ function createAgentRuntime(deps) {
       compileBrowserTask({
         objective,
         agentId: agent.id,
-        budgets: { maxRounds: maxRounds || 18 },
+        budgets: { maxRounds: maxRounds || 24 },
         origin: { type: "agent" },
       }),
     );
@@ -6587,9 +6690,14 @@ function createAgentRuntime(deps) {
       /\b(mailchimp|klaviyo|canva|figma|newsletter|design|poster|flyer|thumbnail|banner|logo|mockup|slide\s*deck|presentation|landing\s*page|template|brand\s*kit)\b/i.test(
         goalForRounds,
       );
+    // Budget parity with desktop MCP turns (40 hops there): real web tasks
+    // burn rounds on cookie walls, redirects, and settle waits before the
+    // actual work starts. 18 starved ordinary flows the moment anything went
+    // sideways, and the multi-step keyword list can't name every long flow —
+    // a higher floor matters more than a smarter classifier.
     const maxRounds = Math.max(
       4,
-      Math.min(48, Number(opts.maxRounds) || (multiStepBrowse ? 36 : 18)),
+      Math.min(64, Number(opts.maxRounds) || (multiStepBrowse ? 48 : 24)),
     );
     const convHistory =
       (Array.isArray(opts.conversationHistory) && opts.conversationHistory.length
@@ -9049,14 +9157,30 @@ function createAgentRuntime(deps) {
       const nominated =
         !!agent.botSkillBeforeCoerce || skill !== "general" || botAskWantsBrowser(core);
       if (nominated && gen === agent.generation) {
+        // The model router is a full round-trip standing in front of the whole
+        // turn, and it is only worth paying for when the answer is genuinely
+        // in doubt. It was already skipped for explicit browser asks; a
+        // heuristic that landed on a concrete tool and shows no browser
+        // signal is just as settled, so it skips too. Ambiguous asks — the
+        // ones where "chat or errand?" is a real question — still ask.
+        const heuristicIsDecisive =
+          HEADLESS_SKILLS.has(skill) &&
+          skill !== "general" &&
+          !botAskWantsBrowser(core) &&
+          !BOT_EXPLICIT_BROWSER_RE.test(core);
         const verdict =
           looksLikeCreateRoutineAsk(core) || skill === "routine"
             ? "routine"
             : BOT_EXPLICIT_BROWSER_RE.test(core)
               ? "browser"
-              : await routeBotTool(agent, core);
+              : heuristicIsDecisive
+                ? skill
+                : await routeBotTool(agent, core);
         if (gen !== agent.generation) return { ok: false, error: "superseded" };
         if (verdict === "browser") botTool = "browser";
+        // Public lookups answer from search instead of opening a browser the
+        // user then has to sit and watch.
+        else if (verdict === "web") botTool = "web-search";
         else if (verdict === "local") botTool = localModeEnabled() ? "local" : "general";
         else if (verdict === "routine") botTool = "routine";
         else if (verdict === "chat") {
@@ -10219,6 +10343,7 @@ function createAgentRuntime(deps) {
     clearBrowserSurface,
     showStepDeliverable,
     emitList,
+    pauseForPower,
     // Recreate the tab for every visible worker agent (used when the Studio
     // browser docks). Headless Bots stay off the tab strip.
     ensureAgentTabs: () => syncAgentBrowserTabs({ focusId: activeAgentId }),

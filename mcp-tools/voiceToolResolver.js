@@ -9,6 +9,7 @@
 
 import { createRequire } from 'node:module';
 import {
+  LOCAL_DISCOVERY_TOOLS,
   MAX_EXTERNAL_TOOLS_PER_DISCLOSURE,
   resolveFirstPartyCapabilities,
   selectExternalToolsForNeeds,
@@ -60,6 +61,7 @@ export const VOICE_TOOLS_BY_CAPABILITY = Object.freeze({
   'tasks.write': Object.freeze(['create_todo', 'update_todo', 'delete_todo']),
   'web.search': Object.freeze(['web_search']),
   'web.read': Object.freeze(['web_fetch']),
+  'desktop.mcp': Object.freeze(['local_mcp_search_tools', 'local_mcp_call_tool']),
   'coding.cursor': Object.freeze(['build_with_cursor', 'check_cursor_build']),
   'self.write': Object.freeze(['update_voice_instructions']),
   'compute.time': Object.freeze(['get_current_time']),
@@ -72,6 +74,9 @@ export const VOICE_TOOLS_BY_CAPABILITY = Object.freeze({
   'compute.code': Object.freeze(['run_python', 'run_code']),
   'media.image': Object.freeze(['generate_image', 'process_image']),
   'media.video': Object.freeze(['render_video']),
+  // 3D generation blocks for minutes and its GLB deliverable has no spoken
+  // form — voice deliberately maps the family to nothing.
+  'media.model3d': Object.freeze([]),
   'media.audio': Object.freeze(['transcribe_audio', 'generate_speech']),
   'media.parse': Object.freeze(['parse_document']),
   'media.translate': Object.freeze(['translate']),
@@ -151,6 +156,12 @@ export function voiceToolsForCapabilities(capabilities, ctx = {}) {
     const names = VOICE_TOOLS_BY_CAPABILITY[cap];
     if (names) for (const n of names) set.add(n);
   }
+  // Local Mode on the desktop is an environment, not a phrase. Offer Chat's
+  // local discovery set plus open-path so the model can list or open a folder.
+  if (ctx.localMode) {
+    for (const n of LOCAL_DISCOVERY_TOOLS) set.add(n);
+    set.add('local_open_path');
+  }
   // Custom REST is Voice-isolated. Disclose only when the user asked for
   // connected-app APIs, never as a hidden MCP fallback (Gmail/Slack/etc.).
   if (messageWantsConnectedAppApis(ctx.message)) {
@@ -207,6 +218,7 @@ export function resolveVoiceTurnDisclosure(ctx = {}) {
     fallback: capabilityResult.fallback,
     reasons: capabilityResult.reasons,
     externalNeeds: capabilityResult.externalNeeds,
+    keepToolsOn: Boolean(capabilityResult.keepToolsOn || firstPartyToolNames.length || selectedExternal.length),
     firstPartyToolNames,
     externalTools: selectedExternal,
     toolNames: [...firstPartyToolNames, ...selectedExternal.map((t) => t.name).filter(Boolean)],

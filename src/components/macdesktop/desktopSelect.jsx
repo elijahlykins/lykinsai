@@ -147,8 +147,8 @@ export function desktopIconClass(selected, { hot = false } = {}) {
 
 export function desktopIconLabelClass(selected) {
   return selected
-    ? "max-w-full truncate rounded-md bg-blue-600 px-1.5 py-px text-[length:var(--desk-label)] font-medium text-white"
-    : "max-w-full truncate text-[length:var(--desk-label)] font-medium text-white/90 [text-shadow:0_1px_3px_rgba(0,0,0,0.45)]";
+    ? "lykn-desk-wallpaper-ink max-w-full truncate rounded-md bg-blue-600 px-1.5 py-px text-[length:var(--desk-label)] font-medium text-white"
+    : "lykn-desk-wallpaper-ink max-w-full truncate text-[length:var(--desk-label)] font-medium text-white/90 [text-shadow:0_1px_3px_rgba(0,0,0,0.45)]";
 }
 
 export function desktopRootOf(el) {

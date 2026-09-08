@@ -510,11 +510,6 @@ export function PrivacyBody() {
               region="US"
             />
             <Row
-              p="Together AI"
-              purpose="Optional. Hosting and fine-tuning for custom and open-weight models you build"
-              region="US"
-            />
-            <Row
               p="ElevenLabs"
               purpose="Optional. Voice mode audio when ElevenLabs is the selected voice provider"
               region="US"

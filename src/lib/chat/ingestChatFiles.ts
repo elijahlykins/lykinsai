@@ -1,4 +1,14 @@
 import type { FocusedChatAttachment } from "@/lib/lyknChat/chatTurnTypes";
+import {
+  engineeringFileAccept,
+  isEngineeringPath,
+  summarizeEngineeringFile,
+} from "../../../lib/engineering/readEngineeringFile.js";
+
+// Hidden file-picker accept list. "*/*" keeps Finder drops open; the rest
+// names formats the picker should not hide on platforms that filter.
+export const CHAT_FILE_ACCEPT =
+  `*/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.md,.json,.html,.csv,.rtf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,.mp3,.wav,.ogg,.flac,.mp4,.mov,.avi,.webm,.m4a,.aac,.wma,${engineeringFileAccept()}`;
 
 /**
  * Shared file → chat-attachment ingestion.
@@ -164,6 +174,33 @@ export async function ingestChatFiles(
           name: file.name,
           mime,
           size: file.size,
+        });
+      }
+      continue;
+    }
+
+    if (isEngineeringPath(file.name)) {
+      const attId = makeAttId();
+      const attName = file.name || "part";
+      let extractedText = "";
+      try {
+        extractedText = await summarizeEngineeringFile(file);
+      } catch {
+        extractedText = `Engineering file "${attName}" (${ext || "unknown"}). Could not parse a brief from the bytes.`;
+      }
+      addFocusedAttachment({
+        id: attId,
+        type: "file",
+        url: "",
+        name: attName,
+        mime: mime || "application/octet-stream",
+        size: file.size,
+        rawFile: file,
+        extractedText,
+      });
+      if (uploadCtx?.userId) {
+        void uploadChatAttachmentBytes(file, attName, uploadCtx.userId).then((meta) => {
+          if (meta) uploadCtx.updateAttachment(attId, meta);
         });
       }
       continue;

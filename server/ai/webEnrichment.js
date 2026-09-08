@@ -6,6 +6,7 @@ import { fetchWebPage } from '../../lib/exterior/webFetch.js';
 import { neutralizeUntrustedInstructionText } from '../../lib/mcp/trust.js';
 import { MANAGED_SURFACE_INTENT } from '../../mcp-tools/chatIntentSignals.js';
 import { GREETING_PATTERN, CASUAL_CHITCHAT_PATTERN } from './chatIntent.js';
+import { messageWantsIdentityAnswer, messageWantsPromptLeak } from './assistantIdentity.js';
 
 const require = createRequire(import.meta.url);
 const webSearchIntent = require('../../lib/webSearchIntent.cjs');
@@ -111,15 +112,10 @@ export const WORKSPACE_SCOPED_PATTERNS = /\b(my\s+(?:board|notes?|project|ideas?
 export const LOCATION_AWARE_PATTERNS = /\b(near\s+me|in\s+my\s+(?:area|town|city|neighborhood|region)|around\s+here|local|nearby|closest|nearest|in\s+(?:downtown|midtown|uptown)|in\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?(?:,\s*[A-Z]{2})?)\b/i;
 
 // Web search intent lives in lib/webSearchIntent.cjs (shared with Glass).
-// Two triggers arm Serper pre-fetch — in regular chat AND in Web / Deep
-// research modes:
-//   1) Explicit opt-in — "search the web", "google it", "do research on X",
-//      "+" → Web search / Deep research
-//   2) Live freshness — news/prices/weather OR current AI-model landscape
-//      asks, so gpt-4.1-nano (June 2024 cutoff) doesn't invent a stale table
-// Capability questions ("can you do live research?") keep web tools on
-// but do not pre-fetch. Everything else stays Vault + training; persona
-// still says not to browse for pure concepts / how-tos.
+// Search tools are attached on every real turn. Serper pre-fetch is only a
+// latency shortcut for explicit Web / Deep research or already-live asks.
+// Missing a pre-fetch must not hide the tools; the model decides whether
+// to look something up.
 export function needsWebSearch(text, opts = {}) {
   if (!text || !process.env.SERPER_API_KEY) return false;
   // Explicit user opt-in from the chat-bar "+" menu (Web search / Deep
@@ -159,6 +155,8 @@ export function classifyEnrichment(text, opts = {}) {
   if (LAYOUT_COMMAND_PATTERN.test(t)) return 'none';
   if (BOARD_ACTION_PATTERN.test(t)) return 'none';
   if (AI_IDENTITY_QUERY_PATTERN.test(t)) return 'none';
+  if (messageWantsIdentityAnswer(t)) return 'none';
+  if (messageWantsPromptLeak(t)) return 'none';
   if (WORKSPACE_SCOPED_PATTERNS.test(t)) return 'light';
   // Mentions of the user's MANAGED SURFACES (to-dos, calendar, reminders,
   // tasks, "my plate / day / week") are data lookups or writes that REQUIRE
@@ -169,6 +167,11 @@ export function classifyEnrichment(text, opts = {}) {
   // tool gate in /api/ai/stream would strip every tool — which is exactly
   // the "I don't see a Todoist connection" failure. Force at least 'light'.
   if (MANAGED_SURFACE_INTENT.test(t)) return 'light';
+  // Real turns keep the tool loop so the model can choose search. Greetings
+  // stay 'none'. Do not require topic keywords to keep tools on.
+  if (webSearchIntent.messageWantsWebTools(t)) {
+    return needsWebSearch(t, opts) ? 'full' : 'light';
+  }
   const wordCount = t.split(/\s+/).length;
   // A short message still needs the agent loop (tools) when it's a genuine
   // request or lookup — "can you see my todolist", "add milk to my list",

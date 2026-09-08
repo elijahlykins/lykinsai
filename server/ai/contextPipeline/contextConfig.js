@@ -1,7 +1,7 @@
 // Prompt-structure versions and context budgets.
 // Bump a version only when the matching stable prefix actually changes.
 
-export const LYKN_SYSTEM_PROMPT_VERSION = '3';
+export const LYKN_SYSTEM_PROMPT_VERSION = '7';
 export const LYKN_RUNTIME_PROMPT_VERSION = '1';
 export const LYKN_TOOLSET_VERSION = '1';
 
@@ -45,6 +45,7 @@ export const DYNAMIC_PROMPT_SECTION_MARKERS = Object.freeze([
 export const SEMI_STABLE_SECTION_MARKERS = Object.freeze([
   '[USER_PREFERENCES]',
   '[ASSISTANT_IDENTITY]',
+  '[ASSISTANT_MODEL]',
   '[INTENT]',
   '[PROJECT_ID]',
   '[RESPONSE_LENGTH]',

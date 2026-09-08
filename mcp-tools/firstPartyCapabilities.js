@@ -46,12 +46,13 @@ import {
   messageWantsHttp,
   messageWantsLocalApps,
   messageWantsLocalDesktop,
+  messageWantsDesktopControl,
   messageWantsLocalFilesWrite,
   messageWantsLocalFolderPeek,
-  messageLooksLikeAttachedFileFollowUp,
   conversationHasAttachedDesktopFolder,
   conversationMentionedLocalFolder,
   messageLooksLikeFolderInspectFollowUp,
+  messageWantsAttachedFolderContext,
   messageWantsLocalShell,
   messageWantsMemoryWrite,
   messageWantsOpenApp,
@@ -69,6 +70,7 @@ import {
   messageWantsWrittenDocument,
   messageWantsWebTools,
   messageWantsBotAsk,
+  messageWants3dModel,
   resolveIntentChatToolNames,
 } from './chatIntentSignals.js';
 
@@ -100,6 +102,7 @@ export const FIRST_PARTY_CAPABILITY_FAMILIES = Object.freeze([
   'compute.time',
   'media.image',
   'media.video',
+  'media.model3d',
   'media.audio',
   'media.parse',
   'media.translate',
@@ -114,6 +117,7 @@ export const FIRST_PARTY_CAPABILITY_FAMILIES = Object.freeze([
   'local.apps',
   'local.shell',
   'local.desktop',
+  'desktop.mcp',
   'browser.agent',
   'bots.ask',
   'connections.external',
@@ -319,7 +323,9 @@ export const FIRST_PARTY_TOOL_METADATA = Object.freeze(
     meta({ name: 'lykn_build_spreadsheet', capabilities: ['artifacts.build'], family: 'artifacts.build', consequence: 'write' }),
     meta({ name: 'lykn_build_template', capabilities: ['artifacts.build'], family: 'artifacts.build', consequence: 'write' }),
     meta({ name: 'lykn_build_react_artifact', capabilities: ['artifacts.build'], family: 'artifacts.build', consequence: 'write' }),
+    meta({ name: 'lykn_read_artifact_source', capabilities: ['artifacts.edit'], family: 'artifacts.edit', consequence: 'read' }),
     meta({ name: 'lykn_render_video', capabilities: ['media.video', 'artifacts.build'], family: 'media.video', consequence: 'write' }),
+    meta({ name: 'lykn_generate_3d_model', capabilities: ['media.model3d'], family: 'media.model3d', consequence: 'write' }),
     meta({
       name: 'local_list_dir',
       capabilities: ['local.files.read'],
@@ -378,6 +384,41 @@ export const FIRST_PARTY_TOOL_METADATA = Object.freeze(
       localMode: true,
     }),
     meta({
+      name: 'local_build_workspace',
+      capabilities: ['local.files.read'],
+      family: 'local.files.read',
+      consequence: 'read',
+      localMode: true,
+    }),
+    meta({
+      name: 'local_start_process',
+      capabilities: ['local.shell'],
+      family: 'local.shell',
+      consequence: 'write',
+      localMode: true,
+    }),
+    meta({
+      name: 'local_process_status',
+      capabilities: ['local.shell'],
+      family: 'local.shell',
+      consequence: 'read',
+      localMode: true,
+    }),
+    meta({
+      name: 'local_stop_process',
+      capabilities: ['local.shell'],
+      family: 'local.shell',
+      consequence: 'write',
+      localMode: true,
+    }),
+    meta({
+      name: 'local_install_app',
+      capabilities: ['local.apps'],
+      family: 'local.apps',
+      consequence: 'write',
+      localMode: true,
+    }),
+    meta({
       name: 'local_running_apps',
       capabilities: ['local.apps'],
       family: 'local.apps',
@@ -412,6 +453,22 @@ export const FIRST_PARTY_TOOL_METADATA = Object.freeze(
       consequence: 'write',
       localMode: true,
     }),
+    // Desktop control: see the screen, then drive native apps with real
+    // mouse/keyboard input (electron/desktop-agent/desktopControl.cjs).
+    meta({
+      name: 'local_desktop_look',
+      capabilities: ['local.desktop'],
+      family: 'local.desktop',
+      consequence: 'read',
+      localMode: true,
+    }),
+    meta({
+      name: 'local_desktop_act',
+      capabilities: ['local.desktop'],
+      family: 'local.desktop',
+      consequence: 'write',
+      localMode: true,
+    }),
     meta({
       name: 'local_browser_agent',
       capabilities: ['browser.agent'],
@@ -424,6 +481,40 @@ export const FIRST_PARTY_TOOL_METADATA = Object.freeze(
       capabilities: ['bots.ask'],
       family: 'bots.ask',
       consequence: 'read',
+      localMode: false,
+    }),
+    // Desktop MCP registry (Blender-class servers on the user's machine).
+    // Client-executed like Local Mode tools, but armed by the desktop's
+    // connected-servers report, not the Local Mode switch — see
+    // chatStream.routes.js streamDesktopMcpArmed.
+    meta({
+      name: 'local_mcp_search_tools',
+      capabilities: ['desktop.mcp'],
+      family: 'desktop.mcp',
+      consequence: 'read',
+      localMode: false,
+    }),
+    meta({
+      name: 'local_mcp_call_tool',
+      capabilities: ['desktop.mcp'],
+      family: 'desktop.mcp',
+      consequence: 'write',
+      localMode: false,
+    }),
+    // Catalog is a pure lookup; connect spawns a process (behind its own
+    // main-issued approval token showing the exact command line).
+    meta({
+      name: 'local_mcp_catalog',
+      capabilities: ['desktop.mcp'],
+      family: 'desktop.mcp',
+      consequence: 'read',
+      localMode: false,
+    }),
+    meta({
+      name: 'local_mcp_connect',
+      capabilities: ['desktop.mcp'],
+      family: 'desktop.mcp',
+      consequence: 'write',
       localMode: false,
     }),
   ].map((row) => Object.freeze(row)),
@@ -515,13 +606,18 @@ export const GLASS_SCREEN_MAKER_TOOLS = Object.freeze(
 
 export const GLASS_VAULT_TOOLS = Object.freeze(new Set());
 
-const LOCAL_DISCOVERY_TOOLS = Object.freeze([
+export const LOCAL_DISCOVERY_TOOLS = Object.freeze([
   'local_synced_folders',
   'local_list_dir',
   'local_search_files',
 ]);
 
-const IMAGE_TOOLS = Object.freeze(['lykn_generate_image', 'lykn_process_image']);
+// Image GENERATION is Imagine-only (the /api/ai/imagine-image endpoint) — chat
+// turns never register lykn_generate_image, including forceImage turns from
+// stale overlay builds. The exception is Build-workspace turns, which re-arm
+// the tool for textures/sprites (see resolveFirstPartyTools + armBuildWorkspaceTools).
+// process_image (OCR / edit of an existing image) stays a chat capability.
+const IMAGE_TOOLS = Object.freeze(['lykn_process_image']);
 const WEB_TOOLS = Object.freeze(['lykn_web_search', 'lykn_web_fetch']);
 
 const CAPABILITY_TO_TOOLS = (() => {
@@ -622,6 +718,17 @@ function localCapabilities(ctx, caps) {
   const localAsk = looksLikeLocalSystemAsk(t);
   const browserAsk = mightBeBrowserTaskAsk(t);
   let matched = false;
+  // A folder on THIS request is consent to walk that tree (nested dirs
+  // included). Do not wait for "read" / "list" verbs. A folder that only
+  // exists in earlier conversation is not — later brainstorming should not
+  // keep local_read_file armed.
+  if (
+    Array.isArray(ctx.attachedFolders) &&
+    ctx.attachedFolders.some((f) => f && (f.path || f.name))
+  ) {
+    addCap(caps, 'local.files.read');
+    matched = true;
+  }
   if (localAsk && messageWantsLocalFilesWrite(t)) {
     addCap(caps, 'local.files.write');
     addCap(caps, 'local.files.read');
@@ -639,7 +746,7 @@ function localCapabilities(ctx, caps) {
     addCap(caps, 'local.apps');
     matched = true;
   }
-  if (messageWantsLocalDesktop(t)) {
+  if (messageWantsLocalDesktop(t) || messageWantsDesktopControl(t)) {
     addCap(caps, 'local.desktop');
     matched = true;
   }
@@ -653,9 +760,8 @@ function localCapabilities(ctx, caps) {
   }
   if (
     !matched &&
-    (conversationHasAttachedDesktopFolder(ctx.conversation) ||
-      (Array.isArray(ctx.attachedFolders) && ctx.attachedFolders.length > 0)) &&
-    messageLooksLikeAttachedFileFollowUp(t)
+    conversationHasAttachedDesktopFolder(ctx.conversation) &&
+    messageWantsAttachedFolderContext(t)
   ) {
     addCap(caps, 'local.files.read');
     matched = true;
@@ -757,7 +863,7 @@ export function resolveFirstPartyCapabilities(ctx = {}) {
   const wantsWeb =
     ctx.forceWebSearch ||
     ctx.deepResearch ||
-    messageWantsWebTools(message, { conversation: ctx.conversation });
+    messageWantsWebTools(message);
   const wantsFetch =
     ctx.forcePageFetch ||
     messageWantsPageFetch(message) ||
@@ -840,6 +946,26 @@ export function resolveFirstPartyCapabilities(ctx = {}) {
   if (messageWantsBotAsk(message, ctx.lyknBots)) {
     addCap(caps, 'bots.ask');
     reasons.push('bots.ask');
+  }
+
+  // A Build-workspace turn arms the on-disk tools no matter how the message
+  // is worded — "are the edits still in there" carries no file keyword, but
+  // the project tools are in the request. The disclosure must say so: a
+  // prompt that reads "web only" makes the model truthfully refuse to touch
+  // the project it just built.
+  if (ctx.buildWorkspace) {
+    addCap(caps, 'local.files.read');
+    addCap(caps, 'local.files.write');
+    addCap(caps, 'local.shell');
+    // Games and apps under construction routinely need real 3D assets, and
+    // procedural code cannot sculpt them — the generator rides every
+    // workspace turn so "add a car to my game" works without 3D wording.
+    addCap(caps, 'media.model3d');
+    reasons.push('build-workspace');
+  }
+  if (messageWants3dModel(message)) {
+    addCap(caps, 'media.model3d');
+    reasons.push('media.model3d');
   }
 
   const localFallback = localCapabilities(ctx, caps);
@@ -966,9 +1092,15 @@ export function resolveFirstPartyTools(capabilityResult, ctx = {}) {
     for (const n of [...names]) {
       if (keepEdit && n === keepEdit) continue;
       if (CHAT_MAKER_TOOL_NAMES.has(n)) names.delete(n);
-      if (!ctx.forceImage && (n === 'lykn_generate_image' || n === 'lykn_process_image')) names.delete(n);
+      if (!ctx.forceImage && n === 'lykn_process_image') names.delete(n);
     }
   }
+
+  // Image generation is Imagine-only. media.image still maps to the generate
+  // tool (voice and Build-workspace turns use it), so chat resolution strips
+  // it unconditionally here — buildWorkspace is the one chat-adjacent surface
+  // allowed to keep it (textures/sprites curled straight into the project).
+  if (!ctx.buildWorkspace) names.delete('lykn_generate_image');
 
   if (ctx.overlayAsk) {
     const keepMakers = new Set();
@@ -999,7 +1131,9 @@ export function resolveFirstPartyTools(capabilityResult, ctx = {}) {
     names.delete('lykn_call_app');
   }
 
-  if (!ctx.localMode) {
+  // Workspace turns keep their local tools even with the Local Mode switch
+  // off — the Electron gate confines those calls to ~/LYKN/Builds.
+  if (!ctx.localMode && !ctx.buildWorkspace) {
     for (const n of LOCAL_TOOL_NAMES) {
       if (n !== 'local_ask_bot') names.delete(n);
     }

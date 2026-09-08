@@ -5,6 +5,8 @@
 
 import type { PromptMessage } from "@/lib/ai/chatSendOrchestrator";
 import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
+import { skipNextQueueDrain } from "@/lib/chat/promptQueue";
+import { setDesktopWorkHold } from "@/lib/desktop/workHold";
 
 export type ChatFlowMode = "idle" | "clarifying" | "generating";
 
@@ -119,7 +121,64 @@ export function patchThreadSnapshot(
   const snap = ensureThreadSnapshot(chatId);
   Object.assign(snap, patch, { updatedAt: patch.updatedAt ?? Date.now() });
   snapshots.set(String(chatId), snap);
+  syncChatWorkHold();
   dispatchThreadRuntimeChange(chatId);
+}
+
+function syncChatWorkHold() {
+  const any = [...snapshots.values()].some((s) => s.isChatLoading);
+  setDesktopWorkHold("chat", any);
+}
+
+export const WORK_PAUSE_EVENT = "lykn-work-paused";
+
+/** Abort every in-flight board and label it Paused. Does not drain the queue. */
+export function pauseInFlightWork() {
+  const pausedIds: string[] = [];
+  for (const [id, snap] of snapshots) {
+    if (!snap.isChatLoading && !snap.abortController) continue;
+    skipNextQueueDrain(id);
+    try {
+      snap.abortController?.abort();
+    } catch {
+      /* ignore */
+    }
+    const msgs = snap.chatMessages.slice();
+    const last = msgs[msgs.length - 1];
+    if (last && !String(last.aiResponse || "").trim()) {
+      msgs[msgs.length - 1] = { ...last, aiResponse: "Paused." };
+    }
+    Object.assign(snap, {
+      chatMessages: msgs,
+      abortController: null,
+      isChatLoading: false,
+      chatFlowMode: "idle",
+      chatStatusText: "Paused",
+      updatedAt: Date.now(),
+    });
+    snapshots.set(id, snap);
+    dispatchThreadRuntimeChange(id);
+    pausedIds.push(id);
+  }
+  syncChatWorkHold();
+  queueMicrotask(() => {
+    for (const id of pausedIds) {
+      const snap = snapshots.get(id);
+      if (!snap) continue;
+      if (snap.isChatLoading || snap.chatStatusText !== "Paused") {
+        patchThreadSnapshot(id, {
+          isChatLoading: false,
+          chatFlowMode: "idle",
+          chatStatusText: "Paused",
+        });
+      }
+    }
+  });
+  try {
+    window.dispatchEvent(new CustomEvent(WORK_PAUSE_EVENT));
+  } catch {
+    /* SSR */
+  }
 }
 
 export function shouldPreferRuntimeSnapshot(

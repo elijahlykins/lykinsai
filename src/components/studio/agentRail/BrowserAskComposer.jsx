@@ -13,11 +13,12 @@ import {
   browserAskComposerPayload,
   browserAskStopPayload,
 } from "@/lib/lyknChat/browserChatSend";
+import { CHAT_FILE_ACCEPT } from "@/lib/chat/ingestChatFiles";
+import PromptQueueBar from "@/components/lyknChat/PromptQueueBar";
 
 const ICON_BTN =
   "flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-black/60 transition-colors hover:bg-black/10 hover:text-black/85";
-const FILE_ACCEPT =
-  "*/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.md,.json,.html,.csv,.rtf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,.mp3,.wav,.ogg,.flac,.mp4,.mov,.avi,.webm,.m4a,.aac,.wma";
+const FILE_ACCEPT = CHAT_FILE_ACCEPT;
 const PROMPT_MAX_H = 128;
 
 function fileFromPickedRow(row) {
@@ -144,7 +145,7 @@ export default function BrowserAskComposer({
   };
 
   const send = () => {
-    if (disabled || streaming || dropping) return;
+    if (disabled || dropping) return;
     const payload = browserAskComposerPayload({ chatId, tabId, text, files });
     if (!payload) return;
     window.dispatchEvent(new CustomEvent(LYKN_CHAT_SEND_EVENT, { detail: payload }));
@@ -163,11 +164,12 @@ export default function BrowserAskComposer({
     window.dispatchEvent(new CustomEvent(LYKN_CHAT_STOP_EVENT, { detail: payload }));
   };
 
-  const sendBlocked = disabled || streaming || dropping || (!text.trim() && !files.length);
+  const sendBlocked = disabled || dropping || (!text.trim() && !files.length);
   const tall = files.length > 0 || promptTall;
 
   return (
-    <div className="relative">
+    <div className="relative flex flex-col gap-1">
+      {chatId ? <PromptQueueBar chatId={chatId} compact /> : null}
       <div
         className={`lykn-browser-ask-bar lg-desktop-surface relative flex w-full flex-col ${
           tall ? "gap-1 rounded-[1.6rem] py-2 pl-1.5 pr-1.5" : "rounded-full py-1.5 pl-1.5 pr-1.5"
@@ -265,7 +267,7 @@ export default function BrowserAskComposer({
             type="button"
             onClick={send}
             disabled={sendBlocked}
-            title="Send"
+            title={streaming ? "Queue prompt" : "Send"}
             aria-label="Send"
             className="lykn-chat-send-btn flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-black/85 text-white shadow transition-all enabled:hover:scale-105 disabled:opacity-35"
           >

@@ -10,8 +10,8 @@ import {
 const CLASSIFIER_SYSTEM = [
   'Classify one chat turn for model routing.',
   'Return JSON only: {"tier":"fast"|"standard"|"advanced","confidence":0-1,"reason":"short"}',
-  'fast: greeting, ack, simple rewrite/summary/transform, basic calc. Quality must match a strong model.',
-  'standard: normal explanation, advice, ordinary code, planning, memory-based chat.',
+  'fast: greeting or one-word ack only. Never use fast for a real question, rewrite, summary, or explanation.',
+  'standard: any real question, explanation, advice, rewrite, summary, ordinary code, planning, memory-based chat.',
   'advanced: architecture, hard debugging, deep comparison, multi-step reasoning where a weaker model would materially drop quality.',
   'If unsure, pick the higher tier.',
 ].join(' ');
@@ -37,29 +37,43 @@ export function extractComplexityFeatures(text, extras = {}) {
     forceImage: Boolean(extras.forceImage),
     deepResearch: Boolean(extras.deepResearch),
     hasArtifact: Boolean(extras.artifactToolName),
+    // Coded builds are their own class of work: the model writes (or exactly
+    // patches) a whole React app inside one tool-call argument. Short wording
+    // says nothing about the difficulty — "make the inventory drag-and-drop"
+    // is two words against 40KB of source.
+    codedArtifact: String(extras.artifactToolName || '') === 'lykn_build_react_artifact',
   };
+}
+
+export function isPhaticChatTurn(text) {
+  const t = String(text || '').trim();
+  if (!t || t.length < 2) return true;
+  const afterGreeting = t.replace(LEADING_GREETING, '').trim();
+  if (GREETING_PATTERN.test(t) || CASUAL_CHITCHAT_PATTERN.test(t)) return true;
+  if (afterGreeting && CASUAL_CHITCHAT_PATTERN.test(afterGreeting)) return true;
+  return false;
 }
 
 function heuristicDecision(features, text) {
   const t = String(text || '').trim();
-  if (!t || features.charLen < 2) {
+  if (isPhaticChatTurn(t)) {
     return {
       modelTier: CHAT_MODEL_TIERS.FAST,
-      confidence: 0.95,
-      reason: 'empty or tiny ack',
+      confidence: t && features.charLen >= 2 ? 0.94 : 0.95,
+      reason: t && features.charLen >= 2 ? 'greeting or phatic turn' : 'empty or tiny ack',
       routingSource: ROUTING_SOURCES.HEURISTIC,
     };
   }
-  const afterGreeting = t.replace(LEADING_GREETING, '').trim();
-  if (
-    GREETING_PATTERN.test(t)
-    || CASUAL_CHITCHAT_PATTERN.test(t)
-    || (afterGreeting && CASUAL_CHITCHAT_PATTERN.test(afterGreeting))
-  ) {
+
+  // Coded artifact builds and edits always get the strongest Auto tier. A
+  // mid model is where surgical `edits` stop matching byte-for-byte and the
+  // turn degrades into rebuild-from-scratch. Users who want a different
+  // trade-off pick a model explicitly (Build page coding-model pill).
+  if (features.codedArtifact) {
     return {
-      modelTier: CHAT_MODEL_TIERS.FAST,
-      confidence: 0.94,
-      reason: 'greeting or phatic turn',
+      modelTier: CHAT_MODEL_TIERS.ADVANCED,
+      confidence: 0.9,
+      reason: 'coded artifact build/edit',
       routingSource: ROUTING_SOURCES.HEURISTIC,
     };
   }
@@ -109,25 +123,8 @@ function heuristicDecision(features, text) {
     return {
       modelTier: CHAT_MODEL_TIERS.STANDARD,
       confidence: 0.74,
-      reason: 'tool-driving turn stays on standard',
+      reason: 'non-coded tool-driving turn stays on standard',
       routingSource: ROUTING_SOURCES.HEURISTIC,
-    };
-  }
-
-  const maybeFast =
-    features.charLen <= CHAT_ROUTING_LENGTHS.maybeFastMaxChars &&
-    !features.hasCodeFence &&
-    !features.hasImages &&
-    !features.hasLargeContext &&
-    features.questions <= 1 &&
-    features.paragraphs <= 1;
-  if (maybeFast) {
-    return {
-      modelTier: CHAT_MODEL_TIERS.STANDARD,
-      confidence: 0.42,
-      reason: 'short turn; not confident cheap is equivalent',
-      routingSource: ROUTING_SOURCES.HEURISTIC,
-      maybeFast: true,
     };
   }
 
@@ -243,21 +240,35 @@ export function applyQualityBias(decision, planId, thresholds = CHAT_ROUTING_THR
   return next;
 }
 
+/**
+ * Luna / fast is greetings and acks only. A real question stays on standard
+ * even if the cheap classifier called it simple.
+ */
+export function holdFastToPhatic(decision, text) {
+  const next = { ...decision };
+  if (next.modelTier === CHAT_MODEL_TIERS.FAST && !isPhaticChatTurn(text)) {
+    next.modelTier = CHAT_MODEL_TIERS.STANDARD;
+    next.reason = `${next.reason}; held at standard (fast is greetings/acks only)`;
+  }
+  return next;
+}
+
 export async function classifyChatComplexity(input = {}) {
   const text = String(input.text || '');
   const features = extractComplexityFeatures(text, input);
   const heuristic = heuristicDecision(features, text);
 
   const shouldAskClassifier =
-    (heuristic.maybeFast || heuristic.maybeAdvanced) &&
+    heuristic.maybeAdvanced &&
     (typeof input.classifyFn === 'function' || classifierEnabled());
 
+  let decision = heuristic;
   if (shouldAskClassifier) {
     const classified = await classifyWithCheapModel(text, features, input.classifyFn);
     if (classified) {
-      return applyQualityBias(classified, input.planId);
+      decision = classified;
     }
   }
 
-  return applyQualityBias(heuristic, input.planId);
+  return holdFastToPhatic(applyQualityBias(decision, input.planId), text);
 }

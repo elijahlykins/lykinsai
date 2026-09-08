@@ -474,6 +474,10 @@ export function deriveVisibleCards({
   embeddedSearch,
   vaultSearch,
   conceptResultIds,
+  // Build-workspace projects for the drive's Builds folder (desktop only).
+  // null means "no bridge" — the folder itself stays off the drive; [] means
+  // "desktop, nothing built yet" — the folder shows, empty like the others.
+  buildProjects = null,
 }) {
   const baseline = vaultCards.filter(
     (card) =>
@@ -492,6 +496,25 @@ export function deriveVisibleCards({
   // Vault page, which is why none of the passes below apply here.
   if (studioSurface) {
     const generated = baseline.filter((card) => driveFolderIdFor(card));
+    // Builds holds project directories from this Mac, not vault rows —
+    // synthesized here so the listing draws them with the drive's shapes.
+    if (openDriveFolder === "builds") {
+      return (buildProjects || []).map((project) => ({
+        id: `__build_project:${project.name}`,
+        kind: "build-project",
+        title: project.name,
+        path: project.path,
+        count: 0,
+        dateLabel: project.modifiedAt
+          ? formatDate(new Date(project.modifiedAt).toISOString())
+          : "",
+        tags: [],
+        allTags: [],
+        lastTouchedMs: project.modifiedAt || 0,
+        // Recently-built first, through the same recency sort files get.
+        createdAtMs: project.modifiedAt || 0,
+      }));
+    }
     if (openDriveFolder) {
       return generated.filter((card) => driveFolderIdFor(card) === openDriveFolder);
     }
@@ -505,23 +528,44 @@ export function deriveVisibleCards({
 
     // Every folder shows even while empty: they're where the AI's next image,
     // document, and artifact will land, and a drive that changes shape as it
-    // fills is harder to learn than one that doesn't.
-    return AI_DRIVE_FOLDERS.map(({ id, name }) => {
-      const items = generated.filter((card) => driveFolderIdFor(card) === id);
-      const lastTouchedMs = items.reduce((max, card) => Math.max(max, card.lastTouchedMs || 0), 0);
-      return {
-        id: `__drive_folder:${id}`,
-        kind: "drive-folder",
-        folderId: id,
-        folderName: name,
-        title: name,
-        count: items.length,
-        dateLabel: lastTouchedMs ? formatDate(new Date(lastTouchedMs).toISOString()) : "",
-        tags: [],
-        allTags: [],
-        lastTouchedMs,
-      };
-    });
+    // fills is harder to learn than one that doesn't. Builds is the one
+    // exception — without the desktop bridge it can never fill, so on the web
+    // it stays off the drive instead of sitting there permanently empty.
+    return AI_DRIVE_FOLDERS.filter(({ id }) => id !== "builds" || buildProjects !== null)
+      .map(({ id, name }) => {
+        if (id === "builds") {
+          const lastBuiltMs = buildProjects.reduce(
+            (max, project) => Math.max(max, project.modifiedAt || 0),
+            0,
+          );
+          return {
+            id: `__drive_folder:${id}`,
+            kind: "drive-folder",
+            folderId: id,
+            folderName: name,
+            title: name,
+            count: buildProjects.length,
+            dateLabel: lastBuiltMs ? formatDate(new Date(lastBuiltMs).toISOString()) : "",
+            tags: [],
+            allTags: [],
+            lastTouchedMs: lastBuiltMs,
+          };
+        }
+        const items = generated.filter((card) => driveFolderIdFor(card) === id);
+        const lastTouchedMs = items.reduce((max, card) => Math.max(max, card.lastTouchedMs || 0), 0);
+        return {
+          id: `__drive_folder:${id}`,
+          kind: "drive-folder",
+          folderId: id,
+          folderName: name,
+          title: name,
+          count: items.length,
+          dateLabel: lastTouchedMs ? formatDate(new Date(lastTouchedMs).toISOString()) : "",
+          tags: [],
+          allTags: [],
+          lastTouchedMs,
+        };
+      });
   }
 
   // Folder-view: when the user has tapped into a connector tile, the

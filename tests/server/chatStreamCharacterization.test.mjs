@@ -19,13 +19,18 @@ test('stream registers local-tool-result before the SSE handler (shared bridge)'
   assert.match(streamSrc, /resolveLocalToolResult\(/);
   assert.match(streamSrc, /registerLocalToolStream\(/);
   assert.match(streamSrc, /releaseLocalToolStream\(/);
-  assert.match(streamSrc, /localToolStreams,/);
+  // Awaiter/approval factories close over the same bridge singleton.
+  assert.match(streamSrc, /makeAwaitLocalTool\(/);
+  assert.match(streamSrc, /makeRequestMcpApproval\(/);
   assert.match(streamSrc, /RETRYABLE_STATUSES,/);
 });
 
 test('SSE framing: token data, keepalive, error, served_model, single [DONE]', () => {
   assert.match(streamSrc, /res\.write\(`data: \$\{JSON\.stringify\(\{ t: text \}\)\}\\n\\n`\)/);
   assert.match(streamSrc, /res\.write\(`data: \$\{JSON\.stringify\(\{ tool_call: evt \}\)\}\\n\\n`\)/);
+  assert.match(streamSrc, /extractSourcesFromWebToolResult\(/);
+  assert.match(streamSrc, /mergeCitationSources\(/);
+  assert.match(streamSrc, /res\.write\(`data: \$\{JSON\.stringify\(\{ sources: streamCitationSources \}\)\}\\n\\n`\)/);
   assert.match(streamSrc, /res\.write\(`: keepalive \$\{Date\.now\(\)\}\\n\\n`\)/);
   assert.match(streamSrc, /res\.write\(`data: \$\{JSON\.stringify\(\{ error: msg \}\)\}\\n\\n`\)/);
   assert.match(streamSrc, /res\.write\(`data: \$\{JSON\.stringify\(\{ served_model: actualModel \}\)\}\\n\\n`\)/);
@@ -53,6 +58,7 @@ test('tool loop, MCP/local tools, and usage accounting remain on the stream path
   assert.match(streamSrc, /logAiUsage\(/);
   assert.match(streamSrc, /resolveProductionChatMemory\(/);
   assert.match(streamSrc, /fetchProjectSection\(/);
+  assert.match(streamSrc, /investigateMode:/);
 });
 
 test('invoke keeps returnActions as a live public contract', () => {
@@ -103,6 +109,16 @@ test('stream imports Cursor build helpers used after enrichment', () => {
   );
   assert.match(streamSrc, /isCursorBuildsConfigured\(\)/);
   assert.match(streamSrc, /claimUnannouncedBuilds\(/);
+});
+
+test('connected apps do not force the agent loop on ordinary chat', () => {
+  assert.match(streamSrc, /attachConnectedAppsToStreamTurn\(/);
+  assert.match(streamSrc, /loadConnectedAppRows\(/);
+  assert.ok(
+    streamSrc.indexOf('res.writeHead(200') < streamSrc.indexOf('attachConnectedAppsToStreamTurn('),
+    'SSE headers must flush before connected-app resolve',
+  );
+  assert.doesNotMatch(streamSrc, /reason !== ['"]no_connections['"]/);
 });
 
 test('browser side chat is ask-only and does not arm agent tools', () => {

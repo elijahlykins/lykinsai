@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { startBrowserAgentTask } from "@/lib/ai/browserAgentLaunch";
 import {
   getAttachedChatId,
+  isBrowserTabRevealed,
   resetBrowserChatAttach,
 } from "@/lib/lyknChat/browserChatAttach";
 
@@ -23,17 +24,17 @@ function withLykn(lykn: Record<string, unknown>, fn: () => Promise<void>) {
   });
 }
 
-test("Chat A launching local_browser_agent stamps sourceChatId A", async () => {
+test("launching an agent never binds the tab to the launching chat", async () => {
   resetBrowserChatAttach();
-  const creates: Array<{ sourceChatId?: string }> = [];
-  const sends: Array<{ id: string; opts?: { task?: { chatId?: string } } }> = [];
+  const creates: Array<Record<string, unknown>> = [];
+  const sends: Array<{ id: string; opts?: Record<string, unknown> }> = [];
   await withLykn(
     {
-      agentCreate(payload: { sourceChatId?: string }) {
+      agentCreate(payload: Record<string, unknown>) {
         creates.push(payload);
         return Promise.resolve({ ok: true, agentId: "agent-a" });
       },
-      studioAgentSend(_text: string, _atts: unknown[], id: string, opts: { task?: { chatId?: string } }) {
+      studioAgentSend(_text: string, _atts: unknown[], id: string, opts: Record<string, unknown>) {
         sends.push({ id, opts });
         return Promise.resolve({ ok: true });
       },
@@ -44,15 +45,20 @@ test("Chat A launching local_browser_agent stamps sourceChatId A", async () => {
         { chatId: "chat-a" },
       );
       assert.equal(result.ok, true);
-      assert.equal(creates[0]?.sourceChatId, "chat-a");
+      // Separation contract: no sourceChatId lineage, no task.chatId stamp,
+      // no renderer bind. The agent tab is its own conversation.
+      assert.equal("sourceChatId" in (creates[0] || {}), false);
       assert.equal(sends[0]?.id, "agent-a");
-      assert.equal(sends[0]?.opts?.task?.chatId, "chat-a");
-      assert.equal(getAttachedChatId("agent-a"), "chat-a");
+      assert.deepEqual(sends[0]?.opts, {});
+      assert.equal(getAttachedChatId("agent-a"), null);
+      // The tab is still marked revealed so its OWN chat (minted on first
+      // rail send) raises it later.
+      assert.equal(isBrowserTabRevealed("agent-a"), true);
     },
   );
 });
 
-test("Chat B launching a second agent stamps sourceChatId B", async () => {
+test("two chats launching agents leave both tabs unbound and independent", async () => {
   resetBrowserChatAttach();
   let n = 0;
   await withLykn(
@@ -68,52 +74,23 @@ test("Chat B launching a second agent stamps sourceChatId B", async () => {
     async () => {
       await startBrowserAgentTask({ task: "A work" }, { chatId: "chat-a" });
       await startBrowserAgentTask({ task: "B work" }, { chatId: "chat-b" });
-      assert.equal(getAttachedChatId("agent-1"), "chat-a");
-      assert.equal(getAttachedChatId("agent-2"), "chat-b");
+      assert.equal(getAttachedChatId("agent-1"), null);
+      assert.equal(getAttachedChatId("agent-2"), null);
     },
   );
 });
 
-test("simultaneous launches cannot cross-bind chats", async () => {
+test("model args.chatId cannot bind the conversation either", async () => {
   resetBrowserChatAttach();
-  let n = 0;
-  const creates: string[] = [];
+  const creates: Array<Record<string, unknown>> = [];
   await withLykn(
     {
-      agentCreate(payload: { sourceChatId?: string }) {
-        const id = `agent-${++n}`;
-        creates.push(String(payload.sourceChatId || ""));
-        return Promise.resolve({ ok: true, agentId: id });
-      },
-      studioAgentSend() {
-        return Promise.resolve({ ok: true });
-      },
-    },
-    async () => {
-      await Promise.all([
-        startBrowserAgentTask({ task: "A" }, { chatId: "chat-a" }),
-        startBrowserAgentTask({ task: "B" }, { chatId: "chat-b" }),
-      ]);
-      assert.deepEqual(creates.sort(), ["chat-a", "chat-b"]);
-      const a = getAttachedChatId("agent-1");
-      const b = getAttachedChatId("agent-2");
-      assert.ok(a === "chat-a" || a === "chat-b");
-      assert.ok(b === "chat-a" || b === "chat-b");
-      assert.notEqual(a, b);
-    },
-  );
-});
-
-test("model args.chatId cannot choose the conversation", async () => {
-  resetBrowserChatAttach();
-  const creates: Array<{ sourceChatId?: string }> = [];
-  await withLykn(
-    {
-      agentCreate(payload: { sourceChatId?: string }) {
+      agentCreate(payload: Record<string, unknown>) {
         creates.push(payload);
         return Promise.resolve({ ok: true, agentId: "agent-1" });
       },
-      studioAgentSend() {
+      studioAgentSend(_t: string, _a: unknown[], _id: string, opts: Record<string, unknown>) {
+        assert.deepEqual(opts, {});
         return Promise.resolve({ ok: true });
       },
     },
@@ -122,30 +99,27 @@ test("model args.chatId cannot choose the conversation", async () => {
         { task: "browse", chatId: "chat-model" },
         { chatId: "chat-host" },
       );
-      assert.equal(creates[0]?.sourceChatId, "chat-host");
-      assert.notEqual(creates[0]?.sourceChatId, "chat-model");
-      assert.equal(getAttachedChatId("agent-1"), "chat-host");
+      assert.equal("sourceChatId" in (creates[0] || {}), false);
+      assert.equal(getAttachedChatId("agent-1"), null);
     },
   );
 });
 
-test("without host context, model chatId is still ignored and the tab stays unbound", async () => {
+test("without host context the tab also stays unbound", async () => {
   resetBrowserChatAttach();
-  const creates: Array<{ sourceChatId?: string }> = [];
   await withLykn(
     {
-      agentCreate(payload: { sourceChatId?: string }) {
-        creates.push(payload);
+      agentCreate() {
         return Promise.resolve({ ok: true, agentId: "agent-1" });
       },
-      studioAgentSend(_t: string, _a: unknown[], _id: string, opts: { task?: { chatId?: string } }) {
-        assert.equal(opts?.task?.chatId, undefined);
+      studioAgentSend(_t: string, _a: unknown[], _id: string, opts: Record<string, unknown>) {
+        assert.deepEqual(opts, {});
         return Promise.resolve({ ok: true });
       },
     },
     async () => {
-      await startBrowserAgentTask({ task: "browse", chatId: "chat-model" });
-      assert.equal(creates[0]?.sourceChatId, undefined);
+      const result = await startBrowserAgentTask({ task: "browse", chatId: "chat-model" });
+      assert.equal(result.ok, true);
       assert.equal(getAttachedChatId("agent-1"), null);
     },
   );

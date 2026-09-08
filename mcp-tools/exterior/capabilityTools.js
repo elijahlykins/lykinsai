@@ -12,6 +12,7 @@ import { transcribeAudio } from '../../lib/exterior/capabilities/transcribeAudio
 import { generateSpeech } from '../../lib/exterior/capabilities/generateAudio.js';
 import { buildTemplate } from '../../lib/exterior/capabilities/buildTemplate.js';
 import { buildReactArtifact } from '../../lib/exterior/capabilities/buildReactArtifact.js';
+import { readArtifactSource } from '../../lib/exterior/capabilities/readArtifactSource.js';
 import { renderVideo } from '../../lib/exterior/capabilities/renderVideo.js';
 import { translateText } from '../../lib/exterior/capabilities/translate.js';
 import { httpRequest } from '../../lib/exterior/capabilities/httpRequest.js';
@@ -564,13 +565,23 @@ export const buildReactArtifactTool = {
         type: 'array',
         description:
           'Targeted patches to the open artifact (instead of full code/files). ' +
-          'For multi-file projects include `path`.',
+          'For multi-file projects include `path`. Send EVERY change for this turn in one array — ' +
+          'if any patch fails, the whole batch is rejected and every failure is reported together.',
         items: {
           type: 'object',
           properties: {
             path: { type: 'string', description: 'File to patch (multi-file projects).' },
-            find: { type: 'string', description: 'Exact snippet copied from the current source (unique, whitespace included).' },
+            find: { type: 'string', description: 'Snippet copied from the current source. Indentation is forgiven on multi-line snippets, but the lines themselves must match.' },
             replace: { type: 'string', description: 'Replacement text ("" deletes the snippet).' },
+            occurrence: {
+              type: 'integer',
+              minimum: 1,
+              description: 'For a snippet that appears more than once: which match to patch (1 = first). Use instead of padding `find` with extra context.',
+            },
+            replace_all: {
+              type: 'boolean',
+              description: 'Patch EVERY match of `find` in the file (e.g. swapping a repeated class name).',
+            },
           },
           required: ['find', 'replace'],
           additionalProperties: false,
@@ -632,6 +643,50 @@ export const buildReactArtifactTool = {
     additionalProperties: false,
   },
   handler: withCtx(buildReactArtifact),
+};
+
+export const readArtifactSourceTool = {
+  name: 'lykn_read_artifact_source',
+  title: 'Read exact source from the open artifact',
+  scope: 'read',
+  description: [
+    'Read the EXACT current source of the artifact open for editing. Use this',
+    'when [ARTIFACT_OPEN] gave you a structure map instead of the full source',
+    '(large artifacts), or whenever an `edits` patch came back',
+    'edit_target_not_found and you need to see the real text.',
+    '',
+    'Two modes:',
+    '  • `find` — locate a substring and get it back with surrounding context,',
+    '    plus how many times it occurs (so you know whether to use',
+    '    `occurrence`/`replace_all` on the edit).',
+    '  • `start_line` / `end_line` — read a range from the structure map.',
+    '',
+    'The `source` it returns is verbatim and unnumbered: copy from it directly',
+    'into `edits[].find`. Line numbers are metadata, never part of the source.',
+    'Read first, patch second — do not guess a snippet from the structure map.',
+  ].join('\n'),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        description: 'File to read (multi-file projects). Defaults to the entry file.',
+      },
+      find: {
+        type: 'string',
+        description: 'Substring to locate. Returns it with surrounding context and an occurrence count.',
+      },
+      start_line: { type: 'integer', minimum: 1, description: 'First line to read (1-based).' },
+      end_line: { type: 'integer', minimum: 1, description: 'Last line to read (inclusive).' },
+      context_lines: {
+        type: 'integer',
+        minimum: 0,
+        description: 'Lines of context around a `find` match (default 12).',
+      },
+    },
+    additionalProperties: false,
+  },
+  handler: withCtx(readArtifactSource),
 };
 
 export const renderVideoTool = {
@@ -762,6 +817,7 @@ export const CAPABILITY_TOOLS = [
   generateSpeechTool,
   buildTemplateTool,
   buildReactArtifactTool,
+  readArtifactSourceTool,
   renderVideoTool,
   translateTool,
   httpRequestTool,

@@ -13,8 +13,8 @@ function logoUrlFor(slug: string) {
 }
 
 const FALLBACK_MODELS: { id: string; name: string; logo: string }[] = [
-  { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", logo: "openai" },
-  { id: "claude-fable-5", name: "Claude Fable 5", logo: "anthropic" },
+  { id: "gpt-6-astra", name: "GPT-6 Astra", logo: "openai" },
+  { id: "claude-fable-5.1", name: "Claude Fable 5.1", logo: "anthropic" },
   { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro", logo: "gemini" },
   { id: "grok-4.6", name: "Grok 4.6", logo: "xai" },
   { id: "meta-llama/llama-4-maverick", name: "Llama 4 Maverick", logo: "meta" },

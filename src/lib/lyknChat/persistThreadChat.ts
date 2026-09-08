@@ -1,4 +1,5 @@
 import { getThreadSnapshot } from "@/lib/chat/chatThreadRuntime";
+import { snapshotHasContext } from "@/lib/lyknChat/lyknChatHasContext";
 
 const MAX_LOCAL_CHAT = 30;
 
@@ -7,6 +8,7 @@ export function writeThreadChatCache(chatId: string) {
   if (!id) return;
   const snap = getThreadSnapshot(id);
   if (!snap) return;
+  if (!snapshotHasContext(snap)) return;
   try {
     localStorage.setItem(
       `lyknchat_chat_${id}`,
@@ -29,10 +31,12 @@ export async function persistOffRouteThread(chatId: string, userId?: string | nu
   writeThreadChatCache(id);
   if (!userId) return;
   const snap = getThreadSnapshot(id);
-  if (!snap) return;
+  if (!snap || !snapshotHasContext(snap)) return;
   try {
     const { supabase } = await import("@/lib/supabase");
+    const { ensureChatBoardRow } = await import("@/lib/chat/chatThreadsClient");
     const now = new Date().toISOString();
+    await ensureChatBoardRow(userId, id);
     const { data: existing } = await supabase
       .from("lykn_chat_states")
       .select("state, version")

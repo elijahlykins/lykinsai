@@ -4,14 +4,12 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { ChevronDown } from "lucide-react";
 import lyknLogoMark from "@/assets/FINAL/LYKN-LOGO-B-Open/SVG/LYKN-Logo-Primary-B-Open-BLACK.svg";
-import glassAdDemo from "@/assets/glass-ad-demo.png";
-import { NEWS_POSTS } from "@/lib/newsPosts";
 import LandingHeader from "@/components/landing/LandingHeader";
 import LandingHero from "@/components/landing/LandingHero";
-import HeroDesktopStage from "@/components/landing/HeroDesktopStage";
+import LandingDesktopApps from "@/components/landing/LandingDesktopApps";
 import LandingExplain from "@/components/landing/LandingExplain";
 import LandingModelsTools from "@/components/landing/LandingModelsTools";
 import LandingSlideshow from "@/components/landing/LandingSlideshow";
@@ -32,7 +30,7 @@ const HOTKEY_SPACED = desktopHotkeyLabel("spaced");
 
 // The production marketing landing page, focused on LYKN desktop (the Mac
 // app). Served at "/", "/landing", and "/glass". Uses the shared
-// LandingHeader routing to Features, Pricing, News, and Download.
+// LandingHeader routing to Features, Pricing, Security, and Download.
 
 const ICON_VIEWBOX = "0 0 204.29 204.29";
 const ICON_PATH =
@@ -250,162 +248,6 @@ function GlassToolbar({
   );
 }
 
-/** The UI views the chips under the screenshot switch between. */
-const ANY_VIEWS = [
-  {
-    id: "browser",
-    label: "Browser",
-    src: null,
-    alt: "The LYKN browser pulled up on the desktop with AI search on a new tab",
-    title: "One browser.",
-    titleDim: "Zero busywork.",
-    desc: "The LYKN browser lives on your desktop. Search with AI from a new tab, or hand it research, forms, and errands and watch it work the web on its own.",
-    stage: { appWindow: "browser" },
-  },
-  {
-    id: "context",
-    label: "Context",
-    src: null,
-    alt: "The LYKN desktop switching between Chat, Build, and Imagine while the same ask stays in the bar",
-    title: "One context.",
-    titleDim: "Every mode.",
-    desc: "LYKN already knows your files, projects, and what's on your screen. Switch between Chat, Build, Imagine, and Research - your context rides along, no re-explaining.",
-    stage: {
-      cycleModes: ["chat", "build", "imagine", "research"],
-      prompt: "Use my codebase for this",
-    },
-  },
-  {
-    id: "glass",
-    label: "Glass",
-    src: glassAdDemo,
-    alt: "LYKN Glass floating over a moodboard, rebranding a product ad on request",
-    title: "One shortcut.",
-    titleDim: "Every screen.",
-    desc: `Press ${HOTKEY} and LYKN Glass appears over whatever you're working on. It reads the page, snips the part you care about, and acts on it, with your projects and context already loaded.`,
-    stage: null,
-  },
-  {
-    id: "apps",
-    label: "Apps",
-    src: null,
-    alt: "The LYKN desktop in Build mode, asked to build a custom note taking app",
-    title: "One sentence.",
-    titleDim: "Real apps.",
-    desc: "Describe the tool you wish existed and LYKN builds it - a real app that runs on your desktop, iterated with you until it feels right.",
-    stage: {
-      mode: "build",
-      prompt: "Build me a custom note taking app",
-      typePrompt: true,
-    },
-  },
-] as const;
-
-const ANY_ROTATE_MS = 6000;
-
-/** LYKN Glass explainer: split layout — headline, shortcut copy,
-    CTA pills, and proof stats on the left; a UI screenshot on the right
-    that the chips underneath switch between. */
-function AnyScreenSection() {
-  const navigate = useNavigate();
-  const [view, setView] = useState<(typeof ANY_VIEWS)[number]["id"]>(
-    ANY_VIEWS[0].id,
-  );
-  const active = ANY_VIEWS.find((v) => v.id === view) ?? ANY_VIEWS[0];
-
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      setView((cur) => {
-        const i = ANY_VIEWS.findIndex((v) => v.id === cur);
-        return ANY_VIEWS[(Math.max(0, i) + 1) % ANY_VIEWS.length].id;
-      });
-    }, ANY_ROTATE_MS);
-    return () => window.clearInterval(id);
-  }, []);
-
-  return (
-    <section className="gl-any" id="about">
-      <div className="gl-any-inner">
-        <div className="gl-any-copy">
-          <h2 className="gl-any-title gl-reveal">
-            <span key={active.id} className="gl-any-sub-swap">
-              {active.title}
-              <br />
-              <span className="gl-any-title-dim">{active.titleDim}</span>
-            </span>
-          </h2>
-          <p className="gl-any-sub gl-reveal">
-            <span key={active.id} className="gl-any-sub-swap">
-              {markLykn(active.desc)}
-            </span>
-          </p>
-          <div className="gl-any-actions gl-reveal">
-            <button
-              type="button"
-              className="gl-any-btn gl-any-btn--primary"
-              onClick={() => navigate("/download")}
-              aria-label="Download LYKN"
-            >
-              Download&nbsp;<LyknWordmark decorative />
-            </button>
-          </div>
-          <dl className="gl-any-stats gl-reveal">
-            <div className="gl-any-stat">
-              <dt>1</dt>
-              <dd>Shortcut to summon it</dd>
-            </div>
-            <div className="gl-any-stat">
-              <dt>Any</dt>
-              <dd>App, doc, or browser</dd>
-            </div>
-            <div className="gl-any-stat">
-              <dt>0</dt>
-              <dd>Context re-explaining</dd>
-            </div>
-          </dl>
-        </div>
-
-        <div className="gl-any-stage gl-reveal">
-          {active.src ? (
-            <img
-              key={active.id}
-              className="gl-any-shot gl-any-shot--switch"
-              data-header-tone="dark"
-              src={active.src}
-              alt={active.alt}
-              draggable={false}
-            />
-          ) : (
-            <div
-              key={active.id}
-              className="gl-any-live"
-              data-header-tone="dark"
-              role="img"
-              aria-label={active.alt}
-            >
-              <HeroDesktopStage {...active.stage} />
-            </div>
-          )}
-          <div className="gl-any-chips" role="tablist" aria-label="LYKN views">
-            {ANY_VIEWS.map((v) => (
-              <button
-                key={v.id}
-                type="button"
-                role="tab"
-                aria-selected={view === v.id}
-                className={`gl-any-chip${view === v.id ? " is-active" : ""}`}
-                onClick={() => setView(v.id)}
-              >
-                {v.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
 /** Big showcase card: the snip animation framed in one wide card. */
 function SnipShowcaseSection() {
   return (
@@ -515,7 +357,7 @@ const DEMO_CANNED: Record<string, string> = {
   "How do you manage my projects?":
     "Think of me as a project manager who never loses context. Once you're set up, I keep your projects and their tasks, know what's done and what's still open, surface what's due, and nudge the next step forward, from Home on your Mac. You stay in the work; I keep the plan moving.",
   "What's on this page?":
-    `You're on the LYKN landing page. Up top is the floating nav: Features, Pricing, Security, News, and a Download pill. The hero reads "LYKN your AI desktop" and rotates three lines: The only AI workspace you need. Fully customizable. Ready to use by anyone for anything. Below that: a short explainer, a flip-through of Chat, Build, Imagine, and Research, five feature cards, Mac sync / customize / agents, and a download card for Mac.`,
+    `You're on the LYKN landing page. Up top is the floating nav: Features, Pricing, Security, and a Download pill. The hero reads "LYKN your AI desktop" and rotates three lines: The only AI workspace you need. Fully customizable. Ready to use by anyone for anything. Below that: a short explainer, a flip-through of Chat, Build, Imagine, and Research, five feature cards, a numbered tour of the desktop (Browser, Agents, Projects, Context, Custom apps, Glass), then Mac sync / customize / agents, and a download card for Mac.`,
   "How does the calendar work?":
     "Once you're set up, I manage your calendar right alongside your work. The calendar widget sits on Home, and I can schedule, reschedule, and flag conflicts so your time and your projects stay in sync.",
   "Can it see what's on my screen?":
@@ -978,51 +820,6 @@ function GlassDemoOverlay({
   );
 }
 
-/** "Latest news" — a row of article tiles, each linking to its full post. */
-function NewsSection() {
-  const navigate = useNavigate();
-  return (
-    <section className="gl-news" id="news" aria-label="Latest news">
-      <div className="gl-news-inner">
-        <div className="gl-news-head gl-reveal">
-          <h2 className="gl-news-title">Latest news</h2>
-          <button
-            type="button"
-            className="gl-news-all"
-            onClick={() => navigate("/news")}
-          >
-            All posts
-            <ChevronRight aria-hidden="true" />
-          </button>
-        </div>
-        <div className="gl-news-grid gl-reveal">
-          {NEWS_POSTS.map((post) => (
-            <Link
-              to={`/news/${post.slug}`}
-              className="gl-news-card"
-              key={post.slug}
-            >
-              <div
-                className="gl-news-tile"
-                style={{ backgroundImage: `url(${post.art})` }}
-              >
-                <span
-                  className={`gl-news-tag${post.lightArt ? " gl-news-tag--dark" : ""}`}
-                >
-                  {post.tag}
-                </span>
-              </div>
-              <p className="gl-news-date">{post.date}</p>
-              <h3 className="gl-news-headline">{post.title}</h3>
-            </Link>
-          ))}
-        </div>
-        <hr className="gl-news-divider" />
-      </div>
-    </section>
-  );
-}
-
 // Frequently asked questions shown in the accordion.
 const FAQS: { q: string; a: string }[] = [
   {
@@ -1118,6 +915,17 @@ const START_OPTIONS: {
     to: "/download",
     solid: true,
   },
+  {
+    title: "LYKN for Windows",
+    sub: "Coming soon. Join the waitlist and we'll email you when the desktop app ships.",
+    points: [
+      "Same Home, chat bar, and files on your PC",
+      "Windows 10 and later",
+      "We'll write the moment it's ready",
+    ],
+    cta: "Join the waitlist",
+    to: "/windows",
+  },
 ];
 
 /** Download CTA above the footer — desktop app is the product entry. */
@@ -1128,9 +936,9 @@ function GetStartedSection() {
       <div className="gl-start-inner">
         <h2 className="gl-start-title gl-reveal">
           Get{"\u00A0"}
-          <LyknWordmark /> desktop for Mac
+          <LyknWordmark /> desktop
         </h2>
-        <div className="gl-start-grid gl-start-grid--single gl-reveal">
+        <div className="gl-start-grid gl-reveal">
           {START_OPTIONS.map((opt) => (
             <article className="gl-start-card" key={opt.title}>
               <h3 className="gl-start-card-title">{markLykn(opt.title)}</h3>
@@ -1188,6 +996,7 @@ const FOOTER_COLS: { title: string; links: FooterLink[] }[] = [
       { label: "Pricing", to: "/pricing" },
       { label: "Security", to: "/security" },
       { label: "Download", scroll: "download" },
+      { label: "Windows", to: "/windows" },
     ],
   },
   {
@@ -1362,9 +1171,9 @@ const GlassLanding = () => {
         <LandingHero />
         <LandingExplain />
         <LandingCapabilities />
-        <LandingSlideshow />
         <LandingModelsTools />
-        <AnyScreenSection />
+        <LandingDesktopApps />
+        <LandingSlideshow />
         <GetStartedSection />
       </main>
 

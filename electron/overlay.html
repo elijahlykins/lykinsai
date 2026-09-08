@@ -178,6 +178,45 @@
         padding-top: 2px;
       }
       .chat-a-actions[hidden] { display: none !important; }
+      .chat-sources-pill {
+        -webkit-app-region: no-drag;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin: 10px 0 0;
+        padding: 5px 12px 5px 8px;
+        width: fit-content;
+        max-width: 100%;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.82);
+        font: inherit;
+        font-size: 12.5px;
+        font-weight: 500;
+        cursor: pointer;
+        text-align: left;
+        transition: background 0.12s ease, border-color 0.12s ease;
+      }
+      .chat-sources-pill[hidden] { display: none !important; }
+      .chat-sources-pill:hover {
+        background: rgba(255, 255, 255, 0.12);
+        border-color: rgba(255, 255, 255, 0.2);
+      }
+      .chat-sources-favicons {
+        display: flex;
+        align-items: center;
+      }
+      .chat-sources-favicons img {
+        width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        background: rgba(18, 20, 26, 0.95);
+        border: 1.5px solid rgba(255, 255, 255, 0.2);
+        margin-left: -6px;
+        object-fit: cover;
+      }
+      .chat-sources-favicons img:first-child { margin-left: 0; }
       /* Parked-on-you indicator: stays on screen after the turn ends so it is
          obvious the run is paused and still watching, not finished. Carries the
          same drawing LYKN mark as the thinking state — a pause is the agent
@@ -743,15 +782,100 @@
         overflow: hidden;
       }
 
-      /* Loading state: the LYKN icon outline drawing on a loop + a shimmer
-         status label — identical to the chat page's ThinkingIndicator. */
+      /* Loading state: LYKN outline on a loop + shimmer label, with an
+         activity log underneath while tools run (same language as Studio). */
       .thinking {
         display: flex;
-        align-items: center;
-        gap: 12px;
+        flex-direction: column;
+        align-items: stretch;
         padding: 4px 0 8px;
         overflow: visible;
         min-height: 30px;
+        --thinking-line: rgba(255, 255, 255, 0.14);
+        --thinking-line-x: 11.5px;
+      }
+      .thinking-head,
+      .thinking-step {
+        display: grid;
+        grid-template-columns: 24px minmax(0, 1fr);
+        column-gap: 12px;
+        align-items: start;
+        position: relative;
+        z-index: 1;
+      }
+      .thinking-mark {
+        display: grid;
+        place-items: center;
+        width: 24px;
+        min-height: 24px;
+        flex-shrink: 0;
+      }
+      .thinking.has-steps .thinking-head::after,
+      .thinking-step:not(:last-child)::after {
+        content: "";
+        position: absolute;
+        left: var(--thinking-line-x);
+        width: 1px;
+        background: var(--thinking-line);
+        pointer-events: none;
+        z-index: 0;
+      }
+      .thinking.has-steps .thinking-head::after {
+        top: 24px;
+        bottom: -4px;
+      }
+      .thinking-step:not(:last-child)::after {
+        top: 19px;
+        bottom: -6px;
+      }
+      .thinking-steps {
+        list-style: none;
+        margin: 2px 0 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .thinking-step {
+        animation: thinkingStepIn 220ms ease-out both;
+      }
+      .thinking-glyph {
+        width: 14px;
+        height: 14px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .thinking-step-label {
+        font-size: 12.5px;
+        font-weight: 500;
+        line-height: 1.45;
+        padding: 1px 0 2px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .thinking-step.is-live .thinking-step-label {
+        color: transparent;
+        background: linear-gradient(
+          100deg,
+          rgba(255, 255, 255, 0.40) 0%,
+          rgba(255, 255, 255, 0.40) 42%,
+          rgba(255, 255, 255, 0.90) 50%,
+          rgba(255, 255, 255, 0.40) 58%,
+          rgba(255, 255, 255, 0.40) 100%
+        );
+        background-size: 220% 100%;
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        animation: lyknThinkingShimmer 2.4s linear infinite;
+      }
+      .thinking.has-steps .thinking-text {
+        animation: none;
+        background: none;
+        -webkit-text-fill-color: rgba(255, 255, 255, 0.72);
+        color: rgba(255, 255, 255, 0.72);
+      }
+      @keyframes thinkingStepIn {
+        from { opacity: 0; transform: translateY(-5px); }
+        to { opacity: 1; transform: none; }
       }
       /* Shown under the model's description while a build/tool is still
          running — same spinner as the initial thinking state. */
@@ -770,7 +894,7 @@
         height: 24px;
       }
       /* Optical nudge: the mark sits a hair low and left of the status line. */
-      .thinking > .lykn-outline-spinner {
+      .thinking-head .lykn-outline-spinner {
         position: relative;
         top: -2px;
         left: 3px;
@@ -921,6 +1045,84 @@
         letter-spacing: 0.02em;
         cursor: pointer;
         animation: micPulse 1.4s ease-in-out infinite;
+      }
+      .voice-eq {
+        display: none;
+        align-items: flex-end;
+        gap: 2px;
+        height: 10px;
+        width: 10px;
+        flex: none;
+      }
+      .voice-eq i {
+        display: block;
+        width: 2px;
+        height: 4px;
+        border-radius: 1px;
+        background: currentColor;
+        transform-origin: center bottom;
+      }
+      html[data-voice-state="thinking"] .voice-eq,
+      html[data-voice-state="speaking"] .voice-eq,
+      html[data-voice-state="connecting"] .voice-eq {
+        display: inline-flex;
+      }
+      html[data-voice-state="thinking"] .voice-eq i,
+      html[data-voice-state="connecting"] .voice-eq i {
+        animation: voiceEqThink 0.85s ease-in-out infinite;
+      }
+      html[data-voice-state="speaking"] .voice-eq i {
+        animation: voiceEqSpeak 0.55s ease-in-out infinite;
+      }
+      .voice-eq i:nth-child(2) { animation-delay: 0.12s; }
+      .voice-eq i:nth-child(3) { animation-delay: 0.24s; }
+      @keyframes voiceEqThink {
+        0%, 100% { height: 3px; opacity: 0.55; }
+        50% { height: 10px; opacity: 1; }
+      }
+      @keyframes voiceEqSpeak {
+        0%, 100% { height: 4px; }
+        40% { height: 10px; }
+        70% { height: 6px; }
+      }
+      html[data-voice-state="thinking"] .mode-pill.voice-pill,
+      html[data-voice-state="connecting"] .mode-pill.voice-pill {
+        animation: voiceWorkingPulse 0.9s ease-in-out infinite;
+      }
+      html[data-voice-state="speaking"] .mode-pill.voice-pill {
+        animation: voiceSpeakPulse 0.7s ease-in-out infinite;
+      }
+      html[data-voice-state="thinking"] .mic.voice-active,
+      html[data-voice-state="connecting"] .mic.voice-active {
+        animation: voiceWorkingPulse 0.9s ease-in-out infinite;
+      }
+      html[data-voice-state="speaking"] .mic.voice-active {
+        animation: voiceSpeakPulse 0.7s ease-in-out infinite;
+      }
+      html[data-voice-state="thinking"] .dot path,
+      html[data-voice-state="connecting"] .dot path {
+        stroke-dasharray: 1;
+        animation: lyknOutlineDraw 3.6s ease-in-out infinite;
+      }
+      @keyframes voiceWorkingPulse {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.0); }
+        50% { box-shadow: 0 0 0 5px rgba(96, 165, 250, 0.28); }
+      }
+      @keyframes voiceSpeakPulse {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.0); }
+        50% { box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.22); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .thinking-step { animation: none; }
+        .voice-eq i { animation: none !important; height: 6px !important; }
+        html[data-voice-state="thinking"] .mode-pill.voice-pill,
+        html[data-voice-state="speaking"] .mode-pill.voice-pill,
+        html[data-voice-state="connecting"] .mode-pill.voice-pill,
+        html[data-voice-state="thinking"] .mic.voice-active,
+        html[data-voice-state="speaking"] .mic.voice-active,
+        html[data-voice-state="connecting"] .mic.voice-active {
+          animation: none;
+        }
       }
       /* Target language picker — only visible while Translate mode is armed.
          Custom menu (not native <select>) so the list scrolls at a fixed height
@@ -1538,6 +1740,79 @@
         padding: 8px 12px 0;
       }
       .attachments.show { display: flex; }
+
+      .prompt-queue {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px 0;
+        min-width: 0;
+      }
+      .prompt-queue[hidden] { display: none !important; }
+      .prompt-queue-label {
+        flex: none;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .prompt-queue-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        flex: 1;
+        overflow-x: auto;
+      }
+      .prompt-queue-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        max-width: 11rem;
+        flex: none;
+        padding: 3px 4px 3px 8px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        font-size: 11px;
+        color: var(--text);
+        white-space: nowrap;
+        overflow: hidden;
+      }
+      .prompt-queue-chip span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .prompt-queue-x {
+        display: grid;
+        place-items: center;
+        width: 16px;
+        height: 16px;
+        flex: none;
+        padding: 0;
+        border: 0;
+        border-radius: 999px;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.45);
+        cursor: pointer;
+      }
+      .prompt-queue-x:hover { color: #fff; background: rgba(255, 255, 255, 0.1); }
+      .prompt-queue-x svg { width: 10px; height: 10px; }
+      .prompt-queue-clear {
+        flex: none;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        font: inherit;
+        font-size: 10px;
+        font-weight: 600;
+        cursor: pointer;
+        padding: 0;
+      }
+      .prompt-queue-clear:hover { color: var(--text); }
+
       .chip {
         display: flex;
         align-items: center;
@@ -1566,6 +1841,7 @@
         flex: none;
       }
       .chip .chip-ico svg { width: 14px; height: 14px; }
+      .chip .chip-ico img { width: 14px; height: 14px; border-radius: 3px; object-fit: contain; }
       .chip .chip-name {
         overflow: hidden;
         text-overflow: ellipsis;
@@ -1582,6 +1858,83 @@
       }
       .chip .chip-x:hover { color: #fff; background: rgba(255, 255, 255, 0.14); }
       .chip .chip-x svg { width: 12px; height: 12px; }
+
+      .slash-path-menu {
+        display: none;
+        flex-direction: column;
+        gap: 1px;
+        margin: 4px 12px 0;
+        max-height: 180px;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding: 4px;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        background: var(--tint);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+        -webkit-app-region: no-drag;
+      }
+      .slash-path-menu:not([hidden]) { display: flex; }
+      .slash-path-hint {
+        padding: 7px 10px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .slash-path-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        scroll-margin: 4px;
+        padding: 7px 10px;
+        border: none;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--text);
+        font-size: 12px;
+        text-align: left;
+        cursor: pointer;
+      }
+      .slash-path-row.active,
+      .slash-path-row:hover {
+        background: rgba(255, 255, 255, 0.1);
+      }
+      .slash-path-ico {
+        width: 14px;
+        flex: none;
+        opacity: 0.55;
+      }
+      .slash-path-ico img {
+        width: 14px;
+        height: 14px;
+        border-radius: 3px;
+        object-fit: contain;
+        display: block;
+      }
+      .slash-path-label {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      .slash-path-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .slash-path-sub {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 10px;
+        color: var(--muted);
+      }
+      .slash-path-tag {
+        flex: none;
+        font-size: 10px;
+        color: var(--muted);
+      }
 
       /* LYKN mark — top of the field row, aligned with the first line of text. */
       .dot {
@@ -1719,6 +2072,9 @@
       .send .ico-spin { display: none; animation: spin 0.8s linear infinite; }
       .send.busy .ico-send { display: none; }
       .send.busy .ico-spin { display: block; }
+      .stop { color: #f87171; }
+      .stop[hidden] { display: none !important; }
+      .stop svg { width: 12px; height: 12px; }
       @keyframes spin { to { transform: rotate(360deg); } }
 
       /* Live-listen (meeting notes) — this DOM stays HIDDEN and serves as the
@@ -2075,6 +2431,10 @@
       <div id="thread"></div>
       <div class="drop-hint">Drop files to attach…</div>
       <div class="attachments" id="attachments"></div>
+      <div class="prompt-queue" id="prompt-queue" hidden></div>
+      <div class="slash-path-menu" id="slash-path-menu" role="listbox" aria-label="Link a file or folder" hidden></div>
+      <div class="slash-path-menu" id="slash-model-menu" role="listbox" aria-label="Choose a model" hidden></div>
+      <div class="slash-path-menu" id="slash-app-menu" role="listbox" aria-label="Choose an app" hidden></div>
       <div class="composer" id="composer">
         <div class="composer-pills">
           <button class="mode-pill project-pill" id="project-pill" type="button" hidden title="Clear project scope">
@@ -2085,6 +2445,7 @@
             </svg>
           </button>
           <button class="mode-pill voice-pill" id="voice-pill" type="button" hidden title="Stop voice mode (Esc)" aria-label="Stop voice mode">
+            <span class="voice-eq" aria-hidden="true"><i></i><i></i><i></i></span>
             <span>Voice</span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M18 6 6 18" />
@@ -2152,15 +2513,6 @@
               <span class="menu-state" id="live-watch-state">Off</span>
             </button>
             <div class="menu-sep"></div>
-            <button class="menu-item" id="menu-image-gen" type="button">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                <circle cx="9" cy="9" r="2" />
-                <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
-              </svg>
-              Create an image
-              <span class="menu-state" id="image-gen-state">Off</span>
-            </button>
             <button class="menu-item" id="menu-build" type="button">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <polyline points="16 18 22 12 16 6" />
@@ -2297,6 +2649,11 @@
             </svg>
             <svg class="ico-mic-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+            </svg>
+          </button>
+          <button class="bar-btn stop" id="stop" title="Stop generating" aria-label="Stop generating" hidden>
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <rect x="7" y="7" width="10" height="10" rx="1.5" />
             </svg>
           </button>
           <button class="bar-btn send" id="send" title="Send" aria-label="Send">

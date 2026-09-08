@@ -22,11 +22,18 @@ import { resolveRenderType } from "@/lib/vault/attachmentType";
  */
 export const AI_DRIVE_FOLDER = "Generated";
 
-/** The folders AI Drive has, and what they are called on screen. */
+/**
+ * The folders AI Drive has, and what they are called on screen.
+ *
+ * Builds is the odd one out: its contents are Build-workspace project
+ * directories on this Mac (see buildsDrive.ts), not vault rows, so it only
+ * appears in the desktop app and never holds an AiDriveItem.
+ */
 export const AI_DRIVE_FOLDERS = [
   { id: "docs", name: "Docs" },
   { id: "artifacts", name: "Artifacts" },
   { id: "images", name: "Image Gen" },
+  { id: "builds", name: "Builds" },
 ] as const;
 
 export type AiDriveFolder = (typeof AI_DRIVE_FOLDERS)[number]["id"];

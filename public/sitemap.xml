@@ -21,6 +21,11 @@
     <priority>0.8</priority>
   </url>
   <url>
+    <loc>https://lykn.io/windows</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
     <loc>https://lykn.io/apps/chatgpt</loc>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>

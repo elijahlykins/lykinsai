@@ -6,18 +6,34 @@
 // Luna / Terra / Sol (see `server/ai/chatRouting`) based on complexity.
 // Explicit picks pass through verbatim to the provider API.
 //
-// Current as of August 29, 2026. Chat/reasoning IDs only — image, audio,
+// Current as of September 5, 2026. Chat/reasoning IDs only — image, audio,
 // realtime, embeddings, and ChatGPT-only aliases stay out of the picker.
 
 export const LYKN_ID = "lykn";
 export const MY_SETUP_ID = "lykn-setup";
 
 // One flagship per lab in the Top group.
-export const FRONTIER_OPENAI_ID = "gpt-5.6-sol";
-export const FRONTIER_ANTHROPIC_ID = "claude-fable-5";
+export const FRONTIER_OPENAI_ID = "gpt-6-astra";
+export const FRONTIER_ANTHROPIC_ID = "claude-fable-5.1";
 export const FRONTIER_GOOGLE_ID = "gemini-3.1-pro-preview";
 export const FRONTIER_XAI_ID = "grok-4.6";
 
+/**
+ * LYKN's default model for coded artifact builds and edits.
+ *
+ * Writing (and exactly patching) a whole React app is a different job from
+ * everyday chat, so an Auto turn that drives the artifact builder routes here
+ * instead of to the normal LYKN chat model. This is the ONE place that
+ * decision lives: the server reads it as the default for CODED_ARTIFACT_MODEL
+ * (overridable per environment), and the Build page's coding-model pill reads
+ * it to label its Auto option honestly.
+ *
+ * An explicitly picked model — the Build pill, the chat-bar picker, a My Setup
+ * assignment, a bot's pinned model or named route — always wins over this.
+ */
+export const LYKN_CODING_MODEL_ID = FRONTIER_XAI_ID;
+
+export const CLAUDE_FABLE_5_ID = "claude-fable-5";
 export const CLAUDE_OPUS_5_ID = "claude-opus-5";
 export const CLAUDE_SONNET_5_ID = "claude-sonnet-5";
 export const CLAUDE_OPUS_4_8_ID = "claude-opus-4-8";
@@ -63,8 +79,8 @@ export const MODEL_GROUPS = [
     id: "frontier",
     label: "Top models",
     items: [
-      { value: FRONTIER_OPENAI_ID, label: "GPT-5.6 Sol", hint: "OpenAI" },
-      { value: FRONTIER_ANTHROPIC_ID, label: "Claude Fable 5", hint: "Anthropic" },
+      { value: FRONTIER_OPENAI_ID, label: "GPT-6 Astra", hint: "OpenAI" },
+      { value: FRONTIER_ANTHROPIC_ID, label: "Claude Fable 5.1", hint: "Anthropic" },
       { value: FRONTIER_GOOGLE_ID, label: "Gemini 3.1 Pro", hint: "Google" },
       { value: FRONTIER_XAI_ID, label: "Grok 4.6", hint: "xAI" },
     ],
@@ -73,6 +89,8 @@ export const MODEL_GROUPS = [
     id: "openai",
     label: "OpenAI",
     items: [
+      { value: "gpt-6-astra-pro", label: "GPT-6 Astra Pro", hint: "Pro reasoning" },
+      { value: "gpt-5.6-sol", label: "GPT-5.6 Sol", hint: "Flagship" },
       { value: "gpt-5.6-terra", label: "GPT-5.6 Terra", hint: "Balanced" },
       { value: "gpt-5.6-luna", label: "GPT-5.6 Luna", hint: "Fast" },
       { value: "gpt-5.5", label: "GPT-5.5", hint: "" },
@@ -102,6 +120,7 @@ export const MODEL_GROUPS = [
     id: "anthropic",
     label: "Anthropic",
     items: [
+      { value: CLAUDE_FABLE_5_ID, label: "Claude Fable 5", hint: "" },
       { value: CLAUDE_OPUS_5_ID, label: "Claude Opus 5", hint: "Flagship" },
       { value: CLAUDE_SONNET_5_ID, label: "Claude Sonnet 5", hint: "Everyday" },
       { value: CLAUDE_OPUS_4_8_ID, label: "Claude Opus 4.8", hint: "" },
@@ -152,8 +171,8 @@ export const CLOSED_LLM_MODEL_SECTIONS = [
     id: "frontier",
     label: "Top models",
     items: [
-      { id: FRONTIER_OPENAI_ID, label: "GPT-5.6 Sol", hint: "OpenAI" },
-      { id: FRONTIER_ANTHROPIC_ID, label: "Claude Fable 5", hint: "Anthropic" },
+      { id: FRONTIER_OPENAI_ID, label: "GPT-6 Astra", hint: "OpenAI" },
+      { id: FRONTIER_ANTHROPIC_ID, label: "Claude Fable 5.1", hint: "Anthropic" },
       { id: FRONTIER_GOOGLE_ID, label: "Gemini 3.1 Pro", hint: "Google" },
       { id: FRONTIER_XAI_ID, label: "Grok 4.6", hint: "xAI" },
     ],
@@ -173,9 +192,9 @@ export const CLOSED_LLM_MODEL_SECTIONS = [
     id: "deep",
     label: "Deep thinking",
     items: [
-      { id: FRONTIER_ANTHROPIC_ID, label: "Claude Fable 5", hint: "Anthropic, highest" },
+      { id: FRONTIER_ANTHROPIC_ID, label: "Claude Fable 5.1", hint: "Anthropic, highest" },
       { id: CLAUDE_OPUS_5_ID, label: "Claude Opus 5", hint: "Anthropic, everyday flagship" },
-      { id: FRONTIER_OPENAI_ID, label: "GPT-5.6 Sol", hint: "OpenAI, flagship" },
+      { id: FRONTIER_OPENAI_ID, label: "GPT-6 Astra", hint: "OpenAI, flagship" },
       { id: FRONTIER_GOOGLE_ID, label: "Gemini 3.1 Pro", hint: "Google, long context" },
       { id: FRONTIER_XAI_ID, label: "Grok 4.6", hint: "xAI, agents" },
     ],

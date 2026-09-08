@@ -36,6 +36,16 @@ const TOOLS = [
     terminal: true,
   },
   {
+    name: "web_search",
+    summary:
+      "Look something up on the live web and answer from it - news, prices, current facts, a quick check on a company or person. Faster than the browser and the user does not have to watch it.",
+    risk: "read",
+    verify: false,
+    // Reading the web is a step, not a delivery. "Check the news and put the
+    // headlines in a doc" must keep going after the search.
+    terminal: false,
+  },
+  {
     name: "research_report",
     summary:
       "Produce a deep, sourced research report on a topic (delivered to the user as a document card).",
@@ -122,9 +132,16 @@ const TOOLS = [
     // tab before any of those acts are even proposed.
     risk: "low",
     verify: false, // the browser agent verifies its own rounds
-    // The browser's finish answer is the report the user reads. A second
-    // harness delivery used to overwrite it with a 1-4 sentence teaser.
-    terminal: true,
+    // NOT terminal. The browser's finish answer IS the report the user reads,
+    // and a follow-up delivery that rewrites it as a 1-4 sentence teaser is a
+    // real regression — but ending the whole task on it was worse: a two-part
+    // ask ("check the news and put it in a doc") stopped dead after the first
+    // part. The answer is preserved instead: the harness carries the browser's
+    // text as the standing delivery, so if the model does deliver next round
+    // it closes rather than re-writes. See `browserAnswer` in index.cjs.
+    terminal: false,
+    // Its output is the user-facing write-up, not raw material for a summary.
+    preserveAnswer: true,
   },
 ];
 

@@ -47,7 +47,7 @@ export function buildVoiceFirstMessage(user) {
 // Voice Mode opening OFFER + injected briefing
 // --------------------------------------------
 // When a voice session connects, LYKN gives a Jarvis-style greeting that
-// OFFERS to run through the user's recent updates ("Welcome back, sir. Do you
+// OFFERS to run through the user's recent updates ("Welcome back, Eli. Do you
 // want to hear your recent updates?") rather than dumping a briefing unprompted.
 // The actual briefing content (active project status, what recently got done,
 // new Vault items) is injected into the session grounding so the conversational
@@ -56,11 +56,10 @@ export function buildVoiceFirstMessage(user) {
 // no pre-call LLM round-trip. Anonymous sessions get the plain rotating greeting.
 // ============================================
 const VOICE_BRIEFING_WINDOW_DAYS = Math.max(1, Number(process.env.VOICE_BRIEFING_WINDOW_DAYS || 7));
-// How LYKN addresses the user in the opening line. Defaults to "sir" for the
-// Jarvis feel; set to a blank string to address them by first name instead, or
-// to any other word. NOTE: a fixed honorific like "sir" is gendered — override
-// per deployment if your users aren't all addressed that way.
-export const VOICE_BRIEFING_HONORIFIC = (process.env.VOICE_BRIEFING_HONORIFIC ?? 'sir').trim();
+// How LYKN addresses the user in the opening line. Defaults to their first
+// name (or nothing if we do not have one). Set VOICE_BRIEFING_HONORIFIC to a
+// word to use a fixed honorific instead.
+export const VOICE_BRIEFING_HONORIFIC = (process.env.VOICE_BRIEFING_HONORIFIC ?? '').trim();
 
 // How far back an already-due reminder may be and still be worth proactively
 // surfacing. Reminders are point-in-time, so a still-pending one from days ago
@@ -81,184 +80,189 @@ export async function gatherVoiceBriefingData(authHeader, userId) {
   const cutoffMs = Date.now() - VOICE_BRIEFING_WINDOW_DAYS * 86_400_000;
   const cutoffIso = new Date(cutoffMs).toISOString();
 
-  let project = null;
-  let recentUpdates = [];
-  try {
-    const ctx = await loadActiveProjectContext(client, userId);
-    if (ctx?.project) {
-      project = {
-        name: String(ctx.project.name || '').trim() || 'your project',
-        description: String(ctx.project.description || '').replace(/\s+/g, ' ').trim().slice(0, 200),
-      };
-      recentUpdates = (ctx.recentActivity || [])
-        .filter((a) => a?.set_at && Date.parse(a.set_at) >= cutoffMs)
-        .slice(0, 6)
-        .map((a) => ({
-          key: String(a.state_key || '').replace(/[_-]+/g, ' ').trim(),
-          value: String(a.value || '').replace(/\s+/g, ' ').trim().slice(0, 240),
-          client: String(a.set_by_client || '').trim(),
-        }))
-        .filter((u) => u.key || u.value);
-    }
-  } catch (e) {
-    console.warn('⚠️ voice briefing project load:', e?.message || e);
-  }
-
-  let recentNotes = [];
-  try {
-    const { data } = await client
-      .from('vault_items')
-      .select('title, ai_summary, tags, created_at')
-      .eq('user_id', userId)
-      .gte('created_at', cutoffIso)
-      .order('created_at', { ascending: false })
-      .limit(8);
-    recentNotes = (data || []).map((n) => ({
-      title: String(n.title || 'Untitled').replace(/\s+/g, ' ').trim().slice(0, 120),
-      summary: String(n.ai_summary || '').replace(/\s+/g, ' ').trim().slice(0, 160),
-      tags: Array.isArray(n.tags) ? n.tags.filter(Boolean).slice(0, 4).join(', ') : '',
-    }));
-  } catch (e) {
-    console.warn('⚠️ voice briefing vault load:', e?.message || e);
-  }
-
-  // Pending reminders the user should hear about, kept on a timeline like the
-  // calendar below: anything that came due within the recent grace window
-  // (REMINDER_OVERDUE_GRACE_DAYS) plus anything coming up in the next couple of
-  // days. The lower bound is what stops stale reminders from days/weeks ago
-  // ("you have a reminder from last week") leading the briefing — they're still
-  // listable via lykn_listReminders, just no longer surfaced proactively.
-  // Pull-based delivery — the briefing IS the surfacing mechanism.
-  let reminders = [];
-  try {
-    const now = Date.now();
-    const overdueFloorIso = new Date(now - REMINDER_OVERDUE_GRACE_DAYS * 86_400_000).toISOString();
-    const upcomingCutoffIso = new Date(now + 2 * 86_400_000).toISOString();
-    const { data } = await client
-      .from('lykn_reminders')
-      .select('title, remind_at, remind_at_text, status')
-      .eq('user_id', userId)
-      .eq('status', 'pending')
-      .gte('remind_at', overdueFloorIso)
-      .lte('remind_at', upcomingCutoffIso)
-      .order('remind_at', { ascending: true })
-      .limit(6);
-    reminders = (data || []).map((r) => ({
-      title: String(r.title || '').replace(/\s+/g, ' ').trim().slice(0, 160),
-      when: String(r.remind_at_text || '').replace(/\s+/g, ' ').trim().slice(0, 80),
-      overdue: Date.parse(r.remind_at) <= now,
-    })).filter((r) => r.title);
-  } catch (e) {
-    console.warn('⚠️ voice briefing reminders load:', e?.message || e);
-  }
-
-  // Calendar events on deck: from the start of today through the next couple
-  // of days, so the briefing can say "here's what's on your calendar". Mirrors
-  // the reminders window; cancelled events are excluded.
-  let events = [];
-  try {
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
-    const upcomingCutoffIso = new Date(Date.now() + 2 * 86_400_000).toISOString();
-    const { data } = await client
-      .from('lykn_events')
-      .select('title, starts_at, all_day, location, timezone, status')
-      .eq('user_id', userId)
-      .neq('status', 'cancelled')
-      .gte('starts_at', startOfToday.toISOString())
-      .lte('starts_at', upcomingCutoffIso)
-      .order('starts_at', { ascending: true })
-      .limit(6);
-    events = (data || []).map((ev) => {
-      const start = new Date(ev.starts_at);
-      const tz = ev.timezone || 'UTC';
-      let when;
+  const now = Date.now();
+  const [
+    projectBundle,
+    recentNotes,
+    reminders,
+    events,
+    todos,
+    recentModels,
+    cursorBuilds,
+  ] = await Promise.all([
+    (async () => {
       try {
-        when = ev.all_day
-          ? `${start.toLocaleDateString('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric' })} (all day)`
-          : start.toLocaleString('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-      } catch {
-        when = start.toISOString();
+        const ctx = await loadActiveProjectContext(client, userId);
+        if (!ctx?.project) return { project: null, recentUpdates: [] };
+        return {
+          project: {
+            name: String(ctx.project.name || '').trim() || 'your project',
+            description: String(ctx.project.description || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+          },
+          recentUpdates: (ctx.recentActivity || [])
+            .filter((a) => a?.set_at && Date.parse(a.set_at) >= cutoffMs)
+            .slice(0, 6)
+            .map((a) => ({
+              key: String(a.state_key || '').replace(/[_-]+/g, ' ').trim(),
+              value: String(a.value || '').replace(/\s+/g, ' ').trim().slice(0, 240),
+              client: String(a.set_by_client || '').trim(),
+            }))
+            .filter((u) => u.key || u.value),
+        };
+      } catch (e) {
+        console.warn('⚠️ voice briefing project load:', e?.message || e);
+        return { project: null, recentUpdates: [] };
       }
-      return {
-        title: String(ev.title || '').replace(/\s+/g, ' ').trim().slice(0, 160),
-        when,
-        location: String(ev.location || '').replace(/\s+/g, ' ').trim().slice(0, 80),
-      };
-    }).filter((ev) => ev.title);
-  } catch (e) {
-    console.warn('⚠️ voice briefing events load:', e?.message || e);
-  }
-
-  // Open to-dos the user should hear about: everything still on the list,
-  // overdue items flagged. Unlike reminders/events these are not windowed by
-  // time (a to-do can be undated) — cap to the top few open tasks.
-  let todos = [];
-  try {
-    const now = Date.now();
-    const { data } = await client
-      .from('lykn_todos')
-      .select('title, status, priority, due_at, due_at_text')
-      .eq('user_id', userId)
-      .eq('status', 'open')
-      .order('created_at', { ascending: false })
-      .limit(20);
-    const PRIORITY_RANK = { high: 0, normal: 1, low: 2 };
-    todos = (data || []).map((t) => ({
-      title: String(t.title || '').replace(/\s+/g, ' ').trim().slice(0, 160),
-      priority: t.priority || 'normal',
-      when: String(t.due_at_text || '').replace(/\s+/g, ' ').trim().slice(0, 80),
-      overdue: t.due_at != null && Date.parse(t.due_at) <= now,
-      _due: t.due_at ? Date.parse(t.due_at) : Infinity,
-    })).filter((t) => t.title);
-    // Surface the most actionable few: overdue, then priority, then soonest due.
-    todos.sort((a, b) => {
-      if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
-      const ra = PRIORITY_RANK[a.priority] ?? 1;
-      const rb = PRIORITY_RANK[b.priority] ?? 1;
-      if (ra !== rb) return ra - rb;
-      return a._due - b._due;
-    });
-    todos = todos.slice(0, 6).map(({ _due, ...t }) => t);
-  } catch (e) {
-    console.warn('⚠️ voice briefing todos load:', e?.message || e);
-  }
-
-  // Custom models the user built/updated in the window (Model Builder).
-  let recentModels = [];
-  try {
-    const { data } = await client
-      .from('lykn_custom_models')
-      .select('name, status, created_at, updated_at, published_at')
-      .eq('user_id', userId)
-      .gte('updated_at', cutoffIso)
-      .order('updated_at', { ascending: false })
-      .limit(6);
-    recentModels = (data || []).map((m) => ({
-      name: String(m.name || 'Untitled model').replace(/\s+/g, ' ').trim().slice(0, 120),
-      status: m.status === 'published' ? 'published' : 'draft',
-    })).filter((m) => m.name);
-  } catch (e) {
-    console.warn('⚠️ voice briefing models load:', e?.message || e);
-  }
-
-  // Cursor cloud-agent builds that finished since we last told the user.
-  // Claim them here (mark announced) because the deterministic opening line
-  // below speaks them — this is the proactive "Cursor finished X" notice.
-  let cursorBuilds = [];
-  try {
-    const claimed = await claimUnannouncedBuilds(client, userId);
-    cursorBuilds = (claimed || []).map((b) => ({
-      instruction: String(b.instruction || '').replace(/\s+/g, ' ').trim().slice(0, 160),
-      status: b.status,
-      pr_url: b.pr_url || null,
-    })).filter((b) => b.instruction);
-  } catch (e) {
-    console.warn('⚠️ voice briefing cursor builds load:', e?.message || e);
-  }
+    })(),
+    (async () => {
+      try {
+        const { data } = await client
+          .from('vault_items')
+          .select('title, ai_summary, tags, created_at')
+          .eq('user_id', userId)
+          .gte('created_at', cutoffIso)
+          .order('created_at', { ascending: false })
+          .limit(8);
+        return (data || []).map((n) => ({
+          title: String(n.title || 'Untitled').replace(/\s+/g, ' ').trim().slice(0, 120),
+          summary: String(n.ai_summary || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+          tags: Array.isArray(n.tags) ? n.tags.filter(Boolean).slice(0, 4).join(', ') : '',
+        }));
+      } catch (e) {
+        console.warn('⚠️ voice briefing vault load:', e?.message || e);
+        return [];
+      }
+    })(),
+    (async () => {
+      try {
+        const overdueFloorIso = new Date(now - REMINDER_OVERDUE_GRACE_DAYS * 86_400_000).toISOString();
+        const upcomingCutoffIso = new Date(now + 2 * 86_400_000).toISOString();
+        const { data } = await client
+          .from('lykn_reminders')
+          .select('title, remind_at, remind_at_text, status')
+          .eq('user_id', userId)
+          .eq('status', 'pending')
+          .gte('remind_at', overdueFloorIso)
+          .lte('remind_at', upcomingCutoffIso)
+          .order('remind_at', { ascending: true })
+          .limit(6);
+        return (data || []).map((r) => ({
+          title: String(r.title || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+          when: String(r.remind_at_text || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+          overdue: Date.parse(r.remind_at) <= now,
+        })).filter((r) => r.title);
+      } catch (e) {
+        console.warn('⚠️ voice briefing reminders load:', e?.message || e);
+        return [];
+      }
+    })(),
+    (async () => {
+      try {
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        const upcomingCutoffIso = new Date(now + 2 * 86_400_000).toISOString();
+        const { data } = await client
+          .from('lykn_events')
+          .select('title, starts_at, all_day, location, timezone, status')
+          .eq('user_id', userId)
+          .neq('status', 'cancelled')
+          .gte('starts_at', startOfToday.toISOString())
+          .lte('starts_at', upcomingCutoffIso)
+          .order('starts_at', { ascending: true })
+          .limit(6);
+        return (data || []).map((ev) => {
+          const start = new Date(ev.starts_at);
+          const tz = ev.timezone || 'UTC';
+          let when;
+          try {
+            when = ev.all_day
+              ? `${start.toLocaleDateString('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric' })} (all day)`
+              : start.toLocaleString('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+          } catch {
+            when = start.toISOString();
+          }
+          return {
+            title: String(ev.title || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+            when,
+            location: String(ev.location || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+          };
+        }).filter((ev) => ev.title);
+      } catch (e) {
+        console.warn('⚠️ voice briefing events load:', e?.message || e);
+        return [];
+      }
+    })(),
+    (async () => {
+      try {
+        const { data } = await client
+          .from('lykn_todos')
+          .select('title, status, priority, due_at, due_at_text')
+          .eq('user_id', userId)
+          .eq('status', 'open')
+          .order('created_at', { ascending: false })
+          .limit(20);
+        const PRIORITY_RANK = { high: 0, normal: 1, low: 2 };
+        const ranked = (data || []).map((t) => ({
+          title: String(t.title || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+          priority: t.priority || 'normal',
+          when: String(t.due_at_text || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+          overdue: t.due_at != null && Date.parse(t.due_at) <= now,
+          _due: t.due_at ? Date.parse(t.due_at) : Infinity,
+        })).filter((t) => t.title);
+        ranked.sort((a, b) => {
+          if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
+          const ra = PRIORITY_RANK[a.priority] ?? 1;
+          const rb = PRIORITY_RANK[b.priority] ?? 1;
+          if (ra !== rb) return ra - rb;
+          return a._due - b._due;
+        });
+        return ranked.slice(0, 6).map(({ _due, ...t }) => t);
+      } catch (e) {
+        console.warn('⚠️ voice briefing todos load:', e?.message || e);
+        return [];
+      }
+    })(),
+    (async () => {
+      try {
+        const { data } = await client
+          .from('lykn_custom_models')
+          .select('name, status, created_at, updated_at, published_at')
+          .eq('user_id', userId)
+          .gte('updated_at', cutoffIso)
+          .order('updated_at', { ascending: false })
+          .limit(6);
+        return (data || []).map((m) => ({
+          name: String(m.name || 'Untitled model').replace(/\s+/g, ' ').trim().slice(0, 120),
+          status: m.status === 'published' ? 'published' : 'draft',
+        })).filter((m) => m.name);
+      } catch (e) {
+        console.warn('⚠️ voice briefing models load:', e?.message || e);
+        return [];
+      }
+    })(),
+    (async () => {
+      try {
+        const claimed = await claimUnannouncedBuilds(client, userId);
+        return (claimed || []).map((b) => ({
+          instruction: String(b.instruction || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+          status: b.status,
+          pr_url: b.pr_url || null,
+        })).filter((b) => b.instruction);
+      } catch (e) {
+        console.warn('⚠️ voice briefing cursor builds load:', e?.message || e);
+        return [];
+      }
+    })(),
+  ]);
 
   return {
-    project, recentUpdates, recentNotes, reminders, events, todos, recentModels,
+    project: projectBundle.project,
+    recentUpdates: projectBundle.recentUpdates,
+    recentNotes,
+    reminders,
+    events,
+    todos,
+    recentModels,
     cursorBuilds,
     windowDays: VOICE_BRIEFING_WINDOW_DAYS,
   };
@@ -362,8 +366,8 @@ export function voiceBriefingHasContent(data) {
     || (data?.cursorBuilds?.length || 0) > 0;
 }
 
-// How LYKN addresses the user in the opening line — the honorific ("sir") when
-// configured, otherwise their first name, otherwise nothing.
+// How LYKN addresses the user in the opening line — a configured honorific when
+// set, otherwise their first name, otherwise nothing.
 export function voiceBriefingAddressee(user) {
   if (VOICE_BRIEFING_HONORIFIC) return VOICE_BRIEFING_HONORIFIC;
   return pickUserDisplayName(user) || '';

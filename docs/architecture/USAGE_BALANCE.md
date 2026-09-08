@@ -1,8 +1,9 @@
 # Usage Balance
 
 Usage Balance is the single customer-facing money system in LYKN.
-Every metered action — premium models, image generation, agents, browser runs, builds, research — draws from one dollar-denominated prepaid balance.
+Every metered action — chat, premium models, image generation, agents, browser runs, builds, research — draws from one dollar-denominated prepaid balance.
 Credits and per-feature quotas (image counts, request caps) are retired.
+There is no included chat: subscriptions turn each payment into that month's usage, and every chat turn meters the balance like any other action.
 
 ## Units
 
@@ -17,9 +18,9 @@ The ledger records both raw cost and customer charge for every settlement.
 ## Canonical modules
 
 - `lib/billing/money.js` — the money unit and arithmetic.
-- `lib/billing/planCatalog.js` — plan ids, prices, included-chat entitlement, Stripe env names, the $10 signup grant.
-- `lib/billing/pricingProfiles.js` — internal cost multipliers as rational integers.
-- `lib/billing/usageEntitlements.js` — included versus metered decisions from model metadata.
+- `lib/billing/planCatalog.js` — plan ids, prices, Stripe env names, the $20 signup grant.
+- `lib/billing/pricingProfiles.js` — the internal cost multiplier as rational integers (single source of the margin).
+- `lib/billing/usageEntitlements.js` — the only metering exemption: internal unlimited-usage accounts.
 - `lib/billing/usagePricing.js` — funding presets and fixed raw costs for flat actions.
 - `lib/billing/usageSpend.js` — buckets, allocation order, payer choice, the in-memory store.
 - `lib/billing/usageLedger.js` — the SQL store (service-role RPCs).
@@ -27,18 +28,16 @@ The ledger records both raw cost and customer charge for every settlement.
 - `lib/billing/planFunding.js` — monthly plan usage grants from Stripe invoices.
 - `lib/billing/legacyCreditMigration.js` + `scripts/migrate-legacy-credits.mjs` — legacy wallet conversion.
 
-## Plans and what is included
+## Plans
 
-- Free: $10 one-time promotional usage at signup, everything metered.
-- Student ($15/mo, $12/mo annual): chat included, monthly usage from each invoice.
-- Pro ($20/mo, $17/mo annual): chat included, monthly usage from each invoice.
-- Max ($100/mo, $75/mo annual): chat included, five times the monthly usage of Pro at the same plan rate.
+- Free: $20 one-time promotional usage at signup, everything metered.
+- Student ($15/mo, $12/mo annual): $15 of monthly usage from each invoice.
+- Pro ($20/mo, $17/mo annual): $20 of monthly usage from each invoice.
+- Pro+ ($60/mo, $51/mo annual): $60 of monthly usage from each invoice.
+- Max ($100/mo, $75/mo annual): $100 of monthly usage from each invoice.
 
-"Chat included" means LYKN Auto routing, or a manually selected model whose canonical registry pricing is at or below the Auto advanced tier (`includedChatBaseline`).
-More expensive manual models are premium and meter Usage even on paid plans.
-Autonomous compute (agents, routines, background work) is never included chat.
-
-The picker surfaces this via `GET /api/models/billing-states` ("Included" / "Uses usage").
+Every action on every plan meters the Usage Balance at the same flat rate — chat, manual model picks, and autonomous compute alike.
+The only exemption is internal unlimited-usage accounts (`lib/billing/internalAccounts.js`).
 
 ## Buckets, profiles, and spending order
 
@@ -46,12 +45,14 @@ Lots carry a bucket and a pricing profile:
 
 | Bucket | Profile | Raw-cost multiplier | LYKN cut of each dollar | Expires |
 |--------|---------|---------------------|-------------------------|---------|
-| plan | `pro_monthly` / `max_monthly` / `student_monthly` | 4/3 (~1.333x) | 25% | at period end |
-| promotional | `promotional` | 10/7 (~1.429x) | 30% | optional |
-| purchased | `topup` | 10/7 (~1.429x) | 30% | never |
-| included | `included` | 0x (recorded, not charged) | — | — |
+| plan | `pro_monthly` / `pro_plus_monthly` / `max_monthly` / `student_monthly` | 3/2 (1.5x) | ~33% | at period end |
+| promotional | `promotional` | 3/2 (1.5x) | ~33% | optional |
+| purchased | `topup` | 3/2 (1.5x) | ~33% | never |
+| included | `included` | 0x (recorded, not charged; internal unlimited accounts only) | — | — |
 
-Rates are set as LYKN's cut of each customer dollar spent (cut = 1 − den/num): spending $1.00 of plan balance covers $0.75 of provider cost; $1.00 of top-up covers $0.70.
+The rate is one flat 50% markup on raw provider cost — the industry baseline for AI usage pricing.
+Equivalently, LYKN keeps a third of each customer dollar spent (cut = 1 − den/num): spending $1.00 covers about $0.67 of provider cost.
+Profile keys stay distinct per bucket so ledger rows record which kind of money paid, but they all resolve to the same ratio.
 Multipliers are internal only and never shown to customers.
 A charge starts from raw provider cost and allocates across lots in this order:
 
@@ -60,7 +61,6 @@ A charge starts from raw provider cost and allocates across lots in this order:
 3. Promotional lots (earliest expiry first).
 4. Purchased lots.
 
-Each lot converts its share of the raw cost through its own profile, so plan dollars stretch further than top-up dollars.
 Expired lots are skipped and cannot debit purchased funds.
 
 ## Funding
@@ -72,7 +72,7 @@ Funding is idempotent on the Stripe session id.
 
 Monthly plan usage is granted by `grantPlanUsageFromInvoice` from `invoice.paid`, sized by the invoice amount, expiring at the period end, idempotent on the invoice id.
 
-The $10 signup grant (`ensureSignupGrant`) is idempotent on `signup-grant:<userId>`.
+The $20 signup grant (`ensureSignupGrant`) is idempotent on `signup-grant:<userId>`.
 
 ## Reservations and settlement
 
@@ -83,8 +83,8 @@ Streamed chat charges post-hoc from provider-reported usage (`recordUsageAfterLo
 ## Access gates
 
 - `requireAppAccess` (server/services/billingService.js): paid plans pass; prepaid accounts need a positive Usage Balance (or leftover legacy credits); otherwise 402 `insufficient_usage_balance` with top-up/upgrade guidance.
-- The metered-usage gate in `server.js` (`checkAiUsageLimit`) no-ops for included chat paths on paid plans and requires a positive balance elsewhere, including desktop agent/browser routes.
-- `assertChatTurnBillable` (server/ai/chatRouting/chatBilling.js) preflights each chat turn and blocks premium manual models at $0 balance before any provider spend.
+- The metered-usage gate in `server.js` (`checkAiUsageLimit`) passes chat paths through (the chat route owns the per-turn check) and requires a positive balance elsewhere, including desktop agent/browser routes.
+- `assertChatTurnBillable` (server/ai/chatRouting/chatBilling.js) preflights each chat turn: paid plans are blocked at $0 balance before any provider spend; internal unlimited-usage accounts are exempt.
 
 ## Failure policy
 
@@ -119,9 +119,7 @@ Dry-run first: `npm run billing:migrate-pro-20 -- --dry-run`.
 `/api/billing/credits` includes `bucket_breakdown`: per-bucket granted/used/remaining plus `percent_used` for the Plan & Usage progress bars.
 Plan-bucket "granted" counts only grants for the current billing period (ledger credits whose `metadata.period_end_unix` is in the future); promotional excludes expired promo value; purchased is lifetime top-ups.
 All figures are customer dollars — no profile names, raw cost, or markup ever leave the server.
-
-`/api/usage/daily` (see `dailyUsageSpend` in `lib/usage/usageEvents.js`) returns a zero-filled last-30-days series of daily customer charge, grouped into coarse product categories (chat / images / agents / other).
-It deliberately never includes model ids, providers, or provider cost.
+The billing page shows balances and bucket bars only; the daily-spend chart and recent-activity list (and their `/api/usage/daily` endpoint) were removed.
 
 ## Analytics
 
@@ -146,4 +144,4 @@ v1 RPCs remain untouched for phased deployment.
 - Old backend + migrations 131/134: safe; old code does not call the new RPCs.
 - New backend + old frontend: safe; old UI surfaces still work against the reshaped `/api/billing/credits` payload defaults.
 - New backend + new frontend: intended.
-- New frontend + old backend: unsafe (bucket fields and `/api/models/billing-states` missing).
+- New frontend + old backend: unsafe (bucket fields missing from `/api/billing/credits`).

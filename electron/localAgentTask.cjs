@@ -48,6 +48,8 @@ function decisionSchemaFor(allowedTools) {
             description:
               "local_edit_file on a document (pdf/docx/rtf/odt/xlsx) only: replace the original file instead of writing a sibling '(edited)' copy",
           },
+          offset: { type: "integer" },
+          limit: { type: "integer" },
           command: { type: "string" },
           cwd: { type: "string" },
           namePattern: { type: "string" },
@@ -70,7 +72,7 @@ const DECISION_SCHEMA = decisionSchemaFor(null);
 const TOOL_LINES = {
   local_list_dir: "- local_list_dir { path } — list a folder (read-only).",
   local_read_file:
-    "- local_read_file { path } — read a file (read-only). Text files return as-is; documents — PDF, Word (docx/doc/rtf/odt), Excel (xlsx), PowerPoint (pptx) — are extracted to text, page by page or sheet by sheet; images (png/jpeg/gif/webp/heic) and screen recordings (mp4/mov/webm) are looked at with vision so you can see what is on screen. Do not ask the user to describe a screenshot you can read.",
+    "- local_read_file { path, offset?, limit? } — read a file (read-only). Returns a line window (default ~400 lines) with nextOffset when truncated. Text files return as-is; documents — PDF, Word (docx/doc/rtf/odt), Excel (xlsx), PowerPoint (pptx) — are extracted to text, page by page or sheet by sheet; images (png/jpeg/gif/webp/heic) and screen recordings (mp4/mov/webm) are looked at with vision so you can see what is on screen. Do not ask the user to describe a screenshot you can read.",
   local_search_files:
     "- local_search_files { path, namePattern, query } — find files or folders by name, or files by text (read-only).",
   local_write_file: "- local_write_file { path, content } — create/overwrite a file (asks the user first).",
@@ -112,6 +114,8 @@ function buildSystemPrompt(allowedTools, { forbidDeletes = false } = {}) {
     "- File access is limited to the user's synced folders — check local_synced_folders if a path is refused.",
     "- Use local_open_path for files and folders. Never open Finder as a substitute for opening a path.",
     "- When they name a folder without a path (\"my LYKN folder\"), search for that name with local_search_files, then list or read the match. Never ask them to open Finder or give you a path first.",
+    "- Search first, then read matching files in slices (offset + limit). If truncated, continue from nextOffset until you can cite real contents.",
+    "- If they asked to analyze, review, or find something, keep reading until you have enough. Do not finish from filenames alone.",
     "- When the goal is done, return kind=finish with a concise summary of what you did.",
     "- If you truly cannot proceed without the user, return kind=ask_user with a specific question.",
     "- If they asked what is in a folder or file, finish with the listing. Do not ask which part they want.",

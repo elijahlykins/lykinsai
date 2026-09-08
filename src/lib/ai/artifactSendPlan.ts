@@ -6,10 +6,16 @@
 // server. Extracted verbatim from useChatEngine.handleChatSend (chat engine
 // decomposition Wave 1, see docs/REFACTOR_LOG.md).
 //
-// IMPORTANT: the ~25 derived booleans below are interdependent and several
-// are documented as mirrors of server-side logic ("keep in sync with
-// server.js", "Mirror server isFreshWebappBuildAsk"). Do not simplify,
-// combine, or reorder conditions — precedence is behavior.
+// IMPORTANT: the ~25 derived booleans below are interdependent. Do not
+// simplify, combine, or reorder conditions — precedence is behavior.
+//
+// The VOCABULARY (every regex that reads the user's wording) lives in
+// @/lib/ai/artifactBuildIntent, shared with server/ai/chatStream.routes.js.
+// It used to be copy-pasted into both files behind "keep in sync" comments
+// and had silently drifted. What legitimately differs between client and
+// server is how those signals are COMBINED — the server has inputs the
+// client doesn't (forceArtifact, lockOutArtifactBuilds, overlayAsk) — so the
+// composition stays in each file and only the wording is shared.
 //
 // This function is PURE: no refs, no React state, no side effects. The two
 // side effects the original block performed (forgetting the linked app on a
@@ -18,12 +24,25 @@
 import type { ComposerMode } from "@/hooks/useChatEngine";
 import { type ChatArtifact, isEditableArtifact } from "@/lib/ai/chatArtifacts";
 import {
+  isBareBuildBrief,
+  isCopyOfWebappAsk,
+  isDesiredStateAsk,
+  isDifferentDeliverableAsk,
+  isDirectCreateQuestion,
+  isDiscussionQuestion,
   isExplicitNewAppAsk,
+  isImageRefinementAsk,
+  isImperativeModeAction,
   isInsistFreshBuildAsk,
+  isMakingVerbAsk,
   isOpenArtifactReferenceAsk,
   isRedesignAsk,
+  isReferencePhraseAsk,
+  isReferenceRebuildAsk,
+  isSurgicalTweakAsk,
   isTypedNewDeliverableAsk,
   isVagueBuildAsk,
+  mentionsWebappNoun,
 } from "@/lib/ai/artifactBuildIntent";
 import { detectImageAsk } from "@/lib/ai/studioModeIntent";
 
@@ -97,8 +116,8 @@ export function resolveArtifactSendPlan(input: ArtifactSendPlanInput): ArtifactS
   // With a same-chat build attached, only indefinite phrasing ("build me a
   // quiz app") commissions fresh; and in an installed-app edit chat even
   // that stays an edit while the ask references the open app without
-  // explicitly asking for another one. Keep in sync with
-  // server/ai/chatStream.routes.js (typedDeliverableCommission).
+  // explicitly asking for another one. Mirrors the server's
+  // typedDeliverableCommission — both read the same shared predicates.
   const typedDeliverableCommission =
     isTypedNewDeliverableAsk(text, {
       excludeDefiniteReferences: artifactBelongsHere,
@@ -110,13 +129,10 @@ export function resolveArtifactSendPlan(input: ArtifactSendPlanInput): ArtifactS
     !createArmed &&
     (typedDeliverableCommission || isInsistFreshBuildAsk(text));
   const redesignAsk = isRedesignAsk(text);
-  // Edit/add asks against an open artifact — keep in sync with server.js.
-  // Length cap is soft: longer "add X and fix Y" messages still refine.
+  // Edit/add asks against an open artifact. The length cap is soft: longer
+  // "add X and fix Y" messages still refine.
   const looksLikeSurgicalTweak =
-    text.trim().length < 400 &&
-    /\b(?:fix|change|update|tweak|adjust|add|make|rename|remove|delete|patch|bug|typo|font|colou?r|theme|move|replace|swap|hide|show|enable|disable|increase|decrease|darken|brighten|dim|mute|darker|lighter|brighter|edit|improve|polish|wire|connect|implement|insert|extend|expand|shorten|widen|narrow|resize|restyle|reword|rewrite|correct|repair)\b/i.test(
-      text,
-    ) &&
+    isSurgicalTweakAsk(text) &&
     !redesignAsk &&
     !typedNewDeliverableAsk &&
     !insistFreshBuildAsk;
@@ -124,31 +140,15 @@ export function resolveArtifactSendPlan(input: ArtifactSendPlanInput): ArtifactS
   // tool buttons. Questions and general discussion stay in chat; only a
   // clear commission or mutation request arms the matching generator.
   const normalizedModeAsk = text.trim();
-  const discussionQuestion =
-    /^(?:what|why|how|when|where|who|which|should|would|could|can|is|are|do|does|did|has|have|tell\s+me|explain|describe|discuss|help\s+me\s+understand|give\s+me\s+advice|make\s+sense)\b/i.test(
-      normalizedModeAsk,
-    );
-  const directCreateQuestion =
-    /^(?:can|could|would|will)\s+(?:you|we)\s+(?:please\s+)?(?:make|build|create|generate|design|draw|add|apply|give|put|change|update|edit|fix|format|style|organize|reorder|group|align|center|bold|italicize|underline|highlight|adjust|tweak|dim|darken|brighten|remove|replace|redesign|rebuild|restyle|turn|set)\b/i.test(
-      normalizedModeAsk,
-    );
-  const imperativeModeAction =
-    /^(?:(?:ok|okay|now|then|also|please|and|let['’]s)\s*[,—-]?\s*)*(?:make|build|create|generate|design|draw|add|apply|give|put|change|update|edit|fix|format|style|organize|reorder|group|align|center|bold|italicize|underline|highlight|adjust|tweak|dim|darken|brighten|remove|replace|redesign|rebuild|restyle|turn|set|redo|reimagine|render)\b/i.test(
-      normalizedModeAsk,
-    );
+  const discussionQuestion = isDiscussionQuestion(normalizedModeAsk);
+  const directCreateQuestion = isDirectCreateQuestion(normalizedModeAsk);
+  const imperativeModeAction = isImperativeModeAction(normalizedModeAsk);
   // Natural edit requests are often phrased as a desired end state rather
   // than an imperative: "every note should have a heading", "the button
   // needs to be smaller", "I want the sidebar darker".
   const desiredStateModeAction =
-    artifactBelongsHere &&
-    (/\b(?:should|needs? to|must)\s+(?:be|have|show|use|include|display|look|feel|read|say|contain)\b/i.test(
-      normalizedModeAsk,
-    ) ||
-      /\b(?:i want|i need|i(?:'|’)d like|i would like)\b/i.test(normalizedModeAsk));
-  const bareBuildBrief =
-    /^(?:(?:an?|the|my|another|new)\s+)?(?:web ?app|web ?site|site|landing ?page|dashboard|app|game|tool|calculator|prototype|widget|quiz|tracker|form|simulator|pitch ?deck|slide ?deck|presentation|spread ?sheet|flow ?chart|diagram|chart|study ?guide|work ?sheet)\b/i.test(
-      normalizedModeAsk,
-    );
+    artifactBelongsHere && isDesiredStateAsk(normalizedModeAsk);
+  const bareBuildBrief = isBareBuildBrief(normalizedModeAsk);
   const hasPriorGeneratedImage = (input.aiThread || []).some(
     (message) =>
       message.role === "assistant" &&
@@ -185,10 +185,7 @@ export function resolveArtifactSendPlan(input: ArtifactSendPlanInput): ArtifactS
   // clearly asking to mutate the open artifact.
   const buildSessionEditTurn =
     stickyBuildMode && buildModeAction && artifactBelongsHere;
-  const imageRefinementAsk =
-    /^(?:(?:ok|okay|now|then|also|and)\s*[,—-]?\s*)*(?:same\b|another\b|again\b|darker\b|lighter\b|brighter\b|more\b|less\b|try\b|redo\b)/i.test(
-      normalizedModeAsk,
-    );
+  const imageRefinementAsk = isImageRefinementAsk(normalizedModeAsk);
   const imagineModeAction =
     (directCreateQuestion &&
       (detectImageAsk(normalizedModeAsk) ||
@@ -217,32 +214,15 @@ export function resolveArtifactSendPlan(input: ArtifactSendPlanInput): ArtifactS
     isBuildMode = false;
   }
   const referenceRebuildAsk =
-    /\b(?:exact(?:ly)?\s+clone|identical|1\s*:\s*1|recreate|clone\s+(?:this|that|it)|(?:look|make)\s+(?:it\s+)?(?:just\s+)?like\s+this|full\s+rewrite)\b/i.test(
-      text,
-    ) &&
-    (hasAttachedImage || artifactBelongsHere);
-  // Mirror server isFreshWebappBuildAsk — open Super Coin Dash must not
-  // ride along on "build me a copy of minecraft like this".
-  const makingVerb =
-    /\b(?:make|build|create|generate|design|code|write|whip up|mock up|put together)\b/i.test(
-      text,
-    );
-  const webappNoun =
-    /\b(?:games?(?! ?plan)|apps?|web ?apps?|mini[- ]?apps?|sandbox(?:es)?|simulators?|minecraft|voxel|platformers?|shooters?|rpg|first[- ]?person|\b3d\b|three\.?js)\b/i.test(
-      text,
-    );
-  const copyOfWebapp =
-    /\bcopy of\b[^.!?\n]{0,80}\b(?:minecraft|games?(?! ?plan)|apps?|sandbox(?:es)?|voxel|platformers?|world)\b/i.test(
-      text,
-    );
-  const referencePhrase =
-    /\b(?:like this|like that|from this|based on this|from the (?:image|screenshot|picture|reference)|as shown|in the (?:image|screenshot|picture))\b/i.test(
-      text,
-    );
-  const differentDeliverable =
-    /\b(?:different|brand[- ]?new|entirely new|fresh|whole new|completely new)\s+(?:game|app|build|artifact|world)\b/i.test(
-      text,
-    );
+    isReferenceRebuildAsk(text) && (hasAttachedImage || artifactBelongsHere);
+  // Client-side mirror of the server's isFreshWebappBuildAsk, built from the
+  // same shared predicates — open Super Coin Dash must not ride along on
+  // "build me a copy of minecraft like this".
+  const makingVerb = isMakingVerbAsk(text);
+  const webappNoun = mentionsWebappNoun(text);
+  const copyOfWebapp = isCopyOfWebappAsk(text);
+  const referencePhrase = isReferencePhraseAsk(text);
+  const differentDeliverable = isDifferentDeliverableAsk(text);
   const visualOverhaulAsk = redesignAsk;
   // Map "+" → Create kinds early so open-panel refine can gate fresh-webapp.
   const CREATE_TOOL_BY_KIND: Record<string, string> = {

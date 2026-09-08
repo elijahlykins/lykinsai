@@ -115,6 +115,7 @@
   padding: 0.9rem 1.85rem;
   font-size: 1rem;
   font-weight: 600;
+  font-family: inherit;
   text-decoration: none;
   color: #ffffff;
   background: #0968c4;
@@ -122,6 +123,7 @@
   border-radius: 999px;
   box-shadow: none;
   isolation: isolate;
+  cursor: pointer;
   transition: transform 0.18s ease, background 0.18s ease;
 }
 .dlp-btn--secondary {

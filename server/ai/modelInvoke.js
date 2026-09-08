@@ -5,6 +5,7 @@ import {
   isTogetherInferenceModel,
 } from '../../lib/lora/togetherLora.js';
 import { splitPromptForProvider, pickOutputCap, clampForProvider } from './promptUtils.js';
+import { LYKN_CODING_MODEL_ID } from '../../src/lib/modelCatalog.js';
 import { estimateTokens, extractOpenAIUsage } from '../../usageTracking.js';
 import { openaiReasoningPayload } from './chatRouting/resolveReasoningEffort.js';
 import { buildPromptCacheKey } from './contextPipeline/promptCacheKey.js';
@@ -120,8 +121,11 @@ export const upgradeModelForVision = (model, hasImages) => {
 //
 // CODED_ARTIFACT_MODEL env var overrides the default (e.g. when the xAI
 // account runs out of credits, point it at gemini-3.1-pro-preview or
-// gpt-4.1 until credits are topped up).
-export const CODED_ARTIFACT_MODEL = String(process.env.CODED_ARTIFACT_MODEL || 'grok-4.5').trim();
+// gpt-5.6-sol until credits are topped up). This route applies to AUTO turns
+// only — an explicitly picked model (Build page coding-model pill, a bot's
+// pinned model) is never rerouted; see chatStream.routes.js.
+export const CODED_ARTIFACT_MODEL =
+  String(process.env.CODED_ARTIFACT_MODEL || LYKN_CODING_MODEL_ID).trim();
 export const codedArtifactModelAvailable = () => {
   if (CODED_ARTIFACT_MODEL.includes('grok')) return !!process.env.XAI_API_KEY;
   if (CODED_ARTIFACT_MODEL.includes('claude')) return !!process.env.ANTHROPIC_API_KEY;
@@ -161,11 +165,38 @@ export const BUILD_SCREEN_REF_RE = new RegExp(
 export const VIDEO_RENDER_INTENT_RE =
   /\b(?:mp4|video|animat(?:e|ed|ion|ions)|motion\s+graphics?|ken\s*burns|(?:intro|title|logo)\s+(?:clip|reel|animation)|clip\s+for\b)\b/i;
 
-export const upgradeModelForCodedArtifact = (model, needsCodedArtifact) => {
+/**
+ * Routing sources that mean "a human picked this model", as opposed to LYKN
+ * deciding for them. Mirrors ROUTING_SOURCES in chatRouting/chatRoutingConfig.js
+ * — modelInvoke.test.mjs asserts the two stay in step.
+ */
+export const USER_CHOSEN_ROUTING_SOURCES = new Set([
+  'override',   // explicit model id in the request (pill / chat-bar picker / bot model)
+  'user_setup', // My Setup category assignment
+  'route',      // named route on a bot
+]);
+
+export const upgradeModelForCodedArtifact = (model, needsCodedArtifact, opts = {}) => {
   if (!needsCodedArtifact) return model;
+  // Anything the USER chose outranks the automatic coding route: the Build
+  // page's coding-model pill, the chat-bar model picker, a My Setup category
+  // assignment, a bot's pinned model or named route, or a Model Builder
+  // persona's base model. Silently rerouting any of those to
+  // CODED_ARTIFACT_MODEL would make every one of those pickers a lie.
+  // Only LYKN's own Auto routing (heuristic / classifier / fallback) gets the
+  // dedicated coder.
+  if (opts.explicitPick || opts.customModel || USER_CHOSEN_ROUTING_SOURCES.has(opts.routingSource)) {
+    // "Coding turn" covers both artifact builds and workspace builds — this
+    // line is about MODEL selection only, it says nothing about which build
+    // surface (artifact vs workspace) the turn uses.
+    console.log(
+      `🧑‍💻 Coding turn model: keeping user-chosen ${model} (${opts.routingSource || 'custom model'})`,
+    );
+    return model;
+  }
   if (codedArtifactModelAvailable()) {
     if (model !== CODED_ARTIFACT_MODEL) {
-      console.log(`🧑‍💻 Code-artifact route: ${model} → ${CODED_ARTIFACT_MODEL} (React artifact turn — dedicated coding model)`);
+      console.log(`🧑‍💻 Coding turn model: ${model} → ${CODED_ARTIFACT_MODEL} (dedicated coding model)`);
     }
     return CODED_ARTIFACT_MODEL;
   }

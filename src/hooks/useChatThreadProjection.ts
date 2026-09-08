@@ -99,10 +99,15 @@ export function useChatThreadProjection(
     snap.chatMessages = updater(snap.chatMessages);
     snap.updatedAt = Date.now();
     dispatchThreadRuntimeChange(String(bid));
+    // The shared React ref must keep mirroring the ACTIVE board only. A
+    // background stream (browser-rail chat, off-route board) patching its own
+    // snapshot must not hijack the ref — the board-switch effect persists
+    // chatMessagesRef into the outgoing board's snapshot, so a hijacked ref
+    // writes one conversation's messages into another chat (cross-chat mix).
     if (getActiveThreadChatId() === String(bid)) {
       setChatMessages(() => snap.chatMessages);
+      chatMessagesRef.current = snap.chatMessages;
     }
-    chatMessagesRef.current = snap.chatMessages;
   }, [chatId, routeChatId, setChatMessages]);
 
   // Switch threads without aborting background streams

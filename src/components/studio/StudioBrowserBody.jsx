@@ -106,9 +106,8 @@ export default function StudioBrowserBody({
       >
         <div
           ref={hostRef}
-          // Chrome wears the frame curve; the page under the tabs is square.
-          // Open rail: left corners only, so the pane meets the chat on a
-          // straight edge.
+          // Chrome and the page both wear the frame curve. Open rail: left
+          // corners only, so the pane meets the chat on a straight edge.
           className="relative min-w-0 flex-1 overflow-hidden"
           style={{
             borderRadius: railOpen

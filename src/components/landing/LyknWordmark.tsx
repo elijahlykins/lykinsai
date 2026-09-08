@@ -14,7 +14,7 @@ export function LyknWordmark({
   return (
     <svg
       className={`lx-wordmark ${className}`.trim()}
-      viewBox="36 34 438 124"
+      viewBox="36 34 407 124"
       fill="currentColor"
       xmlns="http://www.w3.org/2000/svg"
       {...(decorative
@@ -32,8 +32,27 @@ export function markLykn(text: string): ReactNode {
   if (parts.length === 1) return text;
   const nodes: ReactNode[] = [];
   parts.forEach((part, i) => {
-    if (i > 0) nodes.push(<LyknWordmark key={`wm-${i}`} />);
-    if (part) nodes.push(part);
+    if (i > 0) {
+      const tight = /^[.,!?;:]/.test(part);
+      nodes.push(
+        <LyknWordmark
+          key={`wm-${i}`}
+          className={tight ? "lx-wordmark--tight" : ""}
+        />,
+      );
+    }
+    if (!part) return;
+    const punct = part.match(/^([.,!?;:]+)(.*)$/);
+    if (punct) {
+      nodes.push(
+        <span key={`punct-${i}`} className="lx-wordmark-punct">
+          {punct[1]}
+        </span>,
+      );
+      if (punct[2]) nodes.push(punct[2]);
+    } else {
+      nodes.push(part);
+    }
   });
   return nodes;
 }

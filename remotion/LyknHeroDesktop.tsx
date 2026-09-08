@@ -669,7 +669,9 @@ export function ChatBar({
   sourcePicked,
   sourcePress,
   hideSend = false,
+  inputContent,
 }: {
+  inputContent?: React.ReactNode;
   typed: string;
   caretOn: boolean;
   sendPress: number;
@@ -747,7 +749,7 @@ export function ChatBar({
             whiteSpace: "nowrap",
           }}
         >
-          {typed}
+          {inputContent ?? typed}
           <span
             style={{
               display: "inline-block",
@@ -875,6 +877,38 @@ export function HeroCamera({
   );
 }
 
+export function HeroDesktopBackdrop({ glassBlur }: { glassBlur: number }) {
+  return (
+    <>
+      <Img
+        src={staticFile("hero-wave-blue.jpg")}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%",
+          objectFit: "cover",
+          objectPosition: "center",
+          filter: `blur(${glassBlur}px)`,
+        }}
+        from={-208} />
+      <div
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%",
+          background: "rgba(8, 18, 36, 0.18)",
+          border: "1px solid rgba(255,255,255,0.18)",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.22)",
+        }}
+      />
+    </>
+  );
+}
+
 export function HeroDesktopShell({
   mode,
   glassBlur,
@@ -885,6 +919,9 @@ export function HeroDesktopShell({
   showWidgets = true,
   showFolders = true,
   showModes = true,
+  plainWhite = false,
+  backdrop,
+  whiteSurfaceAmount = plainWhite ? 1 : 0,
 }: {
   mode: Mode;
   glassBlur: number;
@@ -895,39 +932,14 @@ export function HeroDesktopShell({
   showWidgets?: boolean;
   showFolders?: boolean;
   showModes?: boolean;
+  plainWhite?: boolean;
+  backdrop?: ReactNode;
+  whiteSurfaceAmount?: number;
 }) {
   const dockIcon = 1.05 * rem;
   return (
     <>
-      <Img
-        src={staticFile("hero-wave-blue.jpg")}
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          width: "100%",
-          height: "155%",
-          objectFit: "cover",
-          objectPosition: "center top",
-          transform: "scale(1.18)",
-          transformOrigin: "center top",
-          filter: `blur(${glassBlur}px)`,
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          width: "100%",
-          height: "155%",
-          background: "rgba(8, 18, 36, 0.28)",
-          border: "1px solid rgba(255,255,255,0.18)",
-          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.22)",
-          backdropFilter: `blur(${glassBlur}px) saturate(1.45)`,
-          WebkitBackdropFilter: `blur(${glassBlur}px) saturate(1.45)`,
-        }}
-      />
+      {backdrop ?? (plainWhite ? <AbsoluteFill style={{ backgroundColor: "#ffffff" }} /> : <HeroDesktopBackdrop glassBlur={glassBlur} />)}
       <div
         style={{
           position: "absolute",
@@ -1000,7 +1012,7 @@ export function HeroDesktopShell({
                   placeItems: "center",
                   width: 2.35 * rem,
                   height: 2.35 * rem,
-                  color: folder.tint === "sky" ? "#38bdf8" : "#f8fafc",
+                  color: folder.tint === "sky" ? "#38bdf8" : `rgb(${248 - 45 * whiteSurfaceAmount}, ${250 - 37 * whiteSurfaceAmount}, ${252 - 27 * whiteSurfaceAmount})`,
                   filter: "drop-shadow(0 4px 10px rgba(0,0,0,0.28))",
                 }}
               >
@@ -1014,8 +1026,8 @@ export function HeroDesktopShell({
                   whiteSpace: "nowrap",
                   fontSize: 0.58 * rem,
                   fontWeight: 600,
-                  color: "#ffffff",
-                  textShadow: "0 1px 8px rgba(8,16,36,0.55)",
+                  color: `rgb(${255 - 218 * whiteSurfaceAmount}, ${255 - 213 * whiteSurfaceAmount}, ${255 - 205 * whiteSurfaceAmount})`,
+                  textShadow: `0 1px 8px rgba(8,16,36,${0.55 * (1 - whiteSurfaceAmount)})`,
                 }}
               >
                 {folder.label}

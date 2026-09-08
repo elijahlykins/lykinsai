@@ -393,3 +393,97 @@ test("invalidating the bundle forces a recompile on the next load", async () => 
   const res = await appProtocol.handleRequest({ url: appProtocol.urlFor(app.id, "app.js") });
   assert.match(await res.text(), /Renamed/);
 });
+
+// ---------------------------------------------------------------------------
+// Static apps — production builds installed from the Build workspace
+// ---------------------------------------------------------------------------
+
+/** A minimal production bundle: hashed asset paths, one binary file. */
+function staticBundle() {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x42, 0x07]);
+  return {
+    png,
+    files: [
+      {
+        path: "index.html",
+        content: '<html><head><script src="/assets/index-abc.js"></script></head><body>Nook</body></html>',
+      },
+      { path: "assets/index-abc.js", content: "document.body.dataset.ready = '1';" },
+      { path: "assets/logo.png", content: png.toString("base64"), encoding: "base64" },
+      // A static build may legitimately ship its own app.js — it must be the
+      // project's file, not the JSX pipeline's compiled bundle.
+      { path: "app.js", content: "// the project's own app.js" },
+    ],
+  };
+}
+
+test("base64 file content round-trips through the store with its encoding", () => {
+  const { png, files } = staticBundle();
+  const app = apps.createApp({ name: "Encoded", entry: "index.html" });
+  apps.putFiles(app.id, files);
+
+  const entry = apps.readFileEntry(app.id, "assets/logo.png");
+  assert.equal(entry.encoding, "base64");
+  assert.deepEqual(Buffer.from(entry.content, "base64"), png);
+
+  // Text rows predating the column (and text writes today) read back as plain.
+  assert.equal(apps.readFileEntry(app.id, "index.html").encoding, null);
+});
+
+test("snapshot and rollback preserve binary encoding", () => {
+  const { png, files } = staticBundle();
+  const app = apps.createApp({ name: "Rollback Static", entry: "index.html" });
+  apps.putFiles(app.id, files);
+
+  const snap = apps.snapshotVersion(app.id, "before update");
+  apps.putFiles(app.id, [{ path: "index.html", content: "<html>v2</html>" }]);
+  assert.equal(apps.readFileEntry(app.id, "assets/logo.png"), null);
+
+  apps.rollback(app.id, snap.version);
+  const restored = apps.readFileEntry(app.id, "assets/logo.png");
+  assert.equal(restored.encoding, "base64");
+  assert.deepEqual(Buffer.from(restored.content, "base64"), png);
+});
+
+test("a static app serves its own files verbatim — no shell, no compiler", async () => {
+  const { png, files } = staticBundle();
+  const app = apps.createApp({ name: "Static Nook", entry: "index.html" });
+  apps.putFiles(app.id, files);
+
+  // The boot document is the project's index.html, not the React shell.
+  const root = await appProtocol.handleRequest({ url: appProtocol.urlFor(app.id) });
+  assert.equal(root.status, 200);
+  assert.match(root.headers.get("content-type"), /text\/html/);
+  const html = await root.text();
+  assert.match(html, /Nook/);
+  assert.ok(!html.includes("vendor/"), "static apps must not load the JSX runtime");
+
+  // Hashed assets come from the file table with real mime types.
+  const js = await appProtocol.handleRequest({ url: appProtocol.urlFor(app.id, "assets/index-abc.js") });
+  assert.equal(js.status, 200);
+  assert.match(js.headers.get("content-type"), /javascript/);
+
+  // Binary decodes back to the original bytes.
+  const img = await appProtocol.handleRequest({ url: appProtocol.urlFor(app.id, "assets/logo.png") });
+  assert.equal(img.status, 200);
+  assert.match(img.headers.get("content-type"), /image\/png/);
+  assert.deepEqual(Buffer.from(await img.arrayBuffer()), png);
+
+  // app.js is the project's own file here, not the compiled JSX bundle.
+  const ownAppJs = await appProtocol.handleRequest({ url: appProtocol.urlFor(app.id, "app.js") });
+  assert.equal(await ownAppJs.text(), "// the project's own app.js");
+});
+
+test("a static app falls back to index.html for client-side routes", async () => {
+  const { files } = staticBundle();
+  const app = apps.createApp({ name: "Static Routes", entry: "index.html" });
+  apps.putFiles(app.id, files);
+
+  const route = await appProtocol.handleRequest({ url: appProtocol.urlFor(app.id, "pages/getting-started") });
+  assert.equal(route.status, 200);
+  assert.match(await route.text(), /Nook/);
+
+  // A missing asset (has an extension) is still a real 404.
+  const missing = await appProtocol.handleRequest({ url: appProtocol.urlFor(app.id, "assets/gone.js") });
+  assert.equal(missing.status, 404);
+});

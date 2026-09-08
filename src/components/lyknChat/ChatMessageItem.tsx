@@ -18,7 +18,9 @@ import ChatNeuronCard from "@/components/lyknChat/ChatNeuronCard";
 import { SentAppEditChip } from "@/components/lyknChat/AppSourceStrip";
 import SentChatAttachment, { type SentChatAttachmentData } from "@/components/lyknChat/SentChatAttachment";
 import { chatAttachmentSaveKeys } from "@/lib/chat/chatAttachmentFile";
+import { imagineImageIsVideo } from "@/lib/chat/imagineThread";
 import { SiteFavicon } from "@/components/SiteFavicon";
+import { MessageSourcesPill, messageCitationSources } from "@/components/lyknChat/MessageSourcesPill";
 import type { PromptMessage } from "@/lib/lyknChat/chatTurnTypes";
 import { safeExternalUrl, safeNavHref } from "@/lib/safeExternalUrl";
 import { handleLyknBrowserClick, studioOpenChatOpts } from "@/lib/lyknChat/openInStudioBrowser";
@@ -72,6 +74,8 @@ type MessageItemProps = {
   /** Studio Research page shows source links in the right rail, so the
    *  per-message chips under the response are hidden there. */
   hideMessageSources?: boolean;
+  /** Open the sources rail/slot for this message's citation list. */
+  onOpenMessageSources?: (msgId: string, sources: { title: string; url: string }[]) => void;
   /** Owning lykn_chats.id for this rendered message. Never inferred from Home. */
   chatId?: string | null;
   isAiExpanded: boolean;
@@ -208,6 +212,59 @@ const ResponseActionsMenu: React.FC<{
   );
 };
 
+function AssistantSourceRow({
+  msg,
+  hideMessageSources,
+  linkOpts,
+  onOpenMessageSources,
+}: {
+  msg: PromptMessage;
+  hideMessageSources: boolean;
+  linkOpts: ReturnType<typeof studioOpenChatOpts>;
+  onOpenMessageSources?: (msgId: string, sources: { title: string; url: string }[]) => void;
+}) {
+  const sources = messageCitationSources(msg);
+  const showLinkChips =
+    !hideMessageSources &&
+    sources.length === 0 &&
+    Array.isArray((msg as any).aiWebLinks) &&
+    (msg as any).aiWebLinks.length > 0;
+  return (
+    <>
+      {sources.length > 0 && (
+        <div className="px-4 pb-1">
+          <MessageSourcesPill
+            sources={sources}
+            onOpen={() => onOpenMessageSources?.(msg.id, sources)}
+          />
+        </div>
+      )}
+      {showLinkChips && (
+        <div className="flex flex-wrap gap-1.5 px-4 pb-3">
+          {(msg as any).aiWebLinks.map((link: string) => {
+            let domain = "";
+            try { domain = new URL(link).hostname.replace(/^www\./, ""); } catch { domain = link; }
+            const href = safeExternalUrl(link) || link;
+            return (
+              <a
+                key={link}
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => handleLyknBrowserClick(e, href, domain, linkOpts)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all"
+              >
+                <SiteFavicon url={href} className="h-3.5 w-3.5" />
+                <span className="truncate max-w-[10rem]">{domain}</span>
+              </a>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
 /**
  * An Imagine batch inside the transcript. That mode answers a prompt with a
  * set of variations rather than one image, so the turn carries them all and
@@ -218,15 +275,23 @@ function AiImageBatch({
   aspect,
   prompt,
   batchId,
+  video: batchVideo,
   savedMediaUrls,
   onSaveAiImage,
   onOpenGeneratedImage,
   onRetrySlot,
 }: {
-  images: { url: string; storagePath?: string; status?: "loading" | "done" | "error"; error?: string }[];
+  images: {
+    url: string;
+    storagePath?: string;
+    status?: "loading" | "done" | "error";
+    error?: string;
+    video?: boolean;
+  }[];
   aspect?: string;
   prompt: string;
   batchId?: string;
+  video?: boolean;
   savedMediaUrls: Set<string>;
   onSaveAiImage: (
     imageUrl: string,
@@ -252,6 +317,7 @@ function AiImageBatch({
           const saved = !!img.url && savedMediaUrls.has(img.url);
           const errored = img.status === "error";
           const loading = !errored && (!img.url || img.status === "loading");
+          const asVideo = imagineImageIsVideo(img, batchVideo ? "video" : undefined);
           return (
             <div
               key={img.url || `slot-${i}`}
@@ -273,6 +339,43 @@ function AiImageBatch({
                 </button>
               ) : loading ? (
                 <div className="lykn-imagine-shimmer absolute inset-0" />
+              ) : asVideo ? (
+                <>
+                  <video
+                    src={img.url}
+                    controls
+                    loop
+                    playsInline
+                    className="w-full object-cover"
+                    style={cellRatio}
+                  />
+                  <button
+                    type="button"
+                    disabled={saved}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSaveAiImage(img.url, prompt, {
+                        storagePath: img.storagePath,
+                        mimeType: "video/mp4",
+                      });
+                    }}
+                    className={`absolute right-1.5 top-1.5 inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] backdrop-blur-sm transition-all ${
+                      saved
+                        ? "border-blue-400/40 bg-blue-500/15 text-blue-600"
+                        : "border-white/25 bg-black/40 text-white opacity-0 group-hover/img:opacity-100"
+                    }`}
+                  >
+                    {saved ? (
+                      <>
+                        <Check className="h-3 w-3" /> Saved
+                      </>
+                    ) : (
+                      <>
+                        <Save className="h-3 w-3" /> Save
+                      </>
+                    )}
+                  </button>
+                </>
               ) : (
                 <>
                   <button
@@ -349,6 +452,7 @@ const ChatMessageItem = React.memo(function MessageItem({
   msg, idx,
   isLatest = false,
   hideMessageSources = false,
+  onOpenMessageSources,
   chatId = null,
   isAiExpanded, isUserPromptExpanded,
   reaction, isCopied,
@@ -555,6 +659,7 @@ const ChatMessageItem = React.memo(function MessageItem({
                     aspect={(msg as any).imagine?.aspect}
                     prompt={msg.content}
                     batchId={(msg as any).imagine?.batchId}
+                    video={(msg as any).imagine?.kind === "video"}
                     savedMediaUrls={savedMediaUrls}
                     onSaveAiImage={onSaveAiImage}
                     onOpenGeneratedImage={onOpenGeneratedImage}
@@ -1069,48 +1174,12 @@ const ChatMessageItem = React.memo(function MessageItem({
                     ))}
                   </div>
                 )}
-                {!hideMessageSources && Array.isArray((msg as any).sources) && (msg as any).sources.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 px-4 pb-3">
-                    {(msg as any).sources.map((src: { title: string; url: string }, i: number) => {
-                      const href = safeExternalUrl(src.url) || src.url;
-                      return (
-                      <a
-                        key={i}
-                        href={href}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => handleLyknBrowserClick(e, href, src.title, linkOpts)}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all"
-                      >
-                        <SiteFavicon url={href} className="h-3.5 w-3.5" />
-                        <span className="truncate max-w-[10rem]">{src.title}</span>
-                      </a>
-                      );
-                    })}
-                  </div>
-                )}
-                {(msg as any).aiWebLinks && (msg as any).aiWebLinks.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 px-4 pb-3">
-                    {(msg as any).aiWebLinks.map((link: string) => {
-                      let domain = "";
-                      try { domain = new URL(link).hostname.replace(/^www\./, ""); } catch { domain = link; }
-                      const href = safeExternalUrl(link) || link;
-                      return (
-                        <a
-                          key={link}
-                          href={href}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => handleLyknBrowserClick(e, href, domain, linkOpts)}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all"
-                        >
-                          <SiteFavicon url={href} className="h-3.5 w-3.5" />
-                          <span className="truncate max-w-[10rem]">{domain}</span>
-                        </a>
-                      );
-                    })}
-                  </div>
-                )}
+                <AssistantSourceRow
+                  msg={msg}
+                  hideMessageSources={hideMessageSources}
+                  linkOpts={linkOpts}
+                  onOpenMessageSources={onOpenMessageSources}
+                />
                 {!inlineThinkingStatus && (
                   <div className="px-3 pb-2 pt-0.5">
                     <ResponseActionsMenu
@@ -1257,48 +1326,12 @@ const ChatMessageItem = React.memo(function MessageItem({
                     </>
                   );
                 })()}
-                {!hideMessageSources && Array.isArray((msg as any).sources) && (msg as any).sources.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 px-4 pb-3">
-                    {(msg as any).sources.map((src: { title: string; url: string }, i: number) => {
-                      const href = safeExternalUrl(src.url) || src.url;
-                      return (
-                      <a
-                        key={i}
-                        href={href}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => handleLyknBrowserClick(e, href, src.title, linkOpts)}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all"
-                      >
-                        <SiteFavicon url={href} className="h-3.5 w-3.5" />
-                        <span className="truncate max-w-[10rem]">{src.title}</span>
-                      </a>
-                      );
-                    })}
-                  </div>
-                )}
-                {(msg as any).aiWebLinks && (msg as any).aiWebLinks.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 px-4 pb-3">
-                    {(msg as any).aiWebLinks.map((link: string) => {
-                      let domain = "";
-                      try { domain = new URL(link).hostname.replace(/^www\./, ""); } catch { domain = link; }
-                      const href = safeExternalUrl(link) || link;
-                      return (
-                        <a
-                          key={link}
-                          href={href}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => handleLyknBrowserClick(e, href, domain, linkOpts)}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all"
-                        >
-                          <SiteFavicon url={href} className="h-3.5 w-3.5" />
-                          <span className="truncate max-w-[10rem]">{domain}</span>
-                        </a>
-                      );
-                    })}
-                  </div>
-                )}
+                <AssistantSourceRow
+                  msg={msg}
+                  hideMessageSources={hideMessageSources}
+                  linkOpts={linkOpts}
+                  onOpenMessageSources={onOpenMessageSources}
+                />
                 <div className="px-3 pb-2 pt-0.5">
                   <ResponseActionsMenu
                     isCopied={isCopied}

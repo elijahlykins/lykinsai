@@ -12,6 +12,7 @@ const {
   createConnectedAppsTool,
   parseInstruction,
   matchConnection,
+  rankConnectedAppTools,
 } = require("./runtime/connectedAppsTool.cjs");
 
 function fakeMcpClient({ connections, details = {}, callResults = [] } = {}) {
@@ -39,7 +40,7 @@ const GMAIL_TOOLS = {
   ],
 };
 
-test("instruction parsing: list vs JSON call", () => {
+test("instruction parsing: list vs search vs JSON call", () => {
   assert.deepEqual(parseInstruction("list"), { mode: "list" });
   assert.deepEqual(parseInstruction(""), { mode: "list" });
   const call = parseInstruction('use gmail: {"app":"Gmail","tool":"GMAIL_FETCH_EMAILS","args":{"query":"from:dana"}}');
@@ -47,7 +48,9 @@ test("instruction parsing: list vs JSON call", () => {
   assert.equal(call.app, "Gmail");
   assert.equal(call.tool, "GMAIL_FETCH_EMAILS");
   assert.deepEqual(call.args, { query: "from:dana" });
-  assert.deepEqual(parseInstruction("{not json"), { mode: "list" });
+  assert.deepEqual(parseInstruction("list unread inbox"), { mode: "search", query: "unread inbox" });
+  assert.deepEqual(parseInstruction("unread mail"), { mode: "search", query: "unread mail" });
+  assert.equal(parseInstruction("{not json").mode, "search");
 });
 
 test("matchConnection resolves by id, id prefix, and name", () => {
@@ -64,7 +67,7 @@ test("list mode reports connected apps with tool consequences", async () => {
   const result = await tool.execute({ instruction: "list" });
   assert.equal(result.ok, true);
   assert.match(result.output, /Gmail \[app id: conn-gmail-1\]/);
-  assert.match(result.output, /GMAIL_SEND_EMAIL \(consequential\)/);
+  assert.match(result.output, /GMAIL_SEND_EMAIL \(consequential, ready\)/);
 });
 
 test("list mode with nothing connected points at Settings", async () => {
@@ -157,4 +160,71 @@ test("unknown app or tool gets a corrective message, not a call", async () => {
   assert.equal(noTool.ok, false);
   assert.match(noTool.output, /no tool named NOT_A_TOOL/);
   assert.equal(mcpClient.calls.callTool.length, 0);
+});
+
+test("a large Gmail catalog surfaces the ready fetch tool, not the first 40 add/get tools", () => {
+  const tools = [];
+  for (let i = 0; i < 40; i += 1) {
+    tools.push({
+      name: `GMAIL_ADD_LABEL_${i}`,
+      description: "Add a label",
+      consequence: "write",
+      required: ["message_id"],
+    });
+  }
+  tools.push({
+    name: "GMAIL_GET_MESSAGE",
+    description: "Get one message",
+    consequence: "read",
+    required: ["message_id"],
+  });
+  tools.push({
+    name: "GMAIL_FETCH_EMAILS",
+    description: "Fetch inbox messages",
+    consequence: "read",
+    required: [],
+  });
+  const ranked = rankConnectedAppTools(tools, "check my email", { requireQueryHit: true });
+  assert.equal(ranked[0].name, "GMAIL_FETCH_EMAILS");
+  assert.ok(!ranked.some((t) => t.name.startsWith("GMAIL_ADD_LABEL")));
+});
+
+test("list with the task goal searches for inbox tools instead of dumping the catalog", async () => {
+  const bloated = {
+    tools: [
+      ...Array.from({ length: 40 }, (_, i) => ({
+        name: `GMAIL_ADD_LABEL_${i}`,
+        description: "Add a label",
+        consequence: "write",
+        required: ["message_id"],
+      })),
+      { name: "GMAIL_FETCH_EMAILS", description: "Fetch inbox messages", capabilities: ["communication.email.read"], consequence: "read" },
+    ],
+  };
+  const mcpClient = fakeMcpClient({ connections: [GMAIL], details: { "conn-gmail-1": bloated } });
+  const tool = createConnectedAppsTool({ mcpClient, apiBase: "https://api", getAuthToken: async () => "t" });
+  const result = await tool.execute({ instruction: "list", goal: "check my email" });
+  assert.equal(result.ok, true);
+  assert.match(result.output, /GMAIL_FETCH_EMAILS/);
+  assert.doesNotMatch(result.output, /GMAIL_ADD_LABEL_0/);
+});
+
+test("a failed connection detail still names the app instead of pretending it has no tools", async () => {
+  const mcpClient = {
+    async listConnections() {
+      return [GMAIL];
+    },
+    async connectionDetail() {
+      throw new Error("detail_failed");
+    },
+    async callTool() {
+      throw new Error("should not call");
+    },
+  };
+  const tool = createConnectedAppsTool({ mcpClient, apiBase: "https://api", getAuthToken: async () => "t", logger: { warn() {} } });
+  const result = await tool.execute({ instruction: "list" });
+  assert.equal(result.ok, true);
+  assert.match(result.output, /Gmail \[app id: conn-gmail-1\]/);
+  assert.match(result.output, /could not be loaded/);
+  assert.match(result.output, /do not switch to the browser/i);
 });

@@ -65,8 +65,13 @@ test("applyViewRadius only passes the integer Electron clips with", () => {
   assert.deepEqual(calls, [14, 14]);
 });
 
-test("page clip is square so the live site meets the tab strip flush", () => {
+test("page clip follows the container curve so the window bottom is rounded", () => {
   assert.equal(pageClipRadius(), 0);
+  assert.equal(pageClipRadius(14), 14);
+  assert.equal(
+    pageClipRadius({ topLeft: 14, topRight: 0, bottomRight: 0, bottomLeft: 14 }),
+    14,
+  );
 });
 
 test("docked host stores the renderer radius spec and lays out with it", () => {
@@ -76,7 +81,7 @@ test("docked host stores the renderer radius spec and lays out with it", () => {
   assert.match(host, /require\("\.\/viewRadius\.cjs"\)/);
   assert.match(host, /normalizeViewRadius\(radius\)/);
   assert.match(host, /viewRadiusMax\(studioStageRadius\)/);
-  assert.match(host, /pageClipRadius\(\)/);
-  assert.match(host, /\{ radius: pageClipRadius\(\) \}/);
+  assert.match(host, /pageClipRadius\(studioStageRadius\)/);
+  assert.match(host, /\{ radius: pageClipRadius\(studioStageRadius\) \}/);
   assert.match(host, /\{ radius: studioStageRadius \}/);
 });

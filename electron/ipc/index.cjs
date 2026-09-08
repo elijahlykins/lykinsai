@@ -7,6 +7,8 @@ const { registerExtensionInstallIpc } = require("./extensionInstall.cjs");
 const { registerRoutinesIpc } = require("./routines.cjs");
 const { registerRemoteTargetsIpc } = require("./remoteTargets.cjs");
 const { registerWorkflowsIpc } = require("./workflows.cjs");
+const { registerBuildDriveIpc } = require("./buildDrive.cjs");
+const { registerDesktopMcpIpc } = require("./desktopMcp.cjs");
 
 function registerAllIpc(d) {
   registerOverlayIpc(d);
@@ -16,6 +18,8 @@ function registerAllIpc(d) {
   registerRoutinesIpc(d);
   registerRemoteTargetsIpc(d);
   registerWorkflowsIpc(d);
+  registerBuildDriveIpc(d);
+  registerDesktopMcpIpc(d);
 }
 
 module.exports = {

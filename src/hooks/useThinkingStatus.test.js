@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   classifyStatusLine,
   isLiveBuildStatus,
+  isTrailWorthyStatus,
   resolveThinkingLane,
   nextPhaseIndex,
   BUILD_PHASE_LOOP_FROM,
@@ -27,6 +28,19 @@ test("file work is a specific activity, not a build", () => {
   assert.equal(classifyStatusLine("Looking through your files…"), "specific");
   assert.equal(classifyStatusLine("Reading the file…"), "specific");
   assert.equal(isLiveBuildStatus("Searching your files: LYKN"), false);
+});
+
+test("research and search lines are trail-worthy in every mode", () => {
+  assert.equal(classifyStatusLine("Searching: lykn pricing"), "specific");
+  assert.equal(classifyStatusLine("Planning research…"), "specific");
+  assert.equal(classifyStatusLine("Writing report…"), "specific");
+  assert.equal(classifyStatusLine("Creating the image…"), "live-build");
+  assert.equal(isTrailWorthyStatus("Searching: lykn pricing"), true);
+  assert.equal(isTrailWorthyStatus("Planning research…"), true);
+  assert.equal(isTrailWorthyStatus("Creating the image…"), true);
+  assert.equal(isTrailWorthyStatus("Reading what you said…"), false);
+  assert.equal(isTrailWorthyStatus("Designing the build…"), false);
+  assert.equal(isTrailWorthyStatus("Thinking…"), false);
 });
 
 test("real build lines stay on the build lane", () => {

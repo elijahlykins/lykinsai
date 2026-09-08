@@ -15,6 +15,7 @@ import {
   fileNameFromPath,
   filesFromMacPaths,
   homeChatArtifactKey,
+  homeChatBarOwnsQueuedFiles,
   listStagedHomeChatArtifacts,
   onHomeChatArtifactsQueued,
   onHomeChatFilesQueued,
@@ -303,11 +304,12 @@ export function useChatAttachmentIngress({
   // Files stay take-once: the home bar claims them when it is on screen.
   // Artifacts are staged for every composer — Home hides this shell, and a
   // Chat window has its own bar, so skipping here left the chip on a bar
-  // the user could not see.
+  // the user could not see. A zoomed image/doc window also unmounts the
+  // Home bar, so "is the bar in the DOM?" is not enough — the hosted Home
+  // composer is still the owner and will claim when the preview closes.
   useEffect(() => {
-    const homeBarUp = () => !!document.querySelector(".lykn-home-chat-bar");
     const claimFiles = () => {
-      if (homeBarUp()) return;
+      if (homeChatBarOwnsQueuedFiles()) return;
       const files = takeQueuedHomeChatFiles();
       if (!files.length) return;
       void ingestChatFiles(files, addFocusedAttachment, {
@@ -728,6 +730,7 @@ export function useChatAttachmentIngress({
     handleToggleMedia,
     handleDismissMedia,
     renderFocusedAttachmentPreview,
+    ingestMacPathsToChat,
   };
 }
 

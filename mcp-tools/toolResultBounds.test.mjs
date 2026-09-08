@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { boundToolResult, measureResultPayload } from './toolResultBounds.js';
+import { boundToolResult, measureResultPayload, clipJsonToCap } from './toolResultBounds.js';
 
 test('small results pass through unchanged', () => {
   const payload = { ok: true, id: 'e1', title: 'Lunch' };
@@ -77,4 +77,42 @@ test('http bodies are clipped; full-read documents stay available up to the cap'
   });
   assert.equal(doc.note.content, 'full text here');
   assert.equal(doc.truncated, undefined);
+});
+
+test('local_read_file keeps nextOffset when content is clipped', () => {
+  const after = boundToolResult('local_read_file', {
+    ok: true,
+    path: '/tmp/big.ts',
+    content: 'x'.repeat(40_000),
+    truncated: true,
+    startLine: 1,
+    endLine: 400,
+    totalLines: 900,
+    nextOffset: 401,
+  });
+  assert.equal(after.truncated, true);
+  assert.equal(after.nextOffset, 401);
+  assert.ok(after.content.length <= 24000);
+  assert.match(String(after.hint || ''), /offset: 401/);
+});
+
+test('clipJsonToCap preserves file-read metadata instead of slicing JSON', () => {
+  const payload = {
+    ok: true,
+    path: '/tmp/app.ts',
+    content: 'line\n'.repeat(8000),
+    truncated: true,
+    startLine: 1,
+    endLine: 400,
+    totalLines: 8000,
+    nextOffset: 401,
+    hint: 'Call again with offset: 401',
+  };
+  const json = clipJsonToCap(payload, payload, 'local_read_file', 4000);
+  const parsed = JSON.parse(json);
+  assert.equal(parsed.truncated, true);
+  assert.equal(parsed.nextOffset, 401);
+  assert.equal(parsed.path, '/tmp/app.ts');
+  assert.equal(typeof parsed.content, 'string');
+  assert.ok(!Object.prototype.hasOwnProperty.call(parsed, 'preview'));
 });

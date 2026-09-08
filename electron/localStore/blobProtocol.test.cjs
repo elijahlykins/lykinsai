@@ -24,6 +24,7 @@ before(async () => {
   localStore.configure(userDataPath);
   await blobs.write("item-1", BODY, { filename: "clip.mp4", variant: "original" });
   await blobs.write("item-1", Buffer.from("thumb"), { filename: "t.jpg", variant: "thumb" });
+  await blobs.write("item-2", Buffer.from("png-bytes"), { filename: "pic.png", variant: "original" });
 });
 
 after(() => {
@@ -72,9 +73,23 @@ describe("serving files", () => {
     assert.match(res.headers.get("cache-control"), /immutable/);
   });
 
+  test("lets the renderer fetch images across origins", async () => {
+    const res = await get(urlFor("item-2/original.png"), {
+      Origin: "http://127.0.0.1:5173",
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("content-type"), "image/png");
+    assert.equal(res.headers.get("access-control-allow-origin"), "http://127.0.0.1:5173");
+    assert.equal(res.headers.get("cross-origin-resource-policy"), "cross-origin");
+    assert.equal(Buffer.from(await res.arrayBuffer()).toString(), "png-bytes");
+  });
+
   test("404s a path with no file behind it", async () => {
-    const res = await get(urlFor("item-1/nothing.png"));
+    const res = await get(urlFor("item-1/nothing.png"), {
+      Origin: "http://127.0.0.1:5173",
+    });
     assert.equal(res.status, 404);
+    assert.equal(res.headers.get("access-control-allow-origin"), "http://127.0.0.1:5173");
   });
 
   test("400s a malformed URL", async () => {

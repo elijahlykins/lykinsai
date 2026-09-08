@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   findImagineTurnIndex,
+  imagineImageIsVideo,
   imagineReferenceAttachments,
   imagineTurnNote,
   imagineTurnUnchanged,
@@ -63,6 +64,41 @@ describe("imagesFromImagineCommit", () => {
     assert.equal(images.length, 4);
     assert.ok(images.every((img) => img.status === "loading"));
   });
+
+  it("reserves one video tile instead of a 4-up", () => {
+    const images = imagesFromImagineCommit({
+      id: "v",
+      prompt: "a clip of rain",
+      kind: "video",
+      images: [],
+      pending: true,
+      slots: [{ status: "loading" }],
+    });
+    assert.equal(images.length, 1);
+    assert.equal(images[0]?.status, "loading");
+    assert.equal(images[0]?.video, true);
+  });
+
+  it("falls back to one loading tile when a pending video commit has no slots yet", () => {
+    const images = imagesFromImagineCommit({
+      id: "v",
+      prompt: "a clip of rain",
+      kind: "video",
+      images: [],
+      pending: true,
+    });
+    assert.equal(images.length, 1);
+    assert.equal(images[0]?.video, true);
+  });
+});
+
+describe("imagineImageIsVideo", () => {
+  it("treats video-lane slots and mp4 urls as video", () => {
+    assert.equal(imagineImageIsVideo({ video: true }), true);
+    assert.equal(imagineImageIsVideo({ url: "https://files/clip.mp4" }), true);
+    assert.equal(imagineImageIsVideo({ url: "https://files/still.png" }, "video"), true);
+    assert.equal(imagineImageIsVideo({ url: "https://files/still.png" }), false);
+  });
 });
 
 describe("imagineTurnNote", () => {
@@ -79,6 +115,28 @@ describe("imagineTurnNote", () => {
         images: [{ url: "a" }, { url: "b" }],
       }),
       "Refined 2 images.",
+    );
+  });
+
+  it("uses video copy for the video lane", () => {
+    assert.equal(
+      imagineTurnNote({
+        id: "v",
+        prompt: "a clip of rain",
+        kind: "video",
+        images: [],
+        pending: true,
+      }),
+      "Generating video.",
+    );
+    assert.equal(
+      imagineTurnNote({
+        id: "v",
+        prompt: "a clip of rain",
+        kind: "video",
+        images: [{ url: "https://clip/1.mp4" }],
+      }),
+      "Generated 1 video.",
     );
   });
 });
