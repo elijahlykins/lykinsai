@@ -43,9 +43,26 @@ function formatCount(n: number) {
   return n.toLocaleString("en-US");
 }
 
+/** The long desktop placeholder overflows a phone-width input — swap in a
+    short one under the same breakpoint the stacked bar layout uses. */
+function usePhonePlaceholder() {
+  const [compact, setCompact] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 560px)");
+    const sync = () => setCompact(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+  return compact
+    ? "Enter your email"
+    : "Enter your email to join the Windows waitlist";
+}
+
 /** /windows — coming-soon waitlist for the Windows desktop app. */
 export default function WindowsWaitlist() {
   const navigate = useNavigate();
+  const placeholder = usePhonePlaceholder();
   const [email, setEmail] = useState("");
   const [honeypot, setHoneypot] = useState("");
   const [joined, setJoined] = useState(false);
@@ -156,7 +173,7 @@ export default function WindowsWaitlist() {
                   name="email"
                   autoComplete="email"
                   inputMode="email"
-                  placeholder="Enter your email to join the Windows waitlist"
+                  placeholder={placeholder}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   disabled={busy}

@@ -874,11 +874,27 @@
     grid-template-columns: 1fr;
     padding: 0;
   }
+  /* Phones reorder the hero: rotating headline, then the desktop preview,
+     then the Download CTA underneath it. `display: contents` promotes the
+     headline and CTA row to grid items so `order` can slot the preview
+     between them. */
   .gl-hero-copy {
-    padding: 0.5rem 0 0;
+    display: contents;
+  }
+  .gl-hero-headline {
+    order: 0;
+    /* The CTA no longer sits under the words, so drop them lower to keep
+       the hero balanced. */
+    margin-top: 2.25rem;
   }
   .gl-hero-visual {
+    order: 1;
     margin-top: 1.25rem;
+  }
+  .gl-hero-ctas {
+    order: 2;
+    justify-content: center;
+    margin-top: 1.4rem;
   }
   .gl-hero-stage {
     width: 100%;
@@ -1908,6 +1924,10 @@
   inset: 0;
   display: grid;
   place-items: center;
+  /* When the panel's layout box is taller than the stage (the scaled-down
+     agents roster on phones), center the overflowing track too — otherwise
+     it pins to the top and the visual sits low. */
+  place-content: center;
   overflow: hidden;
 }
 
@@ -1926,6 +1946,29 @@
 .gl-apps-slide .ls-vis-sync {
   position: relative;
   width: min(27rem, 86%);
+}
+/* The agents roster is ~310px tall (three fixed-height rows), but the
+   16:10-ish stage shrinks with the viewport — around 560px wide the panel no
+   longer fits and gets clipped top and bottom. Scale the whole panel down
+   (transform also shrinks the px-sized bot avatars) and widen the pre-scale
+   box so it still reads ~88% of the stage after scaling. */
+@media (max-width: 560px) {
+  .gl-apps-slide .ls-vis-agents {
+    width: 110%;
+    transform: scale(0.8);
+  }
+}
+@media (max-width: 440px) {
+  .gl-apps-slide .ls-vis-agents {
+    width: 133%;
+    transform: scale(0.66);
+  }
+}
+@media (max-width: 360px) {
+  .gl-apps-slide .ls-vis-agents {
+    width: 157%;
+    transform: scale(0.56);
+  }
 }
 
 /* ── Home desktop preview (hero bar, cap card, sync section, showcase) ── */
@@ -2753,8 +2796,7 @@
 @media (max-width: 860px) {
   .glass-land .gl-any,
   .glass-land .gl-snip,
-  .glass-land .gl-news,
-  .glass-land .gl-start {
+  .glass-land .gl-news {
     background: linear-gradient(150deg, #2f7bff 0%, #0e6fff 55%, #0847c9 100%);
   }
   /* The explainer and its snip demo sit back-to-back — merge them into one
@@ -2812,14 +2854,8 @@
     border-top-color: rgba(255, 255, 255, 0.3);
   }
 
-  /* Get started — white title; the frosted cards go nearly opaque so their
-     dark copy keeps its contrast over the strong blue. */
-  .glass-land .gl-start-title {
-    color: #ffffff;
-  }
-  .glass-land .gl-start-card {
-    background: rgba(255, 255, 255, 0.92);
-  }
+  /* Get started stays on the page's mist-gray background (the section is
+     transparent), matching the rest of the page instead of a blue band. */
 }
 
 /* ============================================================================
