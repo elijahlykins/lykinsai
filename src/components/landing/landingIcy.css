@@ -1005,9 +1005,10 @@
   .glass-land .gl-start {
     padding: 2.4rem 1rem 2.6rem;
   }
+  /* The section sits on the mist-gray page background on phones now (the
+     blue band is gone), so the title keeps its navy blue instead of white. */
   .glass-land .gl-start-title {
     font-size: clamp(1.55rem, 6.6vw, 2rem);
-    color: #ffffff;
   }
   .glass-land .gl-start-grid {
     margin-top: 1.25rem;
