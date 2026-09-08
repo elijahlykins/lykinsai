@@ -23,15 +23,39 @@ function listen(app) {
   });
 }
 
-function makeApp(supabaseAdmin) {
+function makeApp(supabaseAdmin, resendClient = null) {
   const app = express();
   app.use(express.json());
   registerWaitlistRoutes(app, {
     supabaseAdmin,
     waitlistLimiter: passthrough,
     waitlistReadLimiter: passthrough,
+    resendClient,
   });
   return app;
+}
+
+function makeResend() {
+  const calls = [];
+  return {
+    calls,
+    emails: {
+      async send(payload) {
+        calls.push(payload);
+        return { data: { id: 'email-1' }, error: null };
+      },
+    },
+  };
+}
+
+async function postDownloadLink(url, body) {
+  const res = await fetch(`${url}/api/download-link`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  return { status: res.status, json };
 }
 
 async function post(url, body) {
@@ -146,6 +170,104 @@ test('windows waitlist returns 503 when the database is not configured', async (
     const res = await post(url, { email: 'alex@lykn.io' });
     assert.equal(res.status, 503);
     assert.equal(res.json.error, 'db_not_configured');
+  } finally {
+    await close();
+  }
+});
+
+test('download link rejects a malformed email', async () => {
+  const { url, close } = await listen(makeApp({}, makeResend()));
+  try {
+    const res = await postDownloadLink(url, { email: 'not-an-email' });
+    assert.equal(res.status, 400);
+    assert.equal(res.json.error, 'invalid_request');
+  } finally {
+    await close();
+  }
+});
+
+test('download link honeypot succeeds without sending or writing', async () => {
+  const resend = makeResend();
+  let wrote = false;
+  const supabaseAdmin = {
+    from() {
+      wrote = true;
+      throw new Error('should not write');
+    },
+  };
+  const { url, close } = await listen(makeApp(supabaseAdmin, resend));
+  try {
+    const res = await postDownloadLink(url, {
+      email: 'bot@example.com',
+      website: 'http://spam.test',
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.ok, true);
+    assert.equal(resend.calls.length, 0);
+    assert.equal(wrote, false);
+  } finally {
+    await close();
+  }
+});
+
+test('download link returns 503 when email sending is not configured', async () => {
+  const { url, close } = await listen(makeApp({}, null));
+  try {
+    const res = await postDownloadLink(url, { email: 'alex@lykn.io' });
+    assert.equal(res.status, 503);
+    assert.equal(res.json.error, 'email_not_configured');
+  } finally {
+    await close();
+  }
+});
+
+test('download link captures the email and sends the link', async () => {
+  const resend = makeResend();
+  let inserted = null;
+  const supabaseAdmin = {
+    from(table) {
+      assert.equal(table, 'download_link_requests');
+      return {
+        async insert(row) {
+          inserted = row;
+          return { error: null };
+        },
+      };
+    },
+  };
+  const { url, close } = await listen(makeApp(supabaseAdmin, resend));
+  try {
+    const res = await postDownloadLink(url, { email: '  Alex@LYKN.io ' });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.ok, true);
+    assert.equal(res.json.sent, true);
+    assert.equal(inserted.email, 'alex@lykn.io');
+    assert.equal(resend.calls.length, 1);
+    assert.deepEqual(resend.calls[0].to, ['alex@lykn.io']);
+    assert.match(resend.calls[0].subject, /download link/i);
+    assert.match(resend.calls[0].text, /LYKN\.dmg/);
+  } finally {
+    await close();
+  }
+});
+
+test('download link re-sends for a repeat email despite the unique violation', async () => {
+  const resend = makeResend();
+  const supabaseAdmin = {
+    from() {
+      return {
+        async insert() {
+          return { error: { code: '23505', message: 'duplicate' } };
+        },
+      };
+    },
+  };
+  const { url, close } = await listen(makeApp(supabaseAdmin, resend));
+  try {
+    const res = await postDownloadLink(url, { email: 'alex@lykn.io' });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.ok, true);
+    assert.equal(resend.calls.length, 1);
   } finally {
     await close();
   }

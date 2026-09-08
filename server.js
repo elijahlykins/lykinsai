@@ -1687,7 +1687,7 @@ registerBillingRoutes(app, {
   trialCheckoutCustomText,
 });
 
-registerWaitlistRoutes(app, { supabaseAdmin, waitlistLimiter, waitlistReadLimiter });
+registerWaitlistRoutes(app, { supabaseAdmin, waitlistLimiter, waitlistReadLimiter, resendClient });
 
 // App Store Server Notifications V2 — Apple's Stripe-webhook analogue. Unlike
 // Stripe it does not need the raw body (the signature travels as a JWS string
