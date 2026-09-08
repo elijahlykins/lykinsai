@@ -2054,8 +2054,8 @@
    scaled-down marketing replica. Landing-only override (extra classes to
    outrank that rule): center the single text line in the 2rem field. */
 .gl-desk-bar .gl-desk-composer.lykn-home-chat-bar textarea.gl-desk-ask.lykn-home-chat-bar-input {
-  padding-top: 7px;
-  padding-bottom: 7px;
+  padding-top: 9px;
+  padding-bottom: 5px;
 }
 .gl-desk-send {
   display: flex;
