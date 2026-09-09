@@ -5,8 +5,8 @@
 
 import { z, validate } from '../../validation.js';
 import {
+  EMAIL_LOGO_CID,
   emailLogoAttachment,
-  wrapAuthEmailHtml,
 } from '../../lib/auth/emailBranding.js';
 
 const EMAIL_MAX = 320;
@@ -34,24 +34,49 @@ const MAC_DMG_URL =
 const DOWNLOAD_EMAIL_FROM =
   process.env.RESEND_FROM_EMAIL || 'LYKN <hello@lykn.io>';
 
+// Deliberately NOT wrapAuthEmailHtml: that chrome is the dark security-email
+// theme. This is a marketing hand-off, so it stays clean — white background,
+// black copy, one blue button.
 function buildDownloadLinkEmailHtml() {
-  return wrapAuthEmailHtml({
-    title: 'Your LYKN download link',
-    bodyHtml: `
-      <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#334155;">
-        Here's the link you asked for. Open this email on your Mac and
-        download LYKN - Home, the chat bar, and your files already in sync.
-      </p>
-      <p style="margin:0 0 20px;">
-        <a href="${DOWNLOAD_PAGE_URL}"
-           style="display:inline-block;padding:12px 26px;border-radius:999px;background:#0968c4;color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;">
-          Download LYKN for Mac
-        </a>
-      </p>
-      <p style="margin:0;font-size:13px;line-height:1.6;color:#64748b;">
-        Direct download: <a href="${MAC_DMG_URL}" style="color:#0968c4;">LYKN.dmg</a>
-      </p>`,
-  });
+  return `<!doctype html>
+<html>
+<body style="margin:0;padding:0;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#111111">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;padding:44px 16px">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:440px;background:#ffffff">
+          <tr>
+            <td style="text-align:center;padding:0 0 24px">
+              <img src="cid:${EMAIL_LOGO_CID}" alt="LYKN" width="110" style="display:inline-block;width:110px;max-width:55%;height:auto;border:0;outline:none;text-decoration:none" />
+            </td>
+          </tr>
+          <tr>
+            <td style="text-align:center">
+              <h1 style="margin:0 0 12px;font-size:22px;line-height:1.25;color:#111111;font-weight:700">Download LYKN for Mac</h1>
+              <p style="margin:0 0 26px;font-size:15px;line-height:1.6;color:#111111">
+                Here's the link you asked for. Open this email on your Mac and
+                install LYKN - Home, the chat bar, and your files already in sync.
+              </p>
+              <a href="${DOWNLOAD_PAGE_URL}"
+                 style="display:inline-block;padding:13px 30px;border-radius:999px;background:#0968c4;color:#ffffff;font-size:15px;font-weight:600;text-decoration:none">
+                Download LYKN for Mac
+              </a>
+              <p style="margin:24px 0 0;font-size:13px;line-height:1.6;color:#111111">
+                Direct download: <a href="${MAC_DMG_URL}" style="color:#0968c4">LYKN.dmg</a>
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:34px 0 0;text-align:center;font-size:11px;line-height:1.55;color:#94a3b8">
+              This is an automated message from LYKN. Please do not reply.
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
 }
 
 function normalizeEmail(value) {
