@@ -14,6 +14,7 @@ import LandingExplain from "@/components/landing/LandingExplain";
 import LandingModelsTools from "@/components/landing/LandingModelsTools";
 import LandingSlideshow from "@/components/landing/LandingSlideshow";
 import LandingCapabilities from "@/components/landing/LandingCapabilities";
+import SendDownloadLink from "@/components/landing/SendDownloadLink";
 import { LyknWordmark, markLykn } from "@/components/landing/LyknWordmark";
 import { useLandingLightTheme } from "@/components/landing/useLandingLightTheme";
 import { streamWakeChatPreview } from "@/lib/wake/wakeChatPreviewStream";
@@ -928,7 +929,10 @@ const START_OPTIONS: {
   },
 ];
 
-/** Download CTA above the footer — desktop app is the product entry. */
+/** Download CTA above the footer — desktop app is the product entry.
+    Phones can't install the app, so they swap the two download cards for the
+    send-the-link email capture plus the Windows waitlist button (CSS toggles
+    the two blocks at the 860px breakpoint). */
 function GetStartedSection() {
   const navigate = useNavigate();
   return (
@@ -938,6 +942,21 @@ function GetStartedSection() {
           Get{"\u00A0"}
           <LyknWordmark /> desktop
         </h2>
+
+        <div className="gl-start-mobile gl-reveal">
+          <p className="gl-getlink-note">
+            Email yourself the download link for your Mac
+          </p>
+          <SendDownloadLink fieldId="start-getlink-email" />
+          <button
+            type="button"
+            className="gl-start-mobile-windows"
+            onClick={() => navigate("/windows")}
+          >
+            Join the Windows waitlist
+          </button>
+        </div>
+
         <div className="gl-start-grid gl-reveal">
           {START_OPTIONS.map((opt) => (
             <article className="gl-start-card" key={opt.title}>

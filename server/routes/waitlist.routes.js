@@ -30,6 +30,7 @@ const downloadLinkSchema = windowsWaitlistSchema;
 const DOWNLOAD_PAGE_URL = 'https://lykn.io/download';
 const MAC_DMG_URL =
   'https://github.com/elijahlykins/lykn-releases/releases/latest/download/LYKN.dmg';
+const WINDOWS_WAITLIST_URL = 'https://lykn.io/windows';
 
 const DOWNLOAD_EMAIL_FROM =
   process.env.RESEND_FROM_EMAIL || 'LYKN <hello@lykn.io>';
@@ -63,6 +64,12 @@ function buildDownloadLinkEmailHtml() {
               </a>
               <p style="margin:24px 0 0;font-size:13px;line-height:1.6;color:#111111">
                 Direct download: <a href="${MAC_DMG_URL}" style="color:#0968c4">LYKN.dmg</a>
+              </p>
+              <p style="margin:26px 0 0">
+                <a href="${WINDOWS_WAITLIST_URL}"
+                   style="display:inline-block;padding:11px 26px;border-radius:999px;border:1px solid #cbd5e1;background:#ffffff;color:#111111;font-size:14px;font-weight:600;text-decoration:none">
+                  On Windows? Join the waitlist
+                </a>
               </p>
             </td>
           </tr>
@@ -219,6 +226,7 @@ export function registerWaitlistRoutes(app, deps) {
           text:
             `Here's your LYKN download link. Open this email on your Mac and download LYKN:\n\n` +
             `${DOWNLOAD_PAGE_URL}\n\nDirect download: ${MAC_DMG_URL}\n\n` +
+            `On Windows? Join the waitlist: ${WINDOWS_WAITLIST_URL}\n\n` +
             `This is an automated message - please do not reply.`,
           attachments: emailLogoAttachment(),
         });

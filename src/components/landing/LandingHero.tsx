@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { LyknWordmark } from "@/components/landing/LyknWordmark";
 import HeroDesktopStage from "@/components/landing/HeroDesktopStage";
-import { API_BASE_URL } from "@/lib/api-config";
+import SendDownloadLink from "@/components/landing/SendDownloadLink";
 
 // Rotating headline slides. Each rotation is a three-line stack mixing a
 // light lead-in in black with a bold blue core (the Milkinside cadence).
@@ -66,81 +66,12 @@ function usePrefersReducedMotion() {
     phone, so capture an email and mail the visitor their Mac download link.
     Hidden on desktop (and the desktop button hidden on phones) via CSS. */
 function HeroSendLink() {
-  const [email, setEmail] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [sent, setSent] = useState(false);
-  const [error, setError] = useState("");
-
-  const onSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (busy || sent) return;
-    const trimmed = email.trim();
-    if (!trimmed || !trimmed.includes("@")) {
-      setError("Enter a valid email address.");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/download-link`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: trimmed }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        setError(
-          res.status === 429
-            ? "Too many tries. Give it a minute and try again."
-            : "Couldn't send right now. Try again in a moment."
-        );
-        return;
-      }
-      setSent(true);
-    } catch {
-      setError("Couldn't reach LYKN. Check your connection and try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <div className="gl-hero-getlink">
-      <p className="gl-hero-getlink-note">
+      <p className="gl-getlink-note">
         <LyknWordmark decorative /> isn't available on mobile
       </p>
-      {sent ? (
-        <p className="gl-hero-getlink-done" role="status">
-          Link sent - open it on your Mac
-        </p>
-      ) : (
-        <form className="gl-hero-getlink-form" onSubmit={onSubmit} noValidate>
-          <label className="gl-hero-getlink-sr" htmlFor="hero-getlink-email">
-            Email yourself the Mac download link
-          </label>
-          <input
-            id="hero-getlink-email"
-            className="gl-hero-getlink-input"
-            type="email"
-            name="email"
-            autoComplete="email"
-            inputMode="email"
-            placeholder="Enter your email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            disabled={busy}
-            required
-          />
-          <button className="gl-hero-getlink-btn" type="submit" disabled={busy}>
-            {busy ? "Sending…" : "Send the link"}
-          </button>
-        </form>
-      )}
-      {error ? (
-        <p className="gl-hero-getlink-error" role="alert">
-          {error}
-        </p>
-      ) : null}
+      <SendDownloadLink fieldId="hero-getlink-email" />
     </div>
   );
 }
