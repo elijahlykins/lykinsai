@@ -865,12 +865,8 @@
   align-items: baseline;
 }
 
-/* Phone-only "Send the link" email capture (the app can't install on a
-   phone). Shared by the hero and the Get LYKN section; both wrappers are
-   hidden on desktop, where download buttons show instead. */
-.gl-hero-getlink {
-  display: none;
-}
+/* "Send the link" email capture (the app can't install on a phone). Shared
+   by the /get-started page and the Get LYKN section's phone layout. */
 .gl-getlink-note {
   margin: 0;
   font-size: 0.95rem;
@@ -956,59 +952,14 @@
 }
 
 @media (max-width: 860px) {
+  /* Phones skip the hero entirely — the header's Get started button carries
+     the CTA (leading to /get-started) and the page opens on the explainer. */
   .gl-hero {
-    min-height: 0;
-    padding: 5.25rem 0.9rem 2rem;
-  }
-  .gl-hero-inner {
-    grid-template-columns: 1fr;
-    padding: 0;
-  }
-  /* Phones reorder the hero: rotating headline, then the desktop preview,
-     then the Download CTA underneath it. `display: contents` promotes the
-     headline and CTA row to grid items so `order` can slot the preview
-     between them. */
-  .gl-hero-copy {
-    display: contents;
-  }
-  .gl-hero-headline {
-    order: 0;
-    /* The CTA no longer sits under the words, so drop them lower to keep
-       the hero balanced. */
-    margin-top: 2.25rem;
-    text-align: left;
-  }
-  .gl-hero-slide {
-    align-items: flex-start;
-    font-size: clamp(2.4rem, 10.5vw, 3.2rem);
-  }
-  .gl-hero-visual {
-    order: 1;
-    margin-top: 4.5rem;
-  }
-  /* Phones can't install the desktop app: swap the Download button for the
-     "Send the link" email capture under the preview. */
-  .gl-hero-ctas {
     display: none;
   }
-  .gl-hero-getlink {
-    order: 2;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.7rem;
-    /* Land the "isn't available on mobile" note at the bottom edge of the
-       first screen: the content above it ends ~33.5rem into the page on
-       phones, so this margin walks the note to ~100vh and the email form
-       (with its own margin below) starts past the fold. Short/landscape
-       viewports clamp to a plain 1.5rem gap. */
-    margin-top: max(1.5rem, calc(100vh - 34.5rem));
-  }
-  .gl-hero-getlink .gl-getlink-form {
-    margin-top: 1rem;
-  }
-  .gl-hero-stage {
-    width: 100%;
+  /* The explainer is now the first section: clear the fixed header. */
+  .glass-land .lx-explain {
+    padding-top: calc(5.5rem + env(safe-area-inset-top, 0px));
   }
 }
 

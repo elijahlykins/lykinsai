@@ -50,6 +50,7 @@ import Pricing from "./pages/Pricing";
 import Security from "./pages/Security";
 import DownloadLykn from "./pages/DownloadLykn";
 import WindowsWaitlist from "./pages/WindowsWaitlist";
+import GetTheLink from "./pages/GetTheLink";
 import CapabilityPage from "./pages/CapabilityPage";
 import News, { NewsArticle } from "./pages/News";
 import Templates from "./pages/Templates";
@@ -440,6 +441,7 @@ function AppShell() {
             <Route path="/security" element={<Security />} />
             <Route path="/download" element={<DownloadLykn />} />
             <Route path="/windows" element={<WindowsWaitlist />} />
+            <Route path="/get-started" element={<GetTheLink />} />
             {/* Capability product pages: Chat / Build / Imagine / Voice /
                 Research / Browser / Drive / Glass. */}
             <Route path="/product/:capId" element={<CapabilityPage />} />

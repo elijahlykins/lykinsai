@@ -438,6 +438,12 @@
 }
 
 /* ── Mobile header: hamburger + slide-down menu ─────────────── */
+/* Phone-only "Get started" pill beside the hamburger — leads to the
+   send-the-link page. Hidden on desktop, where the Download pill shows. */
+.lkn-getstarted {
+  display: none;
+}
+
 /* The hamburger toggle. Hidden on desktop, where the inline nav shows. */
 .lkn-menu-btn {
   display: none;
@@ -577,6 +583,11 @@
   .lkn-nav,
   .lkn-nav-auth {
     display: none;
+  }
+  .lkn-getstarted {
+    display: inline-flex;
+    padding: 0.55rem 1.1rem;
+    font-size: 0.9rem;
   }
   .lkn-menu-btn {
     display: inline-flex;

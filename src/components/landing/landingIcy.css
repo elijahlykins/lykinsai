@@ -501,19 +501,32 @@
   .ls-pin {
     height: auto;
   }
+  /* Phones swipe the three desktop cards sideways (matching the capability
+     carousel): a scroll-snap row with the next card peeking in. */
   .ls-sticky {
     position: relative;
     height: auto;
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
+    align-items: stretch;
     background: transparent;
     gap: 0.75rem;
     padding: 0.35rem 0.85rem 1.5rem;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scroll-padding-left: 0.85rem;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .ls-sticky::-webkit-scrollbar {
+    display: none;
   }
   .ls-slide {
     position: relative;
     height: auto;
     min-height: 0;
+    flex: 0 0 86%;
+    scroll-snap-align: start;
     opacity: 1 !important;
     transform: none !important;
     padding: 0;
@@ -521,8 +534,7 @@
     -webkit-mask-image: none;
     mask-image: none;
     /* The scroll-driven crossfade sets --ls-copy inline to fade each slide's
-       copy out. Stacked one after another on phones, the cards must stay
-       fully visible while scrolling. */
+       copy out. In the phone carousel the cards must stay fully visible. */
     --ls-copy: 1 !important;
   }
   .ls-slide-inner {

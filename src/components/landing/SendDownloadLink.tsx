@@ -3,9 +3,9 @@ import { API_BASE_URL } from "@/lib/api-config";
 
 /** Email capture that mails the visitor their Mac download link
     (`POST /api/download-link`). Phones can't install the desktop app, so this
-    replaces download buttons on phone layouts: the hero CTA and the
-    Get LYKN section at the bottom of the home page. `fieldId` keeps the
-    input ids unique when both instances render on one page. */
+    replaces download buttons: on the /get-started page and in the Get LYKN
+    section's phone layout. `fieldId` keeps the input ids unique when more
+    than one instance renders on a page. */
 export default function SendDownloadLink({ fieldId }: { fieldId: string }) {
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);

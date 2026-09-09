@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { LyknWordmark } from "@/components/landing/LyknWordmark";
 import HeroDesktopStage from "@/components/landing/HeroDesktopStage";
-import SendDownloadLink from "@/components/landing/SendDownloadLink";
 
 // Rotating headline slides. Each rotation is a three-line stack mixing a
 // light lead-in in black with a bold blue core (the Milkinside cadence).
@@ -12,35 +11,35 @@ type HeroSlide = { lines: [HeroLine, HeroLine, HeroLine] };
 const SLIDES: HeroSlide[] = [
   {
     lines: [
-      { text: "meet the" },
+      { text: "Meet the" },
       { text: "AI desktop", strong: true },
       { text: "for your Mac" },
     ],
   },
   {
     lines: [
-      { text: "the only" },
+      { text: "The only" },
       { text: "AI interface", strong: true },
       { text: "you need" },
     ],
   },
   {
     lines: [
-      { text: "the first ever" },
+      { text: "The first ever" },
       { text: "AI desktop", strong: true },
       { text: "for Mac" },
     ],
   },
   {
     lines: [
-      { text: "fully" },
+      { text: "Fully" },
       { text: "customizable", strong: true },
       { text: "by anyone" },
     ],
   },
   {
     lines: [
-      { text: "one home" },
+      { text: "One home" },
       { text: "for everything", strong: true },
       { text: "you already do" },
     ],
@@ -60,20 +59,6 @@ function usePrefersReducedMotion() {
     return () => mq.removeEventListener("change", sync);
   }, []);
   return reduced;
-}
-
-/** Phone stand-in for the download CTA: the desktop app can't install on a
-    phone, so capture an email and mail the visitor their Mac download link.
-    Hidden on desktop (and the desktop button hidden on phones) via CSS. */
-function HeroSendLink() {
-  return (
-    <div className="gl-hero-getlink">
-      <p className="gl-getlink-note">
-        <LyknWordmark decorative /> isn't available on mobile
-      </p>
-      <SendDownloadLink fieldId="hero-getlink-email" />
-    </div>
-  );
 }
 
 export default function LandingHero() {
@@ -150,8 +135,6 @@ export default function LandingHero() {
               Download <LyknWordmark decorative />
             </button>
           </div>
-
-          <HeroSendLink />
         </div>
 
         <div className="gl-hero-visual">

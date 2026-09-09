@@ -323,6 +323,16 @@ export default function LandingHeader({
             </button>
           </div>
 
+          {/* Phone-only CTA next to the hamburger (CSS toggles it): phones
+              can't install the app, so it leads to the send-the-link page. */}
+          <button
+            type="button"
+            className="lkn-nav-signup lkn-getstarted"
+            onClick={() => navigate("/get-started")}
+          >
+            Get started
+          </button>
+
           {/* Hamburger — only rendered visible on phones (CSS), where the inline
               nav above is hidden. */}
           <button
