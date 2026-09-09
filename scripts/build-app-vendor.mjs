@@ -159,9 +159,25 @@ const manifest = fs
   .readdirSync(outDir)
   .filter((f) => f.endsWith(".js"))
   .sort();
-fs.writeFileSync(
-  path.join(outDir, "manifest.json"),
-  `${JSON.stringify({ files: manifest, exports: exportNames, builtAt: new Date().toISOString() }, null, 2)}\n`,
-);
+// The manifest is committed, and desktop release preflight demands a clean
+// worktree. Refresh builtAt only when the vendored content actually changed —
+// otherwise every build dirties the tree and blocks the next release.
+const manifestPath = path.join(outDir, "manifest.json");
+let previous = null;
+try {
+  previous = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+} catch {
+  previous = null;
+}
+const unchanged =
+  previous &&
+  JSON.stringify({ files: previous.files, exports: previous.exports }) ===
+    JSON.stringify({ files: manifest, exports: exportNames });
+if (!unchanged) {
+  fs.writeFileSync(
+    manifestPath,
+    `${JSON.stringify({ files: manifest, exports: exportNames, builtAt: new Date().toISOString() }, null, 2)}\n`,
+  );
+}
 
 console.log(`Done — ${manifest.length} file(s) in electron/appRuntime/vendor/`);
