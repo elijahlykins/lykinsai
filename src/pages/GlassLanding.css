@@ -954,7 +954,11 @@
 @media (max-width: 860px) {
   .gl-hero {
     min-height: 0;
-    padding: 5.25rem 0.9rem 2.5rem;
+    padding: 5.25rem 0.9rem 3rem;
+    /* The desktop radial fade needs the full-height hero to finish fading
+       into the page grey; cut short on phones it leaves a visible seam
+       under the preview. Let the page background show through instead. */
+    background: none;
   }
   .gl-hero-inner {
     grid-template-columns: 1fr;
@@ -967,7 +971,7 @@
   }
   .gl-hero-headline {
     order: 0;
-    margin-top: 2.25rem;
+    margin-top: 4.75rem;
     text-align: left;
   }
   .gl-hero-slide {
@@ -976,7 +980,7 @@
   }
   .gl-hero-visual {
     order: 1;
-    margin-top: 4.5rem;
+    margin-top: 6rem;
   }
   /* Phones can't install the desktop app: the Download button hides and the
      header's Get started pill (→ /get-started) carries the CTA instead. */

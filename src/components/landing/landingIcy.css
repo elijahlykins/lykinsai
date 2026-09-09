@@ -906,7 +906,11 @@
 @media (max-width: 860px) {
   .glass-land .gl-hero {
     min-height: 0;
-    overflow: hidden;
+    /* Clip sideways only: a full `overflow: hidden` cuts the preview's soft
+       drop shadow dead at the section's bottom edge, drawing a visible line
+       between the hero and the explainer below it. */
+    overflow-x: clip;
+    overflow-y: visible;
     padding: calc(4.6rem + env(safe-area-inset-top, 0px)) 1rem 1.4rem;
   }
   .glass-land .gl-hero-inner {
