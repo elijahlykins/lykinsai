@@ -24,3 +24,19 @@ export function openStudioTab(id: string, src?: string): boolean {
   });
   return !window.dispatchEvent(event);
 }
+
+/**
+ * Open Studio Settings on a pane. When Studio is already mounted, routing
+ * to `/studio?settings=…` does not re-run its mount effect, so the event
+ * has to win. Fall back to the deep-link path for cold loads.
+ */
+export function goToStudioSettings(
+  navigate: ((to: string) => void) | undefined,
+  view = "account",
+): void {
+  if (openStudioTab("settings", view)) return;
+  if (typeof navigate === "function") {
+    const pane = encodeURIComponent(String(view || "account").trim() || "account");
+    navigate(`/studio?settings=${pane}`);
+  }
+}

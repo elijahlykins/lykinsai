@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { X, Wallet } from "lucide-react";
 import { useAuth } from "@/lib/SupabaseAuth";
+import { goToStudioSettings } from "@/lib/studioTabs";
 
 // Don't auto-reopen for this long after a dismiss — a burst of parallel
 // requests all failing with 402 shouldn't re-pop the card the user just
@@ -55,7 +56,7 @@ export default function OutOfUsageCard() {
 
   const goToBilling = () => {
     dismiss();
-    navigate("/billing");
+    goToStudioSettings(navigate, "billing");
   };
 
   return (

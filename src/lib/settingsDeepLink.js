@@ -9,9 +9,41 @@
 
 export const STUDIO_SETTINGS_QUERY_PARAM = 'settings';
 
-export function studioSettingsPath(view = 'account') {
+export function studioSettingsPath(view = 'account', extra = null) {
   const pane = String(view || 'account').trim() || 'account';
-  return `/studio?${STUDIO_SETTINGS_QUERY_PARAM}=${encodeURIComponent(pane)}`;
+  const params = new URLSearchParams();
+  params.set(STUDIO_SETTINGS_QUERY_PARAM, pane);
+  if (extra && typeof extra === 'object') {
+    for (const [key, value] of Object.entries(extra)) {
+      if (value == null || value === '') continue;
+      params.set(key, String(value));
+    }
+  }
+  return `/studio?${params.toString()}`;
+}
+
+const BILLING_RETURN_KEYS = ['checkout', 'session_id', 'topup', 'usage_fund', 'source'];
+
+/**
+ * `/billing` used to be a standalone plan-comparison page. It now opens
+ * Studio Settings → Billing, carrying Stripe return params through so a
+ * checkout that still lands on the old URL is not lost.
+ */
+export function legacyBillingRedirectPath(search = '') {
+  const raw = String(search || '');
+  const query = raw.startsWith('?') ? raw.slice(1) : raw;
+  let incoming;
+  try {
+    incoming = new URLSearchParams(query);
+  } catch {
+    incoming = new URLSearchParams();
+  }
+  const extra = {};
+  for (const key of BILLING_RETURN_KEYS) {
+    const value = incoming.get(key);
+    if (value) extra[key] = value;
+  }
+  return studioSettingsPath('billing', extra);
 }
 
 export function parseSettingsDeepLink(search, allowedViews = []) {

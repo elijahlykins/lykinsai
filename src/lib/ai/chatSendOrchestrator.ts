@@ -391,7 +391,10 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<ChatSendRe
     maybeNotifyModelDowngrade(res);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const finalText = AI_TEMPORARY_FAILURE_TEXT;
+      const isUsageBlock = data?.code === "insufficient_usage_balance" || data?.add_funds;
+      const finalText = isUsageBlock
+        ? String(data?.message || data?.error || "").trim() || "Your usage balance is empty. Top up to keep chatting, or wait for your plan to renew."
+        : AI_TEMPORARY_FAILURE_TEXT;
       state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
       p.aiThread.push({ role: "assistant", content: finalText });
       if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);

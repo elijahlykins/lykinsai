@@ -1403,7 +1403,7 @@ export default function SettingsModal({
 
   const renderPayment = () => (
     user ? (
-      <BillingSettings onNavigateAway={onClose} />
+      <BillingSettings />
     ) : (
       <SettingsGroup caption="Sign in from Account to manage your subscription.">
         <SettingsRow

@@ -101,8 +101,10 @@ export function useUserPlan() {
     // low-balance nudge; the billing popup reads the full breakdown from
     // /api/billing/credits.
     usageBalance: data?.usage_balance || null,
-    // True when a free account has spent all its usage. Metered actions will
-    // 402 server-side; the UI should point at top-up / upgrade.
+    // True when the usage balance is empty. Metered actions will 402
+    // server-side; the UI should point at top-up / upgrade. Paid plans
+    // can hit this too — a subscription that hasn't funded this period
+    // (or has spent its monthly grant) is out of usage, not "broken".
     outOfUsage: Boolean(data?.out_of_usage),
     loading: isLoading || authLoading,
   };

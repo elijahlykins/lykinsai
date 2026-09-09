@@ -1,6 +1,7 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import { Lock, Sparkles } from "lucide-react";
+import { goToStudioSettings } from "@/lib/studioTabs";
 import {
   Dialog,
   DialogContent,
@@ -39,7 +40,7 @@ export default function UpgradeModal({ modal, onDismiss }) {
           <button
             onClick={() => {
               onDismiss();
-              nav("/billing");
+              goToStudioSettings(nav, "billing");
             }}
             className="flex-1 py-2 px-4 rounded-lg border border-blue-300/30 bg-blue-950 text-blue-200 text-xs font-semibold hover:bg-blue-900 transition-colors inline-flex items-center justify-center gap-1.5"
           >

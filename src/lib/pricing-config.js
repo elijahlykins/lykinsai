@@ -219,13 +219,13 @@ export const FAQ_ITEMS = [
     id: "switch-or-cancel",
     question: "Can I switch plans anytime?",
     answer:
-      "Yes. Upgrade or change billing cadence from Billing or Settings → Payment → Manage subscription. To cancel, use Cancel subscription in Settings → Payment or on the Billing page. Upgrades take effect immediately and are prorated; cancellations keep access active through the end of the current billing period.",
+      "Yes. Upgrade or change billing cadence from Settings → Billing. To cancel, use Cancel in Settings → Billing. Upgrades take effect immediately and are prorated; cancellations keep access active through the end of the current billing period.",
   },
   {
     id: "manage-billing",
     question: "Where do I update my card or download invoices?",
     answer:
-      "Open Settings, go to Payment, and choose Manage subscription. The Stripe billing portal lets you update payment methods, review invoices, or change your plan. To cancel, choose Cancel subscription in Settings → Payment or on the Billing page.",
+      "Open Settings, go to Billing, and choose Manage billing. The Stripe billing portal lets you update payment methods, review invoices, or change your plan. To cancel, choose Cancel in Settings → Billing.",
   },
   {
     id: "after-checkout",

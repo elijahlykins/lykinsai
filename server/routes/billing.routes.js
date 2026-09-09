@@ -57,6 +57,7 @@ export function registerBillingRoutes(app, deps) {
     STRIPE_TOPUP_PRICE_MAP,
     STRIPE_TRIAL_DAYS,
     trialCheckoutCustomText,
+    ensureCurrentPeriodPlanUsage,
   } = deps;
 
   // ── /api/billing/me ─────────────────────────────────────────────────────────
@@ -71,6 +72,16 @@ export function registerBillingRoutes(app, deps) {
       // billing portal link keeps working for them.
       if (isCompedProEmail(req.user?.email)) {
         const row = await loadBillingRow(userId);
+        const unlimited = isUnlimitedUsageEmail(req.user?.email);
+        if (!unlimited) {
+          await applySignupGrant({ userId, supabaseAdmin }).catch((err) => {
+            console.warn('⚠️ ensureSignupGrant failed:', err?.message || err);
+          });
+          await ensureCurrentPeriodPlanUsage(userId, row, { comped: true }).catch((err) => {
+            console.warn('⚠️ ensureCurrentPeriodPlanUsage failed:', err?.message || err);
+          });
+        }
+        const usage = unlimited ? null : await getUsageBalance(userId).catch(() => null);
         return res.json(
           billingMePayload(row || { plan: COMPED_PRO_PLAN_ID, status: 'active' }, {
             plan: COMPED_PRO_PLAN_ID,
@@ -81,8 +92,15 @@ export function registerBillingRoutes(app, deps) {
             has_active_subscription: true,
             needs_trial_checkout: false,
             comped: true,
-            unlimited_usage: isUnlimitedUsageEmail(req.user?.email),
-            out_of_usage: false,
+            unlimited_usage: unlimited,
+            out_of_usage: unlimited ? false : (usage?.available || 0) <= 0,
+            ...(usage ? {
+              usage_balance: {
+                available_micros: usage.available || 0,
+                available_usd: usage.display || '$0.00',
+              },
+            } : {}),
+            ...((!unlimited && (usage?.available || 0) <= 0) ? { add_funds: true } : {}),
           }),
         );
       }
@@ -95,6 +113,9 @@ export function registerBillingRoutes(app, deps) {
       const applied = await applySignupGrant({ userId, supabaseAdmin }).catch((err) => {
         console.warn('⚠️ ensureSignupGrant failed:', err?.message || err);
         return null;
+      });
+      await ensureCurrentPeriodPlanUsage(userId, row).catch((err) => {
+        console.warn('⚠️ ensureCurrentPeriodPlanUsage failed:', err?.message || err);
       });
       const usage = await getUsageBalance(userId).catch(() => null);
       if (usage) {
@@ -118,7 +139,7 @@ export function registerBillingRoutes(app, deps) {
           payload.needs_trial_checkout = false;
         }
       }
-      payload.out_of_usage = payload.needs_trial_checkout;
+      payload.out_of_usage = (usage?.available || 0) <= 0;
       payload.needs_trial_checkout = false;
       if (isUnlimitedUsageEmail(req.user?.email)) {
         payload.out_of_usage = false;
@@ -239,8 +260,7 @@ export function registerBillingRoutes(app, deps) {
       // iOS-initiated checkouts (Safari, arriving from the app's external
       // purchase link) return to the AASA-whitelisted /billing/success and
       // /billing/cancel paths, whose pages offer a "Return to LYKN" hand-off
-      // back into the app. Web checkouts keep the query-param round-trip that
-      // Billing.jsx already handles.
+      // back into the app. Web checkouts return to Settings → Billing.
       const fromIOS = req.body.source === 'ios';
       const session = await stripe.checkout.sessions.create({
         mode: 'subscription',
@@ -248,10 +268,10 @@ export function registerBillingRoutes(app, deps) {
         line_items: [{ price: priceId, quantity: 1 }],
         success_url: fromIOS
           ? `${appUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`
-          : `${appUrl}/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+          : `${appUrl}/studio?settings=billing&checkout=success&session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: fromIOS
           ? `${appUrl}/billing/cancel`
-          : `${appUrl}/billing?checkout=canceled`,
+          : `${appUrl}/studio?settings=billing&checkout=canceled`,
         client_reference_id: user.id,
         allow_promotion_codes: true,
         metadata: { supabase_user_id: user.id, plan: planId, period },
@@ -349,8 +369,8 @@ export function registerBillingRoutes(app, deps) {
         // reuses it instead of creating a second Stripe customer.
         ...(checkoutIdentity.customer ? {} : { customer_creation: 'always' }),
         line_items: [{ price: priceId, quantity: 1 }],
-        success_url: `${appUrl}/billing?topup=success&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${appUrl}/billing?topup=canceled`,
+        success_url: `${appUrl}/studio?settings=billing&topup=success&session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${appUrl}/studio?settings=billing&topup=canceled`,
         client_reference_id: user.id,
         // The webhook re-derives the credit amount from pack_id rather than
         // trusting a number in metadata.
@@ -404,8 +424,8 @@ export function registerBillingRoutes(app, deps) {
           },
           quantity: 1,
         }],
-        success_url: `${appUrl}/billing?usage_fund=success&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${appUrl}/billing?usage_fund=canceled`,
+        success_url: `${appUrl}/studio?settings=billing&usage_fund=success&session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${appUrl}/studio?settings=billing&usage_fund=canceled`,
         client_reference_id: user.id,
         metadata: {
           supabase_user_id: user.id,
@@ -557,7 +577,7 @@ export function registerBillingRoutes(app, deps) {
       const flow = String(req.body?.flow || '').toLowerCase();
       const sessionParams = {
         customer: row.stripe_customer_id,
-        return_url: `${appUrl}/billing`,
+        return_url: `${appUrl}/studio?settings=billing`,
       };
       if (flow === 'cancel') {
         if (!row.stripe_subscription_id || !hasSubscriptionAccess(row)) {

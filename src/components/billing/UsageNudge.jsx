@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { X, Sparkles } from "lucide-react";
 import { useUserPlan } from "@/lib/useUserPlan";
+import { goToStudioSettings } from "@/lib/studioTabs";
 
 // Show the nudge once a prepaid (no subscription) account's usage balance
 // drops below this many microdollars ($1.00).
@@ -30,7 +31,7 @@ function readDismissed() {
 
 /**
  * Small floating card that warns prepaid accounts when their usage balance is
- * almost gone and offers a one-click jump to the billing page. Dismissal lasts
+ * almost gone and offers a one-click jump to Settings → Billing. Dismissal lasts
  * for the session; the server-side 402 still backstops at exactly zero.
  */
 export default function UsageNudge() {
@@ -88,7 +89,7 @@ export default function UsageNudge() {
         type="button"
         onClick={() => {
           dismiss();
-          navigate("/billing");
+          goToStudioSettings(navigate, "billing");
         }}
         className="mt-3 w-full rounded-xl bg-white py-2 text-sm font-semibold text-[#0b0c10] transition-transform hover:scale-[1.02]"
       >

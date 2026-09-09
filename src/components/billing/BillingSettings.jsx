@@ -1,12 +1,12 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
-import { ArrowUpRight, Check, Loader2, Plus, Sparkles } from "lucide-react";
+import { Check, Loader2, Plus } from "lucide-react";
 
 import { toast } from "@/components/ui/use-toast";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useUserPlan } from "@/lib/useUserPlan";
 import { API_BASE_URL } from "@/lib/api-config";
+import { queryClientInstance } from "@/lib/query-client";
 import {
   BILLING_PERIODS,
   PLANS,
@@ -154,11 +154,9 @@ function UsageBarRow({ label, sublabel, right, percent, caption, showBar = true 
 
 /**
  * Settings → Billing. Usage, add funds, and plan switching live here.
- * The marketing page at /billing is still the place to compare every feature.
  */
-export default function BillingSettings({ initialTab = "usage", onNavigateAway }) {
+export default function BillingSettings({ initialTab = "usage" }) {
   const { user } = useAuth();
-  const navigate = useNavigate();
   const {
     planId,
     hasStripeCustomer,
@@ -185,6 +183,49 @@ export default function BillingSettings({ initialTab = "usage", onNavigateAway }
     refetchOnMount: "always",
     refetchOnWindowFocus: true,
   });
+
+  const { data: waitlist } = useQuery({
+    queryKey: ["billing-waitlist", user?.id || "guest"],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE_URL}/api/billing/waitlist`);
+      if (!res.ok) throw new Error(`billing/waitlist ${res.status}`);
+      return res.json();
+    },
+    enabled: Boolean(user?.id) && tab === "plans",
+    staleTime: 60_000,
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const checkout = url.searchParams.get("checkout");
+    const topup = url.searchParams.get("topup");
+    const funding = url.searchParams.get("usage_fund");
+    if (!checkout && !topup && !funding) return;
+
+    if (checkout === "success") {
+      toast({
+        title: "You're subscribed",
+        description: "Your plan updates in a few seconds.",
+      });
+      queryClientInstance.invalidateQueries({ queryKey: ["billing-credits"] });
+      queryClientInstance.invalidateQueries({ queryKey: ["billing-me"] });
+      setTab("plans");
+    } else if (topup === "success" || funding === "success") {
+      toast({
+        title: funding === "success" ? "Funds added" : "Top-up on the way",
+        description: "Your usage balance updates in a few seconds.",
+      });
+      queryClientInstance.invalidateQueries({ queryKey: ["billing-credits"] });
+      setTab("usage");
+    }
+
+    url.searchParams.delete("checkout");
+    url.searchParams.delete("topup");
+    url.searchParams.delete("usage_fund");
+    url.searchParams.delete("session_id");
+    window.history.replaceState({}, "", url.toString());
+  }, []);
 
   const legacyCredits = data?.legacy_credits || null;
   const usage = data?.usage || { available_usd: "$0.00" };
@@ -265,10 +306,25 @@ export default function BillingSettings({ initialTab = "usage", onNavigateAway }
     }
   }, [planId, hasActiveSubscription, openPortal, period]);
 
-  const goToFullPage = (hash = "") => {
-    onNavigateAway?.();
-    navigate(`/billing${hash}`);
-  };
+  const joinWaitlist = useCallback(async () => {
+    if (waitlist?.joined || busy === "waitlist") return;
+    setBusy("waitlist");
+    try {
+      const data = await postBilling("/api/billing/waitlist", user?.email ? { email: user.email } : {});
+      queryClientInstance.setQueryData(["billing-waitlist", user?.id || "guest"], {
+        joined: Boolean(data?.joined),
+      });
+      toast({ title: "You're on the list" });
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Couldn't join the waitlist",
+        description: err?.message,
+      });
+    } finally {
+      setBusy(null);
+    }
+  }, [busy, user?.email, user?.id, waitlist?.joined]);
 
   const statusLine = () => {
     if (cancelAtPeriodEnd && periodEndLabel) return `Cancels on ${periodEndLabel}. You keep access until then.`;
@@ -654,7 +710,13 @@ export default function BillingSettings({ initialTab = "usage", onNavigateAway }
                         {isCurrent ? (
                           <PillButton disabled>Your plan</PillButton>
                         ) : plan.comingSoon ? (
-                          <PillButton onClick={() => goToFullPage()}>Join the waitlist</PillButton>
+                          <PillButton
+                            onClick={joinWaitlist}
+                            busy={busy === "waitlist"}
+                            disabled={Boolean(waitlist?.joined)}
+                          >
+                            {waitlist?.joined ? "You're on the list" : "Join the waitlist"}
+                          </PillButton>
                         ) : (
                           <PillButton
                             variant={plan.highlighted ? "primary" : "default"}
@@ -675,16 +737,6 @@ export default function BillingSettings({ initialTab = "usage", onNavigateAway }
                   );
                 })}
               </div>
-
-              <button
-                type="button"
-                onClick={() => goToFullPage()}
-                className="flex w-full items-center justify-center gap-1.5 py-1 text-[12px] text-black/45 transition-colors hover:text-black dark:text-white/40 dark:hover:text-white"
-              >
-                <Sparkles className="h-3.5 w-3.5" />
-                Compare every feature
-                <ArrowUpRight className="h-3.5 w-3.5" />
-              </button>
             </div>
           )}
     </div>

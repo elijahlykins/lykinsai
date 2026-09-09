@@ -14,6 +14,7 @@ import { loadActiveCustomModelId, saveActiveCustomModelId } from "@/lib/modelBui
 import { customModelSelectValue, parseCustomModelSelectValue } from "@/lib/modelBuilder/customModelSelect";
 import { CUSTOM_MODELS_ENABLED } from "@/lib/customModelsEnabled";
 import { fromChatModelKey, toChatModelKey } from "@/lib/lyknChat/chatModelKey";
+import { goToStudioSettings } from "@/lib/studioTabs";
 import { LyknChatModelSelectMenuBody } from "@/components/lyknChat/ChatBarToolbar";
 
 export interface UseChatModelSelectionReturn {
@@ -184,7 +185,7 @@ export function useChatModelSelection({
         action: (
           <button
             type="button"
-            onClick={() => nav(isGuest ? "/login" : "/billing")}
+            onClick={() => (isGuest ? nav("/login") : goToStudioSettings(nav, "billing"))}
             className="inline-flex items-center rounded-md bg-white text-black text-[12px] font-semibold px-3 py-1.5 hover:bg-white/90"
           >
             {isGuest ? "Sign in" : "Upgrade"}

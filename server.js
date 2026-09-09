@@ -334,6 +334,7 @@ import {
   buildStripeCheckoutIdentity,
   handleStripeEvent,
   availableCreditPacks,
+  ensureCurrentPeriodPlanUsage,
 } from './server/services/billingService.js';
 import { registerAppleNotificationRoutes } from './server/routes/appleNotifications.routes.js';
 
@@ -1685,6 +1686,7 @@ registerBillingRoutes(app, {
   STRIPE_TOPUP_PRICE_MAP,
   STRIPE_TRIAL_DAYS,
   trialCheckoutCustomText,
+  ensureCurrentPeriodPlanUsage,
 });
 
 registerWaitlistRoutes(app, { supabaseAdmin, waitlistLimiter, waitlistReadLimiter, resendClient });

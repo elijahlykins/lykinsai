@@ -9,7 +9,7 @@ import { API_BASE_URL } from '@/lib/api-config';
 import { hasAppAccess, isSubscriptionGateExempt } from '@/lib/billingAccess';
 import { canUseWebApp } from '@/lib/webAppAccess';
 import { BrowserRouter as Router, Route, Routes, useLocation, Navigate } from 'react-router-dom';
-import { legacySettingsRedirectPath } from '@/lib/settingsDeepLink';
+import { legacyBillingRedirectPath, legacySettingsRedirectPath } from '@/lib/settingsDeepLink';
 import PageNotFound from './lib/PageNotFound';
 import UsageNudge from '@/components/billing/UsageNudge';
 import OutOfUsageCard from '@/components/billing/OutOfUsageCard';
@@ -38,7 +38,6 @@ import VaultConnectionsShell from "./pages/VaultConnectionsShell";
 import TagManagement from "./pages/TagManagement";
 import LyknCalendarPage from "@/components/calendar/LyknCalendarPage";
 import LyknTodosPage from "@/components/todos/LyknTodosPage";
-import Billing from "./pages/Billing";
 import SignInPill from "./components/SignInPill";
 import {
   isEmbeddedSurfacePath,
@@ -80,6 +79,11 @@ function DesktopProductOnly({ children }) {
 function SettingsToStudioRedirect() {
   const location = useLocation();
   return <Navigate to={legacySettingsRedirectPath(location.search, location.hash)} replace />;
+}
+
+function BillingToStudioRedirect() {
+  const location = useLocation();
+  return <Navigate to={legacyBillingRedirectPath(location.search)} replace />;
 }
 
 // The desktop welcome walkthrough deliberately ends in a usable Studio
@@ -570,7 +574,7 @@ function AppShell() {
               path="/billing"
               element={
                 <ProtectedRoute>
-                  <Billing />
+                  <BillingToStudioRedirect />
                 </ProtectedRoute>
               }
             />

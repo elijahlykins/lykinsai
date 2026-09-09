@@ -4,9 +4,9 @@
 import { PLAN_LIMITS, CREDIT_PACKS, CREDIT_PACKS_FOR_SALE, creditPackById } from '../../src/lib/pricing-config.js';
 import { getCreditWallet, markTopupPayer } from '../../lib/billing/creditWallet.js';
 import { grantUnlimitedUsage } from '../../lib/billing/internalAccounts.js';
-import { fundUsageBalance, getUsageBalance } from '../../lib/billing/usageBalance.js';
+import { fundUsageBalance, getUsageBalance, usageBucketBreakdown } from '../../lib/billing/usageBalance.js';
 import { applySignupGrant } from '../../lib/billing/applySignupGrant.js';
-import { grantPlanUsageFromInvoice } from '../../lib/billing/planFunding.js';
+import { grantPlanUsageFromInvoice, recoverCurrentPeriodPlanGrant, calendarMonthPeriodEndIso } from '../../lib/billing/planFunding.js';
 import { classifyCheckoutPaymentSession, grantUsageFundingFromCheckoutSession, isUsageFundingSession } from '../../lib/billing/usageFunding.js';
 import { logBillingEvent } from '../../lib/billing/billingEvents.js';
 import { appleSyncInputFrom } from '../../lib/billing/appleNotifications.js';
@@ -43,7 +43,8 @@ export function availableCreditPacks() {
 //
 // Metered Usage (images, video, premium models, autonomous) still bills
 // unless the email is also on UNLIMITED_USAGE_EMAILS in
-// lib/billing/internalAccounts.js (admin@lykn.io is on both).
+// lib/billing/internalAccounts.js (admin@lykn.io and jaeminw8@gmail.com
+// are on both).
 //
 // Add overrides via `COMPED_PRO_EMAILS` env (comma-separated) without a
 // redeploy; the hardcoded list is the source of truth for known team members.
@@ -314,7 +315,24 @@ export async function requireAppAccess(req, res, next) {
   const uid = req.user?.id;
   try {
     if (grantUnlimitedUsage({ userId: uid, email: req.user?.email })) return next();
-    if (isCompedProEmail(req.user?.email)) return next();
+    if (isCompedProEmail(req.user?.email)) {
+      // Comped emails unlock Pro features without Stripe, but they still
+      // meter the Usage Balance unless they are also unlimited. The early
+      // return used to skip every grant, so friends-of-house accounts showed
+      // Pro and then failed every prompt at $0.
+      if (supabaseAdmin && uid) {
+        await applySignupGrant({ userId: uid, supabaseAdmin }).catch((err) => {
+          console.warn('⚠️ ensureSignupGrant failed:', err?.message || err);
+        });
+        const row = await loadBillingRow(uid);
+        await ensureCurrentPeriodPlanUsage(uid, row, { comped: true }).catch((err) => {
+          console.warn('⚠️ ensureCurrentPeriodPlanUsage failed:', err?.message || err);
+        });
+        markTopupPayer(uid, false);
+        appAccessGrace.set(uid, Date.now() + APP_ACCESS_GRACE_MS);
+      }
+      return next();
+    }
     if (!supabaseAdmin) throw new Error('billing_backend_unavailable');
     // Query inline (not loadBillingRow, which swallows errors and returns null)
     // so a real DB error throws into the catch and is treated as infra failure
@@ -330,6 +348,11 @@ export async function requireAppAccess(req, res, next) {
       // Subscribers authorize each metered action (chat included) against
       // the Usage Balance, never against legacy credits.
       markTopupPayer(uid, false);
+      // Existing paid periods that predate invoice.paid funding never got a
+      // plan grant. Recover it here so the first chat after deploy works.
+      await ensureCurrentPeriodPlanUsage(uid, data).catch((err) => {
+        console.warn('⚠️ ensureCurrentPeriodPlanUsage failed:', err?.message || err);
+      });
       return next();
     }
 
@@ -1036,6 +1059,75 @@ export async function grantTopupFromCheckoutSession(session) {
     packId: pack.id,
     cents,
   });
+}
+
+const PLAN_USAGE_ENSURE_TTL_MS = 10 * 60 * 1000;
+const planUsageEnsured = new Map(); // userId → { periodEnd, at }
+
+/**
+ * Existing subscribers whose current paid period predates invoice.paid
+ * funding have Pro access and a $0 Usage Balance. Recover the current
+ * period's grant from Stripe (invoice-id idempotent) or, for Apple /
+ * admin rows, from the catalog. Cached per user + period so chat turns
+ * do not list invoices every request.
+ */
+export async function ensureCurrentPeriodPlanUsage(userId, billingRow = null, { comped = false } = {}) {
+  if (!userId) return { ok: true, skipped: true, reason: 'missing_user' };
+  const loaded = billingRow || await loadBillingRow(userId);
+  let row = loaded;
+  if (comped) {
+    const periodMs = loaded?.current_period_end ? Date.parse(loaded.current_period_end) : NaN;
+    const stillCurrent = Number.isFinite(periodMs) && periodMs > Date.now();
+    row = {
+      plan: COMPED_PRO_PLAN_ID,
+      billing_period: loaded?.billing_period || 'monthly',
+      provider: loaded?.provider || null,
+      stripe_customer_id: loaded?.stripe_customer_id || null,
+      current_period_end: stillCurrent ? loaded.current_period_end : calendarMonthPeriodEndIso(),
+    };
+  } else if (!row || !hasAppAccessRow(row)) {
+    return { ok: true, skipped: true, reason: 'no_access' };
+  }
+
+  const periodEnd = row.current_period_end || '';
+  const cached = planUsageEnsured.get(userId);
+  if (cached && cached.periodEnd === periodEnd && (Date.now() - cached.at) < PLAN_USAGE_ENSURE_TTL_MS) {
+    return { ok: true, skipped: true, reason: 'cached' };
+  }
+
+  const breakdown = await usageBucketBreakdown(userId);
+  const hasCurrentPlanGrant = (breakdown?.plan?.granted_micros || 0) > 0;
+
+  let invoices = [];
+  if (!hasCurrentPlanGrant && row.stripe_customer_id && stripe) {
+    try {
+      const listed = await stripe.invoices.list({
+        customer: row.stripe_customer_id,
+        status: 'paid',
+        limit: 10,
+      });
+      invoices = listed.data || [];
+    } catch (err) {
+      logBillingEvent('plan_funding_invoice_list_failed', {
+        userId,
+        error: err?.message || String(err),
+      });
+    }
+  }
+
+  const result = await recoverCurrentPeriodPlanGrant({
+    userId,
+    planId: row.plan,
+    periodEnd: row.current_period_end,
+    billingPeriod: row.billing_period,
+    provider: row.provider,
+    stripeCustomerId: row.stripe_customer_id,
+    invoices,
+    hasCurrentPlanGrant,
+  });
+
+  planUsageEnsured.set(userId, { periodEnd, at: Date.now() });
+  return result;
 }
 
 /**

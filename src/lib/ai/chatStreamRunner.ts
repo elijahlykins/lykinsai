@@ -186,6 +186,7 @@ export async function runChatStream(
   let firstToken = true;
   let sseBuffer = "";
   let serverErrorMsg = "";
+  let billingBlockMessage = "";
   // Deterministic backstop: only let the agent render a VAULT item as a
   // card in the chat when the user actually asked to see it this turn (or
   // confirmed a surfacing offer). The model is told the same thing in the
@@ -244,6 +245,9 @@ export async function runChatStream(
               // keeping the partial reply (and the server's mid-stream
               // errors are usually transient — overload, downgrade, etc.).
               serverErrorMsg = String(parsed.error || "").trim() || "stream_error";
+              if (parsed.code === "insufficient_usage_balance" || parsed.add_funds) {
+                billingBlockMessage = serverErrorMsg;
+              }
               continue;
             }
             if (parsed.status) { state.setChatStatusText(String(parsed.status)); continue; }
@@ -618,7 +622,12 @@ export async function runChatStream(
           try {
             const parsed = JSON.parse(payload);
             if (parsed.t) accumulated += parsed.t;
-            if (parsed.error && !serverErrorMsg) serverErrorMsg = String(parsed.error || "stream_error");
+            if (parsed.error && !serverErrorMsg) {
+              serverErrorMsg = String(parsed.error || "stream_error");
+              if (parsed.code === "insufficient_usage_balance" || parsed.add_funds) {
+                billingBlockMessage = serverErrorMsg;
+              }
+            }
           } catch {}
         }
         sseBuffer = "";
@@ -653,7 +662,9 @@ export async function runChatStream(
   // already tried every available model on the user's behalf by the
   // time we reach this branch, so the copy never tells the user to
   // switch models — they have nothing further they could pick.
-  if (serverErrorMsg && !accumulated.trim()) {
+  if (billingBlockMessage && !accumulated.trim()) {
+    accumulated = billingBlockMessage;
+  } else if (serverErrorMsg && !accumulated.trim()) {
     accumulated = AI_TEMPORARY_FAILURE_TEXT;
   }
   return { accumulated, servedModel, generatedImageUrl, streamedSources };

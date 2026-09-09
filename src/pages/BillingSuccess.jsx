@@ -37,7 +37,7 @@ export default function BillingSuccess() {
         </a>
         <p className="text-[12.5px] text-black/45 dark:text-white/45">
           On the web instead?{" "}
-          <Link to="/billing" className="underline hover:opacity-80 transition-opacity">
+          <Link to="/studio?settings=billing" className="underline hover:opacity-80 transition-opacity">
             Manage your plan
           </Link>
         </p>
