@@ -952,14 +952,39 @@
 }
 
 @media (max-width: 860px) {
-  /* Phones skip the hero entirely — the header's Get started button carries
-     the CTA (leading to /get-started) and the page opens on the explainer. */
   .gl-hero {
+    min-height: 0;
+    padding: 5.25rem 0.9rem 2.5rem;
+  }
+  .gl-hero-inner {
+    grid-template-columns: 1fr;
+    padding: 0;
+  }
+  /* Phones stack the hero: rotating headline, then the desktop preview.
+     `display: contents` promotes them to grid items so `order` applies. */
+  .gl-hero-copy {
+    display: contents;
+  }
+  .gl-hero-headline {
+    order: 0;
+    margin-top: 2.25rem;
+    text-align: left;
+  }
+  .gl-hero-slide {
+    align-items: flex-start;
+    font-size: clamp(2.4rem, 10.5vw, 3.2rem);
+  }
+  .gl-hero-visual {
+    order: 1;
+    margin-top: 4.5rem;
+  }
+  /* Phones can't install the desktop app: the Download button hides and the
+     header's Get started pill (→ /get-started) carries the CTA instead. */
+  .gl-hero-ctas {
     display: none;
   }
-  /* The explainer is now the first section: clear the fixed header. */
-  .glass-land .lx-explain {
-    padding-top: calc(5.5rem + env(safe-area-inset-top, 0px));
+  .gl-hero-stage {
+    width: 100%;
   }
 }
 

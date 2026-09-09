@@ -539,6 +539,9 @@
   }
   .ls-slide-inner {
     position: relative;
+    /* The carousel stretches every card to the tallest one; the glass pane
+       must fill that height or raw wallpaper shows below the content. */
+    height: 100%;
     flex-direction: column;
     align-items: stretch;
     justify-content: flex-start;
@@ -565,8 +568,26 @@
     justify-items: stretch;
   }
   .ls-vis-sync,
+  /* Compact the three agent rows so the Create agents card (the tallest of
+     the trio) doesn't stretch the whole carousel too far down. */
   .ls-vis-agents {
     width: 100%;
+    padding: 0.85rem;
+    gap: 0.6rem;
+  }
+  .ls-vis-agent {
+    padding: 0.6rem 0.85rem;
+    gap: 0.7rem;
+  }
+  .ls-vis-agent-mark {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+  .ls-vis-agent-copy strong {
+    font-size: 1rem;
+  }
+  .ls-vis-agent-copy em {
+    font-size: 0.82rem;
   }
   .ls-vis-customize {
     transform: scale(0.78);
