@@ -47,6 +47,12 @@ function submitForNotarization(zipPath, authArgs) {
     "submit",
     zipPath,
     ...authArgs,
+    // The S3 transfer-acceleration upload path SIGBUSes on large files here
+    // (macOS 26, notarytool 1.1.2), truncating the upload into a submission
+    // that reports In Progress forever. The plain S3 path uploads reliably —
+    // verified 2026-09-09: the same 507MB zip crashed with acceleration and
+    // was Accepted in ~3 minutes without it.
+    "--no-s3-acceleration",
     "--output-format",
     "json",
   ]);
