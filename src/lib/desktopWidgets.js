@@ -137,9 +137,22 @@ const MIGRATION_ORDER = [
   { type: 'monthCalendar', size: 'small', defaultOn: true },
   { type: 'clock', size: 'small', defaultOn: false },
   { type: 'todos', size: 'small', defaultOn: false },
-  { type: 'vault', size: 'medium', defaultOn: true },
+  // New desktops park the vault preview directly under the calendar pair
+  // (left-to-right scanning would otherwise drop it beside them).
+  { type: 'vault', size: 'medium', defaultOn: true, prefer: { col: 0, row: 1 } },
   { type: 'projects', size: 'large', defaultOn: false },
 ];
+
+/** Preferred cell when free, else the first cell the widget fits in. */
+function placeEntry(items, entry) {
+  if (
+    entry.prefer &&
+    !collides({ id: undefined, size: entry.size, ...entry.prefer }, items)
+  ) {
+    return entry.prefer;
+  }
+  return findFreeCell(items, entry.size, { cols: 4, rows: 6 });
+}
 
 function readToggles() {
   try {
@@ -158,7 +171,7 @@ function layoutFromToggles(toggles) {
   for (const entry of MIGRATION_ORDER) {
     const on = typeof toggles[entry.type] === 'boolean' ? toggles[entry.type] : entry.defaultOn;
     if (!on) continue;
-    const at = findFreeCell(items, entry.size, { cols: 4, rows: 6 });
+    const at = placeEntry(items, entry);
     items.push({ id: newId(), type: entry.type, size: entry.size, ...at, props: {} });
   }
   return items;
@@ -268,7 +281,7 @@ export function seedLayoutFromToggles(toggles) {
     if (typeof pick !== 'boolean') continue;
     const has = items.some((i) => i.type === entry.type);
     if (pick && !has) {
-      const at = findFreeCell(items, entry.size, { cols: 4, rows: 6 });
+      const at = placeEntry(items, entry);
       items = [...items, { id: newId(), type: entry.type, size: entry.size, ...at, props: {} }];
     } else if (!pick && has) {
       items = items.filter((i) => i.type !== entry.type);

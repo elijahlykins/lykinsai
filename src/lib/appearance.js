@@ -201,7 +201,9 @@ export const DEFAULT_APPEARANCE = {
   // shipped with, so an untouched install looks unchanged.
   wallpaperDim: 45,
   wallpaperBlur: 0,
-  glassBlur: 40,
+  // Full-strength frost by default: every first-run install should get the
+  // strongest glass blur (users who want less can still slide it down).
+  glassBlur: 64,
   reduceMotion: false,
   highContrast: false,
   rowDividers: true,

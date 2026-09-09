@@ -129,7 +129,11 @@ const BuildModelSelect = React.memo(function BuildModelSelect({
         <SelectContent
           side={menuSide}
           align="end"
-          className="lykn-chat-bar-menu lg-menu w-[min(92vw,20rem)] max-h-[min(28rem,70vh)] overflow-y-auto p-1.5"
+          // Radix's scroll chevrons pop in/out of the layout as the list nears
+          // its ends, which made the bottom of the menu jump and clip — hide
+          // them (the viewport wheel-scrolls fine without them, same as
+          // BotModelSelect) and keep the scroll from chaining to the page.
+          className="lykn-chat-bar-menu lg-menu w-[min(92vw,20rem)] max-h-[min(28rem,70vh)] overflow-y-auto overscroll-contain p-1.5 [&>[data-radix-select-scroll-up-button]]:hidden [&>[data-radix-select-scroll-down-button]]:hidden"
         >
           {groups.map((group, gi) => (
             <React.Fragment key={group.label || "default"}>

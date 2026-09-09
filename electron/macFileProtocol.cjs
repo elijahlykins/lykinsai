@@ -37,6 +37,12 @@ const PRIVILEGES = {
   supportFetchAPI: true,
   corsEnabled: true,
   stream: true,
+  // The window loads the remote app origin, whose Content-Security-Policy
+  // only lists web schemes — without this, every synced-file <img>/<video>/
+  // fetch through lykn-mac:// is silently blocked by CSP and previews report
+  // "isn't on this device". macFiles.canRead stays the security boundary,
+  // same rationale as lykn-artifact in main.cjs.
+  bypassCSP: true,
 };
 
 /** Build the URL for an absolute path. Mirrors the renderer's helper. */

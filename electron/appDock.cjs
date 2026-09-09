@@ -3,8 +3,8 @@
  *
  * Powers the Studio dock strip (list/launch/quit/running indicators) and the
  * `local_running_apps` AI tool. Runs only in the Electron main process.
- * Running-state uses System Events (same Automation permission the browser
- * scrape already requests); listing and launching need no TCC permission.
+ * Running-state uses lsappinfo; listing, launching, and running-state need no
+ * TCC permission. Only quit (an explicit user action) speaks AppleScript.
  */
 
 const fsp = require("fs/promises");
@@ -225,35 +225,58 @@ function runOsascript(script, timeout = 8000) {
   });
 }
 
-const RUNNING_APPS_SCRIPT = `
-set frontApp to ""
-tell application "System Events"
-  try
-    set frontApp to name of first process whose frontmost is true
-  end try
-  set visApps to name of every process whose background only is false
-end tell
-set AppleScript's text item delimiters to "|"
-return frontApp & linefeed & (visApps as string)
-`;
+function runCmd(file, args, timeout = 8000) {
+  return new Promise((resolve) => {
+    execFile(file, args, { timeout, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        const msg = String((stderr || "") + " " + (err.message || "")).trim();
+        resolve({ error: msg || String(err.code || err) });
+        return;
+      }
+      resolve({ out: String(stdout || "") });
+    });
+  });
+}
 
 /**
- * Running (non-background) apps + the frontmost one.
+ * Running (non-background) apps + the frontmost one, read via `lsappinfo`.
+ *
+ * Unlike the previous System Events AppleScript, lsappinfo needs no macOS
+ * Automation permission — so the Studio dock's passive running-state polling
+ * never pops the "LYKN wants access to control System Events" consent dialog.
+ * That dialog must only ever appear from an explicit user action.
+ *
  * Returns { ok, frontmost, running: string[] } or { ok: false, error }.
  */
 async function getRunningApps() {
-  const res = await runOsascript(RUNNING_APPS_SCRIPT);
-  if (res.error) {
-    return {
-      ok: false,
-      error:
-        "Could not read running apps. macOS Automation permission for System Events " +
-        "may be denied. " + res.error,
-    };
+  const [frontRes, listRes] = await Promise.all([
+    runCmd("/usr/bin/lsappinfo", ["front"]),
+    runCmd("/usr/bin/lsappinfo", ["list"]),
+  ]);
+  if (listRes.error) {
+    return { ok: false, error: "Could not read running apps. " + listRes.error };
   }
-  const [front = "", list = ""] = String(res.out || "").split("\n");
-  const running = list.split("|").map((s) => s.trim()).filter(Boolean);
-  return { ok: true, frontmost: front.trim(), running };
+  const frontAsn = (String(frontRes.out || "").match(/ASN:([0-9a-fx-]+)/i) || [])[1] || "";
+  const running = [];
+  let frontmost = "";
+  let current = null; // { name, asn }
+  for (const line of String(listRes.out || "").split("\n")) {
+    const head = line.match(/^\s*\d+\)\s+"(.*)"\s+ASN:([0-9a-fx-]+)/i);
+    if (head) {
+      current = { name: head[1].trim(), asn: head[2] };
+      continue;
+    }
+    if (!current) continue;
+    const type = line.match(/\btype="([^"]+)"/);
+    if (type) {
+      if (type[1] === "Foreground" && current.name) {
+        running.push(current.name);
+        if (frontAsn && current.asn === frontAsn) frontmost = current.name;
+      }
+      current = null;
+    }
+  }
+  return { ok: true, frontmost, running };
 }
 
 /** Result shape for the `local_running_apps` AI tool. */

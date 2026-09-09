@@ -688,9 +688,13 @@ const FAVORITE_DIRS = [
  */
 async function roots() {
   const config = readConfig();
-  if (!config.enabled) return { ok: false, error: "local_mode_off" };
-
-  const reachable = (p) => localSystem.isAllowedPath(p, config);
+  // Local Mode off is NOT an error here: the sidebar still lists the standard
+  // locations (names only — no contents are read through this; every file
+  // access stays behind gate()). Each page renders greyed out with its own
+  // "Turn on sync" switch, which is where new users actually find syncing —
+  // not only buried in Settings → Workspace.
+  const enabled = config.enabled === true;
+  const reachable = (p) => enabled && localSystem.isAllowedPath(p, config);
 
   const favorites = [];
   for (const fav of FAVORITE_DIRS) {
@@ -712,7 +716,7 @@ async function roots() {
   // When the user narrowed LYKN to specific folders, those ARE the sidebar's
   // main event, so they get their own section rather than hiding among the
   // favorites they happen to overlap.
-  const synced = config.syncAll
+  const synced = !enabled || config.syncAll
     ? []
     : config.syncedFolders.map((dir) => ({
         id: `synced:${dir}`,
@@ -723,7 +727,8 @@ async function roots() {
 
   return {
     ok: true,
-    syncAll: config.syncAll !== false,
+    enabled,
+    syncAll: enabled && config.syncAll !== false,
     home: os.homedir(),
     favorites,
     volumes,

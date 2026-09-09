@@ -414,6 +414,37 @@ function showStudioWindow() {
   createStudioWindow();
 }
 
+/**
+ * Bring the existing main window back on screen the way it booted: re-shows
+ * re-enter simple fullscreen (hide and minimize exit it first) so the window
+ * covers the screen and macOS keeps the system Dock auto-hidden instead of
+ * leaving it floating over LYKN's own dock bar. Unlike createStudioWindow
+ * this never navigates — a Dock-icon click / tray "Open LYKN Window" /
+ * lykn:open-main must bring back whatever page the user was on.
+ */
+function revealMainWindow() {
+  if (!d.mainWindow || d.mainWindow.isDestroyed()) {
+    createMainWindow();
+    return;
+  }
+  // First-launch walkthrough owns the screen — don't reveal the home
+  // screen behind it early.
+  if (d.welcomeGateActive) return;
+  if (IS_MAC && (!d.mainWindow.isVisible() || d.mainWindow.isMinimized())) {
+    try {
+      if (!d.mainWindow.isSimpleFullScreen() && !d.mainWindow.isFullScreen()) {
+        d.mainWindow.setSimpleFullScreen(true);
+      }
+    } catch (_) {}
+  }
+  try {
+    if (d.mainWindow.isMinimized()) d.mainWindow.restore();
+  } catch (_) {}
+  d.mainWindow.show();
+  d.mainWindow.focus();
+  updateDockVisibility();
+}
+
 function afterStudioFullscreenExit(win, then) {
   if (!win || win.isDestroyed()) return;
   // Simple fullscreen (macOS studio default) exits instantly — no animation.
@@ -469,6 +500,7 @@ function updateDockVisibility() {
   d.createStudioWindow = createStudioWindow;
   d.fitStudioWindowToWorkArea = fitStudioWindowToWorkArea;
   d.hideStudioWindow = hideStudioWindow;
+  d.revealMainWindow = revealMainWindow;
   d.showStudioWindow = showStudioWindow;
   d.studioFullscreenActive = studioFullscreenActive;
   d.studioTopInset = studioTopInset;

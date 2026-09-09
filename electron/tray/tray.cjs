@@ -116,11 +116,9 @@ function createTray() {
       {
         label: "Open LYKN Window",
         click: () => {
-          if (!d.mainWindow || d.mainWindow.isDestroyed()) createMainWindow();
-          else {
-            d.mainWindow.show();
-            d.mainWindow.focus();
-          }
+          // Re-enters simple fullscreen on re-show so the system Dock
+          // auto-hides again.
+          d.revealMainWindow();
           // Opening the window is a natural moment to re-offer a pending update.
           void maybePromptPendingUpdate({ force: false });
         },

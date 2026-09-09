@@ -317,7 +317,47 @@ function registerWelcomeIpc(d) {
         resolve(err ? "" : String(stdout || "").trim())
       );
     });
+  // Permission-free read of the macOS 14+ wallpaper store. Custom image
+  // wallpapers surface as file:// URLs (sometimes inside bookmark data blobs);
+  // built-in dynamic wallpapers have none, and then only AppleScript can
+  // answer — which is why the AppleScript ladder still exists below.
+  const storeWallpaperPath = async () => {
+    const plist = path.join(
+      app.getPath("home"),
+      "Library/Application Support/com.apple.wallpaper/Store/Index.plist"
+    );
+    if (!fsSync.existsSync(plist)) return "";
+    const xml = await new Promise((resolve) => {
+      execFile(
+        "plutil",
+        ["-convert", "xml1", "-o", "-", plist],
+        { timeout: 5000, maxBuffer: 32 * 1024 * 1024 },
+        (err, stdout) => resolve(err ? "" : String(stdout || ""))
+      );
+    });
+    if (!xml) return "";
+    const candidates = [...xml.matchAll(/file:\/\/[^<"]+/g)].map((m) => m[0]);
+    for (const blob of xml.matchAll(/<data>([\s\S]*?)<\/data>/g)) {
+      try {
+        const txt = Buffer.from(blob[1].replace(/\s+/g, ""), "base64").toString("latin1");
+        for (const m of txt.matchAll(/file:\/\/[\x20-\x7e]+/g)) candidates.push(m[0]);
+      } catch (_) {}
+    }
+    for (const url of candidates) {
+      try {
+        const p = decodeURIComponent(url.replace(/^file:\/\//, "")).replace(/\/$/, "");
+        if (fsSync.existsSync(p) && fsSync.statSync(p).isFile()) return p;
+      } catch (_) {}
+    }
+    return "";
+  };
   const currentWallpaperPath = async () => {
+    // Try the permission-free wallpaper store first: the AppleScript fallback
+    // pops the macOS Automation consent dialog, so it must only ever run on
+    // an explicit user action (choosing "my wallpaper" — callers guarantee
+    // this; nothing invokes this helper passively).
+    const fromStore = await storeWallpaperPath();
+    if (fromStore) return fromStore;
     // System Events first; Finder as fallback (dynamic wallpapers sometimes
     // only answer through one of the two).
     const scripts = [

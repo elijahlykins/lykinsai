@@ -37,6 +37,12 @@ const PRIVILEGES = {
   supportFetchAPI: true,
   corsEnabled: true,
   stream: true,
+  // The window loads the remote app origin, whose Content-Security-Policy
+  // only lists web schemes — without this, every vault <img>/<video>/fetch
+  // through lykn-blob:// is silently blocked by CSP. The scheme has its own
+  // security boundary (the vault blob store), same rationale as
+  // lykn-artifact in main.cjs.
+  bypassCSP: true,
 };
 
 const MIME_BY_EXT = {

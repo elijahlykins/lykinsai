@@ -1626,12 +1626,9 @@ function registerProcessLifecycle() {
     if (welcomeGateActive) return;
     // The hidden overlay/burst windows always exist, so check the main window
     // itself — otherwise the dock icon does nothing after a background launch.
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      d.createMainWindow();
-    } else {
-      mainWindow.show();
-      mainWindow.focus();
-    }
+    // revealMainWindow re-enters simple fullscreen on re-show so the system
+    // Dock auto-hides again instead of floating over LYKN's own dock bar.
+    d.revealMainWindow();
     void d.maybePromptPendingUpdate({ force: false });
   });
 }

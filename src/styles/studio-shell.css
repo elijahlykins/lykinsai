@@ -67,7 +67,8 @@ html.lykn-studio-mode {
   transition: opacity 120ms ease;
 }
 .lykn-studio-fs-traffic:hover .lykn-studio-fs-traffic-cluster,
-.lykn-studio-fs-traffic:focus-within .lykn-studio-fs-traffic-cluster {
+.lykn-studio-fs-traffic:focus-within .lykn-studio-fs-traffic-cluster,
+.lykn-studio-fs-traffic.is-open .lykn-studio-fs-traffic-cluster {
   opacity: 1;
   pointer-events: auto;
 }

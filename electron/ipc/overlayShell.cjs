@@ -225,11 +225,9 @@ function registerOverlayShellIpc(d) {
       } catch (_) {}
     });
     ipcMain.on("lykn:open-main", () => {
-      if (!d.mainWindow) createMainWindow();
-      else {
-        d.mainWindow.show();
-        d.mainWindow.focus();
-      }
+      // Re-enters simple fullscreen on re-show, keeping the system Dock
+      // auto-hidden.
+      d.revealMainWindow();
     });
     ipcMain.on("lykn:open-vault", (_e, noteId) => {
       const id = String(noteId || "").trim();

@@ -2967,10 +2967,10 @@
           setTimeout(() => loginEmail.focus(), 450);
         }
         if (n === 6) void loadBrowsers();
-        // Warm the wallpaper thumbnail one stage early — the sips conversion
-        // takes a few seconds, so kicking it off at macsync means the card is
-        // ready by the time the background stage shows.
-        if (n === "macsync" || n === "background") void loadWallpaperPreview();
+        // The wallpaper thumbnail is NOT warmed here on purpose: resolving the
+        // wallpaper can require an AppleScript fallback, and that pops the
+        // macOS Automation consent dialog. During onboarding that dialog must
+        // only appear from an explicit click on the "my wallpaper" card.
         if (n === 13) {
           // Fill the bar and hand off right away: finish() loads the studio
           // behind this window while the spinner plays, holds for at least one
@@ -3570,6 +3570,9 @@
       };
       bgCardWallpaper.addEventListener("click", () => {
         bgChoice = { source: "wallpaper" };
+        // Resolve the wallpaper only now — this explicit choice is the moment
+        // a macOS Automation prompt (AppleScript fallback) is acceptable.
+        void loadWallpaperPreview();
         renderBgState();
       });
       bgCardFile.addEventListener("click", async () => {
