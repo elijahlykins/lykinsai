@@ -557,7 +557,11 @@ export async function buildStripeCheckoutIdentity(user, billingRow) {
     await backfillStripeCustomerContact(billingRow.stripe_customer_id, { email, name });
     return {
       customer: billingRow.stripe_customer_id,
-      customer_update: { email: 'auto', name: 'auto' },
+      // Note: customer_update only supports address/name/shipping. Email is
+      // synced via backfillStripeCustomerContact above; passing an `email` key
+      // here makes Stripe reject the whole session with an unknown-parameter
+      // error.
+      customer_update: { name: 'auto' },
     };
   }
 
