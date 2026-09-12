@@ -101,7 +101,10 @@
         border: 1px solid var(--border);
         border-radius: 16px;
         overflow: hidden;
+        -webkit-app-region: drag;
       }
+      #wrap.dragging,
+      .titlebar.dragging { cursor: grabbing; }
       /* Side panel (sources / tasks / notes / live feedback) — this DOM stays
          HIDDEN and serves as the state store; the visible card is a detached
          floating vibrancy window (panel.html) that mirrors this markup via
@@ -117,6 +120,7 @@
         overflow-y: auto;
         overflow-x: hidden;
         border-bottom: 1px solid var(--divider);
+        -webkit-app-region: no-drag;
       }
       #thread.show { display: block; }
 
@@ -541,6 +545,16 @@
         background: rgba(74, 222, 128, 0.18);
         color: #4ade80;
       }
+      .chat-a .md-dl.saved {
+        color: #4ade80;
+        border-color: rgba(74, 222, 128, 0.45);
+        background: rgba(74, 222, 128, 0.14);
+        min-width: 2rem;
+      }
+      .chat-a .md-dl.saved:hover:not(:disabled) {
+        background: rgba(74, 222, 128, 0.18);
+        color: #4ade80;
+      }
       /* Code view: the raw JSX the AI wrote, swapped in for the live preview. */
       .chat-a .md-artifact-code-bar {
         display: flex;
@@ -959,16 +973,18 @@
         align-items: center;
         justify-content: flex-start;
         gap: 8px;
-        height: 28px;
-        padding: 4px 10px 0 12px;
+        height: 22px;
+        padding: 10px 10px 0 12px;
         cursor: grab;
+        touch-action: none;
+        -webkit-app-region: drag;
       }
       .titlebar.dragging { cursor: grabbing; }
       .titlebar .grip {
-        width: 34px;
+        width: 42px;
         height: 5px;
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.18);
+        background: rgba(255, 255, 255, 0.22);
         transition: background 0.15s ease;
       }
       .titlebar:hover .grip { background: rgba(255, 255, 255, 0.32); }
@@ -1308,9 +1324,14 @@
         align-items: center;
         gap: 4px;
         padding-top: 0;
-        -webkit-app-region: no-drag;
       }
-      .toolbar-spacer { flex: 1; min-width: 4px; }
+      .toolbar-spacer {
+        flex: 1;
+        min-width: 4px;
+        min-height: 30px;
+        cursor: grab;
+        -webkit-app-region: drag;
+      }
       .bar-btn {
         -webkit-app-region: no-drag;
         flex: none;
@@ -1738,6 +1759,7 @@
         flex-wrap: wrap;
         gap: 6px;
         padding: 8px 12px 0;
+        -webkit-app-region: no-drag;
       }
       .attachments.show { display: flex; }
 
@@ -1963,6 +1985,7 @@
         border-radius: 16px;
         color: var(--blue);
         cursor: pointer;
+        touch-action: none;
         filter: drop-shadow(0 0 3px rgba(59, 120, 255, 0.8))
           drop-shadow(0 0 6px rgba(59, 120, 255, 0.45));
         transition: transform 0.15s ease, background 0.15s ease;

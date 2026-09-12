@@ -79,6 +79,10 @@ export default function WallpaperSettings({ appearance, onChange }) {
   // { id, phase, received, total } while a master downloads from Apple.
   const [progress, setProgress] = useState(null);
   const canUsePhoto = !!bridge()?.backgroundSet;
+  /* window.lykn only exists inside the desktop app, so a bridge without the
+   * background APIs means the installed app predates them (the renderer is the
+   * hosted web app, always current; the bridge ships with the install). */
+  const outdatedApp = !!bridge() && !canUsePhoto;
 
   useEffect(() => {
     const b = bridge();
@@ -309,7 +313,9 @@ export default function WallpaperSettings({ appearance, onChange }) {
         </div>
       ) : (
         <p className="text-[11px] leading-snug text-black/40 dark:text-white/35">
-          Open LYKN on your Mac to use one of your own photos as the wallpaper.
+          {outdatedApp
+            ? 'Wallpapers need a newer version of LYKN. Choose "Quit LYKN Completely" from the menu bar icon, then reopen LYKN to finish updating.'
+            : 'Open LYKN on your Mac to use one of your own photos as the wallpaper.'}
         </p>
       )}
 

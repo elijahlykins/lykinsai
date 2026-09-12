@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * IPC for Bot Routines and the global Activity surface.
+ * IPC for Routines and the global Activity surface.
  *
  * The renderer owns creation/edit UX; the MAIN process owns the durable
  * routine store, the scheduler, monitors, and execution (TaskRuntime). Every
@@ -21,9 +21,9 @@ function registerRoutinesIpc(d) {
   const runtime = () => d.getRoutineRuntime();
   const agents = () => d.initAgentRuntime();
 
-  ipcMain.handle("lykn:routines-list", (_e, payload) => {
+  ipcMain.handle("lykn:routines-list", () => {
     try {
-      return { ok: true, routines: runtime().listRoutines({ botId: payload?.botId }) };
+      return { ok: true, routines: runtime().listRoutines() };
     } catch (err) {
       return { ok: false, error: err?.message || String(err) };
     }
@@ -33,12 +33,10 @@ function registerRoutinesIpc(d) {
     try {
       const input = payload || {};
       // Natural-language creation from the UI: same deterministic parser the
-      // Bot's create_routine tool uses — an ambiguous description returns a
+      // create_routine tool uses — an ambiguous description returns a
       // readable error instead of a guessed trigger.
       if (input.instruction && !input.trigger) {
         return runtime().createRoutineFromInstruction(String(input.instruction), {
-          bot: input.bot,
-          botId: input.botId,
           notificationPolicy: input.notificationPolicy,
           browserContext: input.browserContext,
           windowContext: input.windowContext,
@@ -82,7 +80,7 @@ function registerRoutinesIpc(d) {
     try {
       const rt = runtime();
       const id = String(payload?.routineId || "");
-      if (!rt.listRoutines({}).some((r) => r.id === id)) return { ok: false, error: "not_found" };
+      if (!rt.listRoutines().some((r) => r.id === id)) return { ok: false, error: "not_found" };
       // Fire-and-return: the run's progress reaches the renderer through
       // lykn:routines-changed pushes and the run history, not this reply.
       void rt.runNow(id);
@@ -108,7 +106,7 @@ function registerRoutinesIpc(d) {
       return {
         ok: true,
         tasks: agents().listActiveTasks(),
-        routines: runtime().listRoutines({}),
+        routines: runtime().listRoutines(),
         recentRuns: runtime().listRecentRuns({ limit: Number(payload?.limit) || 30 }),
         notifications: runtime().notifications.listRecent({ limit: 20 }),
       };

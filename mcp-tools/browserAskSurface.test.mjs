@@ -17,7 +17,7 @@ test('isBrowserAskRequest is an explicit client flag, not page context', () => {
 });
 
 test('applyBrowserAskCapabilities drops action families and MCP needs', () => {
-  const caps = new Set(['web.read', 'browser.agent', 'bots.ask', 'connections.external', 'local.shell']);
+  const caps = new Set(['web.read', 'browser.agent', 'connections.external', 'local.shell']);
   const extra = { externalNeeds: ['email', 'chat'] };
   applyBrowserAskCapabilities(caps, extra);
   assert.equal(caps.has('web.read'), true);
@@ -27,12 +27,11 @@ test('applyBrowserAskCapabilities drops action families and MCP needs', () => {
   assert.deepEqual(extra.externalNeeds, []);
 });
 
-test('stripBrowserAskToolNames removes local, bot, and connected-app tools', () => {
+test('stripBrowserAskToolNames removes local and connected-app tools', () => {
   const names = stripBrowserAskToolNames(
     [
       'lykn_web_search',
       'local_browser_agent',
-      'local_ask_bot',
       'lykn_search_connected_tools',
       'lykn_call_connected_tool',
       'lykn_delegate_to_sub_model',
@@ -41,7 +40,6 @@ test('stripBrowserAskToolNames removes local, bot, and connected-app tools', () 
   );
   assert.equal(names.has('lykn_web_search'), true);
   assert.equal(names.has('local_browser_agent'), false);
-  assert.equal(names.has('local_ask_bot'), false);
   assert.equal(names.has('lykn_search_connected_tools'), false);
   assert.equal(names.has('lykn_delegate_to_sub_model'), false);
 });

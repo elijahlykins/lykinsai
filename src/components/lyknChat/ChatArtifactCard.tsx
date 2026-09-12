@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, Download, ExternalLink, LayoutPanelTop, Loader2, Maximize2, Minimize2 } from "lucide-react";
+import { Check, ChevronDown, Download, ExternalLink, LayoutPanelTop, Loader2, Maximize2, Minimize2 } from "lucide-react";
 import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
 import { useThinkingStatus, useThinkingTrail } from "@/hooks/useThinkingStatus";
@@ -15,8 +15,13 @@ import {
 function ArtifactDownloads({ artifact }: { artifact: ChatArtifact }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
   const options = useMemo(() => listArtifactDownloadOptions(artifact), [artifact]);
+
+  useEffect(() => {
+    setDone(false);
+  }, [artifact.id, artifact.previewUrl, artifact.downloadUrl]);
 
   useEffect(() => {
     if (!open) return;
@@ -29,8 +34,9 @@ function ArtifactDownloads({ artifact }: { artifact: ChatArtifact }) {
 
   if (!options.length) return null;
 
-  const btnCls =
-    "inline-flex items-center gap-1 rounded-lg border border-black/10 dark:border-white/12 px-2 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors disabled:opacity-50";
+  const btnCls = done && !busy
+    ? "inline-flex items-center gap-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400"
+    : "inline-flex items-center gap-1 rounded-lg border border-black/10 dark:border-white/12 px-2 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors disabled:opacity-50";
 
   const run = async (id?: string) => {
     if (busy) return;
@@ -38,12 +44,16 @@ function ArtifactDownloads({ artifact }: { artifact: ChatArtifact }) {
     setOpen(false);
     try {
       await downloadArtifactToComputer(artifact, id);
+      setDone(true);
     } catch (err) {
       console.warn("Artifact download failed:", err);
     } finally {
       setBusy(false);
     }
   };
+
+  const icon = busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : done ? <Check className="h-3.5 w-3.5" /> : <Download className="h-3.5 w-3.5" />;
+  const label = done && !busy ? "Downloaded" : "Download";
 
   if (options.length === 1) {
     return (
@@ -52,10 +62,10 @@ function ArtifactDownloads({ artifact }: { artifact: ChatArtifact }) {
         onClick={() => void run(options[0].id)}
         disabled={busy}
         className={btnCls}
-        title={`Download ${options[0].label} to your computer`}
+        title={done && !busy ? "Downloaded" : `Download ${options[0].label} to your computer`}
       >
-        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-        Download
+        {icon}
+        {label}
       </button>
     );
   }
@@ -67,11 +77,11 @@ function ArtifactDownloads({ artifact }: { artifact: ChatArtifact }) {
         onClick={() => setOpen((v) => !v)}
         disabled={busy}
         className={btnCls}
-        title="Download to your computer"
+        title={done && !busy ? "Downloaded" : "Download to your computer"}
       >
-        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-        Download
-        <ChevronDown className="h-3 w-3 opacity-60" />
+        {icon}
+        {label}
+        {done && !busy ? null : <ChevronDown className="h-3 w-3 opacity-60" />}
       </button>
       {open ? (
         <div className="lg-menu absolute right-0 top-full z-20 mt-1 min-w-[11rem] overflow-hidden py-1">

@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import lyknLogoMark from "@/assets/FINAL/LYKN-LOGO-B-Open/SVG/LYKN-Logo-Primary-B-Open-BLACK.svg";
 import LandingHeader from "@/components/landing/LandingHeader";
+import DesktopDownloadLink from "@/components/landing/DesktopDownloadLink";
 import { LyknWordmark } from "@/components/landing/LyknWordmark";
 import { useLandingLightTheme } from "@/components/landing/useLandingLightTheme";
 import { API_BASE_URL } from "@/lib/api-config";
@@ -12,8 +13,6 @@ import "./WindowsWaitlist.css";
 
 const JOINED_KEY = "lykn.windowsWaitlist.joined";
 const WAITLIST_SEED = 2365;
-const MAC_DOWNLOAD_URL =
-  "https://github.com/elijahlykins/lykn-releases/releases/latest/download/LYKN.dmg";
 
 function AppleGlyph() {
   return (
@@ -193,10 +192,10 @@ export default function WindowsWaitlist() {
 
           <p className="dlp-count">Total waitlist {formatCount(total)}</p>
 
-          <a className="dlp-btn" href={MAC_DOWNLOAD_URL}>
+          <DesktopDownloadLink className="dlp-btn" platform="mac" source="windows">
             <AppleGlyph />
             Download for Mac
-          </a>
+          </DesktopDownloadLink>
         </section>
       </main>
     </div>

@@ -53,11 +53,13 @@ export const STATIC_MD_COMPONENTS = {
     React.createElement(
       "div",
       {
+        // Glass card: translucent surface + backdrop blur, matching
+        // ChatArtifactCard / LoadInGreetingBlocks so chat deliverables share
+        // one material.
         className:
-          "my-4 overflow-hidden rounded-2xl border border-black/[0.1] " +
-          "bg-gradient-to-br from-white via-[#f7f6f4] to-[#ececea] " +
-          "shadow-none " +
-          "dark:border-white/[0.1] dark:from-[#141413] dark:via-[#111110] dark:to-[#0c0c0b]",
+          "my-4 overflow-hidden rounded-2xl border border-white/40 " +
+          "bg-white/50 backdrop-blur-md shadow-none " +
+          "dark:border-white/10 dark:bg-white/[0.06]",
       },
       React.createElement(
         "div",
@@ -68,15 +70,16 @@ export const STATIC_MD_COMPONENTS = {
   thead: ({ children }: any) =>
     React.createElement(
       "thead",
-      { className: "bg-black/[0.04] dark:bg-white/[0.05]" },
+      { className: "bg-white/35 dark:bg-white/[0.05]" },
       children,
     ),
   tbody: ({ children }: any) => React.createElement("tbody", null, children),
   tr: ({ children }: any) =>
     React.createElement("tr", {
+      // Zebra tints stay translucent so the glass blur reads through the rows.
       className:
-        "border-b border-black/[0.05] odd:bg-white/60 even:bg-[#f3eee6]/55 " +
-        "dark:border-white/[0.06] dark:odd:bg-white/[0.015] dark:even:bg-white/[0.035]",
+        "border-b border-black/[0.05] even:bg-white/30 " +
+        "dark:border-white/[0.06] dark:even:bg-white/[0.035]",
     }, children),
   th: ({ children }: any) =>
     React.createElement(

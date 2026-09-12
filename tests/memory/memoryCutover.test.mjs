@@ -270,8 +270,8 @@ test('chat load-in calendar greeting reads lykn_events', () => {
 
 test('stopped chat send does not clobber a successor stream', () => {
   const src = readFileSync(join(HERE, '../../src/hooks/useChatEngine.ts'), 'utf8');
-  assert.match(src, /sendAbort !== activeAiAbortRef\.current/);
-  assert.match(src, /activeAiAbortRef\.current === sendAbort/);
+  assert.match(src, /!activeAiAbortRef\.current \|\| activeAiAbortRef\.current === sendAbort/);
+  assert.match(src, /stillOwnsGlobalAbort && activeAiAbortRef\.current === sendAbort/);
 });
 
 test('getMemoryThreadState starts empty so a missing chatId still works', () => {

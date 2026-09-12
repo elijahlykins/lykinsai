@@ -4,7 +4,7 @@
  * BrowserExecutor — the ONE canonical way browser work executes.
  *
  * Runs under TaskRuntime.execute for every surface: a normal Agent browsing,
- * a Bot's approved browser errand, and any future caller. It does not own an
+ * an agent's approved browser errand, and any future caller. It does not own an
  * agent loop of its own — the modular browser-agent runtime
  * (electron/browser-agent) remains the single browser brain — what this class
  * owns is the CONTRACT between that runtime and the canonical Task:
@@ -49,7 +49,7 @@ class BrowserExecutor {
 
   /**
    * Observe a page without running the browser-agent decision loop.
-   * Used by Bot Routine monitors. Never acts. Never calls a model.
+   * Used by Routine monitors. Never acts. Never calls a model.
    */
   async observePassive({ target, query } = {}) {
     if (typeof this.observePage !== "function") {
@@ -119,7 +119,7 @@ class BrowserExecutor {
 }
 
 /**
- * Legacy Bot browser opt-in gate. Interactive bots now start the browser
+ * Legacy browser opt-in gate. Interactive agents now start the browser
  * immediately through BrowserExecutor; this class remains so an already-
  * parked question can still be answered, and so unit tests cover the old
  * park-and-ask contract.

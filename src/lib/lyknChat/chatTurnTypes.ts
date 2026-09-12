@@ -1,9 +1,8 @@
 // Canonical chat type authority for a LyknChat conversation turn and its
-// payloads: the PromptMessage row (user prompt + streamed AI response + bot /
+// payloads: the PromptMessage row (user prompt + streamed AI response +
 // greeting / tool-call / neuron metadata), attachments riding a turn
-// (FocusedChatAttachment, BotSendAttachment), the orchestrator's action /
-// result contracts, and the board->chat import payload with its localStorage
-// key.
+// (FocusedChatAttachment), the orchestrator's action / result contracts, and
+// the board->chat import payload with its localStorage key.
 //
 // This module is the ONE home for shared chat message/attachment types. The
 // send pipeline (chatSendOrchestrator), the engine (useChatEngine), and the
@@ -11,14 +10,6 @@
 // legacy import paths but must not define its own copies (Wave 2 of the
 // chat architecture refactor, see docs/REFACTOR_LOG.md).
 
-
-/** Runtime-shaped attachment riding a Bot send (see botAttachments.js). */
-export type BotSendAttachment = {
-  kind: "image" | "text";
-  name: string;
-  dataUrl?: string;
-  text?: string;
-};
 
 /**
  * One tool the AI invoked during this chat turn (the in-app agent loop in
@@ -160,18 +151,6 @@ export type PromptMessage = {
   aiModel?: string;
   /** ISO timestamp when the assistant reply finished streaming. */
   aiCompletedAt?: string;
-  /** Set when this turn was addressed to a Bot instead of the chat model —
-   *  the reply streams from its worker agent and the view shows its face. */
-  bot?: { id: string; name: string; face: string; eyes: string; color: string };
-  /** The Bot task carrying this turn — lets the row re-attach to the live
-   *  stream after the user leaves the chat mid-task and comes back. */
-  botTaskId?: string;
-  /** True while the Bot's task is still running — the row shows that Bot's
-   *  working face under whatever has streamed so far. Cleared on the final
-   *  update, and by the re-attach pass when a task settled off-screen. */
-  botWorking?: boolean;
-  botStatus?: string;
-  botTrail?: string[];
   /** True when this turn was mirrored into the written chat by Voice Mode
    *  (spoken turn, assistant reply, or a voice-overlay paste/attach) rather
    *  than typed into the composer. Marker only — nothing branches on it

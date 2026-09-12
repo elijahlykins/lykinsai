@@ -10,12 +10,10 @@ import {
   messageWantsMcpConnect,
 } from './localTools.js';
 import {
-  messageWantsBotAsk,
   conversationMentionedLocalFolder,
   messageLooksLikeFolderInspectFollowUp,
   turnWantsLocalFileTools,
 } from './chatIntentSignals.js';
-import { sanitizeLyknBots } from './chatTools.js';
 
 test('named-file peeks are local asks', () => {
   assert.equal(looksLikeLocalSystemAsk("what's in agents.md"), true);
@@ -83,25 +81,6 @@ test('later brainstorming does not keep prior-folder local tools on', () => {
       attachedFolders: [{ name: 'Docs', path: '/Users/me/Docs' }],
     }),
     true,
-  );
-});
-
-test('ask-bot intent matches named teammates and generic consults', () => {
-  const bots = [{ id: 'bot_cody', name: 'Cody', role: 'Architect' }];
-  assert.equal(messageWantsBotAsk('ask Cody what he thinks about the current agent structure', bots), true);
-  assert.equal(messageWantsBotAsk('what does Cody think', bots), true);
-  assert.equal(messageWantsBotAsk('ask my bot about this', []), true);
-  assert.equal(messageWantsBotAsk('send a bot to start work in the browser', []), true);
-  assert.equal(messageWantsBotAsk('run one of the bots', []), true);
-  assert.equal(messageWantsBotAsk('hello', bots), false);
-  assert.equal(messageWantsBotAsk('ask me later', []), false);
-  assert.equal(LOCAL_TOOL_NAMES.includes('local_ask_bot'), true);
-});
-
-test('sanitizeLyknBots keeps known fields only', () => {
-  assert.deepEqual(
-    sanitizeLyknBots([{ id: ' bot_1 ', name: ' Cody ', role: ' Architect ', secret: 'nope' }, { name: 'Nope' }]),
-    [{ id: 'bot_1', name: 'Cody', role: 'Architect' }],
   );
 });
 

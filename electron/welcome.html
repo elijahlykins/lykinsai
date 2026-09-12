@@ -2967,10 +2967,10 @@
           setTimeout(() => loginEmail.focus(), 450);
         }
         if (n === 6) void loadBrowsers();
-        // The wallpaper thumbnail is NOT warmed here on purpose: resolving the
-        // wallpaper can require an AppleScript fallback, and that pops the
-        // macOS Automation consent dialog. During onboarding that dialog must
-        // only appear from an explicit click on the "my wallpaper" card.
+        // The wallpaper thumbnail can load as soon as this stage shows: built-in
+        // Apple wallpapers resolve from on-disk stills with no Automation prompt.
+        // AppleScript is reserved for the explicit "my wallpaper" click.
+        if (n === "background") void loadWallpaperPreview({ allowAppleScript: false });
         if (n === 13) {
           // Fill the bar and hand off right away: finish() loads the studio
           // behind this window while the spinner plays, holds for at least one
@@ -3539,13 +3539,18 @@
       let bgWallpaperPreview = "";
       let bgFilePreview = "";
       let bgPreviewRequested = false;
-      // The wallpaper thumbnail loads lazily when the stage first shows —
-      // conversion shells out to sips, no reason to pay that at startup.
-      const loadWallpaperPreview = async () => {
-        if (bgPreviewRequested) return;
-        bgPreviewRequested = true;
+      let bgPreviewTriedScript = false;
+      const loadWallpaperPreview = async ({ allowAppleScript = false } = {}) => {
+        if (bgWallpaperPreview) return;
+        if (allowAppleScript) {
+          if (bgPreviewTriedScript) return;
+          bgPreviewTriedScript = true;
+        } else {
+          if (bgPreviewRequested) return;
+          bgPreviewRequested = true;
+        }
         try {
-          const res = await window.lyknWelcome.wallpaperPreview();
+          const res = await window.lyknWelcome.wallpaperPreview({ allowAppleScript });
           if (res?.ok && res.dataUrl) {
             bgWallpaperPreview = res.dataUrl;
             bgThumbWallpaper.innerHTML = `<img src="${res.dataUrl}" alt="" />`;
@@ -3570,9 +3575,9 @@
       };
       bgCardWallpaper.addEventListener("click", () => {
         bgChoice = { source: "wallpaper" };
-        // Resolve the wallpaper only now — this explicit choice is the moment
-        // a macOS Automation prompt (AppleScript fallback) is acceptable.
-        void loadWallpaperPreview();
+        // Built-in stills already loaded on stage entry. AppleScript only runs
+        // here if that permission-free pass found nothing.
+        void loadWallpaperPreview({ allowAppleScript: true });
         renderBgState();
       });
       bgCardFile.addEventListener("click", async () => {

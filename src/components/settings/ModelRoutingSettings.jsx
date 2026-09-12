@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { fetchModelCatalog, fetchModelSettings, saveModelSettings } from '@/lib/models/modelPlatformClient';
 import { readLocalModelSetup } from '@/lib/models/modelSetupStore';
+import { displayModelLabel } from '@/lib/models/modelPickerMeta';
 import { ROUTE_CATEGORIES } from '@/lib/models/routeCategories';
 import { LG_INLINE_W } from '@/components/settings/glassTokens';
 import CatalogModelPicker from '@/components/settings/CatalogModelPicker';
@@ -19,7 +20,7 @@ const CATEGORIES = [
 function modelName(models, id) {
   if (!id) return 'LYKN default';
   const found = models.find((m) => m.id === id);
-  return found?.label || id;
+  return found ? displayModelLabel(found) : id;
 }
 
 export default function ModelRoutingSettings({ children }) {

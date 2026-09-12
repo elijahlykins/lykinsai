@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { dockedPageBoundsForOverlay } = require("./menuOverlayLayout.cjs");
 
-test("docked Sync overlay parks the page so the menu is hittable", () => {
+test("docked overlay keeps the page visible while the dropdown is open", () => {
   const open = dockedPageBoundsForOverlay({
     overlay: true,
     x: 40,
@@ -13,7 +13,7 @@ test("docked Sync overlay parks the page so the menu is hittable", () => {
     width: 900,
     pageH: 640,
   });
-  assert.deepEqual(open, { x: 40, y: 94, width: 0, height: 0 });
+  assert.deepEqual(open, { x: 40, y: 94, width: 900, height: 640 });
 });
 
 test("docked page keeps its panel rect when Sync is closed", () => {
@@ -36,5 +36,6 @@ test("menu overlay IPC writes the host overlay flag used by layout", () => {
   assert.match(host, /bindLet\("agentStageMenuOverlay"/);
   assert.match(bridge, /d\.agentStageMenuOverlay = next/);
   assert.match(bridge, /lykn:agent-stage-menu-overlay/);
-  assert.match(host, /if \(agentStageMenuOverlay\)/);
+  // Docked: page keeps its rect and only re-raises above chrome when closed.
+  assert.match(host, /if \(!agentStageMenuOverlay\)/);
 });

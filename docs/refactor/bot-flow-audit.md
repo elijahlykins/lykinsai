@@ -7,13 +7,13 @@ Scope: what a custom Bot is, how it is stored, how it is invoked, and how one Bo
 Compared against `docs/refactor/agent-harness-audit.md`.
 Where that document is stale for Bots, this audit says so.
 
-This document does not design or implement TaskRuntime / BotExecutor.
+This document does not design or implement TaskRuntime / AgentExecutor.
 
 ## Executive summary
 
 A Bot run in LYKN today is not one object.
 
-It is a renderer-owned persona plus queue (`src/lib/bots/botStore.ts`), a headless Electron worker agent (`electron/agentRuntime.cjs`), and - for task-shaped turns only - a decide/use-tool/verify/deliver loop (`electron/bot-harness/index.cjs`).
+It is a renderer-owned persona plus queue (`src/lib/bots/botStore.ts`), a headless Electron worker agent (`electron/agentRuntime.cjs`), and - for task-shaped turns only - a decide/use-tool/verify/deliver loop (`electron/agent-harness/index.cjs`).
 
 There is no server Bot API.
 There is no Bot capability system.
@@ -52,10 +52,10 @@ Renderer `Bot`, Electron `botProfile`, dispatch `taskBrief` text, and the casual
 `successCondition` / `doNot` are model-authored on the first harness decision, then pinned.
 They are not an immutable user Task.
 
-The inner harness loop (`runBotTask`) is already a reasonable BotExecutor candidate.
+The inner harness loop (`runAgentTask`) is already a reasonable AgentExecutor candidate.
 The surrounding lifecycle is not.
 Task identity, queue, routing, abort, browser eject, casual-chat bypass, UI status, and persistence live in `botsClient` and `agentRuntime.send`.
-Adapting Bot Harness behind a BotExecutor without first moving those authorities would leave two Task owners.
+Adapting Bot Harness behind a AgentExecutor without first moving those authorities would leave two Task owners.
 
 ## Current architecture diagram
 
@@ -91,8 +91,8 @@ flowchart TD
     LC[runLocalTask]
   end
 
-  subgraph Harness["electron/bot-harness"]
-    LOOP[runBotTask]
+  subgraph Harness["electron/agent-harness"]
+    LOOP[runAgentTask]
     CTX[contextRouter]
     REG[toolRegistry]
     TS[taskState]
@@ -223,7 +223,7 @@ No.
 | `agent.botProfile` | Harness identity for task-shaped turns |
 | `taskBrief()` text | Identity injected into the user message |
 | `streamChat` prompt | Casual-chat identity, currently LYKN, not the Bot |
-| `electron/bot-harness/AGENTS.md` | Runtime "you are a LYKN Bot" identity, always loaded in harness |
+| `electron/agent-harness/AGENTS.md` | Runtime "you are a LYKN Bot" identity, always loaded in harness |
 
 The renderer `Bot` is the closest product authority.
 The harness does not read it.
@@ -333,7 +333,7 @@ skill = verdict or heuristic
 runOneSkill
   if headless && !botBrowserRun && skill !== general && botHarnessEnabled
     runBotHarnessTask
-      botHarness.runBotTask
+      agentHarness.runAgentTask
         loop:
           model.structured("decide")     // /api/desktop/agent-model
           use_tool → executor
@@ -367,7 +367,7 @@ chat row: botWorking, botStatus, botTrail, aiResponse
 Completion:
 
 ```
-runBotTask returns { status, answer }
+runAgentTask returns { status, answer }
 runBotHarnessTask returns answer or offerAgentQuestion
 send() finish → lykn:agent-done { agentId, text, stopped }
 botsClient.onAgentDone
@@ -389,7 +389,7 @@ Kill switch: `LYKN_BOT_HARNESS=0` restores that single-shot path for task-shaped
 ### Browser-opt-in fork
 
 See Browser integration.
-After yes, this send() does **not** re-enter `runBotTask`.
+After yes, this send() does **not** re-enter `runAgentTask`.
 
 ## Task authority
 
@@ -465,7 +465,7 @@ Otherwise the answer is formatted (`formatHeadlessCompletion` when still headles
 `followBotTask` mirrors `BotTask.status`.
 If the bot/task disappears, the row is forced to a failed done state so the spinner cannot run forever.
 
-**Casual chat / harness-disabled / browser-ejected paths** never hit `runBotTask` completion.
+**Casual chat / harness-disabled / browser-ejected paths** never hit `runAgentTask` completion.
 They use `streamChat` provider-final or browser-agent `finish`.
 
 ### Over-execution after the user's ask is done
@@ -559,7 +559,7 @@ Dangerous defaults:
 
 ### Inventory
 
-From `electron/bot-harness/runtime/toolRegistry.cjs`:
+From `electron/agent-harness/runtime/toolRegistry.cjs`:
 
 | Tool | Class | Registry risk | Verify | Terminal | Gate |
 |---|---|---|---|---|---|
@@ -741,7 +741,7 @@ Bot does **not** use the Markdown Memory system (`server/memory/*`, `lykn_memory
 
 | Kind | Used by Bot today? |
 |---|---|
-| Markdown personal Memory | no seam in bot-harness or botsClient |
+| Markdown personal Memory | no seam in agent-harness or botsClient |
 | Conversation history | yes: renderer chat board; `agent.history`; harness last 8; streamChat last 12 |
 | Bot configuration | persona string only |
 | Bot execution history | `BotTask.result` in localStorage, trimmed to 30 |
@@ -757,15 +757,15 @@ Neither reads `memoryStore` today.
 
 ### Loaded markdown
 
-Loader: `electron/bot-harness/runtime/instructions.cjs`.
+Loader: `electron/agent-harness/runtime/instructions.cjs`.
 Files cached in a `Map` after first read.
 Not invalidated on change without process restart.
 
 Always injected into `buildDecisionSystem`:
 
-- `electron/bot-harness/AGENTS.md`
-- `electron/bot-harness/agent/core.md`
-- `electron/bot-harness/agent/safety.md`
+- `electron/agent-harness/AGENTS.md`
+- `electron/agent-harness/agent/core.md`
+- `electron/agent-harness/agent/safety.md`
 
 On first tool select, `agent/tools/${name}.md`.
 
@@ -780,22 +780,22 @@ On first tool select, `agent/tools/${name}.md`.
 - `taskBrief` (`botStore.ts`)
 - `streamChat` Agent Mode / LYKN sidebar prompts
 - Local `SYSTEM_PROMPT` in `localAgentTask.cjs`
-- Status lines in `botHarnessStatusLine`
+- Status lines in `agentHarnessStatusLine`
 
 ### `AGENTS.md` collision (mechanical)
 
-`electron/bot-harness/AGENTS.md` is runtime identity.
+`electron/agent-harness/AGENTS.md` is runtime identity.
 A development agent editing that tree can treat it as development instructions.
 
-Current behavior: `instructions.cjs` resolves `path.join(__dirname, "..")` = `electron/bot-harness/`.
+Current behavior: `instructions.cjs` resolves `path.join(__dirname, "..")` = `electron/agent-harness/`.
 
 Recommended mechanical migration (do not perform):
 
-1. Move runtime files to a non-`AGENTS.md` name, e.g. `electron/bot-harness/runtime/BOT.md` or `prompts/identity.md`.
+1. Move runtime files to a non-`AGENTS.md` name, e.g. `electron/agent-harness/runtime/BOT.md` or `prompts/identity.md`.
 2. Change the single `loadAgentsMd()` path.
 3. Keep `agent/core.md`, `agent/safety.md`, `agent/tools/*.md` or relocate with the same loader.
-4. Add a stub `electron/bot-harness/AGENTS.md` for developers that says it is not injected, **or** omit it so Cursor does not treat it as agent instructions.
-5. Update `tests/electron/securityGates.test.cjs` which currently asserts `bot-harness/AGENTS.md` exists.
+4. Add a stub `electron/agent-harness/AGENTS.md` for developers that says it is not injected, **or** omit it so Cursor does not treat it as agent instructions.
+5. Update `tests/electron/securityGates.test.cjs` which currently asserts `agent-harness/AGENTS.md` exists.
 
 Same pattern as browser-agent, already noted in the Agent Harness audit.
 
@@ -1004,7 +1004,7 @@ Classification of current responsibilities (conservative):
 | Global tool index | BOT DEFINITION defaults + TASK capabilities |
 | `AGENTS.md` / core / safety | BOT EXECUTOR prompts (runtime pack) |
 | Progressive disclosure loop | BOT EXECUTOR |
-| `runBotTask` decide/act/verify | BOT EXECUTOR |
+| `runAgentTask` decide/act/verify | BOT EXECUTOR |
 | `routeBotTool` | LEGACY / fold into TaskCompiler |
 | `taskBrief` wrapping | LEGACY / BOT DEFINITION injection |
 | Casual `streamChat` bypass | LEGACY / BOT EXECUTOR or a Reply skill |
@@ -1018,15 +1018,15 @@ Classification of current responsibilities (conservative):
 | Skills | SKILL (unused at Bot layer; browser skills after eject) |
 | Watchtower/monitor persona | UNKNOWN / not implemented |
 | Teammate `[[ask]]` protocol | UNKNOWN (product) |
-| `LYKN_BOT_HARNESS=0` | LEGACY / DELETE CANDIDATE after BotExecutor exists |
+| `LYKN_BOT_HARNESS=0` | LEGACY / DELETE CANDIDATE after AgentExecutor exists |
 
-## BotExecutor migration seam
+## AgentExecutor migration seam
 
-`electron/bot-harness/index.cjs` `runBotTask({ goal, bot, model, executors, conversationHistory, attachmentsNote, localMode, primaryTool, onProgress, onApproval, signal, maxRounds })` is already an injected-capability loop.
+`electron/agent-harness/index.cjs` `runAgentTask({ goal, bot, model, executors, conversationHistory, attachmentsNote, localMode, primaryTool, onProgress, onApproval, signal, maxRounds })` is already an injected-capability loop.
 
-Adapting **that function** behind `BotExecutor.execute(task)` is straightforward.
+Adapting **that function** behind `AgentExecutor.execute(task)` is straightforward.
 
-What is **not** a BotExecutor today:
+What is **not** a AgentExecutor today:
 
 - `botsClient.assign` / `dispatchNext` / `BotTask`
 - `agentRuntime.send` routing and `botBrowserRun`
@@ -1034,7 +1034,7 @@ What is **not** a BotExecutor today:
 - completion mapping to chat rows
 - identity `taskBrief`
 
-If BotExecutor is installed without moving those, TaskRuntime would still not own objective, completion, cancellation, or browser/local child lifetimes.
+If AgentExecutor is installed without moving those, TaskRuntime would still not own objective, completion, cancellation, or browser/local child lifetimes.
 
 ## Keep / Adapt / Replace / Delete table
 
@@ -1046,7 +1046,7 @@ If BotExecutor is installed without moving those, TaskRuntime would still not ow
 | `BotsPage` builder | Keep / extend | No role/tools/model yet |
 | `BOT_TEMPLATES` | Keep or wire | Present, unused in UI |
 | `taskBrief` | Replace | Identity belongs in BotDefinition/system, not user text |
-| `bot-harness/index.cjs` | Adapt | Natural BotExecutor core |
+| `agent-harness/index.cjs` | Adapt | Natural AgentExecutor core |
 | `contextRouter` / `taskState` / `toolRegistry` | Adapt | Move success/doNot authorship to TaskCompiler |
 | Runtime markdown pack | Adapt | Rename off `AGENTS.md` |
 | `runBotHarnessTask` executors | Adapt | Bind BrowserExecutor/LocalExecutor instead of eject/nest |
@@ -1064,24 +1064,24 @@ If BotExecutor is installed without moving those, TaskRuntime would still not ow
 These are not answered by current code.
 
 1. Should a BotTask queue remain a user-visible desk after TaskRuntime exists, or is every chat send one Task with no Bot-level queue?
-2. Is casual chat a BotExecutor path with a reply skill, or a non-Task message that never enters TaskRuntime?
-3. After browser opt-in, should BotExecutor stay parent (verify/deliver) or should TaskRuntime switch executor?
+2. Is casual chat a AgentExecutor path with a reply skill, or a non-Task message that never enters TaskRuntime?
+3. After browser opt-in, should AgentExecutor stay parent (verify/deliver) or should TaskRuntime switch executor?
 4. Are teammate hand-offs Tasks, sub-Tasks, or a Bot-only protocol outside TaskRuntime?
 5. Should BotDefinition include role, default tools, model, memory, and Local/Browser permissions, given the builder collects only name/persona/look today?
 6. Is `localStorage` still acceptable as BotDefinition persistence, or does a Bot become a server object?
 7. Should each Bot get an isolated browser partition, or keep the shared `persist:lykn-agent-browser` session?
 8. Does "New chat" re-homing stay a Bot concern, or is it ordinary chat-board UX?
 9. Should running Bots expose a Stop control in chat, or only inherit TaskRuntime cancellation UI?
-10. Is Watchtower-style monitoring in scope for BotExecutor, or a different scheduled Task trigger?
+10. Is Watchtower-style monitoring in scope for AgentExecutor, or a different scheduled Task trigger?
 
 ## Recommended migration sequence
 
 Mechanical order implied by current coupling, not a product plan.
 
-1. Freeze Bot behavior behind tests already in `electron/bot-harness/botHarness.test.cjs`, `botHarnessIntegration.test.cjs`, `botToolRouting.test.cjs`, `src/lib/bots/botStore.test.ts`.
-2. Introduce Task as an immutable host object **outside** `runBotTask`, populated from `BotTask.text` (not from model `successCondition`).
+1. Freeze Bot behavior behind tests already in `electron/agent-harness/agentHarness.test.cjs`, `agentHarnessIntegration.test.cjs`, `botToolRouting.test.cjs`, `src/lib/bots/botStore.test.ts`.
+2. Introduce Task as an immutable host object **outside** `runAgentTask`, populated from `BotTask.text` (not from model `successCondition`).
 3. Stop using `taskBrief` as the IPC payload; pass `{ goal, botId, botProfile }` structured.
-4. Point BotExecutor at current `runBotTask`, with Task-owned signal, budgets, and onProgress.
+4. Point AgentExecutor at current `runAgentTask`, with Task-owned signal, budgets, and onProgress.
 5. Replace `pendingBotBrowse` eject with TaskRuntime → BrowserExecutor, keeping the user opt-in as a Task approval, not a second send() rewrite.
 6. Replace nested `runLocalTask` with LocalExecutor under the same Task abort/budget.
 7. Fold casual chat into an explicit Reply path so identity cannot silently become "You are LYKN".
@@ -1091,13 +1091,13 @@ Mechanical order implied by current coupling, not a product plan.
 
 ## Most important question
 
-**Can the current Bot Harness be adapted behind a BotExecutor interface, or does its task/lifecycle ownership require structural rework first?**
+**Can the current Bot Harness be adapted behind a AgentExecutor interface, or does its task/lifecycle ownership require structural rework first?**
 
 The **inner loop** can be adapted.
 
-`runBotTask` already takes goal, bot identity, model, executors, signal, approvals, and progress.
+`runAgentTask` already takes goal, bot identity, model, executors, signal, approvals, and progress.
 Tests already drive it with fakes.
-That is a BotExecutor-shaped function.
+That is a AgentExecutor-shaped function.
 
 The **lifecycle** requires structural rework first.
 
@@ -1105,12 +1105,12 @@ Evidence:
 
 1. Objective authority is `BotTask.text` in the renderer, then `taskBrief` text, then `botAskCore(goal)`, then model `successCondition`. None of these is a single immutable Task (`botStore.ts`, `botsClient.js`, `contextRouter.cjs` `setTaskBrief`).
 2. Completion is at least three objects: harness `status`, `lykn:agent-done`, renderer `BotTask.status` (`index.cjs` deliver; `botsClient.onAgentDone`).
-3. Browser work **leaves** the harness (`botBrowserRun` skips `runBotHarnessTask` in `runOneSkill`). A BotExecutor that does not own that branch does not own the run.
+3. Browser work **leaves** the harness (`botBrowserRun` skips `runBotHarnessTask` in `runOneSkill`). A AgentExecutor that does not own that branch does not own the run.
 4. Casual turns never enter the harness (`botSkill !== "general"` gate).
 5. `agentRuntime.send` owns generation, abort, history, routing, and finish formatting for every Bot dispatch.
 6. `docs/refactor/agent-harness-audit.md` already identifies authority fragmentation; this audit confirms Bot is a second, renderer-heavy instance of the same problem, not a clean persona layer over a shared Task.
 
-Therefore: wrap `runBotTask` as BotExecutor **after** (or while) TaskRuntime takes objective, budgets, completion, cancellation, approvals, and child executors.
+Therefore: wrap `runAgentTask` as AgentExecutor **after** (or while) TaskRuntime takes objective, budgets, completion, cancellation, approvals, and child executors.
 Doing only the wrap would preserve two Task owners.
 
 ## Corrections to the Agent Harness audit (Bot sections)
@@ -1118,7 +1118,7 @@ Doing only the wrap would preserve two Task owners.
 Verified against this worktree; do not treat the following Agent Harness lines as Bot source of truth:
 
 - There is no `server/routes/desktop.routes.js` Bot assign/execute API. Desktop routes used by Bots are `/api/desktop/agent-model` (and stream `/api/ai/stream`).
-- Host function is `runBotHarnessTask`, not `runBotTask`. `runBotTask` lives in `electron/bot-harness/index.cjs`.
+- Host function is `runBotHarnessTask`, not `runAgentTask`. `runAgentTask` lives in `electron/agent-harness/index.cjs`.
 - There are no server Bot records. Persistence is renderer localStorage plus Electron `overlay-agents.json`.
 - Bot Harness does not verify/deliver after a browser child. Browser opt-in ejects into the host browse pipeline.
 - `botProfile` is not persisted with agents.

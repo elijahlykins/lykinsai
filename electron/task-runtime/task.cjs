@@ -74,15 +74,6 @@ function createTask(input) {
     },
     origin: input?.origin || Object.freeze({ type: "unknown" }),
     association: input?.association || Object.freeze({}),
-    collaborators: Array.isArray(input?.collaborators)
-      ? input.collaborators
-          .map((item) => ({
-            id: String(item?.id || ""),
-            name: String(item?.name || ""),
-            role: String(item?.role || ""),
-          }))
-          .filter((item) => item.id && item.name)
-      : [],
     status: String(input?.status || TASK_STATUSES.CREATED),
     createdAt,
     updatedAt: String(input?.updatedAt || createdAt),
@@ -102,7 +93,6 @@ function transitionTask(task, patch) {
     cancellation: patch?.cancellation || task.cancellation,
     origin: task.origin,
     association: task.association,
-    collaborators: task.collaborators,
   });
 }
 

@@ -1,6 +1,6 @@
 "use strict";
 
-const { compileBotTask } = require("./taskCompiler.cjs");
+const { compileAgentTask } = require("./taskCompiler.cjs");
 const {
   TASK_STATUSES,
   createTask,
@@ -14,14 +14,11 @@ class TaskRuntime {
     this.onEvent = onEvent;
     this.now = now;
     this.records = new Map();
-    this.botTaskIndex = new Map();
   }
 
-  createBotTask(input = {}) {
-    const existing = input.botTaskId ? this.getByBotTaskId(input.botTaskId) : null;
-    if (existing && !isTerminalTaskStatus(existing.status)) return existing;
+  createAgentTask(input = {}) {
     const controller = new AbortController();
-    const task = compileBotTask(input, {
+    const task = compileAgentTask(input, {
       signal: controller.signal,
       now: this.now(),
     });
@@ -33,9 +30,6 @@ class TaskRuntime {
       result: null,
       timeout: null,
     });
-    if (task.association.botTaskId) {
-      this.botTaskIndex.set(task.association.botTaskId, task.id);
-    }
     this.emit(task, TASK_EVENT_TYPES.CREATED);
     return task;
   }
@@ -65,11 +59,6 @@ class TaskRuntime {
 
   get(taskId) {
     return this.records.get(String(taskId || ""))?.task || null;
-  }
-
-  getByBotTaskId(botTaskId) {
-    const taskId = this.botTaskIndex.get(String(botTaskId || ""));
-    return taskId ? this.get(taskId) : null;
   }
 
   waitForUser(taskId, detail = {}) {

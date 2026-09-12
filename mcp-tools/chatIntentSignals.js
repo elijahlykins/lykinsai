@@ -539,39 +539,6 @@ export function messageWantsLocalApps(msg) {
   return false;
 }
 
-const ASK_BOT_KIND_RE =
-  /\b(?:ask|consult|check\s+with|talk\s+to|speak\s+(?:to|with)|get\s+(?:a\s+|the\s+)?(?:take|opinion|thoughts?)\s+(?:from|of))\b.{0,48}\b(?:bot|teammate)s?\b/i;
-
-const SEND_BOT_KIND_RE =
-  /\b(?:send|run|start|dispatch|launch|have)\b.{0,48}\b(?:bot|teammate)s?\b/i;
-
-const MY_BOTS_RE = /\b(?:my|your|the)\s+(?:bot|teammate)s?\b/i;
-
-const ASK_NAMED_SOMEONE_RE =
-  /\b(?:ask|consult|check\s+with|talk\s+to|speak\s+(?:to|with)|what\s+does)\s+(?!me\b|us\b|them\b|him\b|her\b|it\b|this\b|that\b|you\b|your\b|yourself\b|my\b|our\b|the\b|a\b|an\b)([A-Za-z][A-Za-z0-9_-]{1,40})\b/i;
-
-function escapeRegExp(value) {
-  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function botRoster(raw) {
-  return Array.isArray(raw) ? raw : [];
-}
-
-/** True when this turn wants LYKN to talk to a desktop bot and report back. */
-export function messageWantsBotAsk(msg, bots) {
-  const t = String(msg || '');
-  if (!t.trim()) return false;
-  if (ASK_BOT_KIND_RE.test(t) || SEND_BOT_KIND_RE.test(t) || MY_BOTS_RE.test(t)) return true;
-  if (ASK_NAMED_SOMEONE_RE.test(t)) return true;
-  for (const bot of botRoster(bots)) {
-    const name = String(bot?.name || '').trim();
-    if (name.length < 2) continue;
-    if (new RegExp(`\\b${escapeRegExp(name)}\\b`, 'i').test(t)) return true;
-  }
-  return false;
-}
-
 /**
  * Tiny intent → tool allowlist. Exclusive composer modes are hard locks.
  * Returns null when no first-party family matched (never a reason to dump
@@ -694,7 +661,6 @@ export function messageWantsAgentTools(msg, opts = {}) {
   ) {
     return true;
   }
-  if (messageWantsBotAsk(t, opts.lyknBots)) return true;
   if (looksLikeLocalSystemAsk(t) || mightBeBrowserTaskAsk(t) || messageWantsLocalFolderPeek(t)) return true;
   if (
     conversationHasAttachedDesktopFolder(opts.conversation) &&

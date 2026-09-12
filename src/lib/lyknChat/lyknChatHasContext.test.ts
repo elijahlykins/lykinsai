@@ -36,6 +36,15 @@ test("chats with messages, notes, or a custom title stay listed", () => {
   assert.deepEqual(rows.map((r) => r.id), ["named", "with-messages", "with-notes"]);
 });
 
+test("has_content flag lists untitled chats without downloading snapshot jsonb", () => {
+  const rows = filterLyknChatsWithContext([
+    { id: "flagged", title: "New Chat", lykn_chat_states: { has_content: true } },
+    { id: "empty-flag", title: "New Chat", lykn_chat_states: { has_content: false } },
+    { id: "named-empty", title: "Launch plan", lykn_chat_states: { has_content: false } },
+  ] as Array<{ id: string; title: string; lykn_chat_states?: unknown }>);
+  assert.deepEqual(rows.map((r) => r.id), ["flagged", "named-empty"]);
+});
+
 test("snapshotHasContext is false for empty shells", () => {
   assert.equal(snapshotHasContext(null), false);
   assert.equal(snapshotHasContext({ chatMessages: [], aiThread: [] }), false);

@@ -10,7 +10,6 @@ import {
   Plus,
   Telescope,
 } from "lucide-react";
-import { BotMark } from "@/components/bots/BotAvatar";
 
 export const DESKTOP_CHAT_MODES = [
   { id: "chat", label: "Chat", icon: MessageCircle },
@@ -23,9 +22,9 @@ export type DesktopChatMode = (typeof DESKTOP_CHAT_MODES)[number]["id"];
 
 const PLACEHOLDERS: Record<DesktopChatMode, string> = {
   chat: "Ask me anything...",
-  build: "Describe what you want to build...",
-  imagine: "Describe the image you want...",
-  research: "What should I research?",
+  build: "What should LYKN build?",
+  imagine: "What do you want to create?",
+  research: "What should LYKN research?",
 };
 
 const PROMPT_IDEAS: { mode: DesktopChatMode; text: string }[] = [
@@ -225,16 +224,6 @@ export default function DesktopChatBar({
       ) : null}
 
       <div className="lykn-home-chat-bar lg-desktop-surface gl-desk-composer">
-        <button
-          type="button"
-          className="gl-desk-bot"
-          title="Talk to a Bot"
-          aria-label="Talk to a Bot"
-          onClick={onActivate}
-        >
-          <BotMark className="h-[19px] w-[19px]" />
-          <ChevronDown className="h-3 w-3 shrink-0 opacity-40" />
-        </button>
         <button
           type="button"
           className={ICON_BTN}

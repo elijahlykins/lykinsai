@@ -1,6 +1,7 @@
 "use strict";
 
 const { bindOverlayIpcContext } = require("./overlayIpcContext.cjs");
+const { clampOverlayMove, overlayMoveFromCursor, unionRects } = require("../overlay/overlayMove.cjs");
 
 function registerOverlayShellIpc(d) {
   const {
@@ -181,7 +182,10 @@ function registerOverlayShellIpc(d) {
     userWantsSearchOrType
   } = bindOverlayIpcContext(d);
 
-    ipcMain.on("lykn:hide-overlay", () => hideOverlay());
+    ipcMain.on("lykn:hide-overlay", () => {
+      stopOverlayCursorFollow();
+      hideOverlay();
+    });
     // Renderer-initiated summon (Studio desktop right-click → "Open LYKN Glass").
     // Same path as the ⌘/Ctrl+L hotkey: show the bar and focus the composer.
     ipcMain.on("lykn:show-overlay", () => {
@@ -522,7 +526,11 @@ function registerOverlayShellIpc(d) {
     });
     // During drag, only move the bar. Repositioning menu/picker/live/panel on
     // every pixel was stalling the cursor; those catch up on lykn:move-end.
+    // Cursor follow (move-start) is the live path: panel windows drop renderer
+    // pointer events as soon as setBounds races the cursor.
     let overlayMoveSideTimer = null;
+    let overlayDragOrigin = null;
+    let overlayDragTimer = null;
     const followOverlaySideWindows = () => {
       if (overlayMoveSideTimer) {
         clearTimeout(overlayMoveSideTimer);
@@ -535,43 +543,136 @@ function registerOverlayShellIpc(d) {
       positionPanelWindow();
       positionAgentSidebarWindow();
     };
-    ipcMain.on("lykn:move-by", (_e, { dx, dy } = {}) => {
-      if (!d.overlayWindow || d.overlayWindow.isDestroyed()) return;
-      const rdx = Math.round(dx || 0);
-      const rdy = Math.round(dy || 0);
-      if (!rdx && !rdy) return;
-      const b = d.overlayWindow.getBounds();
-      const workArea = overlayWorkArea(b);
-      const margin = 8;
-      const maxX = workArea.x + workArea.width - b.width;
-      const maxY = workArea.y + workArea.height - b.height - margin;
-      const nx = Math.max(workArea.x, Math.min(b.x + rdx, maxX));
-      const ny = Math.max(workArea.y + margin, Math.min(b.y + rdy, Math.max(workArea.y + margin, maxY)));
+    const applyOverlayBounds = (next) => {
+      if (!d.overlayWindow || d.overlayWindow.isDestroyed() || !next) return;
+      let cur;
+      try {
+        cur = d.overlayWindow.getBounds();
+      } catch (_) {
+        return;
+      }
+      if (cur.x === next.x && cur.y === next.y && cur.width === next.width && cur.height === next.height) {
+        return;
+      }
       d.overlayProgrammaticMove = true;
       try {
-        d.overlayWindow.setBounds(
-          { x: nx, y: ny, width: b.width, height: b.height },
-          false,
-        );
+        if (
+          cur.width === next.width &&
+          cur.height === next.height &&
+          typeof d.overlayWindow.setPosition === "function"
+        ) {
+          d.overlayWindow.setPosition(next.x, next.y, false);
+        } else {
+          d.overlayWindow.setBounds(next, false);
+        }
       } catch (_) {
         try {
-          d.overlayWindow.setBounds({ x: nx, y: ny, width: b.width, height: b.height });
+          d.overlayWindow.setBounds(next);
         } catch (_) {
           /* ignore */
         }
       }
       d.overlayProgrammaticMove = false;
       d.overlayUserPositioned = true;
-      d.overlayAnchorLeft = nx;
-      d.overlayAnchorBottomY = ny + b.height;
-      // Safety net if the renderer never sends move-end (stuck drag / crash).
+      d.overlayAnchorLeft = next.x;
+      d.overlayAnchorBottomY = next.y + next.height;
+    };
+    const dragWorkArea = (fallbackBounds) => {
+      try {
+        const areas = screen.getAllDisplays().map((disp) => disp.workArea).filter(Boolean);
+        if (areas.length > 1) return unionRects(areas);
+        if (areas[0]) return areas[0];
+      } catch (_) {
+        /* fall through */
+      }
+      return overlayWorkArea(fallbackBounds);
+    };
+    const stopOverlayCursorFollow = () => {
+      if (overlayDragTimer) {
+        clearInterval(overlayDragTimer);
+        overlayDragTimer = null;
+      }
+      overlayDragOrigin = null;
+    };
+    const applyOverlayCursorFollow = () => {
+      if (!overlayDragOrigin || !d.overlayWindow || d.overlayWindow.isDestroyed()) {
+        stopOverlayCursorFollow();
+        return;
+      }
+      if (!d.overlayWindow.isVisible()) return;
+      let cursor;
+      try {
+        cursor = screen.getCursorScreenPoint();
+      } catch (_) {
+        return;
+      }
+      const travel =
+        Math.abs(cursor.x - overlayDragOrigin.cursorX) +
+        Math.abs(cursor.y - overlayDragOrigin.cursorY);
+      if (travel < 2) return;
+      applyOverlayBounds(
+        overlayMoveFromCursor(
+          overlayDragOrigin,
+          cursor,
+          dragWorkArea(overlayDragOrigin),
+        ),
+      );
+    };
+    const beginOverlayCursorFollow = () => {
+      if (!d.overlayWindow || d.overlayWindow.isDestroyed()) return;
+      if (!d.overlayWindow.__lyknDragHideStop) {
+        d.overlayWindow.__lyknDragHideStop = true;
+        d.overlayWindow.on("hide", () => stopOverlayCursorFollow());
+        d.overlayWindow.on("closed", () => stopOverlayCursorFollow());
+      }
+      let cursor = { x: 0, y: 0 };
+      try {
+        cursor = screen.getCursorScreenPoint();
+      } catch (_) {
+        /* keep zeros */
+      }
+      const b = d.overlayWindow.getBounds();
+      overlayDragOrigin = {
+        cursorX: cursor.x,
+        cursorY: cursor.y,
+        x: b.x,
+        y: b.y,
+        width: b.width,
+        height: b.height,
+      };
+      if (!overlayDragTimer) {
+        overlayDragTimer = setInterval(applyOverlayCursorFollow, 16);
+      }
+      applyOverlayCursorFollow();
+    };
+    const scheduleOverlaySideFollow = () => {
       if (overlayMoveSideTimer) clearTimeout(overlayMoveSideTimer);
       overlayMoveSideTimer = setTimeout(() => {
         overlayMoveSideTimer = null;
         followOverlaySideWindows();
       }, 120);
+    };
+    ipcMain.on("lykn:move-start", () => {
+      beginOverlayCursorFollow();
+    });
+    ipcMain.on("lykn:move-by", (_e, { dx, dy } = {}) => {
+      if (!d.overlayWindow || d.overlayWindow.isDestroyed()) return;
+      if (overlayDragOrigin) return;
+      const rdx = Math.round(dx || 0);
+      const rdy = Math.round(dy || 0);
+      if (!rdx && !rdy) return;
+      const b = d.overlayWindow.getBounds();
+      applyOverlayBounds(
+        clampOverlayMove(
+          { x: b.x + rdx, y: b.y + rdy, width: b.width, height: b.height },
+          overlayWorkArea(b),
+        ),
+      );
+      scheduleOverlaySideFollow();
     });
     ipcMain.on("lykn:move-end", () => {
+      applyOverlayCursorFollow();
+      stopOverlayCursorFollow();
       followOverlaySideWindows();
     });
     ipcMain.on("lykn:ask", (event, args) => {

@@ -72,7 +72,7 @@ test('client Voice tool names stay in lockstep with the registry', () => {
     'utf8',
   );
   for (const name of LYKN_VOICE_TOOL_NAMES) {
-    if (name === 'ask_bot' || name === 'browser_agent' || name === 'update_voice_instructions') continue;
+    if (name === 'browser_agent' || name === 'update_voice_instructions') continue;
     assert.match(overlay, new RegExp(`"${name}"`), `overlay list missing ${name}`);
   }
 });
@@ -149,28 +149,18 @@ test('custom REST list_apps is not an MCP fallback', () => {
   assert.ok(custom.firstPartyToolNames.includes('call_app'));
 });
 
-test('desktop voice discloses browser_agent and ask_bot for those asks', () => {
+test('desktop voice discloses browser_agent for browser asks', () => {
   const browse = disclose('run a browser agent and go to the Perplexity Computer website', {
     localMode: true,
   });
   assert.ok(browse.capabilities.includes('browser.agent'));
   assert.ok(browse.firstPartyToolNames.includes('browser_agent'));
-  assert.equal(browse.firstPartyToolNames.includes('ask_bot'), false);
-
-  const send = disclose('send Scout to start work in the browser', {
-    localMode: true,
-    lyknBots: [{ id: 'bot_scout', name: 'Scout', role: 'Research' }],
-  });
-  assert.ok(send.capabilities.includes('bots.ask'));
-  assert.ok(send.firstPartyToolNames.includes('ask_bot'));
 });
 
-test('hello on desktop voice still discloses no bot or browser tools', () => {
+test('hello on desktop voice still discloses no browser tools', () => {
   const d = disclose('hello', {
     localMode: true,
-    lyknBots: [{ id: 'bot_scout', name: 'Scout', role: 'Research' }],
   });
-  assert.equal(d.firstPartyToolNames.includes('ask_bot'), false);
   assert.equal(d.firstPartyToolNames.includes('browser_agent'), false);
   assert.ok(d.firstPartyToolNames.includes('local_list_dir'));
   assert.ok(d.firstPartyToolNames.includes('local_open_path'));

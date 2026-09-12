@@ -174,8 +174,6 @@ function inferLikelyParameters(inputSteps) {
 }
 
 async function compileWorkflow(input = {}, options = {}) {
-  const botId = String(input.botId || "").trim().slice(0, 120);
-  if (!botId) throw new TypeError("Demonstrated workflow requires a botId");
   const source = Array.isArray(input.events) ? input.events : [];
   const events = removeNoise(normalizeEvents(source, { now: options.now }));
   if (!events.length) throw new TypeError("Cannot compile an empty demonstration");
@@ -231,7 +229,6 @@ async function compileWorkflow(input = {}, options = {}) {
     schema: WORKFLOW_SCHEMA,
     schemaVersion: WORKFLOW_SCHEMA_VERSION,
     id: String(input.id || options.id || newWorkflowId()),
-    botId,
     version: 1,
     name,
     objective: String(input.objective || "").trim().slice(0, 1000),

@@ -13,11 +13,12 @@ test("chat hints teach slash folder access and keep Ask me anything", () => {
   assert.ok(chat.length >= 4);
 });
 
-test("each studio mode rotates through more than one phrase", () => {
-  for (const mode of ["chat", "build", "imagine", "research"] as const) {
-    const phrases = COMPOSER_HINT_PHRASES[mode];
-    assert.ok(phrases.length >= 2, `${mode} should rotate`);
-    assert.equal(defaultComposerPlaceholder(mode), phrases[0]);
+test("build, imagine, and research stay on one sticky prompt", () => {
+  assert.deepEqual(COMPOSER_HINT_PHRASES.build, ["What should LYKN build?"]);
+  assert.deepEqual(COMPOSER_HINT_PHRASES.imagine, ["What do you want to create?"]);
+  assert.deepEqual(COMPOSER_HINT_PHRASES.research, ["What should LYKN research?"]);
+  for (const mode of ["build", "imagine", "research"] as const) {
+    assert.equal(defaultComposerPlaceholder(mode), COMPOSER_HINT_PHRASES[mode][0]);
   }
 });
 

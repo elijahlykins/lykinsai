@@ -6,7 +6,7 @@ import {
 
 /**
  * Cycles empty-composer hint copy. Parks on the first phrase when disabled
- * (typing, dictation, a bot target) or when the user prefers reduced motion
+ * (typing, dictation) or when the user prefers reduced motion
  * enough that we still rotate, just slower.
  */
 export function useRotatingPlaceholder(

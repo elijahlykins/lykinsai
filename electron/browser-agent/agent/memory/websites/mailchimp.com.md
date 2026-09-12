@@ -2,8 +2,9 @@
 
 - The app lives on a region host like `us21.admin.mailchimp.com`. Signing in at
   `login.mailchimp.com` redirects there; do not try to guess the region prefix.
-- Google's "Continue with Google" button does not work in an embedded browser.
-  If the user needs to sign in, tell them to use email + password.
+- **Continue with Google** opens a real Chrome window.
+  Finish signing in there; LYKN brings the session back.
+  Email + password also works.
 
 ## Getting to a new email
 

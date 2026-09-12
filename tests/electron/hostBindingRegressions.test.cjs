@@ -138,7 +138,7 @@ test("extracted hosts require the bindings they lost in the Electron split", () 
   assert.match(agentBridge, /require\("\.\.\/agentTabIds\.cjs"\)/);
   assert.match(agentBridge, /const MAX_AGENT_BROWSER_TABS = 20/);
   assert.match(agentBridge, /runtime\(\)\.isHeadless\?/);
-  assert.match(agentBridge, /concealBotBrowserTab\(id\)/);
+  assert.match(agentBridge, /concealAgentBrowserTab\(id\)/);
 
   const agentRuntime = read("agentRuntime.cjs");
   assert.match(agentRuntime, /workerAgents\(\)\.filter\(\(a\) => !a\.headless\)/);

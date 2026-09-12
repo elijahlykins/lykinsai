@@ -107,11 +107,24 @@ export type LyknChatListRow = {
   thread_id?: string | null;
 };
 
-function stateFromBoardRow(row: Record<string, unknown>): unknown {
+function chatStateRelation(row: Record<string, unknown>): Record<string, unknown> | null {
   const rel = row.lykn_chat_states;
-  if (Array.isArray(rel)) return rel[0] && typeof rel[0] === "object" ? (rel[0] as { state?: unknown }).state : null;
-  if (rel && typeof rel === "object") return (rel as { state?: unknown }).state ?? null;
+  if (Array.isArray(rel)) {
+    return rel[0] && typeof rel[0] === "object" ? (rel[0] as Record<string, unknown>) : null;
+  }
+  if (rel && typeof rel === "object") return rel as Record<string, unknown>;
   return null;
+}
+
+function stateFromBoardRow(row: Record<string, unknown>): unknown {
+  const rel = chatStateRelation(row);
+  return rel ? rel.state ?? null : null;
+}
+
+function hasContentFlagFromBoardRow(row: Record<string, unknown>): boolean | undefined {
+  const rel = chatStateRelation(row);
+  if (!rel || !("has_content" in rel) || rel.has_content == null) return undefined;
+  return Boolean(rel.has_content);
 }
 
 /** Boards that should appear in chat and project sidebars. */
@@ -121,7 +134,11 @@ export function filterLyknChatsWithContext<T extends LyknChatListRow>(
 ): T[] {
   return rows.filter((row) => {
     if (boardTitleLooksCustomized(row.title)) return true;
-    const state = stateByChatId?.get(row.id) ?? stateFromBoardRow(row as Record<string, unknown>);
+    const rec = row as Record<string, unknown>;
+    const flag = hasContentFlagFromBoardRow(rec);
+    if (flag === true) return true;
+    if (flag === false) return false;
+    const state = stateByChatId?.get(row.id) ?? stateFromBoardRow(rec);
     return snapshotHasContext(state);
   });
 }

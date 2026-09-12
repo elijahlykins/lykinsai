@@ -32,7 +32,6 @@ export async function resolveVoiceToolsForUtterance({
   message,
   conversation,
   localMode,
-  lyknBots,
 } = {}) {
   const text = String(message || '').trim();
   const contextText = mcpContextFromConversation(conversation);
@@ -58,7 +57,6 @@ export async function resolveVoiceToolsForUtterance({
     message: text,
     conversation,
     localMode: Boolean(localMode),
-    lyknBots: Array.isArray(lyknBots) ? lyknBots : [],
     resolveExternal: () => mcpTurn.tools,
   });
   const tools = [

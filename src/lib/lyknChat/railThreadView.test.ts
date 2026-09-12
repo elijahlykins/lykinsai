@@ -4,19 +4,15 @@ import { railShowsWaitingIndicator } from "@/lib/lyknChat/railThreadView";
 
 test("waiting row stays up until the reply starts typing", () => {
   assert.equal(
-    railShowsWaitingIndicator({ loading: true, botAlreadyWorking: false, lastAiResponse: "" }),
+    railShowsWaitingIndicator({ loading: true, lastAiResponse: "" }),
     true,
   );
   assert.equal(
-    railShowsWaitingIndicator({ loading: true, botAlreadyWorking: false, lastAiResponse: "Hello" }),
+    railShowsWaitingIndicator({ loading: true, lastAiResponse: "Hello" }),
     false,
   );
   assert.equal(
-    railShowsWaitingIndicator({ loading: true, botAlreadyWorking: true, lastAiResponse: "" }),
-    false,
-  );
-  assert.equal(
-    railShowsWaitingIndicator({ loading: false, botAlreadyWorking: false, lastAiResponse: "" }),
+    railShowsWaitingIndicator({ loading: false, lastAiResponse: "" }),
     false,
   );
 });

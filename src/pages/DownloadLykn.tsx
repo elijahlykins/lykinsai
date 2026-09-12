@@ -2,18 +2,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import lyknLogoMark from "@/assets/FINAL/LYKN-LOGO-B-Open/SVG/LYKN-Logo-Primary-B-Open-BLACK.svg";
 import LandingHeader from "@/components/landing/LandingHeader";
+import DesktopDownloadLink from "@/components/landing/DesktopDownloadLink";
 import "./GlassLanding.css";
 import "@/components/landing/landingIcy.css";
 import "./DownloadLykn.css";
 
-// Direct download of the latest signed builds. electron-builder publishes to
-// the public releases-only repo (see electron-builder.json "publish") with
-// version-less artifact names, so these "latest" URLs always resolve to the
-// newest build without the site needing to know the version.
-const MAC_DOWNLOAD_URL =
-  "https://github.com/elijahlykins/lykn-releases/releases/latest/download/LYKN.dmg";
-const WIN_DOWNLOAD_URL =
-  "https://github.com/elijahlykins/lykn-releases/releases/latest/download/LYKN-Setup.exe";
+// Installer clicks go through GET /api/download/mac (and /win), which
+// records a first-party count then 302s to the GitHub "latest" asset.
 
 // Flip on after Windows code signing ships a production-ready installer.
 const WINDOWS_DOWNLOAD_ENABLED = false;
@@ -147,14 +142,14 @@ export default function DownloadLykn() {
           <div className="dlp-actions">
             {primaryIsWin ? (
               <>
-                <a className="dlp-btn" href={WIN_DOWNLOAD_URL}>
+                <DesktopDownloadLink className="dlp-btn" platform="win">
                   <WindowsGlyph />
                   Download for Windows
-                </a>
-                <a className="dlp-btn dlp-btn--secondary" href={MAC_DOWNLOAD_URL}>
+                </DesktopDownloadLink>
+                <DesktopDownloadLink className="dlp-btn dlp-btn--secondary" platform="mac">
                   <AppleGlyph />
                   Download for Mac
-                </a>
+                </DesktopDownloadLink>
               </>
             ) : showWinComingSoon ? (
               <>
@@ -162,22 +157,22 @@ export default function DownloadLykn() {
                   <WindowsGlyph />
                   Join the Windows waitlist
                 </Link>
-                <a className="dlp-btn dlp-btn--secondary" href={MAC_DOWNLOAD_URL}>
+                <DesktopDownloadLink className="dlp-btn dlp-btn--secondary" platform="mac">
                   <AppleGlyph />
                   Download for Mac
-                </a>
+                </DesktopDownloadLink>
               </>
             ) : (
               <>
-                <a className="dlp-btn" href={MAC_DOWNLOAD_URL}>
+                <DesktopDownloadLink className="dlp-btn" platform="mac">
                   <AppleGlyph />
                   Download for Mac
-                </a>
+                </DesktopDownloadLink>
                 {WINDOWS_DOWNLOAD_ENABLED ? (
-                  <a className="dlp-btn dlp-btn--secondary" href={WIN_DOWNLOAD_URL}>
+                  <DesktopDownloadLink className="dlp-btn dlp-btn--secondary" platform="win">
                     <WindowsGlyph />
                     Download for Windows
-                  </a>
+                  </DesktopDownloadLink>
                 ) : (
                   <Link className="dlp-btn dlp-btn--secondary" to="/windows">
                     <WindowsGlyph />

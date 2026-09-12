@@ -26,7 +26,7 @@ export default function StudioUpdateBanners({ onOpenAccount }) {
   if (!showDesktop && !showProduct && !showCredits) return null;
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-3 z-[60] flex justify-center px-4">
+    <div className="pointer-events-none absolute inset-x-0 top-3 z-[60] flex justify-end px-4">
       <div className="pointer-events-auto flex w-full max-w-[420px] flex-col gap-2">
         {showCredits ? (
           <GlassNotice title={credits.copy.title} summary={credits.copy.summary}>

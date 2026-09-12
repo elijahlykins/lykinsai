@@ -112,7 +112,7 @@ export function buildAttachmentContext(sentAttachments: FocusedChatAttachment[])
         `You CAN read nested folders. Search with local_search_files on this exact Path, then ` +
         `local_list_dir / local_read_file on matching nested paths (src/, server/, electron/, …) ` +
         `until you can answer with specifics from the text you read. ` +
-        `Never say you only have the top-level listing. Do not hand this off to another model or bot.\n` +
+        `Never say you only have the top-level listing. Do not hand this off to another model.\n` +
         (listing || "(empty listing)")
       );
     }

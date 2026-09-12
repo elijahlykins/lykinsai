@@ -17,7 +17,7 @@ export type BrowserChatBind = {
 
 const byAgent = new Map<string, BrowserChatBind>();
 /** Tabs the user has actually opened (click-to-reveal, a chat link). Hidden
- *  Bot work does not count — that stays a peek on that Bot's own chat. */
+ *  Hidden agent work does not count — it stays on its own board. */
 const revealed = new Set<string>();
 /** In-flight opens keyed by a token so two rapid studioOpenUrl calls cannot
  *  steal each other's chat. The rail never reads this; it only resolves a
@@ -135,7 +135,7 @@ export function ensureBrowserTabChat(
   const title = String(meta?.title || "").trim() || undefined;
   const existing = byAgent.get(tab);
   if (existing && existing.chatId !== chat) {
-    // A Bot's worker tab (or any already-paired tab) must not follow the
+    // A hidden agent's worker tab (or any already-paired tab) must not follow the
     // user onto a sibling chat. Update the page only when the pair matches.
     return;
   }

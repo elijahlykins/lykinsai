@@ -1,9 +1,9 @@
 {
   "generatedBy": "tests/electron/ipcSurface.cjs",
-  "channelCount": 262,
-  "uniqueChannelCount": 262,
-  "handleCount": 198,
-  "onCount": 64,
+  "channelCount": 268,
+  "uniqueChannelCount": 268,
+  "handleCount": 203,
+  "onCount": 65,
   "duplicateCount": 0,
   "entries": [
     {
@@ -15,6 +15,11 @@
       "mode": "handle",
       "channel": "lykn:add-live-watch-rule",
       "file": "ipc/overlayShell.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:agent-bookmark-toggle",
+      "file": "ipc/agentBridge.cjs"
     },
     {
       "mode": "handle",
@@ -39,6 +44,11 @@
     {
       "mode": "handle",
       "channel": "lykn:agent-browser-history-remove",
+      "file": "ipc/agentBridge.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:agent-browser-home-suggest-data",
       "file": "ipc/agentBridge.cjs"
     },
     {
@@ -224,6 +234,21 @@
     {
       "mode": "handle",
       "channel": "lykn:agent-switch",
+      "file": "ipc/agentBridge.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:agent-visits-clear",
+      "file": "ipc/agentBridge.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:agent-visits-list",
+      "file": "ipc/agentBridge.cjs"
+    },
+    {
+      "mode": "handle",
+      "channel": "lykn:agent-visits-remove",
       "file": "ipc/agentBridge.cjs"
     },
     {
@@ -734,6 +759,11 @@
     {
       "mode": "on",
       "channel": "lykn:move-end",
+      "file": "ipc/overlayShell.cjs"
+    },
+    {
+      "mode": "on",
+      "channel": "lykn:move-start",
       "file": "ipc/overlayShell.cjs"
     },
     {

@@ -1,48 +1,49 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
 import { extractChatArtifacts, extractLeakedHtmlDocument, buildLeakedHtmlArtifact } from "./chatArtifacts";
 import type { ToolCallEvent } from "../lyknChat/chatTurnTypes";
 
 describe("extractLeakedHtmlDocument", () => {
   it("extracts a complete bare HTML document and keeps surrounding prose", () => {
     const r = extractLeakedHtmlDocument("Here you go:\n<!DOCTYPE html><html><body><h1>Hi</h1></body></html>\nEnjoy!");
-    expect(r.pending).toBe(false);
-    expect(r.html).toContain("<!DOCTYPE html>");
-    expect(r.rest).toContain("Here you go:");
-    expect(r.rest).toContain("Enjoy!");
-    expect(r.rest).not.toContain("<html");
+    assert.equal(r.pending, false);
+    assert.ok(String(r.html ?? "").includes("<!DOCTYPE html>"));
+    assert.ok(r.rest.includes("Here you go:"));
+    assert.ok(r.rest.includes("Enjoy!"));
+    assert.ok(!r.rest.includes("<html"));
   });
 
   it("extracts a fenced ```html document", () => {
     const r = extractLeakedHtmlDocument("Sure:\n```html\n<!DOCTYPE html><html><head><title>X</title></head><body>hi</body></html>\n```");
-    expect(r.html).toContain("<title>X</title>");
-    expect(r.rest).toBe("Sure:");
+    assert.ok(String(r.html ?? "").includes("<title>X</title>"));
+    assert.equal(r.rest, "Sure:");
   });
 
   it("flags a still-streaming document as pending and hides the markup", () => {
     const r = extractLeakedHtmlDocument("Building your page:\n\n<!DOCTYPE html><html><head><meta charset=\"utf-8\">");
-    expect(r.pending).toBe(true);
-    expect(r.html).toBeNull();
-    expect(r.rest).toBe("Building your page:");
-    expect(r.rest).not.toContain("<!DOCTYPE");
+    assert.equal(r.pending, true);
+    assert.equal(r.html, null);
+    assert.equal(r.rest, "Building your page:");
+    assert.ok(!r.rest.includes("<!DOCTYPE"));
   });
 
   it("does NOT trigger on prose that merely mentions an <html> tag", () => {
     const r = extractLeakedHtmlDocument("You can use the <html> tag to start a document.");
-    expect(r.pending).toBe(false);
-    expect(r.html).toBeNull();
-    expect(r.rest).toContain("<html>");
+    assert.equal(r.pending, false);
+    assert.equal(r.html, null);
+    assert.ok(r.rest.includes("<html>"));
   });
 
   it("passes plain prose through untouched", () => {
     const r = extractLeakedHtmlDocument("Here are three tips for today.");
-    expect(r).toEqual({ html: null, rest: "Here are three tips for today.", pending: false });
+    assert.deepEqual(r, { html: null, rest: "Here are three tips for today.", pending: false });
   });
 
   it("builds a previewable html artifact titled from <title>", () => {
     const art = buildLeakedHtmlArtifact("msg1", "<!DOCTYPE html><html><head><title>My Page</title></head><body>x</body></html>");
-    expect(art.kind).toBe("html");
-    expect(art.title).toBe("My Page");
-    expect(art.srcDoc).toContain("<body>x</body>");
+    assert.equal(art.kind, "html");
+    assert.equal(art.title, "My Page");
+    assert.ok(String(art.srcDoc ?? "").includes("<body>x</body>"));
   });
 });
 
@@ -67,10 +68,10 @@ describe("extractChatArtifacts", () => {
     ];
     const arts = extractChatArtifacts(calls);
     // One artifact (the HTML deck), with pptx available as a download option.
-    expect(arts).toHaveLength(1);
-    expect(arts[0].kind).toBe("html");
-    expect(arts[0].previewUrl).toContain("deck.html");
-    expect(arts[0].downloads?.some((d) => d.format === "pptx")).toBe(true);
+    assert.equal(arts.length, 1);
+    assert.equal(arts[0].kind, "html");
+    assert.ok(String(arts[0].previewUrl ?? "").includes("deck.html"));
+    assert.equal(arts[0].downloads?.some((d) => d.format === "pptx"), true);
   });
 
   it("renders build_template html via srcDoc when preview_html is present", () => {
@@ -96,9 +97,9 @@ describe("extractChatArtifacts", () => {
     ];
     const arts = extractChatArtifacts(calls);
     const htmlArt = arts.find((a) => a.kind === "html");
-    expect(htmlArt?.srcDoc).toContain("<h1>Study guide</h1>");
-    expect(htmlArt?.downloadUrl).toContain("guide.html");
-    expect(arts.filter((a) => a.kind === "html")).toHaveLength(1);
+    assert.ok(String(htmlArt?.srcDoc ?? "").includes("<h1>Study guide</h1>"));
+    assert.ok(String(htmlArt?.downloadUrl ?? "").includes("guide.html"));
+    assert.equal(arts.filter((a) => a.kind === "html").length, 1);
   });
 
   it("exposes PNG/SVG/PDF downloads for a generated chart", () => {
@@ -122,9 +123,9 @@ describe("extractChatArtifacts", () => {
       },
     ];
     const arts = extractChatArtifacts(calls);
-    expect(arts).toHaveLength(1);
-    expect(arts[0].kind).toBe("image");
-    expect(arts[0].downloads?.map((d) => d.format).sort()).toEqual(["pdf", "png", "svg"]);
+    assert.equal(arts.length, 1);
+    assert.equal(arts[0].kind, "image");
+    assert.deepEqual(arts[0].downloads?.map((d) => d.format).sort(), ["pdf", "png", "svg"]);
   });
 
   it("exposes SVG/PNG downloads for a generated diagram", () => {
@@ -147,8 +148,8 @@ describe("extractChatArtifacts", () => {
       },
     ];
     const arts = extractChatArtifacts(calls);
-    expect(arts).toHaveLength(1);
-    expect(arts[0].downloads?.map((d) => d.format).sort()).toEqual(["png", "svg"]);
+    assert.equal(arts.length, 1);
+    assert.deepEqual(arts[0].downloads?.map((d) => d.format).sort(), ["png", "svg"]);
   });
 
   it("attaches a PNG download to a generated image", () => {
@@ -163,8 +164,8 @@ describe("extractChatArtifacts", () => {
       },
     ];
     const arts = extractChatArtifacts(calls);
-    expect(arts).toHaveLength(1);
-    expect(arts[0].downloads).toEqual([
+    assert.equal(arts.length, 1);
+    assert.deepEqual(arts[0].downloads, [
       { format: "png", url: "https://files.example.com/signed/img.png", filename: "generated-image.png" },
     ]);
   });
@@ -186,9 +187,9 @@ describe("extractChatArtifacts", () => {
       },
     ];
     const arts = extractChatArtifacts(calls);
-    expect(arts).toHaveLength(1);
-    expect(arts[0].kind).toBe("html");
-    expect(arts[0].srcDoc).toContain("<h1>Hi</h1>");
+    assert.equal(arts.length, 1);
+    assert.equal(arts[0].kind, "html");
+    assert.ok(String(arts[0].srcDoc ?? "").includes("<h1>Hi</h1>"));
   });
 
   it("renders a written document from preview_html", () => {
@@ -208,10 +209,10 @@ describe("extractChatArtifacts", () => {
       },
     ];
     const arts = extractChatArtifacts(calls);
-    expect(arts).toHaveLength(1);
-    expect(arts[0].kind).toBe("html");
-    expect(arts[0].title).toBe("Cover Letter");
-    expect(arts[0].toolName).toBe("lykn_write_document");
-    expect(arts[0].srcDoc).toContain("Dear team");
+    assert.equal(arts.length, 1);
+    assert.equal(arts[0].kind, "html");
+    assert.equal(arts[0].title, "Cover Letter");
+    assert.equal(arts[0].toolName, "lykn_write_document");
+    assert.ok(String(arts[0].srcDoc ?? "").includes("Dear team"));
   });
 });

@@ -21,19 +21,13 @@ function cleanConnectionIds(value) {
     ))].slice(0, 20);
 }
 
-function resolveMcpConnectionIds(definition, bot) {
+function resolveMcpConnectionIds(definition) {
   const required = cleanConnectionIds(
     (definition?.connections || [])
       .filter((connection) => connection?.kind === "mcp")
       .map((connection) => connection.id),
   ) || [];
-  const restricted = bot && Object.prototype.hasOwnProperty.call(bot, "connectionIds");
-  if (!restricted) return { connectionIds: required, unavailable: [] };
-  const allowed = new Set(cleanConnectionIds(bot.connectionIds) || []);
-  return {
-    connectionIds: required.filter((id) => allowed.has(id)),
-    unavailable: required.filter((id) => !allowed.has(id)),
-  };
+  return { connectionIds: required, unavailable: [] };
 }
 
 function clone(value) {
@@ -52,6 +46,8 @@ function assertAllowedKeys(value, allowed, context) {
 function validateWorkflowDefinition(input) {
   assertPlain(input, "WorkflowDefinition must be an object");
   assertAllowedKeys(input, new Set([
+    // "botId" is tolerated read-only: pre-elimination saves carry it and the
+    // definitions are frozen on disk. New definitions never include it.
     "schema", "schemaVersion", "id", "botId", "version", "name", "objective", "parameters",
     "capabilities", "connections", "approvalPolicy", "steps", "createdAt", "updatedAt", "metadata",
   ]), "WorkflowDefinition");
@@ -59,7 +55,6 @@ function validateWorkflowDefinition(input) {
     throw new TypeError("Unsupported WorkflowDefinition schema version");
   }
   if (!String(input.id || "").trim()) throw new TypeError("WorkflowDefinition id is required");
-  if (!String(input.botId || "").trim()) throw new TypeError("WorkflowDefinition botId is required");
   if (!Number.isInteger(input.version) || input.version < 1) throw new TypeError("WorkflowDefinition version must be positive");
   if (!String(input.name || "").trim()) throw new TypeError("WorkflowDefinition name is required");
   if (!Array.isArray(input.steps) || input.steps.length === 0) throw new TypeError("WorkflowDefinition steps are required");

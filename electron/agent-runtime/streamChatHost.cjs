@@ -40,7 +40,7 @@ function createStreamChatHost(host) {
     const isLive = () =>
       questionsOnly ? gen === agent.askGeneration : gen === agent.generation;
     // browse-summary must not reuse prior "please sign in" turns — they override the scrape.
-    // Browser-rail questions use their own thread so Bot work never mixes in.
+    // Browser-rail questions use their own thread so agent work never mixes in.
     const history = questionsOnly
       ? (Array.isArray(agent.askHistory) ? agent.askHistory : []).slice(-12)
       : skill === "browse-summary"
@@ -80,9 +80,9 @@ function createStreamChatHost(host) {
       !screenSourced &&
       (skill === "research" || skill === "build") &&
       !(skill === "build" && (agent.lastArtifact?.code || agent.lastResearchReport));
-    // Headless agents (Bots) must not read the user's open page — they aren't
+    // Headless agents must not read the user's open page — they aren't
     // connected to the browser, so their answers come from the conversation.
-    // Browser-rail questions still ground on the tab even when a Bot owns it.
+    // Browser-rail questions still ground on the tab even when a headless agent owns it.
     if ((skill === "general" || screenSourced || livePageDefault) && (!agent.headless || questionsOnly)) {
       try {
         const wc = resolvePageContextWebContents(agent);
@@ -254,16 +254,11 @@ function createStreamChatHost(host) {
         /* roster is best-effort */
       }
     }
-    const botSoftChatPrompt =
-      !questionsOnly && softChat && agent.headless && agent.botProfile
+    const headlessSoftChatPrompt =
+      !questionsOnly && softChat && agent.headless
         ? [
-            `You are ${agent.botProfile.name || "the user's Bot"}${
-              agent.botProfile.role ? `, their ${agent.botProfile.role}` : ""
-            } - a standing teammate inside LYKN.`,
-            agent.botProfile.persona
-              ? `Working style the user gave you:\n${agent.botProfile.persona}`
-              : "",
-            "Stay in this Bot identity. Do not introduce yourself unless they ask who you are.",
+            "You are LYKN — a sharp, friendly teammate.",
+            "Do not introduce yourself unless they ask who you are.",
             "Small talk and one-fact answers stay short. A write-up, briefing, comparison, or anything they will keep is a formatted markdown report: title, short summary, headed sections, lists or a table, sources when you have them. Longer is better than a teaser.",
             "Do not call tools, invent a plan, or announce work for this reply-only turn.",
             "Never silently broaden the user's request or offer unrelated follow-up work.",
@@ -272,21 +267,8 @@ function createStreamChatHost(host) {
             .filter(Boolean)
             .join("\n\n")
         : "";
-    const botPolicy = agent.botProfile?.modelPolicy || { mode: "lykn" };
-    const requestedModel = botPolicy.mode === "my_setup"
-      ? "lykn-setup"
-      : botPolicy.mode === "model" && botPolicy.modelId
-        ? botPolicy.modelId
-        : "lykn";
     const body = {
-      model: requestedModel,
-      modelPolicy: {
-        mode: botPolicy.mode || "lykn",
-        routeId: botPolicy.routeId || null,
-        modelId: botPolicy.modelId || null,
-        botId: agent.botProfile?.id || null,
-      },
-      botId: agent.botProfile?.id || null,
+      model: "lykn",
       intent: "ask",
       text: clipped,
       prompt: toolDraft
@@ -335,11 +317,11 @@ function createStreamChatHost(host) {
                 `Answer the question. Do not operate the page, click, navigate, fill forms, send mail, or start a task.\n` +
                 `When [PAGE CONTENT] / FULL PAGE TEXT is in the prompt, that IS the open tab — answer from it.\n` +
                 `Never say you don't have the page or need a screenshot when PAGE CONTENT is present.\n` +
-                `If they asked you to do something on the web rather than answer a question, say you can talk about what's on screen, and that a Bot can do the work.\n` +
+                `If they asked you to do something on the web rather than answer a question, say you can talk about what's on screen, and that LYKN can do the work if they ask in the main chat.\n` +
                 `Do NOT invent a working plan, call tools, or include “Want me to…” follow-up questions.\n\n` +
                 `User: ${clipped}`
             : softChat
-              ? botSoftChatPrompt ||
+              ? headlessSoftChatPrompt ||
                 (`You are LYKN — a sharp, friendly teammate chatting in the browser sidebar. ` +
                 `Do not introduce yourself unless they ask who you are. Just answer.\n` +
                 `You are also a real browser agent: when the user asks, you can open sites, click, type, fill forms, ` +
@@ -439,7 +421,7 @@ function createStreamChatHost(host) {
                 forceArtifact: true,
                 artifactType: "webapp",
                 // Sighted fresh builds skip search — their content comes from
-                // the conversation or the open page. A headless Bot build has
+                // the conversation or the open page. A headless build has
                 // no page and may be the task's ONLY pass over the topic
                 // ("research X and turn it into a deck" is one build call, no
                 // report first), so it must be allowed to ground itself; the
@@ -467,7 +449,7 @@ function createStreamChatHost(host) {
                 }
           : skill === "web-search"
             ? {
-                // Look it up and answer. The middle rung the Bot was missing:
+                // Look it up and answer. The middle rung that was missing:
                 // "check the news" used to mean opening a real browser and
                 // driving it, because search-and-summarise was not something
                 // the planner could pick. No deep-research crawl either —

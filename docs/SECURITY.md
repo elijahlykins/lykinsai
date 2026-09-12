@@ -159,7 +159,7 @@ That is governed by each provider's terms.
 
 Chat tools must be on the `CHAT_TOOL_NAMES` allowlist (`mcp-tools/chatTools.js`) and pass per-turn capability gates.
 
-Desktop bots use `electron/bot-harness`.
+Desktop bots use `electron/agent-harness`.
 `local_computer` is omitted unless Local Mode is on.
 `browser` drives the owned browser.
 Headless bots do not get the browser unless explicitly enabled.
@@ -200,6 +200,8 @@ Those events are not chat bodies.
 
 The public website can use Google Analytics 4 when the visitor accepts analytics cookies.
 The Mac app does not report to that analytics path.
+Installer clicks go through `GET /api/download/mac` and `GET /api/download/win`, which write an ops-only `desktop_download_events` row (service role, no SELECT policy) and then 302 to GitHub.
+That count is not unique people and is not Mac-app telemetry.
 
 iOS MetricKit diagnostics can be associated with an account.
 They are not vault or message content.

@@ -9,6 +9,7 @@ import {
 import { MODEL_GROUPS, LYKN_ID, MY_SETUP_ID } from "@/lib/modelCatalog";
 import { customModelSelectValue } from "@/lib/modelBuilder/customModelSelect";
 import { isModelAllowedForPlan } from "@/lib/modelTiers";
+import { modelPickerHint } from "@/lib/models/modelPickerMeta";
 import lyknWordmarkBlack from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-BLACK-web.png";
 import lyknWordmarkNeutral from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-NEUTRAL-web.png";
 
@@ -58,7 +59,7 @@ export default function ModelSelectOptions({
       <SelectItem
         key={item.value}
         value={item.value}
-        hint={item.hint}
+        hint={modelPickerHint({ id: item.value, label: item.label })}
         disabled={!allowed}
         className={!allowed ? "opacity-50 cursor-not-allowed" : undefined}
       >

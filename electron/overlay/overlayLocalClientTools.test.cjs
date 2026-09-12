@@ -8,6 +8,7 @@ const {
   sanitizeLocalResult,
   runOverlayLocalTool,
   handleOverlayAwaitingClient,
+  postOverlayLocalToolResult,
 } = require("./overlayLocalClientTools.cjs");
 
 test("Glass only arms Local Mode when the Vault switch is on", () => {
@@ -31,14 +32,6 @@ test("pulled-file bytes never go back to the model", () => {
 });
 
 test("renderer-only local tools fail closed instead of hanging the turn", async () => {
-  const bot = await runOverlayLocalTool({
-    name: "local_ask_bot",
-    localSystem: { readLocalMode: () => ({ enabled: true }), run: async () => ({ ok: true }) },
-    userDataPath: "/tmp",
-  });
-  assert.equal(bot.ok, false);
-  assert.match(bot.error, /Studio Chat or use voice/);
-
   const browser = await runOverlayLocalTool({
     name: "local_browser_agent",
     localSystem: { readLocalMode: () => ({ enabled: true }), run: async () => ({ ok: true }) },
@@ -80,6 +73,29 @@ test("file tools run in main and post the result back to the stream", async () =
   assert.equal(body.streamId, "lt_1");
   assert.equal(body.toolCallId, "call_1");
   assert.equal(body.result.ok, true);
+});
+
+test("Glass local-tool-result refreshes a dead JWT instead of hanging the turn", async () => {
+  const posted = [];
+  const tokens = [];
+  await postOverlayLocalToolResult({
+    apiBase: "http://127.0.0.1:3001",
+    token: "expired",
+    getAuthToken: async ({ forceRefresh } = {}) => {
+      tokens.push(!!forceRefresh);
+      return forceRefresh ? "fresh" : "expired";
+    },
+    streamId: "lt_1",
+    toolCallId: "call_1",
+    result: { ok: true },
+    fetchImpl: async (url, init) => {
+      posted.push(init.headers.Authorization);
+      const auth = init.headers.Authorization;
+      return { status: auth === "Bearer fresh" ? 200 : 401, ok: auth === "Bearer fresh" };
+    },
+  });
+  assert.deepEqual(tokens, [false, true]);
+  assert.deepEqual(posted, ["Bearer expired", "Bearer fresh"]);
 });
 
 test("risky overlay local actions re-run only after approval", async () => {

@@ -56,7 +56,7 @@ recorded per item so classifications can be re-verified.
 
 | Pair | Verdict |
 |---|---|
-| `electron/browser-agent/` vs `electron/bot-harness/` | Sibling architectures, not a fork: same runtime shape (contextRouter/taskState/instructions) but different schemas; bot-harness imports `normalizeAnswerOptions` from browser-agent rather than copying. Both required by `agentRuntime.cjs`. |
+| `electron/browser-agent/` vs `electron/agent-harness/` | Sibling architectures, not a fork: same runtime shape (contextRouter/taskState/instructions) but different schemas; agent-harness imports `normalizeAnswerOptions` from browser-agent rather than copying. Both required by `agentRuntime.cjs`. |
 | Embedding layers (`factEmbedding.js`, `conceptEmbedding.js`, `synthesis-service.js`, inline server embed paths, `electron/localStore` CJS ports) | Different tables/surfaces. Known real duplication: vault-chunk embedding exists both inline in `server.js` and in `synthesis-service.js` (noted in the file itself). Consolidation = Risk Level 3+. |
 | Provider routing (`server.js` inline streaming, `lib/agentModelProviders.js`, `mcp-tools/chatTools.js` `providerForModel`) | `chatTools.js` duplicates provider mapping *intentionally* to avoid an import cycle — consolidating requires breaking that cycle first. |
 | `LyknChatBarToolbar` (component file) vs inline memo toolbar in `LyknChat.tsx` | Real UI duplication: file version serves wake preview + HomeChatBar; LyknChat defines its own. Candidate for consolidation after diffing behavior. |

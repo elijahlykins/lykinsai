@@ -112,6 +112,19 @@ export function trackPageview(path) {
   });
 }
 
+/** Consent-gated companion to the first-party `/api/download/:platform`
+    count. Fires only on lykn.io after the visitor accepts analytics. */
+export function trackDesktopDownload(platform) {
+  if (!isAnalyticsRuntime()) return;
+  const isWin = platform === "win";
+  gtag("event", "file_download", {
+    file_name: isWin ? "LYKN-Setup.exe" : "LYKN.dmg",
+    file_extension: isWin ? "exe" : "dmg",
+    link_url: `${window.location.origin}/api/download/${isWin ? "win" : "mac"}`,
+    send_to: GA_MEASUREMENT_ID,
+  });
+}
+
 /** Re-open the consent banner (e.g. from Cookie Policy). */
 export function openCookiePreferences() {
   if (typeof window === "undefined") return;

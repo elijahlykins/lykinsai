@@ -53,7 +53,7 @@ function registerWorkflowsIpc(d) {
 
   d.ipcMain.handle("lykn:workflows-list", (_event, payload) => {
     try {
-      return { ok: true, workflows: service().listWorkflows(payload?.botId) };
+      return { ok: true, workflows: service().listWorkflows() };
     } catch (error) {
       return asError(error);
     }

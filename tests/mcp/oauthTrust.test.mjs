@@ -738,13 +738,13 @@ test('HTTP request botConnectionIds cannot expand a Bot-associated Task', () => 
   assert.deepEqual(authority.association.connectionIds, ['work']);
 });
 
-test('Bot-associated Task without an allowlist is fail-closed', async () => {
+test('Routine-associated Task without an allowlist is fail-closed', async () => {
   const send = classifyMcpTool({ name: 'send_email', description: 'Send an email' });
   const denied = await executeMcpTool({
     task: {
       id: 't1',
-      origin: { type: 'bot' },
-      association: { botId: 'bot-work' },
+      origin: { type: 'agent' },
+      association: { routineId: 'routine-work' },
       capabilities: ['communication.email.send'],
     },
     resolution: { tools: [{ ...send, connectionId: 'personal' }] },

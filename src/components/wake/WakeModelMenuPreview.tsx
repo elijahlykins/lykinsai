@@ -2,6 +2,7 @@ import React from "react";
 import { Check, Lock } from "lucide-react";
 import { MODEL_GROUPS, LYKN_ID } from "@/lib/modelCatalog";
 import { isModelAllowedForPlan } from "@/lib/modelTiers";
+import { modelPickerHint } from "@/lib/models/modelPickerMeta";
 import lyknWordmarkBlack from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-BLACK-web.png";
 import lyknWordmarkNeutral from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-NEUTRAL-web.png";
 
@@ -60,6 +61,7 @@ export default function WakeModelMenuPreview({
                 ? isModelAllowedForPlan(item.value, modelTier)
                 : true;
               const selected = item.value === selectedModel;
+              const hint = modelPickerHint({ id: item.value, label: item.label });
               return (
                 <div
                   key={item.value}
@@ -79,9 +81,9 @@ export default function WakeModelMenuPreview({
                     )}
                     {!allowed && <Lock className="w-3 h-3 opacity-60" />}
                   </span>
-                  {item.hint ? (
+                  {hint ? (
                     <span className={`ml-auto pl-2 text-[0.625rem] truncate ${hintCls}`}>
-                      {item.hint}
+                      {hint}
                     </span>
                   ) : null}
                   {selected && (

@@ -411,7 +411,7 @@ export default function DesktopAuth() {
         void openApp({ silent: true });
       }, 1200);
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [phase]);
 
   // Last chance: user closes/hides the tab after sign-in without clicking.
@@ -429,7 +429,7 @@ export default function DesktopAuth() {
       window.removeEventListener("pagehide", onLeave);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [phase]);
 
   const switchAccount = async () => {
@@ -568,7 +568,7 @@ export default function DesktopAuth() {
       }
       await startOAuth();
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [loading, user]);
 
   const waitingCopy = finishing || hasOAuthCallbackParams()

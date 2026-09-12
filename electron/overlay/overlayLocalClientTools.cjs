@@ -10,7 +10,7 @@
  * path; they return a clear error so the turn does not hang.
  */
 
-const RENDERER_ONLY_LOCAL_TOOLS = new Set(["local_ask_bot", "local_browser_agent"]);
+const RENDERER_ONLY_LOCAL_TOOLS = new Set(["local_browser_agent"]);
 
 function isOverlayLocalModeOn(localSystem, userDataPath) {
   try {
@@ -65,9 +65,7 @@ async function runOverlayLocalTool(opts = {}) {
     return {
       ok: false,
       error:
-        name === "local_ask_bot"
-          ? "Asking a bot from Glass typed chat is not available yet. Open Studio Chat or use voice."
-          : "The browser agent is not available from Glass typed chat. Open Studio or start Agent Mode there.",
+        "The browser agent is not available from Glass typed chat. Open Studio or start Agent Mode there.",
     };
   }
   const localSystem = opts.localSystem;
@@ -106,9 +104,18 @@ async function runOverlayLocalTool(opts = {}) {
   return sanitizeLocalResult(result);
 }
 
+async function resolveOverlayRelayToken({ token, getAuthToken, forceRefresh = false } = {}) {
+  if (typeof getAuthToken === "function") {
+    const fresh = await getAuthToken({ forceRefresh: !!forceRefresh }).catch(() => null);
+    if (fresh) return String(fresh);
+  }
+  return typeof token === "string" ? token : "";
+}
+
 async function postOverlayLocalToolResult({
   apiBase,
   token,
+  getAuthToken,
   streamId,
   toolCallId,
   result,
@@ -119,14 +126,28 @@ async function postOverlayLocalToolResult({
   const cid = String(toolCallId || "");
   if (!base || !sid || !cid) return { ok: false, error: "missing local tool relay" };
   const fetchFn = typeof fetchImpl === "function" ? fetchImpl : fetch;
-  await fetchFn(`${base}/api/ai/local-tool-result`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ streamId: sid, toolCallId: cid, result }),
-  });
+  const post = async (auth) =>
+    fetchFn(`${base}/api/ai/local-tool-result`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(auth ? { Authorization: `Bearer ${auth}` } : {}),
+      },
+      body: JSON.stringify({ streamId: sid, toolCallId: cid, result }),
+    });
+  let bearer = await resolveOverlayRelayToken({ token, getAuthToken });
+  let res = await post(bearer);
+  if (res && res.status === 401) {
+    const refreshed = await resolveOverlayRelayToken({
+      token,
+      getAuthToken,
+      forceRefresh: true,
+    });
+    if (refreshed && refreshed !== bearer) {
+      bearer = refreshed;
+      res = await post(bearer);
+    }
+  }
   return { ok: true };
 }
 
@@ -147,6 +168,7 @@ async function handleOverlayAwaitingClient(tc, opts = {}) {
   await postOverlayLocalToolResult({
     apiBase: opts.apiBase,
     token: opts.token,
+    getAuthToken: opts.getAuthToken,
     streamId,
     toolCallId,
     result,

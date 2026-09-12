@@ -98,7 +98,6 @@ class WorkflowExecutor {
         options.origin ||
         { type: "taught_workflow", workflowId: definition.id, workflowVersion: definition.version },
       association: {
-        botId: definition.botId,
         workflowId: definition.id,
         workflowVersion: definition.version,
         connectionIds: definition.connections.filter((item) => item.kind === "mcp").map((item) => item.id),

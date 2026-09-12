@@ -46,7 +46,7 @@ function bindOverlayIpcContext(d) {
   const closeAgentFinishedPopup = (...a) => d.closeAgentFinishedPopup(...a);
   const closeStudioBrowserSession = (...a) => d.closeStudioBrowserSession(...a);
   const commitAgentBrowserHistory = (...a) => d.commitAgentBrowserHistory(...a);
-  const concealBotBrowserTab = (...a) => d.concealBotBrowserTab(...a);
+  const concealAgentBrowserTab = (...a) => d.concealAgentBrowserTab(...a);
   const createMainWindow = (...a) => d.createMainWindow(...a);
   const describeBrowserTabProblem = (...a) => d.describeBrowserTabProblem(...a);
   const destroyAgentBrowserWindow = (...a) => d.destroyAgentBrowserWindow(...a);
@@ -231,7 +231,7 @@ function bindOverlayIpcContext(d) {
     closeAgentFinishedPopup,
     closeStudioBrowserSession,
     commitAgentBrowserHistory,
-    concealBotBrowserTab,
+    concealAgentBrowserTab,
     createMainWindow,
     describeBrowserTabProblem,
     destroyAgentBrowserWindow,

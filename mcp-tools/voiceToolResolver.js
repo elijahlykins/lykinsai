@@ -105,7 +105,6 @@ export const VOICE_TOOLS_BY_CAPABILITY = Object.freeze({
   'local.shell': Object.freeze(['local_run_command']),
   'local.desktop': Object.freeze(['local_organize_desktop']),
   'browser.agent': Object.freeze(['browser_agent']),
-  'bots.ask': Object.freeze(['ask_bot']),
   'connections.external': Object.freeze([]),
 });
 
@@ -184,7 +183,6 @@ function voiceCapabilityCtx(ctx = {}) {
     localMode: Boolean(ctx.localMode),
     overlayAsk: false,
     inProject: Boolean(ctx.inProject),
-    lyknBots: Array.isArray(ctx.lyknBots) ? ctx.lyknBots : [],
     allowNewArtifactBuild: Boolean(spokenMake || spokenCursor || artifactToolName),
     lockOutArtifactBuilds: false,
     forceImage: spokenImage,

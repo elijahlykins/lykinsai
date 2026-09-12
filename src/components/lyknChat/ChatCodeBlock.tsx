@@ -34,7 +34,7 @@ function CodeBlockInner({ code, lang }: { code: string; lang: string }) {
   }, [code]);
 
   return (
-    <div className="my-3 rounded-lg overflow-hidden border border-white/10 bg-[#1e1e1e] text-[0.85em]">
+    <div className="my-3 rounded-xl overflow-hidden border border-white/10 bg-[#161615]/80 backdrop-blur-md text-[0.85em]">
       <div className="flex items-center justify-between px-3 py-1.5 bg-white/[0.04] border-b border-white/10">
         <span className="text-[11px] uppercase tracking-wide text-white/40 font-medium">
           {lang === "text" ? "code" : lang}

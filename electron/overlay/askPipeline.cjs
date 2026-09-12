@@ -2079,6 +2079,7 @@ async function streamScreenAnswer(event, {
               overlayWindow: d.overlayWindow,
               apiBase: API_BASE,
               token: bearerToken,
+              getAuthToken,
               fetchImpl: (...a) => fetch(...a),
             }),
         });

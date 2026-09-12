@@ -100,7 +100,7 @@ Largest: `Vault.jsx` 3744, `LyknChat.tsx` 3577, `LyknChatView.tsx` 2560, `GlassL
 Largest: `chat-agent-loop.js` 2171, `lib/exterior/capabilities/buildReactArtifact.js` 966, `lib/agentToolVenues.cjs` 893.
 
 **Agent runtime** (canonical new modules, not the host file).
-`taskRuntime.cjs` 342, `taskCompiler.cjs` 335, `localExecutor.cjs` 229, `remoteExecutor.cjs` 187, `browserExecutor.cjs` 161, `bot-harness/index.cjs` 347, `routineRuntime.cjs` 418.
+`taskRuntime.cjs` 342, `taskCompiler.cjs` 335, `localExecutor.cjs` 229, `remoteExecutor.cjs` 187, `browserExecutor.cjs` 161, `agent-harness/index.cjs` 347, `routineRuntime.cjs` 418.
 These are **not** megafiles.
 
 **Vault backend** is small.
@@ -319,7 +319,7 @@ Harness extraction is **NEEDS HARNESS** / **HIGH RISK**.
 Canonical owners now exist and **are used**:
 
 - `TaskRuntime` instantiated once
-- `BotExecutor`, `BrowserExecutor`, `LocalExecutor`, `RemoteExecutor` wired
+- `AgentExecutor`, `BrowserExecutor`, `LocalExecutor`, `RemoteExecutor` wired
 - `browser-agent` is the default browse brain
 - `localAgentTask` / `remoteAgentTask` are the local/remote brains
 - Routines late-bind via `setRoutineBridge`
@@ -383,7 +383,7 @@ Factory split: **HIGH RISK** without moving tests with the extract.
 
 `electron/browserAct.cjs` (1306) is **external Chrome via AppleScript**, not the owned-browser loop.
 Do not merge it with `browser-agent`.
-Do not merge `browser-agent` with `bot-harness`.
+Do not merge `browser-agent` with `agent-harness`.
 
 `ownedBrowserAct` change concentration since 2026-07-01: **7 commits** (stable relative to size).
 `browser-agent/index.cjs`: 8 commits.
@@ -597,7 +597,7 @@ Re-evaluated against current HEAD relative to `docs/refactor/dedup-dead-code-aud
 | `providerForModel` in `chatTools.js` and `agentModelProviders.js` | **STILL PRESENT** (intentional isolation; beliefSystem justification is gone) |
 | `CUSTOM_MODELS_ENABLED` JS + TS twins | **STILL PRESENT** (FEATURE-GATED, keep both if Vite/Node split required) |
 | `runOsascript` in `main.cjs` vs `appDock.cjs` | **NEW OWNER EXISTS**. Canonical is `electron/os/browserAutomation.cjs`. `main.cjs` is now a thin forwarder. `appDock.cjs` still has its own copy. **SAFE NOW** to share after glue deletion |
-| `readCached` in browser-agent vs bot-harness | **STILL PRESENT**. INTENTIONAL VARIANT of scaffolding. **STILL DEFER** (do not merge runtimes) |
+| `readCached` in browser-agent vs agent-harness | **STILL PRESENT**. INTENTIONAL VARIANT of scaffolding. **STILL DEFER** (do not merge runtimes) |
 | Connection-dialog `authedFetch` / `relativeTime` / `truncate` | **STILL PRESENT** (OAuth, Token, CustomApi, VaultAppDock, ConnectionsAppGrid, Calendar) |
 | Vault `extractYouTubeLinks` / `formatDate` vs `vaultContentsForAi.ts` | **STILL PRESENT** |
 | Overlay `escapeHtml` clones | **STILL PRESENT** (overlay/menu/picker/lang-picker/agent-sidebar/stage). `main.cjs` now has `escapeHtmlForStage` as a renamed variant |
@@ -825,7 +825,7 @@ ownedBrowserAct.cjs
   After legacy loop: ~11,000 (actuator KEEP)
   Should remain:     catalog, runAction, screenshots, mail/URL heuristics,
                      exported looksLike* used by browser-agent and tests
-  Do not merge with browser-agent or bot-harness
+  Do not merge with browser-agent or agent-harness
 ```
 
 ---
@@ -905,7 +905,7 @@ Landing / wake CSS.
 `mcp-tools/*` modular registry.
 TaskRuntime / executors / Remote / Routines.
 `localSystem.cjs` security.
-`browser-agent/` vs `bot-harness/` (do not merge).
+`browser-agent/` vs `agent-harness/` (do not merge).
 `loadInUpdates.ts` (live greeting, name is leftover).
 `synthesis.routes.js` (RAG isolation boundary).
 BotsPage / ActivityPanel.
@@ -975,7 +975,7 @@ Includes:
 - Delete `main.cjs` thin-forwarder / `bindShellContext` glue
 - Optional same phase if tests stay green: move Agent Harness Maps/stage out of `main.cjs`
 
-Does **not** include: merging browser-agent and bot-harness; splitting `ownedBrowserAct` actuator; deleting `localSystem` security.
+Does **not** include: merging browser-agent and agent-harness; splitting `ownedBrowserAct` actuator; deleting `localSystem` security.
 
 **Recommended model: Grok 4.6**
 This phase is architectural judgment against TaskRuntime/executors, with many load-bearing comments and characterization tests.
@@ -1026,7 +1026,7 @@ Correctness will.
 
 ## What NOT to touch
 
-- Merge `electron/browser-agent` with `electron/bot-harness`
+- Merge `electron/browser-agent` with `electron/agent-harness`
 - Delete or "simplify" `localSystem.cjs` path/security because `LocalExecutor` exists
 - Remote modules (already modular)
 - `mcp-tools/` progressive-disclosure modules (just cleaned)

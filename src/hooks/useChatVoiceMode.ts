@@ -22,7 +22,6 @@ import type {
   FocusedChatAttachment,
   PromptMessage,
 } from "@/lib/lyknChat/chatTurnTypes";
-import { snapshotLyknBots } from "@/lib/voice/voiceDesktopTools";
 
 export function useChatVoiceMode({
   user,
@@ -147,17 +146,6 @@ export function useChatVoiceMode({
       const kb = typeof getCachedKbText === "function" ? getCachedKbText() : "";
       const kbText = typeof kb === "string" ? kb : String((kb as { text?: string })?.text || "");
       if (kbText) push(`Relevant saved knowledge:\n${kbText.slice(0, 4000)}`);
-    } catch { /* ignore */ }
-
-    try {
-      const bots = snapshotLyknBots();
-      if (bots.length) {
-        const lines = bots.map((bot) => (bot.role ? `- ${bot.name} - ${bot.role}` : `- ${bot.name}`)).join("\n");
-        push(
-          `[LYKN BOTS] Desktop teammates you can send with ask_bot. ` +
-            `If they want a website opened and did not name a bot, use browser_agent.\n${lines}`,
-        );
-      }
     } catch { /* ignore */ }
 
     return parts.join("\n\n");

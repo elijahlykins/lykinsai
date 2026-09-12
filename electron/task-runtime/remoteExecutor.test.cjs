@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 
 const { TaskRuntime } = require("./taskRuntime.cjs");
 const { TASK_STATUSES } = require("./task.cjs");
-const { BotExecutor } = require("./executors/botExecutor.cjs");
+const { AgentExecutor } = require("./executors/agentExecutor.cjs");
 const {
   RemoteExecutor,
   remoteMaxRounds,
@@ -465,14 +465,13 @@ test("remote events carry task and run identity", async () => {
   }
 });
 
-// ── Composition: Bot → RemoteExecutor on the SAME Task ───────────────────────
+// ── Composition: Agent → RemoteExecutor on the SAME Task ─────────────────────
 
-test("Bot remote work uses RemoteExecutor on the SAME Task", async () => {
+test("Agent remote work uses RemoteExecutor on the SAME Task", async () => {
   const runtime = new TaskRuntime();
-  const task = runtime.createBotTask({
+  const task = runtime.createAgentTask({
     objective: "Check whether the api service on the dev server is healthy.",
-    botTaskId: "ui-remote-1",
-    bot: { id: "bot-1", name: "Ops" },
+    agentId: "agent-remote-1",
     capabilities: ["reply", "remote.connect", "remote.read", "remote.shell.read"],
   });
   const seen = { remoteTaskId: null };
@@ -482,8 +481,8 @@ test("Bot remote work uses RemoteExecutor on the SAME Task", async () => {
       return { ok: true, status: "completed", answer: "api is healthy, uptime 12 days." };
     },
   });
-  const bot = new BotExecutor({
-    runBotTask: async ({ task: canonical, executors }) => {
+  const bot = new AgentExecutor({
+    runAgentTask: async ({ task: canonical, executors }) => {
       const child = await executors.remote_computer({ instruction: "check api health" });
       assert.equal(canonical.id, task.id);
       return { ok: true, status: "completed", answer: child.output };

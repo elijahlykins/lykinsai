@@ -44,7 +44,6 @@ test("unbound rail can send and tab switches remount the thread", () => {
   assert.doesNotMatch(rail, /disabled=\{unbound\}/);
   assert.match(rail, /key=\{railChatId\}/);
   assert.match(rail, /Ask about this page/);
-  assert.match(rail, /LYKN Chat on Home or a custom agent/);
   assert.match(composer, /browserAskComposerPayload\(\{ chatId, tabId, text, files \}\)/);
   assert.match(session, /startChatForUnboundBrowserTab/);
 });
@@ -93,10 +92,16 @@ test("browser and rail share one pane with a hairline join", () => {
   assert.match(layout, /BROWSER_VIEW_RADIUS = 14/);
   assert.match(studio, /radius: BROWSER_VIEW_RADIUS/);
   assert.match(studio, /railOpen=\{railAttachedOpen\}/);
-  assert.match(rail, /bg-\[#f3f2f0\]/);
+  // Rail body matches the page (white); its header band keeps the chrome grey.
+  assert.match(rail, /lykn-browser-rail[^"]*bg-white/);
+  assert.match(rail, /border-b border-black\/\[0\.08\] bg-\[#f3f2f0\]/);
   assert.match(rail, /border-l border-black\/\[0\.08\]/);
   assert.doesNotMatch(rail, /rounded-r-\[14px\]/);
   assert.doesNotMatch(rail, /bg-\[#f7f6f4\]/);
+  // Native views clip with one uniform radius, so an open rail needs corner
+  // backers to square the pane's right edge against the chat.
+  assert.match(body, /railOpen && \(/);
+  assert.match(body, /width: BROWSER_VIEW_RADIUS/);
 });
 
 test("browser rail message ink stays black on the light pane", () => {
@@ -105,6 +110,12 @@ test("browser rail message ink stays black on the light pane", () => {
   assert.match(css, /\.lykn-browser-rail[\s\S]*color:\s*#000/);
   assert.match(css, /\.lykn-browser-rail \.lykn-outline-spinner[\s\S]*color:\s*#000/);
   assert.match(css, /\.lykn-browser-ask-field/);
+  // Thinking timeline stays dark ink even when Studio is dark — chat-effects'
+  // `.dark` white rules load later and tie on specificity without these.
+  assert.match(css, /html\.dark \.lykn-browser-rail \.lykn-thinking__label/);
+  assert.match(css, /html\.dark \.lykn-browser-rail \.lykn-thinking__label--head/);
+  assert.match(css, /html\.dark \.lykn-browser-rail \.lykn-thinking__glyph/);
+  assert.match(css, /html\.dark \.lykn-browser-rail \.lykn-chat-thinking-text/);
   assert.match(thread, /className="lykn-rail-md lykn-chat-ai-text[^"]*text-black"/);
   assert.doesNotMatch(thread, /lykn-chat-ai-text[^"]*dark:text-white/);
 });
@@ -141,10 +152,23 @@ test("session still fetches page context from the initiating tab", () => {
   assert.match(session, /LYKN_CHAT_STOP_EVENT/);
 });
 
-test("rail copy says ask-only and points agentic work to Home or a custom agent", () => {
+test("rail is agentic: sends run the tab's agent runtime and stream back in", () => {
   const rail = src("src/components/studio/agentRail/StudioAgentRail.jsx");
-  assert.match(rail, /Ask only/);
-  assert.match(rail, /Ask about this page/);
-  assert.match(rail, /LYKN Chat on Home or a custom agent/);
+  const session = src("src/hooks/useStudioChatSession.ts");
+  const bridge = src("src/lib/lyknChat/railAgentChat.ts");
+  // Copy no longer says ask-only or redirects agentic work elsewhere.
+  assert.doesNotMatch(rail, /Ask only/);
+  assert.doesNotMatch(rail, /LYKN Chat on Home or a custom agent/);
+  assert.match(rail, /Agent on this tab/);
+  assert.match(rail, /installRailAgentStreamBridge/);
   assert.doesNotMatch(rail, /Start a conversation/);
+  // Desktop rail sends pivot to the agent runtime; stop targets the agent.
+  assert.match(session, /railAgentBridgeAvailable\(\)/);
+  assert.match(session, /sendRailAgentTurn\(/);
+  assert.match(session, /if \(stopRailAgentTurn\(parsed\.chatId\)\) return;/);
+  // Full capability: the bridge never sends a questionsOnly flag.
+  assert.doesNotMatch(bridge, /questionsOnly:/);
+  assert.match(bridge, /studioAgentSend/);
+  assert.match(bridge, /onAgentDelta/);
+  assert.match(bridge, /onAgentDone/);
 });

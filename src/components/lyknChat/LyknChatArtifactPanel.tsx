@@ -55,6 +55,8 @@ export type LyknChatArtifactPanelProps = {
 
 const HDR_BTN =
   "lg-stepper inline-flex items-center gap-1 rounded-[8px] px-2 py-1.5 text-[11px] font-medium text-black/60 transition-colors hover:text-black/90 dark:text-white/65 dark:hover:text-white/95 disabled:opacity-50";
+const HDR_DONE =
+  "inline-flex items-center gap-1 rounded-[8px] border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400";
 
 function badgeFor(artifact: ChatArtifact): string {
   if (artifact.kind === "html") {
@@ -87,11 +89,17 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
   }, [artifact]);
   const shown = artifact ?? lingering;
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const [dlDone, setDlDone] = useState(false);
+  const [pdfDone, setPdfDone] = useState(false);
+  const [codeDlDone, setCodeDlDone] = useState(false);
   // Reset the save affordance whenever the panel switches artifacts or a refine /
   // code-edit lands new content — otherwise "Saved" sticks and blocks re-saving
   // the latest version.
   useEffect(() => {
     setSaveState("idle");
+    setDlDone(false);
+    setPdfDone(false);
+    setCodeDlDone(false);
   }, [
     artifact?.id,
     artifact?.toolCallId,
@@ -269,17 +277,23 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
 
   const handleDownloadCode = useCallback(() => {
     if (!shown) return;
-    void downloadArtifactToComputer(shown, "source").catch(() => {
-      // Fallback: current editor buffer only.
-      const base = (shown.filename || shown.title || "artifact").replace(/\.[a-z0-9]+$/i, "");
-      const blob = new Blob([draft], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${base}.jsx`;
-      a.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 5000);
-    });
+    void (async () => {
+      try {
+        await downloadArtifactToComputer(shown, "source");
+        setCodeDlDone(true);
+      } catch {
+        // Fallback: current editor buffer only.
+        const base = (shown.filename || shown.title || "artifact").replace(/\.[a-z0-9]+$/i, "");
+        const blob = new Blob([draft], { type: "text/plain;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${base}.jsx`;
+        a.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 5000);
+        setCodeDlDone(true);
+      }
+    })();
   }, [draft, shown]);
 
   const handleApplyCode = useCallback(async () => {
@@ -477,6 +491,7 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
       try {
         await handleSaveToVault();
         await downloadArtifactToComputer(shown, optionId);
+        setDlDone(true);
       } catch (err) {
         console.warn("Artifact download failed:", err);
       } finally {
@@ -492,6 +507,7 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
     try {
       await handleSaveToVault();
       await downloadArtifactAsPdf(shown);
+      setPdfDone(true);
     } catch (err) {
       console.warn("Artifact PDF export failed:", err);
     } finally {
@@ -655,11 +671,11 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                     type="button"
                     onClick={() => void handleSavePdf()}
                     disabled={dlBusy}
-                    className={HDR_BTN}
-                    title="Download as PDF"
+                    className={pdfDone && !dlBusy ? HDR_DONE : HDR_BTN}
+                    title={pdfDone && !dlBusy ? "Downloaded" : "Download as PDF"}
                   >
-                    {dlBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5" />}
-                    PDF
+                    {dlBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : pdfDone ? <Check className="h-3.5 w-3.5" /> : <FileDown className="h-3.5 w-3.5" />}
+                    {pdfDone && !dlBusy ? "Downloaded" : "PDF"}
                   </button>
                 ) : null}
                 {downloadOptions.length === 1 ? (
@@ -667,11 +683,11 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                     type="button"
                     onClick={() => void handleDownloadOption(downloadOptions[0].id)}
                     disabled={dlBusy}
-                    className={HDR_BTN}
-                    title={`Download ${downloadOptions[0].label} to your computer`}
+                    className={dlDone && !dlBusy ? HDR_DONE : HDR_BTN}
+                    title={dlDone && !dlBusy ? "Downloaded" : `Download ${downloadOptions[0].label} to your computer`}
                   >
-                    {dlBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                    Download
+                    {dlBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : dlDone ? <Check className="h-3.5 w-3.5" /> : <Download className="h-3.5 w-3.5" />}
+                    {dlDone && !dlBusy ? "Downloaded" : "Download"}
                   </button>
                 ) : downloadOptions.length > 1 ? (
                   <div className="relative" ref={dlRef}>
@@ -679,12 +695,12 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                       type="button"
                       onClick={() => setDlMenuOpen((v) => !v)}
                       disabled={dlBusy}
-                      className={HDR_BTN}
-                      title="Download to your computer"
+                      className={dlDone && !dlBusy ? HDR_DONE : HDR_BTN}
+                      title={dlDone && !dlBusy ? "Downloaded" : "Download to your computer"}
                     >
-                      {dlBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                      Download
-                      <ChevronDown className="h-3 w-3 opacity-60" />
+                      {dlBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : dlDone ? <Check className="h-3.5 w-3.5" /> : <Download className="h-3.5 w-3.5" />}
+                      {dlDone && !dlBusy ? "Downloaded" : "Download"}
+                      {dlDone && !dlBusy ? null : <ChevronDown className="h-3 w-3 opacity-60" />}
                     </button>
                     {dlMenuOpen ? (
                       <div className="lg-menu absolute right-0 top-full z-10 mt-1 min-w-[11rem] overflow-hidden py-1">
@@ -741,11 +757,11 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                       <button
                         type="button"
                         onClick={handleDownloadCode}
-                        className={HDR_BTN}
-                        title="Download as .jsx"
+                        className={codeDlDone ? HDR_DONE : HDR_BTN}
+                        title={codeDlDone ? "Downloaded" : "Download as .jsx"}
                       >
-                        <Download className="h-3.5 w-3.5" />
-                        .jsx
+                        {codeDlDone ? <Check className="h-3.5 w-3.5" /> : <Download className="h-3.5 w-3.5" />}
+                        {codeDlDone ? "Downloaded" : ".jsx"}
                       </button>
                       <button
                         type="button"

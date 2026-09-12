@@ -69,7 +69,6 @@ import {
   messageWantsVaultWrite,
   messageWantsWrittenDocument,
   messageWantsWebTools,
-  messageWantsBotAsk,
   messageWants3dModel,
   resolveIntentChatToolNames,
 } from './chatIntentSignals.js';
@@ -119,7 +118,6 @@ export const FIRST_PARTY_CAPABILITY_FAMILIES = Object.freeze([
   'local.desktop',
   'desktop.mcp',
   'browser.agent',
-  'bots.ask',
   'connections.external',
 ]);
 
@@ -475,13 +473,6 @@ export const FIRST_PARTY_TOOL_METADATA = Object.freeze(
       family: 'browser.agent',
       consequence: 'write',
       localMode: true,
-    }),
-    meta({
-      name: 'local_ask_bot',
-      capabilities: ['bots.ask'],
-      family: 'bots.ask',
-      consequence: 'read',
-      localMode: false,
     }),
     // Desktop MCP registry (Blender-class servers on the user's machine).
     // Client-executed like Local Mode tools, but armed by the desktop's
@@ -943,11 +934,6 @@ export function resolveFirstPartyCapabilities(ctx = {}) {
     reasons.push('artifactEdit');
   }
 
-  if (messageWantsBotAsk(message, ctx.lyknBots)) {
-    addCap(caps, 'bots.ask');
-    reasons.push('bots.ask');
-  }
-
   // A Build-workspace turn arms the on-disk tools no matter how the message
   // is worded — "are the edits still in there" carries no file keyword, but
   // the project tools are in the request. The disclosure must say so: a
@@ -1134,12 +1120,10 @@ export function resolveFirstPartyTools(capabilityResult, ctx = {}) {
   // Workspace turns keep their local tools even with the Local Mode switch
   // off — the Electron gate confines those calls to ~/LYKN/Builds.
   if (!ctx.localMode && !ctx.buildWorkspace) {
-    for (const n of LOCAL_TOOL_NAMES) {
-      if (n !== 'local_ask_bot') names.delete(n);
-    }
+    for (const n of LOCAL_TOOL_NAMES) names.delete(n);
   } else if (capabilityResult?.fallback === 'local-discovery') {
     for (const n of LOCAL_TOOL_NAMES) {
-      if (!LOCAL_DISCOVERY_TOOLS.includes(n) && n !== 'local_ask_bot') names.delete(n);
+      if (!LOCAL_DISCOVERY_TOOLS.includes(n)) names.delete(n);
     }
     for (const n of LOCAL_DISCOVERY_TOOLS) names.add(n);
   }

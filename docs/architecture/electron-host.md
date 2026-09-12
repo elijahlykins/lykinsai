@@ -41,4 +41,4 @@ Do not merge it into the renderer.
 
 ## Canonical execution
 
-TaskRuntime, TaskCompiler, BotExecutor, BrowserExecutor, LocalExecutor, RemoteExecutor, McpExecutor, RoutineRuntime.
+TaskRuntime, TaskCompiler, AgentExecutor, BrowserExecutor, LocalExecutor, RemoteExecutor, McpExecutor, RoutineRuntime.

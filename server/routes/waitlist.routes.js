@@ -1,7 +1,8 @@
-// Public product waitlists and download-link capture (Windows desktop, …).
-// Unauthenticated by design: landing visitors are not signed in. Writes go
-// through the service role so clients cannot insert rows directly. Distinct
-// from /api/billing/waitlist, which is the authenticated Studio Max list.
+// Public product waitlists, emailed Mac download links, and counted
+// installer redirects (`GET /api/download/mac|win`). Unauthenticated by
+// design: landing visitors are not signed in. Writes go through the service
+// role so clients cannot insert rows directly. Distinct from
+// /api/billing/waitlist, which is the authenticated Studio Max list.
 
 import { z, validate } from '../../validation.js';
 import {
@@ -30,7 +31,17 @@ const downloadLinkSchema = windowsWaitlistSchema;
 const DOWNLOAD_PAGE_URL = 'https://lykn.io/download';
 const MAC_DMG_URL =
   'https://github.com/elijahlykins/lykn-releases/releases/latest/download/LYKN.dmg';
+const WIN_EXE_URL =
+  'https://github.com/elijahlykins/lykn-releases/releases/latest/download/LYKN-Setup.exe';
+const TRACKED_MAC_DOWNLOAD_URL = 'https://api.lykn.io/api/download/mac?src=email';
 const WINDOWS_WAITLIST_URL = 'https://lykn.io/windows';
+
+const DOWNLOAD_ASSETS = {
+  mac: { platform: 'mac', artifact: 'dmg', url: MAC_DMG_URL },
+  win: { platform: 'win', artifact: 'exe', url: WIN_EXE_URL },
+};
+
+const DOWNLOAD_SOURCES = new Set(['website', 'email', 'windows', 'other']);
 
 const DOWNLOAD_EMAIL_FROM =
   process.env.RESEND_FROM_EMAIL || 'LYKN <hello@lykn.io>';
@@ -63,7 +74,7 @@ function buildDownloadLinkEmailHtml() {
                 Download LYKN for Mac
               </a>
               <p style="margin:24px 0 0;font-size:13px;line-height:1.6;color:#111111">
-                Direct download: <a href="${MAC_DMG_URL}" style="color:#0968c4">LYKN.dmg</a>
+                Direct download: <a href="${TRACKED_MAC_DOWNLOAD_URL}" style="color:#0968c4">LYKN.dmg</a>
               </p>
               <p style="margin:26px 0 0">
                 <a href="${WINDOWS_WAITLIST_URL}"
@@ -101,6 +112,44 @@ function clientMeta(req) {
   };
 }
 
+function passthroughLimiter(_req, _res, next) {
+  next();
+}
+
+function isDownloadBot(ua) {
+  return /bot|crawler|spider|slurp|preview|facebookexternalhit|whatsapp|telegram|discordbot|embedly|quora/i.test(
+    String(ua || ''),
+  );
+}
+
+function downloadSource(req) {
+  const raw = String(req.query?.src || 'website')
+    .trim()
+    .toLowerCase()
+    .slice(0, 32);
+  if (DOWNLOAD_SOURCES.has(raw)) return raw;
+  if (/^[a-z][a-z0-9_-]*$/.test(raw)) return raw;
+  return 'website';
+}
+
+async function recordDesktopDownload(supabaseAdmin, req, asset) {
+  if (!supabaseAdmin) return;
+  if (req.method && req.method !== 'GET') return;
+  if (isDownloadBot(req.headers['user-agent'])) return;
+  const { error } = await supabaseAdmin.from('desktop_download_events').insert({
+    platform: asset.platform,
+    artifact: asset.artifact,
+    source: downloadSource(req),
+    metadata: {
+      ...clientMeta(req),
+      referer: String(req.headers.referer || req.headers.referrer || '').slice(0, 300),
+    },
+  });
+  if (error) {
+    console.error('❌ desktop download capture error:', error.message);
+  }
+}
+
 async function displayCount(supabaseAdmin) {
   if (!supabaseAdmin) return WINDOWS_WAITLIST_SEED;
   try {
@@ -120,6 +169,10 @@ async function displayCount(supabaseAdmin) {
 
 export function registerWaitlistRoutes(app, deps) {
   const { supabaseAdmin, waitlistLimiter, waitlistReadLimiter, resendClient } = deps;
+  const downloadRedirectLimiter =
+    typeof deps.downloadRedirectLimiter === 'function'
+      ? deps.downloadRedirectLimiter
+      : passthroughLimiter;
 
   app.get('/api/waitlist/windows', waitlistReadLimiter, async (_req, res) => {
     try {
@@ -225,7 +278,7 @@ export function registerWaitlistRoutes(app, deps) {
           html: buildDownloadLinkEmailHtml(),
           text:
             `Here's your LYKN download link. Open this email on your Mac and download LYKN:\n\n` +
-            `${DOWNLOAD_PAGE_URL}\n\nDirect download: ${MAC_DMG_URL}\n\n` +
+            `${DOWNLOAD_PAGE_URL}\n\nDirect download: ${TRACKED_MAC_DOWNLOAD_URL}\n\n` +
             `On Windows? Join the waitlist: ${WINDOWS_WAITLIST_URL}\n\n` +
             `This is an automated message - please do not reply.`,
           attachments: emailLogoAttachment(),
@@ -238,4 +291,16 @@ export function registerWaitlistRoutes(app, deps) {
       }
     },
   );
+
+  for (const [platform, asset] of Object.entries(DOWNLOAD_ASSETS)) {
+    app.get(`/api/download/${platform}`, downloadRedirectLimiter, async (req, res) => {
+      try {
+        await recordDesktopDownload(supabaseAdmin, req, asset);
+      } catch (err) {
+        console.error(`❌ /api/download/${platform} capture error:`, err);
+      }
+      res.set('Cache-Control', 'no-store');
+      return res.redirect(302, asset.url);
+    });
+  }
 }

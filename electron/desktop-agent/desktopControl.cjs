@@ -165,7 +165,7 @@ function createDesktopControl({
     // Native layer missing (permissions, packaging) — Electron still knows
     // the display bounds, and a screen-scoped look remains useful.
     try {
-      // eslint-disable-next-line global-require
+       
       const { screen } = require("electron");
       const b = screen.getPrimaryDisplay().bounds;
       return { x: b.x, y: b.y, width: b.width, height: b.height };

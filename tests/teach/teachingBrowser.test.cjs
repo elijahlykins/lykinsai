@@ -55,8 +55,6 @@ test("ensureTeachingBrowser reuses a Bot agent and reveals it outside the headle
 
   const result = runtime.ensureTeachingBrowser({
     agentId: created.agentId,
-    botId: "bot_ghost",
-    bot: { id: "bot_ghost", name: "Ghost" },
   });
 
   assert.equal(result, wc);
@@ -65,7 +63,7 @@ test("ensureTeachingBrowser reuses a Bot agent and reveals it outside the headle
   assert.equal(reveal.focus, true);
 });
 
-test("ensureTeachingBrowser creates a Bot-owned agent when none exists", () => {
+test("ensureTeachingBrowser creates a headless worker when none exists", () => {
   const contentsById = new Map();
   const { runtime } = newRuntime({ contentsById });
   const originalGet = contentsById.get.bind(contentsById);
@@ -76,18 +74,14 @@ test("ensureTeachingBrowser creates a Bot-owned agent when none exists", () => {
     return originalGet(id);
   };
 
-  const wc = runtime.ensureTeachingBrowser({
-    botId: "bot_new",
-    bot: { id: "bot_new", name: "Scout" },
-  });
+  const wc = runtime.ensureTeachingBrowser({});
   assert.ok(wc?.id);
   const agent = runtime.__getAgentForTest(wc.id);
   assert.equal(agent.headless, true);
-  assert.equal(agent.botProfile.id, "bot_new");
-  assert.equal(agent.title, "Scout");
+  assert.equal(agent.title, "Teaching");
 });
 
-test("ensureTeachingBrowser falls back to the active Studio tab when no Bot is named", () => {
+test("ensureTeachingBrowser falls back to the active Studio tab when no agent is named", () => {
   const contentsById = new Map();
   const wc = fakeWebContents("tab_active");
   contentsById.set("tab_active", wc);

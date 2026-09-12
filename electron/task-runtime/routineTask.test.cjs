@@ -14,8 +14,6 @@ const { compileRoutineTask, ROUTINE_DEFAULT_TIMEOUT_MS } = require("./taskCompil
 
 const ROUTINE = {
   id: "routine-7",
-  botId: "bot-1",
-  bot: { id: "bot-1", name: "Scout", persona: "Diligent researcher.", chatId: "chat-9" },
   name: "Morning pricing",
   instructions: "Check competitor pricing pages and summarize changes.",
   trigger: { type: "schedule", schedule: { kind: "weekdays", time: "08:00" } },
@@ -23,17 +21,15 @@ const ROUTINE = {
   approvalPolicy: "standing_authorization",
 };
 
-test("each occurrence is a fresh task tied to bot, routine, and run", () => {
+test("each occurrence is a fresh task tied to the routine and run", () => {
   const first = compileRoutineTask({ routine: ROUTINE, runId: "rrun-1" });
   const second = compileRoutineTask({ routine: ROUTINE, runId: "rrun-2" });
 
   assert.notEqual(first.id, second.id);
-  assert.equal(first.association.botId, "bot-1");
   assert.equal(first.association.routineId, "routine-7");
   assert.equal(first.association.routineRunId, "rrun-1");
   assert.equal(second.association.routineRunId, "rrun-2");
-  assert.equal(first.origin.type, "bot");
-  assert.equal(first.origin.bot.name, "Scout");
+  assert.equal(first.origin.type, "agent");
   assert.equal(first.origin.routine.id, "routine-7");
 });
 

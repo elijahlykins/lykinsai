@@ -24,13 +24,16 @@ function attachAgentBrowser(d) {
   const agentRecentVisits = d.agentRecentVisits;
   const localStore = d.localStore;
   const createAgentRuntime = require("../agentRuntime.cjs").createAgentRuntime;
-  const { createRoutineRuntime } = require("../bot-routines/routineRuntime.cjs");
+  const { createRoutineRuntime } = require("../routines/routineRuntime.cjs");
   const { createTeachService } = require("../teach/service.cjs");
   const agentTabIds = require("../agentTabIds.cjs");
-  const botTabVisibility = require("./botTabVisibility.cjs");
+  const hiddenTabVisibility = require("./hiddenTabVisibility.cjs");
   const tabChatLineage = require("./tabChatLineage.cjs");
   const { dockedPageBoundsForOverlay } = require("./menuOverlayLayout.cjs");
+  const visitHistory = require("./visitHistory.cjs");
+  const agentBookmarks = require("./bookmarks.cjs");
   const { sidebarTargetBounds } = require("./sidebarLayout.cjs");
+  const googleAuthHandoff = require("./googleAuthHandoff.cjs");
   const {
     applyViewRadius,
     normalizeViewRadius,
@@ -423,12 +426,6 @@ const agentBrowserViews = new Map();
 // Attaching a blank WebContentsView lets macOS briefly paint its white default
 // surface over the browser page, even when its bounds are immediately parked.
 const agentBrowserViewsReady = new Set();
-// Bots currently armed for a user-approved browser run. Their hidden tabs must
-// keep a REAL-sized, attached surface (parked fully offscreen) — a detached or
-// zero-sized WebContentsView stops producing compositor frames, and frames are
-// exactly what the tiny live viewport above the chat bar captures every beat.
-// Updated by the agent runtime via setBotShotAgents.
-const agentBotShotIds = new Set();
 const agentBrowserLabels = new Map();
 /** Hard ceiling on open browser tabs — matches MAX_WORKER_AGENTS (each
  *  worker agent owns a tab), keeping tab count and agent count capped
@@ -439,7 +436,7 @@ const MAX_AGENT_BROWSER_TABS = 20;
 function agentBrowserMainTabCount() {
   let n = 0;
   for (const id of agentBrowserViews.keys()) {
-    if (isAgentArtifactTabId(id) || isHiddenBotTab(id)) continue;
+    if (isAgentArtifactTabId(id) || isHiddenAgentTab(id)) continue;
     n += 1;
   }
   return n;
@@ -952,6 +949,65 @@ function presentAgentAuthPopup(childWindow) {
   } catch (_) {}
 }
 
+function guardGoogleAuth(wc, url, extras = {}) {
+  try {
+    if (!wc || wc.isDestroyed?.()) return false;
+    if (!googleAuthHandoff.shouldHandoff(url, extras)) return false;
+    const opener =
+      extras.openerWc && !extras.openerWc.isDestroyed?.() ? extras.openerWc : wc;
+    let openerUrl = "";
+    try {
+      openerUrl = opener.getURL() || "";
+    } catch (_) {}
+    googleAuthHandoff.start({
+      authUrl: url,
+      currentUrl: openerUrl,
+      session: opener.session || wc.session,
+      userDataPath: app.getPath("userData"),
+      waiter: {
+        wc: opener,
+        popupWindow: extras.popupWindow || null,
+        currentUrl: openerUrl,
+        returnUrl: googleAuthHandoff.returnUrlFor({
+          authUrl: url,
+          currentUrl: openerUrl,
+        }),
+      },
+    });
+    return true;
+  } catch (err) {
+    console.warn("[google-auth-handoff]", err?.message || err);
+    return false;
+  }
+}
+
+function wireGoogleAuthHandoff(wc, extras = {}) {
+  if (!wc || wc.isDestroyed?.()) return;
+  const handle = (event, nextUrl) => {
+    const u =
+      (typeof nextUrl === "string" && nextUrl) ||
+      String(event?.url || nextUrl?.url || "");
+    if (guardGoogleAuth(wc, u, extras)) {
+      try {
+        event.preventDefault();
+      } catch (_) {}
+    }
+  };
+  wc.on("will-navigate", handle);
+  wc.on("will-redirect", handle);
+  wc.on("did-finish-load", () => {
+    let u = "";
+    let title = "";
+    try {
+      u = wc.getURL() || "";
+      title = wc.getTitle() || "";
+    } catch (_) {}
+    if (googleAuthHandoff.isGoogleAuthBlockedPage({ url: u, title })) {
+      guardGoogleAuth(wc, u, extras);
+    }
+  });
+}
+
 function wireAgentPopupWindow(childWindow, { parentWc, agentId } = {}) {
   if (!childWindow || childWindow.isDestroyed?.()) return;
   presentAgentAuthPopup(childWindow);
@@ -961,10 +1017,8 @@ function wireAgentPopupWindow(childWindow, { parentWc, agentId } = {}) {
     // Same chrome UA as the rest of the app (strip Electron token).
     if (app.userAgentFallback) childWc.setUserAgent(app.userAgentFallback);
   } catch (_) {}
-  // This is the window accounts.google.com actually loads in, and it checks the
-  // browser it's running in as hard as the opener did — the "This browser or app
-  // may not be secure" wall. Re-asserted per navigation: an OAuth flow crosses
-  // several documents in here, some of them in a different process.
+  // Google blocks accounts.google.com in Electron. Interactive Google sign-in
+  // is handed to real Chrome/Edge; cookies come back into this partition.
   applyAgentTabEmulation(childWc);
   childWc.on("did-navigate", () => applyAgentTabEmulation(childWc));
   childWc.setWindowOpenHandler((details) => {
@@ -994,6 +1048,11 @@ function wireAgentPopupWindow(childWindow, { parentWc, agentId } = {}) {
   });
   childWc.on("will-navigate", (event, url) => {
     if (!agentStageUrlAllowed(url)) event.preventDefault();
+  });
+  wireGoogleAuthHandoff(childWc, {
+    isPopup: true,
+    popupWindow: childWindow,
+    openerWc: parentWc,
   });
   wireAgentSessionPermissions(childWc.session);
   // OAuth runs in this popup — it needs the same Chrome-looking client hints.
@@ -1410,11 +1469,11 @@ async function warmStudioBrowser() {
   fillEmptyStudioBrowser({ show: false });
 }
 
-/** Click-to-reveal set: Bot work surfaces the user opened from the peek.
+/** Click-to-reveal set: headless work surfaces the user chose to reveal.
  *  Cleared when the Studio Browser session closes or the user hides that tab. */
-const revealedBotTabs = new Set();
+const revealedAgentTabs = new Set();
 
-function botVisibilityOpts() {
+function hiddenTabVisibilityOpts() {
   return {
     isHeadless: (id) => {
       try {
@@ -1423,18 +1482,18 @@ function botVisibilityOpts() {
         return false;
       }
     },
-    isRevealed: (id) => revealedBotTabs.has(String(id || "").trim()),
+    isRevealed: (id) => revealedAgentTabs.has(String(id || "").trim()),
     partitionOwner: (id) => agentTabIds.partitionOwner(id) || id,
   };
 }
 
-function isHeadlessBotTab(id) {
-  return botTabVisibility.isHeadlessBotTab(id, botVisibilityOpts());
+function isHeadlessAgentTab(id) {
+  return hiddenTabVisibility.isHeadlessAgentTab(id, hiddenTabVisibilityOpts());
 }
 
-/** Hidden until the user opens the peek. Revealed Bot tabs are user tabs. */
-function isHiddenBotTab(id) {
-  return botTabVisibility.isHiddenBotTab(id, botVisibilityOpts());
+/** Hidden until the user reveals it. Revealed headless tabs are user tabs. */
+function isHiddenAgentTab(id) {
+  return hiddenTabVisibility.isHiddenAgentTab(id, hiddenTabVisibilityOpts());
 }
 
 function tabChatProjection(extra = {}) {
@@ -1444,7 +1503,7 @@ function tabChatProjection(extra = {}) {
       metaById: agentBrowserMeta,
       activeId,
       chatOpen: extra.open ?? agentChatOpen,
-      isHiddenTab: isHiddenBotTab,
+      isHiddenTab: isHiddenAgentTab,
       closedTabIds: extra.closedTabIds || [],
     }),
     ...extra,
@@ -1474,36 +1533,29 @@ function noteClosedTabChat(tabId) {
   if (id) pendingClosedTabIds.push(id);
 }
 
-function revealBotBrowserTab(id) {
-  const owner = botTabVisibility.botTabOwner(id, botVisibilityOpts().partitionOwner);
-  if (owner) revealedBotTabs.add(owner);
+function revealAgentBrowserTab(id) {
+  const owner = hiddenTabVisibility.hiddenTabOwner(id, hiddenTabVisibilityOpts().partitionOwner);
+  if (owner) revealedAgentTabs.add(owner);
 }
 
-function concealBotBrowserTab(id) {
+function concealAgentBrowserTab(id) {
   const raw = String(id || "").trim();
-  const owner = botTabVisibility.botTabOwner(id, botVisibilityOpts().partitionOwner);
-  if (raw) revealedBotTabs.delete(raw);
-  if (owner) revealedBotTabs.delete(owner);
+  const owner = hiddenTabVisibility.hiddenTabOwner(id, hiddenTabVisibilityOpts().partitionOwner);
+  if (raw) revealedAgentTabs.delete(raw);
+  if (owner) revealedAgentTabs.delete(owner);
   if (agentStageActiveId === raw || (owner && agentStageActiveId === owner)) {
     agentStageActiveId = userBrowserTabIds().find((tabId) => tabId !== raw && tabId !== owner) || null;
   }
   if (!hasUserBrowserTab() && studioStageEmbedActive() && !studioBrowserDisposing) {
     openFreshStudioBrowserTab({ focusOmnibox: true });
   }
-  if (owner && agentBotShotIds.has(owner)) {
-    try {
-      prepareBotShotSurface(owner);
-    } catch {
-      /* peek park is best-effort */
-    }
-  }
   layoutAgentStageViews();
   pushAgentStageState();
 }
 
-/** Tabs the user can see and switch. Hidden Bot shot surfaces stay off-strip. */
+/** Tabs the user can see and switch. Hidden agent surfaces stay off-strip. */
 function userBrowserTabIds() {
-  return [...agentBrowserViews.keys()].filter((id) => !isHiddenBotTab(id));
+  return [...agentBrowserViews.keys()].filter((id) => !isHiddenAgentTab(id));
 }
 
 function hasUserBrowserTab() {
@@ -1514,11 +1566,11 @@ function hasUserBrowserTab() {
  *  History, agents are retired, views are destroyed. The next press warms a
  *  fresh session. Minimize never calls this — it only undocks the views. */
 function closeStudioBrowserSession() {
-  // Closing the Studio Browser is a fresh *browser* session. Headless Bots
+  // Closing the Studio Browser is a fresh *browser* session. Headless workers
   // are teammates, not tabs - keep their agents and work surfaces alive so
   // a mid-task research/browse run does not die as `agent_closed`.
-  const tabIds = [...agentBrowserViews.keys()].filter((id) => !isHeadlessBotTab(id));
-  revealedBotTabs.clear();
+  const tabIds = [...agentBrowserViews.keys()].filter((id) => !isHeadlessAgentTab(id));
+  revealedAgentTabs.clear();
   const snaps = tabIds.map((id) => snapshotAgentBrowserHistory(id));
   studioBrowserDisposing = true;
   try {
@@ -1942,120 +1994,6 @@ function fitAgentTabsToPane(width) {
   for (const [id, view] of agentBrowserViews) applyAgentTabZoom(id, view, width);
 }
 
-/**
- * Where a Bot's hidden-but-working tab parks: hanging off the host window's
- * bottom-right corner at a real page size, with a 2×2 px corner of the
- * surface still ON the window.
- *
- * The overlap is the load-bearing part. A view with NO on-window
- * intersection stops being composited by macOS if it has never been shown —
- * capturePage returns empty images and even CDP Page.captureScreenshot gets
- * no frame, which left the mini viewport on "Opening the browser…" until the
- * user revealed the tab by hand. (Fully-offscreen parks at edge+40 and at
- * x=20000 were both tried and both starved; the docked pane's own edge+40
- * park survives only because that view was already on screen once.) Two
- * pixels of the page's top-left corner peeking into the window corner keep
- * the layer live for a view straight from creation, and are imperceptible.
- *
- * The measurement must come from the window the view is ATTACHED to: an
- * earlier version measured the hidden stage window while the view sat on the
- * (wider) Studio window, and the "offscreen" park landed inside it as a big
- * floating page. Callers pass the host; the park is also re-asserted on
- * every shot tick, so a window resize can misplace it for at most one
- * capture beat before it is pushed back into the corner.
- */
-function botShotParkBounds(host) {
-  let hostW = 0;
-  let hostH = 0;
-  try {
-    if (host && !host.isDestroyed()) [hostW, hostH] = host.getContentSize();
-  } catch (_) {}
-  const width = Math.max(720, Math.min(1280, studioStageBounds?.width || hostW || 1024));
-  const height = Math.max(520, Math.min(960, studioStageBounds?.height || hostH || 720));
-  return { x: Math.max(hostW - 2, 0), y: Math.max(hostH - 2, 0), width, height };
-}
-
-/** The window a hidden Bot tab should live on for capture. */
-function botShotHostWindow() {
-  if (studioStageEmbedActive()) return d.studioWindow;
-  if (agentStageWindow && !agentStageWindow.isDestroyed() && agentStageWindow.isVisible()) {
-    return agentStageWindow;
-  }
-  if (d.studioWindow && !d.studioWindow.isDestroyed()) return d.studioWindow;
-  if (agentStageWindow && !agentStageWindow.isDestroyed()) return agentStageWindow;
-  return null;
-}
-
-/**
- * Make a Bot's hidden tab capturable right now: attach it to a live window
- * and park it offscreen at real size. ensureAgentBrowserWindow creates
- * headless tabs detached and zero-sized ("park before attaching"), and a view
- * in that state never paints — capturePage returns empty images forever,
- * which is why the mini viewport used to sit on "Opening the browser…" until
- * the user revealed the tab once by hand. Called when a run arms and on every
- * shot tick (cheap: attach happens only when the view is not already on the
- * host; re-parking tracks the live window size across resizes and the
- * dock/undock transfers that re-parent every view).
- */
-function prepareBotShotSurface(agentId) {
-  const id = String(agentId || "").trim();
-  const view = agentBotShotView(id);
-  if (!view) return;
-  const host = botShotHostWindow();
-  if (!host) return;
-  let attached = false;
-  try {
-    attached = host.contentView?.children?.includes?.(view) === true;
-  } catch (_) {}
-  if (!attached) {
-    // Views live on one window at a time — release the other host first, the
-    // same way the dock/undock transfers do. Top-of-stack is fine: all but a
-    // 2×2 px corner of the park sits outside the window's content.
-    if (host !== agentStageWindow) detachViewFromWindow(agentStageWindow, view);
-    if (host !== d.studioWindow) detachViewFromWindow(d.studioWindow, view);
-    attachViewToWindow(host, view);
-    setViewVisible(view, true);
-  }
-  try {
-    view.setBounds(botShotParkBounds(host));
-  } catch (_) {}
-}
-
-/** The armed tab's view — unless that tab is actually on screen right now,
- *  in which case the real layout owns it and we must not touch it. */
-function agentBotShotView(id) {
-  const view = agentBrowserViews.get(id);
-  if (!view) return null;
-  const onScreen =
-    id === agentStageActiveId &&
-    ((studioStageEmbedActive() && studioStageRevealed) ||
-      (agentStageWindow && !agentStageWindow.isDestroyed() && agentStageWindow.isVisible()));
-  return onScreen ? null : view;
-}
-
-/** The agent runtime reports which Bots hold a browser go-ahead; layout keeps
- *  those tabs' surfaces alive offscreen instead of parking them at zero size. */
-function setBotShotAgents(ids = []) {
-  const next = new Set(
-    (Array.isArray(ids) ? ids : []).map((x) => String(x || "").trim()).filter(Boolean),
-  );
-  let changed = next.size !== agentBotShotIds.size;
-  if (!changed) {
-    for (const id of next) {
-      if (!agentBotShotIds.has(id)) {
-        changed = true;
-        break;
-      }
-    }
-  }
-  if (!changed) return;
-  agentBotShotIds.clear();
-  for (const id of next) agentBotShotIds.add(id);
-  for (const id of next) prepareBotShotSurface(id);
-  // Disarmed tabs fall back to the regular 0×0 park on this pass.
-  layoutAgentStageViews();
-}
-
 function layoutAgentStageViews() {
   // Docked in the Studio window — lay everything out inside the panel rect
   // the Studio renderer reported instead of filling the stage window.
@@ -2085,13 +2023,6 @@ function layoutAgentStageViews() {
     fitAgentTabsToPane(b.width);
     for (const [id, view] of agentBrowserViews) {
       try {
-        // A Bot working an approved browser run keeps a real-sized surface
-        // parked outside the window, so the mini viewport keeps getting
-        // frames — the 0×0 park below stops the compositor cold.
-        if (id !== agentStageActiveId && agentBotShotIds.has(id)) {
-          view.setBounds(botShotParkBounds(d.studioWindow));
-          continue;
-        }
         if (!agentBrowserViewsReady.has(id)) {
           view.setBounds({ x: b.x, y: b.y + chromeH, width: 0, height: 0 });
           continue;
@@ -2105,12 +2036,12 @@ function layoutAgentStageViews() {
             width: b.width,
             pageH,
           });
-          if (agentStageMenuOverlay) {
-            // Park like the standalone stage: the Sync / omnibox menus overflow
-            // the toolbar into this rect. Leaving a live page here swallows clicks.
-            view.setBounds(pageBounds);
-          } else {
-            setDockedViewBounds(view, pageBounds, { radius: pageClipRadius(studioStageRadius) });
+          setDockedViewBounds(view, pageBounds, { radius: pageClipRadius(studioStageRadius) });
+          // While a dropdown is open the chrome view is raised above the page
+          // (transparent outside the bars/menu), so the page stays visible
+          // under the omnibox suggestions instead of vanishing. Only raise the
+          // page back on top once the overlay closes.
+          if (!agentStageMenuOverlay) {
             raiseAgentStageView(d.studioWindow, view, `studio:page:${id}`);
           }
         } else {
@@ -2137,12 +2068,6 @@ function layoutAgentStageViews() {
   fitAgentTabsToPane(width);
   for (const [id, view] of agentBrowserViews) {
     try {
-      // Armed Bot tab: real-sized offscreen park so its shot feed keeps
-      // painting (see the docked branch above).
-      if (id !== agentStageActiveId && agentBotShotIds.has(id)) {
-        view.setBounds(botShotParkBounds(agentStageWindow));
-        continue;
-      }
       if (!agentBrowserViewsReady.has(id)) {
         view.setBounds({ x: 0, y: chromeH, width: 0, height: 0 });
         continue;
@@ -2173,7 +2098,7 @@ function pushAgentStageState() {
   }
   const tabs = [];
   for (const [id, view] of agentBrowserViews) {
-    if (isHiddenBotTab(id)) continue;
+    if (isHiddenAgentTab(id)) continue;
     const meta = agentBrowserMeta.get(id) || {};
     let url = meta.url || "";
     let pageTitle = meta.pageTitle || "";
@@ -2272,6 +2197,14 @@ function pushAgentStageState() {
   } catch (_) {
     recents = [];
   }
+  // The favorites bar shows user-saved bookmarks only — history has its own
+  // button. Recents stay in the payload for consumers that still want them.
+  let bookmarks = [];
+  try {
+    bookmarks = agentBookmarks.readBookmarks(app.getPath("userData")).items || [];
+  } catch (_) {
+    bookmarks = [];
+  }
   const payload = {
     tabs,
     activeAgentId: agentStageActiveId,
@@ -2281,6 +2214,7 @@ function pushAgentStageState() {
       ? isAgentIncognito(agentStageActiveId)
       : !!agentStageIncognitoDefault,
     recents,
+    bookmarks,
     chatOpen: !!agentChatOpen,
     sourceChatId: String(activeMeta.sourceChatId || "").trim() || undefined,
   };
@@ -2311,6 +2245,24 @@ function pushAgentStageState() {
   // its window over is now a little out of date.
   scheduleStudioStageShot();
   notifyStudioTabChatState();
+}
+
+/** Fire-and-forget event to whichever browser chrome is alive (standalone
+ *  stage window and/or the chrome view docked in the Studio). */
+function sendAgentStageEvent(channel, payload) {
+  try {
+    if (agentStageWindow && !agentStageWindow.isDestroyed()) {
+      agentStageWindow.webContents.send(channel, payload);
+    }
+  } catch (_) {}
+  try {
+    if (
+      studioStageChromeView?.webContents &&
+      !studioStageChromeView.webContents.isDestroyed()
+    ) {
+      studioStageChromeView.webContents.send(channel, payload);
+    }
+  } catch (_) {}
 }
 
 function wireAgentBrowserViewEvents(agentId, view) {
@@ -2374,6 +2326,15 @@ function wireAgentBrowserViewEvents(agentId, view) {
       if (!isArtifact && /^https?:\/\//i.test(clean) && !isAgentIncognito(agentId)) {
         try {
           agentRecentVisits.recordRecentVisit(app.getPath("userData"), {
+            url: clean,
+            title: pageTitle || "",
+            favicon: nextFavicon || "",
+          });
+        } catch (_) {}
+        // Chrome-style browsing history: every visit, shown by the History
+        // button in the chrome (bookmarks stay user-curated only).
+        try {
+          visitHistory.recordVisit(app.getPath("userData"), {
             url: clean,
             title: pageTitle || "",
             favicon: nextFavicon || "",
@@ -2536,6 +2497,9 @@ function wireAgentBrowserViewEvents(agentId, view) {
       event.preventDefault();
     }
   });
+  if (!isArtifact) {
+    wireGoogleAuthHandoff(wc, { isMainFrame: true });
+  }
   // "Leave site? Changes you made may not be saved." is a native modal, and a
   // native modal blocks the renderer — so the agent cannot read the page, let
   // alone click the dialog it is trapped behind. Leaving is what was asked for
@@ -2665,7 +2629,35 @@ function wireAgentSessionDownloads(sess) {
         target = path.join(downloadsDir, `${stem} (${i})${ext}`);
       }
       item.setSavePath(target);
+      // Progress → chrome download button animation (ring + arrow), like
+      // Chrome's toolbar download indicator.
+      const key = `dl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      const progressOf = () => {
+        const total = item.getTotalBytes();
+        if (!(total > 0)) return -1; // indeterminate
+        return Math.max(0, Math.min(1, item.getReceivedBytes() / total));
+      };
+      sendAgentStageEvent("lykn:agent-stage-download-progress", {
+        key,
+        filename: base,
+        state: "started",
+        progress: progressOf(),
+      });
+      item.on("updated", (_e, state) => {
+        sendAgentStageEvent("lykn:agent-stage-download-progress", {
+          key,
+          filename: base,
+          state: state === "interrupted" ? "interrupted" : "progress",
+          progress: progressOf(),
+        });
+      });
       item.once("done", (_e, state) => {
+        sendAgentStageEvent("lykn:agent-stage-download-progress", {
+          key,
+          filename: base,
+          state: state === "completed" ? "done" : "failed",
+          progress: 1,
+        });
         if (state === "completed") {
           try {
             shell.showItemInFolder(target);
@@ -2850,14 +2842,14 @@ function ensureAgentBrowserWindow(agentId, { show = false, focus = true, label, 
     } catch (_) {}
   }
 
-  // A click on the Bot peek (show:true) reveals that live tab. Hidden Bot
+  // Revealing (show:true) shows that live tab. Hidden agent
   // shot surfaces must never become the visible tab on their own.
-  if (show && isHeadlessBotTab(id)) revealBotBrowserTab(id);
+  if (show && isHeadlessAgentTab(id)) revealAgentBrowserTab(id);
   if (
-    !isHiddenBotTab(id) &&
+    !isHiddenAgentTab(id) &&
     (focus !== false ||
       !agentStageActiveId ||
-      isHiddenBotTab(agentStageActiveId) ||
+      isHiddenAgentTab(agentStageActiveId) ||
       !agentBrowserViews.has(agentStageActiveId))
   ) {
     agentStageActiveId = id;
@@ -2889,10 +2881,10 @@ function destroyAgentBrowserWindow(agentId) {
   agentBrowserMeta.delete(id);
   noteClosedTabChat(id);
   agentIncognito.delete(id);
-  revealedBotTabs.delete(id);
+  revealedAgentTabs.delete(id);
   {
-    const owner = botTabVisibility.botTabOwner(id, botVisibilityOpts().partitionOwner);
-    if (owner) revealedBotTabs.delete(owner);
+    const owner = hiddenTabVisibility.hiddenTabOwner(id, hiddenTabVisibilityOpts().partitionOwner);
+    if (owner) revealedAgentTabs.delete(owner);
   }
   if (!view) {
     notifyStudioTabChatState();
@@ -2900,7 +2892,6 @@ function destroyAgentBrowserWindow(agentId) {
   }
   agentBrowserViews.delete(id);
   agentBrowserViewsReady.delete(id);
-  agentBotShotIds.delete(id);
   agentTabZoomLogged.delete(id);
   detachViewFromWindow(agentStageWindow, view);
   detachViewFromWindow(d.studioWindow, view);
@@ -2921,7 +2912,7 @@ function destroyAgentBrowserWindow(agentId) {
     // Closing the last docked tab leaves the studio browser open — keep a
     // fresh new-tab in place like a real browser window would. Closing the
     // window itself (not a tab, not minimize) skips that so reopen is empty.
-    // Headless Bot shot surfaces do not count as user tabs.
+    // Headless agent surfaces do not count as user tabs.
     if (
       !studioBrowserDisposing &&
       !hasUserBrowserTab() &&
@@ -3591,7 +3582,7 @@ function resolveAgentBrowseTargetId() {
   const rt = agentRuntime;
   const isBrowseTab = (id) => {
     const tabId = String(id || "").trim();
-    if (!tabId || isAgentArtifactTabId(tabId) || isHiddenBotTab(tabId)) return false;
+    if (!tabId || isAgentArtifactTabId(tabId) || isHiddenAgentTab(tabId)) return false;
     const meta = agentBrowserMeta.get(tabId) || {};
     return meta.kind !== "artifact";
   };
@@ -3826,11 +3817,6 @@ function initAgentRuntime() {
     getActiveBrowseAgentId: () => resolveAgentBrowseTargetId() || agentStageActiveId || null,
     agentTabs: agentTabsCapability,
     onStructuredEvent: (event) => teachService?.recordTaskEvent(event),
-    // Bot mini-viewport support: which hidden tabs must keep painting for
-    // capturePage, and a nudge to rebuild a surface when a capture comes
-    // back empty (fresh tab, or a dock/undock re-parented the view).
-    setBotShotAgents,
-    prepareBotShotSurface,
     workKeepAlive: d.workKeepAlive,
   });
   agentRuntimeLoadPromise = Promise.resolve(agentRuntime.load()).catch((err) => {
@@ -3839,7 +3825,7 @@ function initAgentRuntime() {
   return agentRuntime;
 }
 
-// BOT ROUTINES: durable schedules/monitors that spawn canonical Tasks.
+// ROUTINES: durable schedules/monitors that spawn canonical Tasks.
 // The routine runtime owns WHEN (store + scheduler + monitors + notifications);
 // the agent runtime stays the execution authority for each occurrence.
 function initRoutineRuntime() {
@@ -3853,7 +3839,7 @@ function initRoutineRuntime() {
       create: (opts) => new Notification(opts),
     },
     // Notification click: surface the app and let the renderer route to the
-    // bot's board / routine (App-level listener on lykn:activity-open).
+    // Activity surface (App-level listener on lykn:activity-open).
     onOpenNotification: (deepLink) => {
       try {
         if (!d.mainWindow || d.mainWindow.isDestroyed()) createMainWindow();
@@ -3875,12 +3861,11 @@ function initRoutineRuntime() {
         if (!workflow) return { status: "failed", error: "workflow_not_found" };
         return runtime.runLearnedWorkflow({
           workflow,
-          bot: routine.bot,
           onTaskCreated,
           runId,
           interactiveApproval: false,
           origin: {
-            type: "bot",
+            type: "agent",
             routine: {
               id: String(routine.id),
               name: String(routine.name || "").slice(0, 80),
@@ -3890,7 +3875,6 @@ function initRoutineRuntime() {
             },
           },
           association: {
-            botId: String(routine.botId || ""),
             routineId: String(routine.id),
             routineRunId: String(runId || ""),
             workflowId: workflow.id,
@@ -3898,10 +3882,9 @@ function initRoutineRuntime() {
           },
           onApprovalRequired: (request) => {
             routineRuntime?.notifications?.notify({
-              botId: routine.botId,
               routineId: routine.id,
               runId,
-              title: `${routine.bot?.name || "Bot"} needs approval: ${routine.name}`,
+              title: `LYKN needs approval: ${routine.name}`,
               body: String(
                 request?.question || "A consequential action needs your approval.",
               ).slice(0, 240),
@@ -3919,10 +3902,9 @@ function initRoutineRuntime() {
         // waiting_for_approval — this is the "come approve it" ping.
         onApprovalRequired: (request) => {
           routineRuntime?.notifications?.notify({
-            botId: routine.botId,
             routineId: routine.id,
             runId,
-            title: `${routine.bot?.name || "Bot"} needs approval: ${routine.name}`,
+            title: `LYKN needs approval: ${routine.name}`,
             body: String(request?.question || "A consequential action needs your approval.").slice(0, 240),
             urgency: "high",
           });
@@ -4075,11 +4057,6 @@ function initTeachService() {
   d.agentTabZoomForWidth = agentTabZoomForWidth;
   d.applyAgentTabZoom = applyAgentTabZoom;
   d.fitAgentTabsToPane = fitAgentTabsToPane;
-  d.botShotParkBounds = botShotParkBounds;
-  d.botShotHostWindow = botShotHostWindow;
-  d.prepareBotShotSurface = prepareBotShotSurface;
-  d.agentBotShotView = agentBotShotView;
-  d.setBotShotAgents = setBotShotAgents;
   d.layoutAgentStageViews = layoutAgentStageViews;
   d.pushAgentStageState = pushAgentStageState;
   d.tabChatProjection = tabChatProjection;
@@ -4096,9 +4073,9 @@ function initTeachService() {
   d.ensureAgentBrowserWindow = ensureAgentBrowserWindow;
   d.destroyAgentBrowserWindow = destroyAgentBrowserWindow;
   d.showAgentBrowserWindow = showAgentBrowserWindow;
-  d.revealBotBrowserTab = revealBotBrowserTab;
-  d.concealBotBrowserTab = concealBotBrowserTab;
-  d.isHiddenBotTab = isHiddenBotTab;
+  d.revealAgentBrowserTab = revealAgentBrowserTab;
+  d.concealAgentBrowserTab = concealAgentBrowserTab;
+  d.isHiddenAgentTab = isHiddenAgentTab;
   d.waitForWebContentsLoad = waitForWebContentsLoad;
   d.toggleAgentIncognito = toggleAgentIncognito;
   d.escapeHtmlForStage = escapeHtmlForStage;
@@ -4133,7 +4110,6 @@ function initTeachService() {
   d.agentBrowserLabels = agentBrowserLabels;
   d.agentIncognito = agentIncognito;
   d.agentBrowserViewsReady = agentBrowserViewsReady;
-  d.agentBotShotIds = agentBotShotIds;
   d.artifactHtmlCache = artifactHtmlCache;
   const bindLet = (name, get, set) => {
     Object.defineProperty(d, name, { enumerable: true, get, set });

@@ -167,7 +167,7 @@ Competing registries, current HEAD:
 | **Local decision loop** | `electron/localAgentTask.cjs` + `localCapabilities.cjs` | Structured decision JSON `tool` enum | Task `capabilities[]` → 13 names | `localSystem.run` after capability + consequence | Hardcoded `TOOL_LINES` | Capability compiler from objective |
 | **Remote decision loop** | `electron/remote/remoteAgentTask.cjs` + `remotePolicy.cjs` | Structured decision JSON | Task capabilities → 5 names | SSH session | Hardcoded `TOOL_LINES` | Capability + environment consequence |
 | **Browser decision loop** | `electron/browser-agent/runtime/model.cjs` + `capabilities.cjs` | Structured `action.type` enum (20) | Task `browser*` capabilities | `controller.cjs` → `ownedBrowserAct.cjs` | Always-loaded markdown corpus (~8.9K tokens) | Capability-narrowed action enum |
-| **Bot Harness** | `electron/bot-harness/runtime/toolRegistry.cjs` | Index `{name,summary,risk}` + markdown docs | 8 tools (7 without Local Mode) | `agentRuntime` executors | Progressive: index always; full doc on first select | `primaryTool` preloads one doc; `requiresLocalMode` filter |
+| **Bot Harness** | `electron/agent-harness/runtime/toolRegistry.cjs` | Index `{name,summary,risk}` + markdown docs | 8 tools (7 without Local Mode) | `agentRuntime` executors | Progressive: index always; full doc on first select | `primaryTool` preloads one doc; `requiresLocalMode` filter |
 | **Voice** | `server/routes/voice.routes.js` `LYKN_VOICE_TOOL_DEFS` | OpenAI realtime / ElevenLabs client-tool shape | 35 server names | `runMcp` or special-case | Descriptions on the defs; no Chat-style gated guidance | **Static giant set.** No intent filter. |
 | **Custom-model Chat** | `lib/modelBuilder/customModelChatTools.js` + `modelCapabilitiesCatalog.js` | Capability id → Chat tool names | User toggles / defaults | Same `runChatTool` | Soft-unplugged (`CUSTOM_MODELS_ENABLED=false`) | Maps to `CHAT_TOOL_NAMES` only |
 | **First-party GitHub** | `mcp-tools/githubTools.js` | Internal runner, not Chat schemas | 13 names via `github.*` capabilities | `runGithubTool` | None in Chat | Not model-visible in Chat |
@@ -298,8 +298,8 @@ Client-only: `update_voice_instructions`.
 
 `reply`, `research_report`, `edit_report`, `build_artifact`, `generate_image`, `local_computer`, `create_routine`, `browser`.
 LIVE.
-Progressive docs in `electron/bot-harness/agent/tools/*.md`.
-Tests: `botHarness.test.cjs`, `botHarnessIntegration.test.cjs`, `botToolRouting.test.cjs`.
+Progressive docs in `electron/agent-harness/agent/tools/*.md`.
+Tests: `agentHarness.test.cjs`, `agentHarnessIntegration.test.cjs`, `botToolRouting.test.cjs`.
 
 ### Browser actions (20)
 

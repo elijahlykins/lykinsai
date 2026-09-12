@@ -143,9 +143,23 @@ async function buildPastPageConversationSection(normalizedUrl, excludeSessionId)
   return blocks.join("\n\n");
 }
 
+let appChatsCache = { at: 0, token: "", value: null };
+const APP_CHATS_TTL_MS = 20_000;
+
+function invalidateAppChatsCache() {
+  appChatsCache = { at: 0, token: "", value: null };
+}
+
 async function fetchAppChatsForOverlay() {
   const token = await getAuthToken();
   if (!token) return { chats: [], error: "not_signed_in" };
+  if (
+    appChatsCache.value &&
+    appChatsCache.token === token &&
+    Date.now() - appChatsCache.at < APP_CHATS_TTL_MS
+  ) {
+    return appChatsCache.value;
+  }
   try {
     const res = await fetch(`${API_BASE}/api/desktop/chats?limit=40`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -155,7 +169,9 @@ async function fetchAppChatsForOverlay() {
       return { chats: [], error: body || `http_${res.status}` };
     }
     const data = await res.json();
-    return { chats: Array.isArray(data.chats) ? data.chats : [] };
+    const value = { chats: Array.isArray(data.chats) ? data.chats : [] };
+    appChatsCache = { at: Date.now(), token, value };
+    return value;
   } catch (e) {
     return { chats: [], error: e && e.message ? e.message : "fetch_failed" };
   }
@@ -171,6 +187,7 @@ async function pushOverlaySessionToApp(sessionId, title, messages) {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ chatId: sessionId, title, messages }),
     });
+    if (res.ok) invalidateAppChatsCache();
     return res.ok;
   } catch {
     return false;

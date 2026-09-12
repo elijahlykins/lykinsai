@@ -1076,7 +1076,7 @@ export function DesktopFolders({ onOpen, onEmptyClick, onEditWidgets }) {
       cancelled = true;
     };
     // Mount only — existing icons, not every rename.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   /* Folders parked by an older build hold raw pixels, which only mean anything

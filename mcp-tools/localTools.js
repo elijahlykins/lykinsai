@@ -34,7 +34,6 @@ export const LOCAL_TOOL_NAMES = [
   'local_desktop_look',
   'local_desktop_act',
   'local_browser_agent',
-  'local_ask_bot',
   'local_mcp_search_tools',
   'local_mcp_call_tool',
   'local_mcp_catalog',
@@ -643,33 +642,6 @@ export const LOCAL_CHAT_TOOLS = [
         },
       },
       required: ['task'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'local_ask_bot',
-    description:
-      'Ask one of the user\'s LYKN bots (named desktop teammates) a question and wait for ' +
-      'their reply so you can report it back. Their work streams into THIS chat so the user ' +
-      'can watch. Use this when the user names a bot ("ask Cody", "what does Scout think") or ' +
-      'asks you to consult a teammate. The bot answers in this same turn — relay their view ' +
-      'in your own words. Never tell the user to open the bot\'s chat or paste the question ' +
-      'themselves. These are LYKN bots, not published custom models and not Mac apps.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: {
-          type: 'string',
-          description: 'The bot\'s name as listed in [LYKN BOTS] (e.g. "Cody").',
-        },
-        message: {
-          type: 'string',
-          description:
-            'The complete question or brief for that bot. It does not see this conversation, ' +
-            'so include everything it needs to answer.',
-        },
-      },
-      required: ['name', 'message'],
       additionalProperties: false,
     },
   },

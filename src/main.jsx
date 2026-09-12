@@ -18,6 +18,14 @@ try {
 } catch {}
 
 try {
+  // One-time cleanup: the Bots product was removed (its agentic capability
+  // lives in LYKN chat now). Drop its persisted roster and any
+  // parked bot-chat hand-offs so nothing resurrects stale state.
+  localStorage.removeItem('lykn_bots_v1');
+  sessionStorage.removeItem('lykn_pending_bot_open');
+} catch {}
+
+try {
   const saved = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
   const fontScales = { small: '0.875', medium: '1', large: '1.125' };
   if (saved.fontSize) document.documentElement.style.setProperty('--font-scale', fontScales[saved.fontSize] || '1');

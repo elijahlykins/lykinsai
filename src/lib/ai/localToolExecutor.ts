@@ -15,7 +15,6 @@ import { uploadFileToStorage } from "@/lib/vault/uploadFileToStorage";
 import { openStudioTab } from "@/lib/studioTabs";
 import { openLyknMediaPop } from "@/lib/lyknMediaPop";
 import { arrangeDesktop } from "@/components/macdesktop/desktopArrange";
-import { askBot } from "@/lib/bots/askBot";
 import {
   startBrowserAgentTask,
   type LocalToolHostContext,
@@ -37,19 +36,15 @@ async function postResult(
   toolCallId: string,
   result: LocalToolResult,
 ): Promise<void> {
-  let token = "";
   try {
-    const { data } = await supabase.auth.getSession();
-    token = data.session?.access_token || "";
-  } catch {
-    /* no session — the POST will 401 and the server will time the call out */
-  }
-  try {
+    // Do NOT attach Authorization here. installAuthFetch injects a
+    // refreshed JWT and retries on 401. A stale getSession() token would
+    // lock out that refresh path, the server would wait for a result that
+    // never authenticates, and the user would see "That didn't work."
     await fetch(`${apiBase}/api/ai/local-tool-result`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({ streamId, toolCallId, result }),
     });
@@ -239,7 +234,6 @@ export async function runLocalToolNow(
   host?: LocalToolHostContext,
 ): Promise<LocalToolResult> {
   if (name === "local_browser_agent") return startBrowserAgentTask(args, host);
-  if (name === "local_ask_bot") return askBot(args);
   if (
     name === "local_mcp_search_tools" ||
     name === "local_mcp_call_tool" ||

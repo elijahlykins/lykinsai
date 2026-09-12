@@ -145,9 +145,6 @@ export default function DesktopAppWindow({
   // Ref handed the window's title-bar actions, for a chromeless page that
   // can't reach them any other way (native views paint above the renderer).
   controls,
-  // Right-side title-bar control (e.g. the Bots window's Activity button).
-  // Clicks stay on the control; they must not start a window drag.
-  titleTrailing,
   // Zoom runs to the desktop's bottom edge, dock strip included. Used by the
   // Browser (native views already paint above the dock) and by installed apps
   // (the host raises this window above the dock while it's zoomed).
@@ -186,6 +183,14 @@ export default function DesktopAppWindow({
   onSnapHintRef.current = onSnapHint;
   const [geom, setGeom] = useState(null);
   const [zoomed, setZoomed] = useState(false);
+  // First click on a window that's behind another raises it. The catcher
+  // stays up through that gesture so the click cannot land on a control
+  // inside the window that just came forward (complete a to-do, follow a
+  // link in an iframe, …).
+  const [raising, setRaising] = useState(false);
+  useEffect(() => {
+    if (hidden || minimized || peeked) setRaising(false);
+  }, [hidden, minimized, peeked]);
   // Desktop width, for working out which side is nearer to slide off toward.
   const [parentW, setParentW] = useState(0);
   const restoreRef = useRef(null);
@@ -223,7 +228,7 @@ export default function DesktopAppWindow({
       };
     setParentW(box.w);
     setGeom(clampGeom(base, box));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   // Anything anchored to the frame from outside the DOM (native views) has to
@@ -245,7 +250,7 @@ export default function DesktopAppWindow({
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [peeked]);
 
   const zoomedRef = useRef(zoomed);
@@ -537,7 +542,7 @@ export default function DesktopAppWindow({
       ref={winRef}
       role="dialog"
       aria-label={title}
-      onPointerDown={() => onFocus?.()}
+      onPointerDownCapture={() => onFocus?.()}
       style={{
         ...NO_DRAG,
         left: geom?.x ?? 0,
@@ -589,7 +594,7 @@ export default function DesktopAppWindow({
           onPointerMove={moveGesture}
           onPointerUp={endGesture}
           onDoubleClick={toggleZoom}
-          className="relative flex h-7 flex-shrink-0 touch-none select-none items-center gap-2 px-2.5"
+          className="relative z-[80] flex h-7 flex-shrink-0 touch-none select-none items-center gap-2 px-2.5"
         >
           <TrafficLights
             title={title}
@@ -607,19 +612,21 @@ export default function DesktopAppWindow({
               {title}
             </span>
           </div>
-          {titleTrailing ? (
-            <div
-              className="relative z-10 ml-auto flex items-center"
-              style={NO_DRAG}
-              onPointerDown={(event) => event.stopPropagation()}
-            >
-              {titleTrailing}
-            </div>
-          ) : null}
         </div>
       )}
 
       <div className="relative min-h-0 flex-1 overflow-hidden">{children}</div>
+
+      {/* iframes and <webview>s never bubble pointer events to the frame, so
+          a window sitting behind another would otherwise ignore clicks on
+          its own page. The catcher is a real hit target on top of that
+          content; title bar and resize grips sit above it. */}
+      {onFocus && (!active || raising) && (
+        <FocusCatcher
+          onFocus={onFocus}
+          onHeld={setRaising}
+        />
+      )}
 
       {/* Resize grips: every edge and corner, like a real window. They sit
           last so they take the pointer ahead of the title bar's move handler
@@ -659,7 +666,33 @@ function Grip({ onDown, onMove, onUp, className }) {
       onPointerDown={onDown}
       onPointerMove={onMove}
       onPointerUp={onUp}
-      className={`absolute touch-none ${className}`}
+      className={`absolute z-[80] touch-none ${className}`}
+    />
+  );
+}
+
+function swallowPointer(e) {
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+function FocusCatcher({ onFocus, onHeld }) {
+  return (
+    <div
+      aria-hidden
+      className="lykn-win-raise absolute inset-0 z-[70]"
+      onPointerDown={(e) => {
+        swallowPointer(e);
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+        onHeld(true);
+        onFocus?.();
+      }}
+      onPointerUp={(e) => {
+        swallowPointer(e);
+        requestAnimationFrame(() => onHeld(false));
+      }}
+      onPointerCancel={() => onHeld(false)}
+      onClick={swallowPointer}
     />
   );
 }

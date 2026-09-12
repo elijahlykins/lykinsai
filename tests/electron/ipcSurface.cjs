@@ -7,7 +7,7 @@ const ELECTRON_ROOT = path.resolve(__dirname, "..", "..", "electron");
 
 const SKIP_DIR_NAMES = new Set([
   "browser-agent",
-  "bot-harness",
+  "agent-harness",
   "eval",
   "appRuntime",
   "vendor",

@@ -332,12 +332,18 @@ async function sessionHasLiveGoogleLogin(session) {
  * - The Google family is auto-protected: if the destination session already
  *   has a live Google login, Chrome's Google cookies are NOT imported, so a
  *   working signed-in state is never clobbered.
+ * - `replaceGoogle`: overwrite Google cookies anyway (used when a real Chrome
+ *   window just finished Google sign-in and those cookies must win).
  */
-async function importCookiesToSession(session, cookies, { skipDomains = [] } = {}) {
+async function importCookiesToSession(
+  session,
+  cookies,
+  { skipDomains = [], replaceGoogle = false } = {},
+) {
   const skip = new Set(
     (Array.isArray(skipDomains) ? skipDomains : []).map((d) => String(d).toLowerCase()),
   );
-  if (await sessionHasLiveGoogleLogin(session)) {
+  if (!replaceGoogle && (await sessionHasLiveGoogleLogin(session))) {
     for (const fam of GOOGLE_FAMILIES) skip.add(fam);
   }
   let imported = 0;

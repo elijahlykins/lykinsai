@@ -2,7 +2,6 @@
 // they open (floating window, stage tab, dock entry, split pane), plus the
 // shared chrome constants the shell's surfaces are painted with.
 import {
-  Activity,
   CalendarDays,
   Folder,
   FolderKanban,
@@ -11,7 +10,6 @@ import {
   MessageCircle,
   Settings,
 } from "lucide-react";
-import { BotMark } from "@/components/bots/BotAvatar";
 import BrowserMark from "@/components/macdesktop/BrowserMark";
 
 // Pages that open as macOS-style floating windows over the Home desktop
@@ -72,29 +70,6 @@ export const WINDOW_APPS = {
     width: 940,
     height: 620,
   },
-  // LYKN Bots — always-on agents you build once and message like coworkers.
-  // Each Bot is a durable persona wrapped around a worker agent (with its own
-  // browser tab) plus a task queue, so work dispatches the moment the
-  // previous task finishes. First open lands on the build-your-first-Bot
-  // screen; clicking a Bot opens /bots/:botId (connections, skills).
-  // Teach-a-task and Routines launch later.
-  bots: {
-    label: "Bots",
-    icon: BotMark,
-    src: "/bots",
-    width: 960,
-    height: 760,
-  },
-  // LYKN Activity — opened from the Bots window title-bar button, not the
-  // dock. What every Bot is doing right now (with Stop). Routine lists
-  // stay behind botStandingWorkUiEnabled until that feature launches.
-  activity: {
-    label: "Activity",
-    icon: Activity,
-    src: "/activity",
-    width: 620,
-    height: 700,
-  },
 };
 
 export const SECTIONS = [
@@ -106,7 +81,6 @@ export const SECTIONS = [
   { id: "vault", label: "Vault", icon: Folder },
   { id: "files", label: "Files", icon: Folder },
   { id: "browser", label: "Browser", icon: BrowserMark },
-  { id: "bots", label: "Bots", icon: BotMark },
   { id: "calendar", label: "Calendar", icon: CalendarDays },
   { id: "todos", label: "To-dos", icon: ListTodo },
   { id: "settings", label: "Settings", icon: Settings },
@@ -144,7 +118,6 @@ export const NAV_ITEMS = [
   // surface and its rounded bar. Chats open there via openTab("chat", …).
   { id: "dashboard", label: "Home", icon: Home, action: "tab" },
   { id: "browser", label: "Browser", icon: BrowserMark, action: "tab" },
-  { id: "bots", label: "Bots", icon: BotMark, action: "tab" },
   { id: "projects", label: "Projects", icon: FolderKanban, action: "tab" },
   { id: "vault", label: "Vault", icon: Folder, action: "tab" },
   { id: "files", label: "Files", icon: Folder, action: "tab" },
@@ -153,13 +126,14 @@ export const NAV_ITEMS = [
   { id: "settings", label: "Settings", icon: Settings, action: "tab" },
 ];
 
-// Home is the default and lives on the LYKN icon's double-click. Files,
-// Projects, Calendar, To-dos, and Settings are available from the Vault
-// sidebar, so they stay reachable if they're pulled off the dock. Calendar
-// and To-dos also render beside the user's custom apps in the dock.
+// Home is the default and lives on the LYKN icon's double-click. Files and
+// Projects stay in the Vault sidebar so they stay reachable if they're pulled
+// off the dock. Calendar and To-dos render beside the user's custom apps.
+// Settings stays with the built-in strip (Browser, Vault), on
+// the other side of the custom-apps divider.
 export const DOCK_ITEMS = NAV_ITEMS.filter(
   (item) =>
-    !["dashboard", "files", "projects", "settings", "calendar", "todos"].includes(item.id),
+    !["dashboard", "files", "projects", "calendar", "todos"].includes(item.id),
 );
 export const CUSTOM_APP_NEIGHBORS = NAV_ITEMS.filter((item) =>
   ["calendar", "todos"].includes(item.id),

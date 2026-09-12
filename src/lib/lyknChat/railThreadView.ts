@@ -5,9 +5,8 @@
 
 export function railShowsWaitingIndicator(opts: {
   loading: boolean;
-  botAlreadyWorking: boolean;
   lastAiResponse?: string | null;
 }): boolean {
-  if (!opts.loading || opts.botAlreadyWorking) return false;
+  if (!opts.loading) return false;
   return !String(opts.lastAiResponse || "").trim();
 }

@@ -332,24 +332,6 @@ test('Glass overlay with Local Mode discloses local file reads for a Desktop com
   assert.equal(d.keepToolsOn, true);
 });
 
-test('ask Cody discloses local_ask_bot without Local Mode', () => {
-  const d = disclose('ask Cody what he thinks about the current agent structure', {
-    lyknBots: [{ id: 'bot_cody', name: 'Cody', role: 'Architect' }],
-  });
-  assert.ok(names(d).includes('local_ask_bot'));
-  assert.ok(d.capabilities.includes('bots.ask'));
-  assert.equal(d.keepToolsOn, true);
-  assert.equal(names(d).includes('local_list_dir'), false);
-});
-
-test('send a bot discloses local_ask_bot', () => {
-  const d = disclose('send Scout to start work in the browser', {
-    lyknBots: [{ id: 'bot_scout', name: 'Scout', role: 'Research' }],
-  });
-  assert.ok(names(d).includes('local_ask_bot'));
-  assert.ok(d.capabilities.includes('bots.ask'));
-});
-
 test('run a browser agent discloses local_browser_agent in Local Mode', () => {
   const d = disclose('run a browser agent and go to the Perplexity Computer website', {
     localMode: true,
@@ -358,30 +340,25 @@ test('run a browser agent discloses local_browser_agent in Local Mode', () => {
   assert.ok(d.capabilities.includes('browser.agent'));
 });
 
-test('browser side chat stays ask-only even with Local Mode and bots', () => {
+test('browser side chat stays ask-only even with Local Mode', () => {
   const d = disclose('run a browser agent and email this to my team', {
     localMode: true,
     browserAsk: true,
-    lyknBots: [{ id: 'bot_scout', name: 'Scout', role: 'Research' }],
     hasConnectedApps: true,
     discoveredExternalTools: fakeMcpCatalog().slice(0, 20),
     allowNewArtifactBuild: true,
   });
   assert.equal(names(d).includes('local_browser_agent'), false);
-  assert.equal(names(d).includes('local_ask_bot'), false);
   assert.equal(names(d).includes('local_run_command'), false);
   assert.equal(names(d).includes('lykn_search_connected_tools'), false);
   assert.equal(names(d).includes('lykn_call_connected_tool'), false);
   assert.equal(d.externalTools.length, 0);
   assert.equal(d.capabilities.includes('browser.agent'), false);
-  assert.equal(d.capabilities.includes('bots.ask'), false);
   assert.equal(d.capabilities.includes('connections.external'), false);
 });
 
-test('hello with a bot roster still discloses zero tools', () => {
-  const d = disclose('hello', {
-    lyknBots: [{ id: 'bot_cody', name: 'Cody', role: 'Architect' }],
-  });
+test('hello still discloses zero tools', () => {
+  const d = disclose('hello', {});
   assert.deepEqual(names(d), []);
   assert.equal(d.keepToolsOn, false);
 });

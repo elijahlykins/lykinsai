@@ -233,7 +233,7 @@ const ROUTE_SCHEMA = {
 };
 
 /**
- * Which of a Bot's tools should carry one prompt?
+ * Which of an agent's tools should carry one prompt?
  *
  * Bots (headless teammates) have every LYKN tool: plain chat, image
  * generation, artifact building, research reports, local-machine tasks, and
@@ -370,19 +370,11 @@ function createAgentModel({
   arm = "",
   onUsage = null,
   timeoutMs = CALL_TIMEOUT_MS,
-  /**
-   * A Bot pinned to a specific model (Bots → model picker). Sent with every
-   * stage call; the server validates it against the catalog and the user's
-   * plan and applies it only to the stages that are the agent reasoning.
-   * Empty means the stage defaults stand, which is what every bot does until
-   * its owner changes the picker.
-   */
-  botModelId = "",
 } = {}) {
   const doFetch = fetchImpl || fetch;
 
-  // getAuthToken() reads live from the renderer over IPC on every call. A Bot
-  // turn makes three to five model calls, so that IPC round-trip was being
+  // getAuthToken() reads live from the renderer over IPC on every call. An
+  // agent turn makes three to five model calls, so that IPC round-trip was being
   // paid three to five times before any request left the machine. Access
   // tokens are valid for far longer than this window, so a short cache is
   // safe; a 401 clears it and the next call reads live again.
@@ -405,7 +397,6 @@ function createAgentModel({
     const body = JSON.stringify({
       stage, system, user, imageUrl, schema, maxTokens,
       ...(arm ? { arm } : {}),
-      ...(botModelId ? { botModelId } : {}),
     });
     let res;
     let lastError = "";

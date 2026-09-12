@@ -1,14 +1,20 @@
 import { supabase } from "@/lib/supabase";
 import type { QueryClient } from "@tanstack/react-query";
-import { filterLyknChatsWithContext, type LyknChatListRow } from "@/lib/lyknChat/lyknChatHasContext";
+import {
+  boardTitleLooksCustomized,
+  filterLyknChatsWithContext,
+  type LyknChatListRow,
+} from "@/lib/lyknChat/lyknChatHasContext";
 import { isDemoLyknChatId } from "@/lib/demoLyknChats";
 
-const BOARD_LIST_SELECT_BASE =
-  "id, title, updated_at, created_at, lykn_chat_states(state)";
-const BOARD_LIST_SELECT_WITH_MODEL =
-  "id, title, updated_at, created_at, chat_model_key, lykn_chat_states(state)";
-const BOARD_LIST_SELECT_WITH_MODEL_AND_PIN =
-  "id, title, updated_at, created_at, chat_model_key, pinned_at, lykn_chat_states(state)";
+const BOARD_LIST_META_BASE = "id, title, updated_at, created_at";
+const BOARD_LIST_META_WITH_MODEL = "id, title, updated_at, created_at, chat_model_key";
+const BOARD_LIST_META_WITH_MODEL_AND_PIN =
+  "id, title, updated_at, created_at, chat_model_key, pinned_at";
+
+function withHasContent(select: string) {
+  return `${select}, lykn_chat_states(has_content)`;
+}
 
 function isMissingColumnError(
   error: { message?: string; code?: string } | null,
@@ -28,6 +34,62 @@ function isMissingChatModelKeyColumn(error: { message?: string; code?: string } 
 
 function isMissingPinnedAtColumn(error: { message?: string; code?: string } | null) {
   return isMissingColumnError(error, "pinned_at");
+}
+
+function isMissingHasContentColumn(error: { message?: string; code?: string } | null) {
+  // Do not treat generic 42703 as this column — pin/model misses share that code.
+  const msg = String(error?.message || "").toLowerCase();
+  return msg.includes("has_content");
+}
+
+function withHasContentFlag<T extends LyknChatListRow>(
+  rows: T[],
+  flags: Map<string, boolean>,
+): T[] {
+  return rows.map((row) => {
+    if (boardTitleLooksCustomized(row.title) || !flags.has(row.id)) return row;
+    return { ...row, lykn_chat_states: { has_content: flags.get(row.id) } } as T;
+  });
+}
+
+/**
+ * Untitled chats need a content signal so empty shells stay out of history.
+ * Prefer the boolean `has_content` column; fall back to snapshot jsonb only
+ * for those untitled ids on older DBs.
+ */
+async function attachListContext<T extends LyknChatListRow>(rows: T[]): Promise<T[]> {
+  const untitledIds = rows
+    .filter((row) => !boardTitleLooksCustomized(row.title))
+    .map((row) => row.id);
+  if (!untitledIds.length) return rows;
+
+  const flagged = await supabase
+    .from("lykn_chat_states")
+    .select("chat_id, has_content")
+    .in("chat_id", untitledIds);
+  if (!flagged.error) {
+    const flags = new Map<string, boolean>();
+    for (const row of flagged.data || []) {
+      const id = String((row as { chat_id?: string }).chat_id || "");
+      if (id) flags.set(id, Boolean((row as { has_content?: boolean }).has_content));
+    }
+    return withHasContentFlag(rows, flags);
+  }
+
+  if (!isMissingHasContentColumn(flagged.error)) throw flagged.error;
+
+  const heavy = await supabase
+    .from("lykn_chat_states")
+    .select("chat_id, state")
+    .in("chat_id", untitledIds);
+  if (heavy.error) throw heavy.error;
+  return rows.map((row) => {
+    if (boardTitleLooksCustomized(row.title)) return row;
+    const match = (heavy.data || []).find(
+      (s) => String((s as { chat_id?: string }).chat_id || "") === row.id,
+    );
+    return match ? ({ ...row, lykn_chat_states: { state: (match as { state?: unknown }).state } } as T) : row;
+  });
 }
 
 /** Prevents mergeActiveRoute from resurrecting a chat mid-delete. */
@@ -113,10 +175,18 @@ export function patchLyknChatPinnedInListQueries(
 
 type BoardListQuery = ReturnType<ReturnType<typeof supabase.from>["select"]>;
 
+function isSchemaFallbackError(error: { message?: string; code?: string } | null) {
+  return (
+    isMissingHasContentColumn(error) ||
+    isMissingPinnedAtColumn(error) ||
+    isMissingChatModelKeyColumn(error)
+  );
+}
+
 /**
  * Runs the board-list select against `lykn_chats` for `userId`, ordered newest
- * first, applying `shape` (range / limit / extra filters) to the query. Falls
- * back to the model-less projection on older DBs that lack `chat_model_key`.
+ * first, applying `shape` (range / limit / extra filters) to the query.
+ * Prefers a boolean has_content embed so lists never download snapshot jsonb.
  */
 async function runBoardListQuery(
   userId: string,
@@ -131,27 +201,32 @@ async function runBoardListQuery(
         .order("updated_at", { ascending: false }) as unknown as BoardListQuery,
     );
 
-  const withModelAndPin = await build(BOARD_LIST_SELECT_WITH_MODEL_AND_PIN);
-  if (!withModelAndPin.error) return (withModelAndPin.data || []) as LyknChatListRow[];
+  const asRows = (data: unknown) => (data || []) as LyknChatListRow[];
 
-  if (isMissingPinnedAtColumn(withModelAndPin.error)) {
-    const withModel = await build(BOARD_LIST_SELECT_WITH_MODEL);
-    if (!withModel.error) return (withModel.data || []) as LyknChatListRow[];
-    if (isMissingChatModelKeyColumn(withModel.error)) {
-      const fallback = await build(BOARD_LIST_SELECT_BASE);
-      if (fallback.error) throw fallback.error;
-      return (fallback.data || []) as LyknChatListRow[];
-    }
-    throw withModel.error;
+  const leanSelects = [
+    withHasContent(BOARD_LIST_META_WITH_MODEL_AND_PIN),
+    withHasContent(BOARD_LIST_META_WITH_MODEL),
+    withHasContent(BOARD_LIST_META_BASE),
+  ];
+  for (const select of leanSelects) {
+    const res = await build(select);
+    if (!res.error) return asRows(res.data);
+    if (!isSchemaFallbackError(res.error)) throw res.error;
+    if (isMissingHasContentColumn(res.error)) break;
   }
 
-  if (isMissingChatModelKeyColumn(withModelAndPin.error)) {
-    const fallback = await build(BOARD_LIST_SELECT_BASE);
-    if (fallback.error) throw fallback.error;
-    return (fallback.data || []) as LyknChatListRow[];
+  const metaSelects = [
+    BOARD_LIST_META_WITH_MODEL_AND_PIN,
+    BOARD_LIST_META_WITH_MODEL,
+    BOARD_LIST_META_BASE,
+  ];
+  for (const select of metaSelects) {
+    const res = await build(select);
+    if (!res.error) return attachListContext(asRows(res.data));
+    if (!isSchemaFallbackError(res.error)) throw res.error;
   }
 
-  throw withModelAndPin.error;
+  throw new Error("Failed to load chats");
 }
 
 async function fetchBoardListRows(

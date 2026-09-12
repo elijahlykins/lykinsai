@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Bot opt-in copy when an ask can be served by a named MCP plugin
+ * Browser opt-in copy when an ask can be served by a named MCP plugin
  * (Gmail, Drive, Slack, …) instead of only the browser.
  *
  * Heuristic only — it decides the question, never the execution path.

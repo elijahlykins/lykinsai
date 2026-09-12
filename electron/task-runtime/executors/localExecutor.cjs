@@ -4,7 +4,7 @@
  * LocalExecutor — the ONE canonical way local-computer work executes.
  *
  * Runs under TaskRuntime.execute for a normal Agent's Local Mode skill, and as
- * a child executor (via TaskRuntime.runChild) when a Bot selects
+ * a child executor (via TaskRuntime.runChild) when an agent selects
  * `local_computer`. It does not own a Task lifecycle of its own — the loop in
  * electron/localAgentTask.cjs remains the local brain — what this class owns
  * is the CONTRACT between that loop and the canonical Task:
@@ -183,7 +183,7 @@ class LocalExecutor {
 }
 
 /**
- * Map a LocalExecutor result onto the Bot harness child-tool envelope.
+ * Map a LocalExecutor result onto the agent harness child-tool envelope.
  * Waiting is a terminal pause, never a successful string the harness could
  * treat as completed work.
  */

@@ -7,9 +7,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 
 import { toast } from "@/components/ui/use-toast";
-import { takePendingBotChatAttachments } from "@/lib/bots/botAttachments";
-import { LYKN_CHAT_OPEN_EVENT } from "@/lib/bots/botChatBridge";
-import { getBot, getBots, setBotChatBoard } from "@/lib/bots/botsClient";
 import { normalizeResearchSourcePref, type ResearchSourcePref } from "@/lib/ai/researchSourcePrefs";
 import { isImagineAspect, loadImagineAspect, saveImagineAspect } from "@/lib/chat/imagineLayout";
 import { getAttachedPageForChat, subscribeBrowserChatAttach } from "@/lib/lyknChat/browserChatAttach";
@@ -17,7 +14,6 @@ import { syncStudioBrowserToChat } from "@/lib/lyknChat/openInStudioBrowser";
 import { createNewChat } from "@/lib/chat/chatThreadsClient";
 import {
   addOpenThread,
-  getLastLyknChatId,
   patchThreadSnapshot,
   pauseInFlightWork,
   rememberLyknChatId,
@@ -53,7 +49,6 @@ import {
   imagesFromImagineCommit,
 } from "@/lib/chat/imagineThread";
 import {
-  type BotSendAttachment,
   type FocusedChatAttachment,
   type PromptMessage,
 } from "@/lib/lyknChat/chatTurnTypes";
@@ -74,7 +69,6 @@ import {
 } from "@/components/lyknChat/StudioChatChrome";
 import { citationSourcesFromMessage } from "@/lib/ai/webCitationSources";
 import type { ComposerMode } from "@/hooks/useChatEngine";
-import { useBotChatBridge } from "@/hooks/useBotChatBridge";
 import type { ChatSendOpts } from "@/lib/ai/chatSendTarget";
 import {
   LYKN_CHAT_SEND_EVENT,
@@ -89,6 +83,12 @@ import {
   type QueuedPrompt,
 } from "@/lib/chat/promptQueue";
 import { fetchTrustedBrowserTabPage } from "@/lib/lyknChat/browserSurfaceContext";
+import {
+  filesToAgentAttachments,
+  railAgentBridgeAvailable,
+  sendRailAgentTurn,
+  stopRailAgentTurn,
+} from "@/lib/lyknChat/railAgentChat";
 import {
   startChatForUnboundBrowserTab,
   stampBrowserTabChatInMain,
@@ -268,11 +268,6 @@ export function useStudioChatSession({
     if (!user?.id) return;
     try {
       const { chatId: freshChatId } = await createNewChat(user.id);
-      // Clearing a Bot's chat re-homes the bot onto the fresh board: coming
-      // back to it (dropdown, work strip, sends) lands on the new thread,
-      // while the old one stays in history like any other chat.
-      const botOwner = getBots().find((b) => b.chatId === routeChatId);
-      if (botOwner) setBotChatBoard(botOwner.id, freshChatId);
       addOpenThread(freshChatId);
       notifyLyknChatsChanged();
       nav(`/chat/${encodeURIComponent(freshChatId)}`);
@@ -281,56 +276,9 @@ export function useStudioChatSession({
     }
   }, [studioView, user?.id, routeChatId, nav]);
 
-  // Switching back to LYKN must leave the Bot's board (and its browser)
-  // behind. Restore the last LYKN thread, or mint a fresh one.
-  const handleOpenLyknChat = useCallback(async () => {
-    try {
-      sessionStorage.removeItem("lykn_pending_lykn_open");
-    } catch {
-      /* event path still works */
-    }
-    const last = String(getLastLyknChatId() || "").trim();
-    const lastIsBot = last && getBots().some((b) => b.chatId === last);
-    if (last && !lastIsBot) {
-      if (last !== routeChatId) nav(`/chat/${encodeURIComponent(last)}`);
-      return;
-    }
-    if (!user?.id) return;
-    try {
-      const { chatId: freshChatId } = await createNewChat(user.id);
-      rememberLyknChatId(freshChatId);
-      addOpenThread(freshChatId);
-      notifyLyknChatsChanged();
-      nav(`/chat/${encodeURIComponent(freshChatId)}`);
-    } catch {
-      /* stay on the current board */
-    }
-  }, [routeChatId, nav, user?.id]);
-
-  useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem("lykn_pending_lykn_open");
-      if (raw) {
-        sessionStorage.removeItem("lykn_pending_lykn_open");
-        const p = JSON.parse(raw) as { at?: number };
-        if (Date.now() - Number(p?.at || 0) < 15000) {
-          void handleOpenLyknChat();
-        }
-      }
-    } catch {
-      /* event path below still works */
-    }
-    const onOpen = () => {
-      void handleOpenLyknChat();
-    };
-    window.addEventListener(LYKN_CHAT_OPEN_EVENT, onOpen);
-    return () => window.removeEventListener(LYKN_CHAT_OPEN_EVENT, onOpen);
-  }, [handleOpenLyknChat]);
-
   useEffect(() => {
     const id = String(routeChatId || chatId || "").trim();
     if (!id) return;
-    if (getBots().some((b) => b.chatId === id)) return;
     rememberLyknChatId(id);
   }, [routeChatId, chatId]);
 
@@ -428,24 +376,6 @@ export function useStudioChatSession({
   >(null);
   const [homeAttachSendTick, setHomeAttachSendTick] = useState(0);
 
-  // A turn addressed to a Bot. It lives in this thread like any other turn:
-  // the prompt is a normal user row, and the Bot's worker agent streams its
-  // live text / parked question / final result into the row's aiResponse via
-  // botChatBridge. These turns never touch the chat model's pipeline, but
-  // the finished exchange is pushed into the model's thread snapshot so LYKN
-  // knows what its coworker was asked and what came back.
-  //
-  // Bot chat integration (send / re-attach / hop / seen / held sends) — see
-  // useBotChatBridge.
-  const { handleBotChatSend, pendingBotSendRef, chatIdLiveRef, resolveBotBoard } = useBotChatBridge({
-    chatId,
-    routeChatId,
-    nav,
-    chatMessages,
-    setChatMessages,
-    userId: user?.id,
-  });
-
   // Home-screen chat bar: the Studio desktop stashes {view, text} and flips
   // to this tab. Consume on mount (cold surface) or via the DOM event (warm
   // surface): arm the picked mode and send immediately. Imagine is special —
@@ -459,7 +389,6 @@ export function useStudioChatSession({
     const consume = (fallback: {
       view?: string;
       text?: string;
-      botId?: string;
       researchSourcePref?: string;
       imagineAspect?: string;
       vaultPayloads?: Record<string, unknown>[];
@@ -473,7 +402,6 @@ export function useStudioChatSession({
     } = {}) => {
       let view = String(fallback.view || "");
       let text = String(fallback.text || "");
-      let botId = String(fallback.botId || "");
       let sourcePref = String(fallback.researchSourcePref || "");
       let aspectPref = String(fallback.imagineAspect || "");
       let vaultPayloads = Array.isArray(fallback.vaultPayloads) ? fallback.vaultPayloads : [];
@@ -485,7 +413,6 @@ export function useStudioChatSession({
           const p = JSON.parse(raw) as {
             view?: string;
             text?: string;
-            botId?: string;
             researchSourcePref?: string;
             imagineAspect?: string;
             vaultPayloads?: Record<string, unknown>[];
@@ -499,7 +426,6 @@ export function useStudioChatSession({
           };
           view = String(p?.view || view);
           text = String(p?.text || text);
-          botId = String(p?.botId || botId);
           sourcePref = String(p?.researchSourcePref || sourcePref);
           aspectPref = String(p?.imagineAspect || aspectPref);
           if (Array.isArray(p?.vaultPayloads)) vaultPayloads = p.vaultPayloads;
@@ -519,25 +445,6 @@ export function useStudioChatSession({
         setImagineAspect(next);
       }
       text = text.trim();
-      // Addressed to a Bot: the turn belongs to this thread, but the reply
-      // comes from the Bot's worker agent, not the chat model. Attachments
-      // arrive pre-converted by the bar (runtime shape) and parked — claim
-      // them here so they ride the send to the worker agent.
-      if (botId && text) {
-        const botAtts = takePendingBotChatAttachments() as BotSendAttachment[];
-        pendingBotSendRef.current = { botId, text, attachments: botAtts };
-        void resolveBotBoard(botId).then((botBoard) => {
-          if (botBoard && botBoard !== routeChatId) {
-            nav(`/chat/${botBoard}`);
-            return;
-          }
-          if (chatIdLiveRef.current === routeChatId) {
-            pendingBotSendRef.current = null;
-            handleBotChatSend(botId, text, botAtts);
-          }
-        });
-        return;
-      }
       // Claimed before the empty-prompt bail so files/folders can't linger
       // and reappear on a later send. A file with no words is a valid turn.
       const homeFiles = takePendingHomeChatFiles();
@@ -615,7 +522,6 @@ export function useStudioChatSession({
       consume(((e as CustomEvent).detail || {}) as {
         view?: string;
         text?: string;
-        botId?: string;
         researchSourcePref?: string;
         imagineAspect?: string;
         vaultPayloads?: Record<string, unknown>[];
@@ -630,7 +536,7 @@ export function useStudioChatSession({
     window.addEventListener("lykn-home-chat-send", onSend);
     return () => window.removeEventListener("lykn-home-chat-send", onSend);
   }, [
-    routeChatId, nav, handleStudioFollowUp, handleBotChatSend, resolveBotBoard,
+    routeChatId, nav, handleStudioFollowUp,
     setComposerMode, addFocusedAttachment, updateFocusedAttachment, user?.id,
     applyVaultDropToChat,
   ]);
@@ -651,6 +557,20 @@ export function useStudioChatSession({
             })) || "";
         }
         if (!chatId) return;
+        // Desktop rail sends are fully agentic: the tab's agent runtime runs
+        // the turn (browse, click, search, act) and its stream paints into
+        // this chat via railAgentChat. Ask-only SSE remains the web fallback.
+        if (parsed.tabId && railAgentBridgeAvailable()) {
+          const agentAttachments = await filesToAgentAttachments(parsed.files);
+          if (!parsed.text && !agentAttachments.length) return;
+          await sendRailAgentTurn({
+            chatId,
+            tabId: parsed.tabId,
+            text: parsed.text,
+            attachments: agentAttachments,
+          });
+          return;
+        }
         const page = parsed.tabId
           ? await fetchTrustedBrowserTabPage(parsed.tabId)
           : undefined;
@@ -685,6 +605,8 @@ export function useStudioChatSession({
     const onBrowserStop = (e: Event) => {
       const parsed = parseLyknChatStopDetail((e as CustomEvent).detail);
       if (!parsed) return;
+      // Agentic rail turn → stop the tab's agent; otherwise abort the SSE turn.
+      if (stopRailAgentTurn(parsed.chatId)) return;
       handleStopAi(parsed.chatId);
     };
     window.addEventListener(LYKN_CHAT_STOP_EVENT, onBrowserStop);

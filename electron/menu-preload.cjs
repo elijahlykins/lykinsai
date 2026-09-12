@@ -20,7 +20,7 @@ contextBridge.exposeInMainWorld("lyknMenu", {
   // Snapshot of toggle states (voice / listen / watch / stealth) from the overlay.
   getState: () => ipcRenderer.invoke("lykn:menu-state"),
   // Past chats reuse the overlay's existing list source.
-  listChats: () => ipcRenderer.invoke("lykn:list-chats"),
+  listChats: (opts) => ipcRenderer.invoke("lykn:list-chats", opts || {}),
   listProjects: () => ipcRenderer.invoke("lykn:list-projects"),
   openAppChat: (chatId) => ipcRenderer.send("lykn:open-app-chat", chatId),
   onShown: (cb) => ipcRenderer.on("lykn:menu-shown", () => cb()),

@@ -7,9 +7,21 @@ const urlSuggestEl = document.getElementById("url-suggest");
 const emptyEl = document.getElementById("empty");
 const toastEl = document.getElementById("toast");
 const useLyknBtn = document.getElementById("use-lykn");
+const bookmarkBtn = document.getElementById("bookmark");
+const historyBtn = document.getElementById("history-btn");
+const historyMenu = document.getElementById("history-menu");
+const historyListEl = document.getElementById("history-list");
+const downloadBtn = document.getElementById("download");
 const syncBtn = document.getElementById("sync-btn");
 const syncMenu = document.getElementById("sync-menu");
 const chromeSyncUi = window.lyknChromeSyncContract || {};
+// Suggestion engine shared with the new-tab page (omniboxSuggest.js).
+const {
+  hostLabel,
+  faviconUrlFor,
+  stripUrlDecor,
+  buildUrlSuggestions,
+} = window.lyknOmniboxSuggest;
 
 let state = {
   tabs: [],
@@ -19,11 +31,13 @@ let state = {
   incognito: false,
   chatOpen: false,
   recents: [],
+  bookmarks: [],
 };
 let toastTimer = null;
 let toastAgentId = "";
 let syncMenuOpen = false;
 let syncLoaded = false;
+let historyMenuOpen = false;
 let historyItems = [];
 let urlSuggestOpen = false;
 let urlSuggestItems = [];
@@ -34,79 +48,11 @@ let pendingNewTabAnimation = false;
 // strip stands in for the floating Browser window's title bar.
 let docked = false;
 
-const COMMON_SITES = [
-  { name: "Google", url: "https://www.google.com/" },
-  { name: "YouTube", url: "https://www.youtube.com/" },
-  { name: "Gmail", url: "https://mail.google.com/" },
-  { name: "Google Docs", url: "https://docs.google.com/" },
-  { name: "Google Drive", url: "https://drive.google.com/" },
-  { name: "Wikipedia", url: "https://www.wikipedia.org/" },
-  { name: "GitHub", url: "https://github.com/" },
-  { name: "X", url: "https://x.com/" },
-  { name: "Reddit", url: "https://www.reddit.com/" },
-  { name: "LinkedIn", url: "https://www.linkedin.com/" },
-];
-
 function escapeHtml(s) {
   return String(s || "").replace(
     /[&<>"']/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
   );
-}
-
-function hostLabel(url) {
-  try {
-    return new URL(url).hostname.replace(/^www\./i, "");
-  } catch {
-    return "";
-  }
-}
-
-/** Product icons for Google hosts — S2 returns the same "G" for every *.google.com. */
-const BRAND_ICON_BY_HOST = {
-  "mail.google.com":
-    "https://www.gstatic.com/images/branding/product/2x/gmail_2020q4_48dp.png",
-  "calendar.google.com":
-    "https://www.gstatic.com/images/branding/product/2x/calendar_2020q4_48dp.png",
-  "drive.google.com":
-    "https://www.gstatic.com/images/branding/product/2x/drive_2020q4_48dp.png",
-  "docs.google.com":
-    "https://www.gstatic.com/images/branding/product/2x/docs_2020q4_48dp.png",
-  "sheets.google.com":
-    "https://www.gstatic.com/images/branding/product/2x/sheets_2020q4_48dp.png",
-  "slides.google.com":
-    "https://www.gstatic.com/images/branding/product/2x/slides_2020q4_48dp.png",
-  "keep.google.com":
-    "https://www.gstatic.com/images/branding/product/2x/keep_2020q4_48dp.png",
-  "youtube.com":
-    "https://www.gstatic.com/images/branding/product/2x/youtube_48dp.png",
-  "music.youtube.com":
-    "https://www.gstatic.com/images/branding/product/2x/youtube_music_2020q4_48dp.png",
-};
-
-function brandIconFor(url) {
-  const u = String(url || "");
-  const host = hostLabel(u);
-  if (!host) return "";
-  if (host === "docs.google.com") {
-    if (u.includes("/document/")) return BRAND_ICON_BY_HOST["docs.google.com"];
-    if (u.includes("/spreadsheets/")) return BRAND_ICON_BY_HOST["sheets.google.com"];
-    if (u.includes("/presentation/")) return BRAND_ICON_BY_HOST["slides.google.com"];
-  }
-  if (host === "google.com" && u.includes("/calendar/")) {
-    return BRAND_ICON_BY_HOST["calendar.google.com"];
-  }
-  return BRAND_ICON_BY_HOST[host] || "";
-}
-
-function faviconUrlFor(url, explicit) {
-  // Brand icons win over page/S2 favicons — otherwise Gmail/Docs/Drive all show the Google G.
-  const brand = brandIconFor(url);
-  if (brand) return brand;
-  if (typeof explicit === "string" && explicit) return explicit;
-  const host = hostLabel(url);
-  if (!host) return "";
-  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=32`;
 }
 
 const GLOBE_SVG =
@@ -130,185 +76,24 @@ function isEmptyBrowserTab(t) {
   return false;
 }
 
+/** Suggestion history = every visit (Chrome-style) plus closed-tab entries. */
 function refreshHistoryCache() {
-  if (typeof window.lyknAgentStage?.listHistory !== "function") return;
-  void window.lyknAgentStage.listHistory().then((res) => {
-    historyItems = Array.isArray(res?.items) ? res.items : [];
+  const stage = window.lyknAgentStage || {};
+  const visits =
+    typeof stage.listVisits === "function"
+      ? stage.listVisits().catch(() => null)
+      : Promise.resolve(null);
+  const closed =
+    typeof stage.listHistory === "function"
+      ? stage.listHistory().catch(() => null)
+      : Promise.resolve(null);
+  void Promise.all([visits, closed]).then(([v, c]) => {
+    historyItems = [
+      ...(Array.isArray(v?.items) ? v.items : []),
+      ...(Array.isArray(c?.items) ? c.items : []),
+    ];
     if (urlSuggestOpen) renderUrlSuggest();
-  }).catch(() => {});
-}
-
-/** Bare brand/host token? e.g. "nike" — not a search phrase, not already a URL. */
-function isDomainTyped(query) {
-  const q = String(query || "").trim();
-  if (!q || /\s/.test(q)) return false;
-  if (/^https?:\/\//i.test(q)) return false;
-  // "nike", "nike.", "nike.c", "nike.com", "nike.com/shoes"
-  return /^[a-z0-9][a-z0-9.-]*$/i.test(q);
-}
-
-function stripUrlDecor(url) {
-  return String(url || "")
-    .replace(/^https?:\/\//i, "")
-    .replace(/^www\./i, "")
-    .replace(/\/$/, "");
-}
-
-/**
- * Google-style inline completion target for what the user typed.
- * Prefers a known host/path from history; otherwise guesses `{token}.com`.
- */
-function bestLinkCompletion(query, candidates) {
-  const raw = String(query || "");
-  const q = raw.trim();
-  if (!q || !isDomainTyped(q)) return null;
-  const ql = q.toLowerCase();
-
-  // 1) Known links whose host/path starts with the typed prefix.
-  let best = null;
-  for (const it of candidates || []) {
-    const completes = [it.complete, stripUrlDecor(it.url), hostLabel(it.url)].filter(Boolean);
-    for (const c of completes) {
-      const cl = String(c).toLowerCase();
-      if (!cl.startsWith(ql) || cl.length <= ql.length) continue;
-      const score = cl.length + (it.kind === "Recent" ? 0 : 2);
-      if (!best || score < best.score) {
-        best = {
-          score,
-          complete: q + String(c).slice(q.length),
-          url: it.url || `https://${String(c).replace(/^www\./i, "")}`,
-          name: it.name || hostLabel(it.url) || c,
-          kind: it.kind || "Link",
-        };
-      }
-    }
-  }
-  if (best) {
-    return {
-      name: best.name,
-      url: /^https?:\/\//i.test(best.url) ? best.url : `https://${best.url}`,
-      kind: best.kind,
-      complete: best.complete,
-    };
-  }
-
-  // 2) No history hit — guess the .com (Chrome does this constantly).
-  if (/^[a-z0-9-]+$/i.test(q)) {
-    const host = `${q}.com`;
-    return {
-      name: host,
-      url: `https://${host.toLowerCase().replace(/^www\./, "")}/`,
-      kind: "Link",
-      complete: `${q}.com`,
-    };
-  }
-  // Typed "nike." / "nike.c" → finish ".com"
-  const m = q.match(/^([a-z0-9-]+)\.(com?)?$/i);
-  if (m && (!m[2] || m[2].toLowerCase() !== "com")) {
-    const base = m[1];
-    return {
-      name: `${base}.com`,
-      url: `https://${base.toLowerCase()}.com/`,
-      kind: "Link",
-      complete: `${base}.com`,
-    };
-  }
-  return null;
-}
-
-function buildUrlSuggestions(query) {
-  const raw = String(query || "");
-  const q = raw.trim().toLowerCase();
-  const out = [];
-  const seen = new Set();
-  const push = (item) => {
-    const url = String(item.url || "").trim();
-    if (!url || !/^https?:\/\//i.test(url)) return;
-    const key = url.replace(/\/$/, "").toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    const host = hostLabel(url);
-    out.push({
-      name: item.name || item.title || host || url,
-      url,
-      kind: item.kind || "Link",
-      // Prefer bare host for inline fill ("nike" → "nike.com")
-      complete: item.complete || host || stripUrlDecor(url),
-      favicon: item.favicon || "",
-    });
-  };
-
-  for (const t of state.tabs || []) {
-    if (t.url) {
-      push({
-        name: t.pageTitle || t.title || hostLabel(t.url),
-        url: t.url,
-        kind: "Tab",
-        favicon: t.favicon || "",
-      });
-    }
-  }
-  for (const h of historyItems || []) {
-    if (h.url) {
-      push({
-        name: h.pageTitle || h.title || hostLabel(h.url),
-        url: h.url,
-        kind: "Recent",
-      });
-    }
-  }
-  for (const c of COMMON_SITES) {
-    push({
-      name: c.name,
-      url: c.url,
-      kind: "Popular",
-      complete: hostLabel(c.url) || stripUrlDecor(c.url),
-    });
-  }
-
-  if (!q) return out.slice(0, 8);
-
-  const filtered = out.filter((it) => {
-    const host = hostLabel(it.url).toLowerCase();
-    const hay = `${it.name} ${it.url} ${it.complete} ${host}`.toLowerCase();
-    return (
-      host.startsWith(q) ||
-      String(it.complete || "").toLowerCase().startsWith(q) ||
-      hay.includes(q)
-    );
   });
-
-  // Prefer link completions in the list (e.g. nike → nike.com).
-  const linkGuess = bestLinkCompletion(raw, out);
-  if (linkGuess) {
-    const key = linkGuess.url.replace(/\/$/, "").toLowerCase();
-    if (!seen.has(key)) {
-      filtered.unshift(linkGuess);
-      seen.add(key);
-    } else {
-      const idx = filtered.findIndex(
-        (it) => it.url.replace(/\/$/, "").toLowerCase() === key,
-      );
-      if (idx > 0) {
-        const [hit] = filtered.splice(idx, 1);
-        hit.complete = linkGuess.complete;
-        filtered.unshift(hit);
-      } else if (idx === 0) {
-        filtered[0].complete = linkGuess.complete;
-      }
-    }
-  }
-
-  // Search row after link guesses.
-  if (q && !/^[a-z0-9.-]+\.[a-z]{2,}/i.test(q) && !/^https?:\/\//i.test(q)) {
-    filtered.push({
-      name: `Search Google for “${raw.trim()}”`,
-      url: `https://www.google.com/search?q=${encodeURIComponent(raw.trim())}`,
-      kind: "Search",
-      complete: raw.trim(),
-    });
-  }
-  return filtered.slice(0, 8);
 }
 
 /** Query used for suggestions — empty when the whole field is selected (focus). */
@@ -330,7 +115,10 @@ function omniboxSuggestQuery() {
 function renderUrlSuggest() {
   if (!urlSuggestEl || !urlEl) return;
   const q = omniboxSuggestQuery();
-  urlSuggestItems = buildUrlSuggestions(q);
+  urlSuggestItems = buildUrlSuggestions(q, {
+    tabs: state.tabs || [],
+    history: historyItems,
+  });
   urlSuggestIndex = -1;
 
   if (!urlSuggestOpen || !urlSuggestItems.length) {
@@ -386,6 +174,7 @@ function setUrlSuggestOpen(open) {
   urlSuggestOpen = !!open;
   if (urlSuggestOpen) {
     if (syncMenuOpen) setSyncMenuOpen(false);
+    if (historyMenuOpen) setHistoryMenuOpen(false);
     refreshHistoryCache();
     renderUrlSuggest();
   } else if (urlSuggestEl) {
@@ -410,7 +199,7 @@ function applyTheme() {
 // native page view — so main.cjs must raise/expand the chrome over the page
 // and go transparent around the menu. Keep that in sync with every menu.
 function updateMenuOverlay() {
-  const anyOpen = syncMenuOpen || urlSuggestOpen;
+  const anyOpen = syncMenuOpen || urlSuggestOpen || historyMenuOpen;
   document.documentElement.classList.toggle("menu-overlay", anyOpen);
   window.lyknAgentStage.setMenuOverlay?.(anyOpen);
 }
@@ -423,10 +212,109 @@ function setSyncMenuOpen(open) {
     syncBtn.setAttribute("aria-expanded", syncMenuOpen ? "true" : "false");
   }
   if (syncMenuOpen) {
+    if (historyMenuOpen) setHistoryMenuOpen(false);
     setSyncPhase("idle");
     void loadSyncProfiles();
   }
   updateMenuOverlay();
+}
+
+/* ── History dropdown — Chrome-style list of every visit ────────────────── */
+
+function timeAgoLabel(ts) {
+  const diff = Date.now() - Number(ts || 0);
+  if (!Number.isFinite(diff) || diff < 0) return "";
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "Yesterday" : `${days}d ago`;
+}
+
+function renderHistoryMenu(items) {
+  if (!historyListEl) return;
+  if (!items.length) {
+    historyListEl.innerHTML = `<div class="history-empty">Pages you visit will show up here.</div>`;
+    return;
+  }
+  historyListEl.innerHTML = items
+    .slice(0, 60)
+    .map((v, i) => {
+      const fav = faviconUrlFor(v.url, v.favicon);
+      const ico = fav
+        ? `<img src="${escapeHtml(fav)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-fallback="globe" />`
+        : GLOBE_SVG;
+      const title = v.title || hostLabel(v.url) || v.url;
+      return `<button type="button" class="history-item" data-idx="${i}">
+          <span class="history-ico" aria-hidden="true">${ico}</span>
+          <span class="history-meta">
+            <span class="history-title">${escapeHtml(title)}</span>
+            <span class="history-host">${escapeHtml(hostLabel(v.url) || v.url)}</span>
+          </span>
+          <span class="history-when">${escapeHtml(timeAgoLabel(v.at))}</span>
+        </button>`;
+    })
+    .join("");
+  historyListEl.querySelectorAll("img[data-fallback]").forEach((img) => {
+    img.addEventListener(
+      "error",
+      () => {
+        const wrap = document.createElement("span");
+        wrap.innerHTML = GLOBE_SVG;
+        img.replaceWith(wrap.firstChild || wrap);
+      },
+      { once: true },
+    );
+  });
+}
+
+let historyMenuItems = [];
+function setHistoryMenuOpen(open) {
+  historyMenuOpen = !!open;
+  if (historyMenu) historyMenu.hidden = !historyMenuOpen;
+  if (historyBtn) {
+    historyBtn.classList.toggle("active", historyMenuOpen);
+    historyBtn.setAttribute("aria-expanded", historyMenuOpen ? "true" : "false");
+  }
+  if (historyMenuOpen) {
+    if (syncMenuOpen) setSyncMenuOpen(false);
+    if (urlSuggestOpen) setUrlSuggestOpen(false);
+    historyMenuItems = [];
+    renderHistoryMenu([]);
+    void window.lyknAgentStage.listVisits?.().then((res) => {
+      if (!historyMenuOpen) return;
+      historyMenuItems = Array.isArray(res?.items) ? res.items : [];
+      renderHistoryMenu(historyMenuItems);
+    });
+  }
+  updateMenuOverlay();
+}
+
+/* ── Bookmark star — filled when the active page is saved ───────────────── */
+
+function bookmarkKeyOf(url) {
+  const u = String(url || "").trim();
+  if (!/^https?:\/\//i.test(u)) return "";
+  try {
+    const parsed = new URL(u);
+    parsed.hash = "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return "";
+  }
+}
+
+function renderBookmarkStar() {
+  if (!bookmarkBtn) return;
+  const key = bookmarkKeyOf(state.url);
+  const saved =
+    !!key && (state.bookmarks || []).some((b) => (b.key || bookmarkKeyOf(b.url)) === key);
+  bookmarkBtn.classList.toggle("bookmarked", saved);
+  bookmarkBtn.setAttribute("aria-pressed", saved ? "true" : "false");
+  bookmarkBtn.title = saved ? "Remove bookmark" : "Bookmark this page";
+  bookmarkBtn.disabled = !key;
 }
 
 async function loadSyncProfiles() {
@@ -637,6 +525,7 @@ function applyState(p) {
     incognito: typeof p.incognito === "boolean" ? p.incognito : state.incognito,
     chatOpen: typeof p.chatOpen === "boolean" ? p.chatOpen : state.chatOpen,
     recents: Array.isArray(p.recents) ? p.recents : state.recents,
+    bookmarks: Array.isArray(p.bookmarks) ? p.bookmarks : state.bookmarks,
   };
   if (typeof p.url === "string") {
     // Don't clobber in-progress typing — state pushes while Google home loads.
@@ -650,15 +539,16 @@ function applyState(p) {
   renderTabs();
   renderFavs();
   renderUseLykn();
+  renderBookmarkStar();
 }
 
-/* Favorites bar — recently visited sites as favicon chips (bookmarks-bar
-   style). Clicking one navigates the active tab; the bar reports its height
-   change so the native page view re-lays-out under the taller chrome. */
+/* Bookmarks bar — ONLY pages the user starred (history has its own button).
+   Clicking one navigates the active tab; the bar reports its height change so
+   the native page view re-lays-out under the taller chrome. */
 let lastFavsHidden = null;
 function renderFavs() {
   if (!favsEl || !favsScrollEl) return;
-  const items = (state.recents || []).slice(0, 14);
+  const items = (state.bookmarks || []).slice(0, 14);
   const hide = !items.length;
   favsEl.hidden = hide;
   if (hide) {
@@ -865,7 +755,7 @@ if (favsScrollEl) {
   favsScrollEl.addEventListener("click", (e) => {
     const chip = e.target.closest(".fav");
     if (!chip) return;
-    const hit = (state.recents || [])[Number(chip.getAttribute("data-idx"))];
+    const hit = (state.bookmarks || [])[Number(chip.getAttribute("data-idx"))];
     if (hit?.url) void window.lyknAgentStage.navigate(hit.url);
   });
 }
@@ -970,17 +860,122 @@ document
   .getElementById("reload")
   .addEventListener("click", () => void window.lyknAgentStage.reload());
 
-const downloadBtn = document.getElementById("download");
+/* ── Download button + progress animation ─────────────────────────────────
+   Real downloads report progress from main (will-download); the button grows
+   a progress ring while the file lands and pops a check when it's done. */
+let downloadDoneTimer = 0;
+const activeDownloads = new Map();
+
+function setDownloadRing(progress) {
+  if (!downloadBtn) return;
+  const p = Number(progress);
+  // Indeterminate (-1) spins via CSS; known progress fills the ring.
+  downloadBtn.classList.toggle("indeterminate", !(p >= 0));
+  downloadBtn.style.setProperty("--dl-pct", p >= 0 ? String(Math.round(p * 100)) : "30");
+}
+
+function applyDownloadProgress(p) {
+  if (!downloadBtn || !p?.key) return;
+  clearTimeout(downloadDoneTimer);
+  if (p.state === "done" || p.state === "failed") {
+    activeDownloads.delete(p.key);
+  } else {
+    activeDownloads.set(p.key, Number(p.progress));
+  }
+  if (activeDownloads.size > 0) {
+    downloadBtn.classList.add("downloading");
+    downloadBtn.classList.remove("done");
+    const values = [...activeDownloads.values()];
+    const known = values.filter((v) => v >= 0);
+    setDownloadRing(known.length ? known.reduce((a, b) => a + b, 0) / known.length : -1);
+    return;
+  }
+  downloadBtn.classList.remove("downloading", "indeterminate");
+  downloadBtn.style.removeProperty("--dl-pct");
+  if (p.state === "done") {
+    downloadBtn.classList.add("done");
+    downloadDoneTimer = setTimeout(() => downloadBtn.classList.remove("done"), 1800);
+  } else {
+    downloadBtn.classList.remove("done");
+  }
+}
+
+if (typeof window.lyknAgentStage.onDownloadProgress === "function") {
+  window.lyknAgentStage.onDownloadProgress(applyDownloadProgress);
+}
+
 if (downloadBtn) {
   downloadBtn.addEventListener("click", async () => {
     downloadBtn.classList.add("active");
     try {
-      await window.lyknAgentStage.downloadPage?.();
+      const res = await window.lyknAgentStage.downloadPage?.();
+      // Artifact saves finish instantly without will-download events — still
+      // give the same "landed" pop as a real download.
+      if (res?.ok && !res.started && activeDownloads.size === 0) {
+        clearTimeout(downloadDoneTimer);
+        downloadBtn.classList.add("done");
+        downloadDoneTimer = setTimeout(() => downloadBtn.classList.remove("done"), 1800);
+      }
     } finally {
       setTimeout(() => downloadBtn.classList.remove("active"), 600);
     }
   });
 }
+
+/* ── Bookmark star + History dropdown ─────────────────────────────────── */
+
+if (bookmarkBtn) {
+  bookmarkBtn.addEventListener("click", async () => {
+    const active = (state.tabs || []).find((t) => t.id === state.activeAgentId);
+    const res = await window.lyknAgentStage.toggleBookmark?.({
+      url: state.url,
+      title: active?.pageTitle || active?.title || state.title || "",
+      favicon: active?.favicon || "",
+    });
+    if (res?.ok) {
+      state.bookmarks = Array.isArray(res.items) ? res.items : state.bookmarks;
+      renderFavs();
+      renderBookmarkStar();
+    }
+  });
+}
+
+if (historyBtn && historyMenu) {
+  historyBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setHistoryMenuOpen(!historyMenuOpen);
+  });
+  historyListEl?.addEventListener("click", (e) => {
+    const item = e.target.closest(".history-item");
+    if (!item) return;
+    const hit = historyMenuItems[Number(item.getAttribute("data-idx"))];
+    if (!hit?.url) return;
+    setHistoryMenuOpen(false);
+    void window.lyknAgentStage.navigate(hit.url);
+  });
+  document.getElementById("history-clear")?.addEventListener("click", async () => {
+    await window.lyknAgentStage.clearVisits?.();
+    historyMenuItems = [];
+    renderHistoryMenu([]);
+  });
+  document.addEventListener("click", (e) => {
+    if (!historyMenuOpen) return;
+    if (e.target.closest("#history-menu") || e.target.closest("#history-btn")) return;
+    setHistoryMenuOpen(false);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && historyMenuOpen) setHistoryMenuOpen(false);
+  });
+}
+
+// With the page visible under the open suggestions (chrome overlays it,
+// transparent outside the menus), a click in the page area lands on this
+// document — dismiss the dropdown like Chrome's first-click-closes.
+document.addEventListener("pointerdown", (e) => {
+  if (!urlSuggestOpen) return;
+  if (e.target.closest("#url-wrap")) return;
+  setUrlSuggestOpen(false);
+});
 
 if (useLyknBtn) {
   useLyknBtn.addEventListener("click", () => {

@@ -4,9 +4,8 @@
  *
  * The old text led with "Take the next step in the agent browser tab, then say
  * continue", which told the user the run had ended and that restarting it was
- * their job. It also stayed silent about Google refusing OAuth inside an
- * app-embedded browser, so a dead "Continue with Google" button looked like a
- * bug in LYKN.
+ * their job. Google sign-in opens in Chrome, so the brief has to say that
+ * instead of treating the button as a dead end.
  */
 
 import test from "node:test";
@@ -55,21 +54,22 @@ test("a wall detector never hands over a generic instruction", () => {
   assert.doesNotMatch(blocker.message, /Take the next step/i);
 });
 
-test("Google's button is flagged as the path that will not work here", () => {
+test("Google's button is explained as a Chrome window, not a dead control", () => {
   const note = owned.signInPageThirdPartyNote({
     title: "Log in to Mailchimp",
     pageText: "Username Password Log in or Continue with Google",
   });
+  assert.match(note, /Chrome/i);
   assert.match(note, /email \+ password/i);
-  assert.match(note, /embedded/i);
 });
 
-test("Google's refusal page is explained instead of left as a dead end", () => {
+test("Google's refusal page points at the Chrome handoff", () => {
   const note = owned.signInPageThirdPartyNote({
     title: "Couldn't sign you in",
     pageText: "This browser or app may not be secure. Try using a different browser.",
   });
-  assert.match(note, /email \+ password/i);
+  assert.match(note, /Chrome/i);
+  assert.match(note, /bring/i);
 });
 
 test("sign-in pages without a Google option get no Google note", () => {
@@ -86,5 +86,5 @@ test("the note rides along into the brief the user reads", () => {
     title: "Log in to Mailchimp",
     pageText: "Log in Username Password Log in Continue with Google",
   });
-  assert.match(blocker.message, /email \+ password/i);
+  assert.match(blocker.message, /Chrome/i);
 });

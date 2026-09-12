@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 
 import {
   applyStudioWindowAction,
+  studioBrowserFront,
+  studioBrowserViewsLive,
   studioFullscreenTrafficVisible,
   studioSurfaceFullscreen,
   studioWindowFillsDesktop,
@@ -78,4 +80,56 @@ test("Home mounts hover traffic lights for the fullscreen shell", () => {
   assert.match(studio, /surfaceFullscreen/);
   assert.match(controls, /lykn-studio-fs-traffic/);
   assert.match(css, /lykn-studio-fs-traffic:hover/);
+});
+
+test("a background window comes forward when it is clicked", () => {
+  const win = fs.readFileSync(path.join(here, "DesktopAppWindow.jsx"), "utf8");
+  const studio = fs.readFileSync(path.join(here, "../../pages/Studio.jsx"), "utf8");
+  const body = fs.readFileSync(
+    path.join(here, "../studio/StudioBrowserBody.jsx"),
+    "utf8",
+  );
+  assert.match(win, /lykn-win-raise/);
+  assert.match(win, /onPointerDownCapture/);
+  assert.match(studio, /studioBrowserFront/);
+  assert.match(studio, /frozen=\{browserFrozen\}/);
+  assert.match(body, /frozen = false/);
+});
+
+test("native browser views only live on the front window", () => {
+  assert.equal(
+    studioBrowserFront({ appWins: ["calendar", "browser"] }),
+    true,
+  );
+  assert.equal(
+    studioBrowserFront({ appWins: ["browser", "calendar"] }),
+    false,
+  );
+  assert.equal(studioBrowserFront({ splitHasBrowser: true, appWins: [] }), true);
+  assert.equal(
+    studioBrowserViewsLive({
+      browserOpen: true,
+      browserSettled: true,
+      browserFront: true,
+    }),
+    true,
+  );
+  assert.equal(
+    studioBrowserViewsLive({
+      browserOpen: true,
+      browserSettled: true,
+      browserFront: false,
+    }),
+    false,
+    "views stay undocked so a window behind the Browser can come forward",
+  );
+  assert.equal(
+    studioBrowserViewsLive({
+      splitHasBrowser: true,
+      tab: "dashboard",
+      desktopPeek: false,
+      browserFront: false,
+    }),
+    true,
+  );
 });

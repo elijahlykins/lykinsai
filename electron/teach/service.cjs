@@ -11,7 +11,7 @@ const {
 } = require("./workflow.cjs");
 const { validateParameters } = require("./executor.cjs");
 const { attachBrowserTeachingCapture } = require("./browserCapture.cjs");
-const { resolveRoutineSpec } = require("../bot-routines/nlRoutine.cjs");
+const { resolveRoutineSpec } = require("../routines/nlRoutine.cjs");
 
 function taskEventToTeachEvent(event) {
   const detail = event?.detail && typeof event.detail === "object" ? event.detail : {};
@@ -122,9 +122,7 @@ function createTeachService({
   }
 
   function start(input = {}) {
-    const botId = String(input.botId || "").trim();
-    if (!botId) throw new TypeError("Teaching requires a botId");
-    const snapshot = session.start({ ...input, botId });
+    const snapshot = session.start({ ...input });
     const wc = getBrowserWebContents(input) || null;
     if (wc) {
       detachBrowser = attachBrowserTeachingCapture({
@@ -161,7 +159,6 @@ function createTeachService({
     publishTeaching();
     const workflow = await compileWorkflow(
       {
-        botId: capture.botId,
         name: input.name || capture.name,
         objective: capture.objective,
         events: capture.events,
@@ -210,10 +207,8 @@ function createTeachService({
     return removed;
   }
 
-  function listWorkflows(botId) {
-    const id = String(botId || "").trim();
+  function listWorkflows() {
     return store.list()
-      .filter((workflow) => !id || workflow.botId === id)
       .map((workflow) => {
         const proposal = [...recoveredUpdates.values()]
           .reverse()
@@ -234,9 +229,6 @@ function createTeachService({
   function run(id, input = {}) {
     const workflow = store.get(id);
     if (!workflow) return { ok: false, error: "workflow_not_found" };
-    if (input.botId && String(input.botId) !== workflow.botId) {
-      return { ok: false, error: "workflow_bot_mismatch" };
-    }
     if (typeof runWorkflow !== "function") return { ok: false, error: "workflow_executor_unavailable" };
     try {
       validateParameters(workflow, input.parameters || {});
@@ -248,7 +240,6 @@ function createTeachService({
       runWorkflow({
         workflow,
         parameterValues: input.parameters || {},
-        bot: input.bot || null,
         onTaskCreated: (idValue) => {
           taskId = String(idValue || "");
         },
@@ -269,9 +260,7 @@ function createTeachService({
     const workflow = store.get(id);
     if (!workflow) return { ok: false, error: "workflow_not_found" };
     if (typeof createRoutine !== "function") return { ok: false, error: "routine_runtime_unavailable" };
-    const botId = String(input.botId || workflow.botId);
-    if (botId !== workflow.botId) return { ok: false, error: "workflow_bot_mismatch" };
-    const mcpAccess = resolveMcpConnectionIds(workflow, input.bot);
+    const mcpAccess = resolveMcpConnectionIds(workflow);
     if (mcpAccess.unavailable.length) {
       return {
         ok: false,
@@ -289,8 +278,6 @@ function createTeachService({
       trigger = resolved.spec.trigger;
     }
     const routine = createRoutine({
-      botId,
-      bot: input.bot,
       workflowId: workflow.id,
       workflowVersion: workflow.version,
       name: String(input.name || workflow.name).slice(0, 80),

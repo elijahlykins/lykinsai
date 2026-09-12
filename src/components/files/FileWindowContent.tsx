@@ -46,23 +46,34 @@ function Action({
   label,
   onClick,
   busy,
+  done,
+  doneLabel,
 }: {
   icon: typeof Save;
   label: string;
   onClick: () => void;
   busy?: boolean;
+  done?: boolean;
+  doneLabel?: string;
 }) {
+  const shown = busy
+    ? `${label.replace(/…$/, "")}…`
+    : done
+      ? doneLabel || "Done"
+      : label;
   return (
     <button
       type="button"
       onClick={onClick}
-      title={label}
-      aria-label={label}
+      title={shown}
+      aria-label={shown}
       disabled={busy}
-      className={ACTION_CLS}
+      className={`${ACTION_CLS} ${done && !busy ? "text-emerald-600 dark:text-emerald-400" : ""}`}
     >
       {busy ? (
         <Loader2 className="h-4 w-4 animate-spin" />
+      ) : done ? (
+        <Check className="h-4 w-4" strokeWidth={2} />
       ) : (
         <Icon className="h-4 w-4" strokeWidth={1.6} />
       )}
@@ -161,6 +172,7 @@ export default function FileWindowContent({
 }) {
   const [file, setFile] = useState<ResolvedFile | null>(null);
   const [busy, setBusy] = useState("");
+  const [downloaded, setDownloaded] = useState(false);
 
   // Re-opening a file that's already up hands down a fresh source object, so
   // this runs again on a window that is already showing the thing. Holding the
@@ -174,6 +186,10 @@ export default function FileWindowContent({
       cancelled = true;
     };
   }, [source]);
+
+  useEffect(() => {
+    setDownloaded(false);
+  }, [source.path, source.url, source.name]);
 
   const fileRef = useRef(file);
   fileRef.current = file;
@@ -256,6 +272,7 @@ export default function FileWindowContent({
       if (!response.ok) return;
       const blob = await response.blob();
       await downloadToComputer(blob, resolved.name, blob.type || resolved.mime);
+      setDownloaded(true);
     } catch {
       /* the browser reports its own failure */
     } finally {
@@ -297,6 +314,8 @@ export default function FileWindowContent({
             icon={Download}
             label="Download"
             busy={busy === "download"}
+            done={downloaded}
+            doneLabel="Downloaded"
             onClick={() => void download()}
           />
         )}

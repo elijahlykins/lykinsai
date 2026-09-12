@@ -13,7 +13,6 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { BotMark } from "@/components/bots/BotAvatar";
 import BrowserMark from "@/components/macdesktop/BrowserMark";
 import lyknIconLight from "@/assets/FINAL/LYKN-ICON-B-Open/SVG/LYKN-Icon-B-Open-NEUTRAL.svg";
 import lyknIconBlue from "@/assets/FINAL/LYKN-ICON-B-Open/SVG/LYKN-Icon-B-Open-BLUE.svg";
@@ -30,7 +29,6 @@ import {
 
 const DOCK = [
   { id: "browser", label: "Browser", icon: BrowserMark },
-  { id: "bots", label: "Bots", icon: BotMark },
   { id: "projects", label: "Projects", icon: FolderKanban },
   { id: "vault", label: "Vault", icon: Folder },
   { id: "calendar", label: "Calendar", icon: CalendarDays },

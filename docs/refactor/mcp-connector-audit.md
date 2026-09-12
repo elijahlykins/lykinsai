@@ -237,7 +237,7 @@ Hard-coding sites:
 - `mcp-tools/chatTools.js` `CHAT_TOOL_NAMES`
 - `mcp-tools/localTools.js` `LOCAL_TOOL_NAMES`
 - `mcp-tools/exterior/index.js` + `capabilityTools.js`
-- `electron/bot-harness/runtime/toolRegistry.cjs` `TOOLS`
+- `electron/agent-harness/runtime/toolRegistry.cjs` `TOOLS`
 - `electron/browser-agent/runtime/capabilities.cjs` action sets
 - `electron/task-runtime/executors/localCapabilities.cjs`
 - `lib/modelBuilder/modelCapabilitiesCatalog.js` `CAPABILITY_RUNTIME_MAP`
@@ -261,7 +261,7 @@ MCP `resources/list`, `resources/read`, `prompts/list`, `prompts/get`: **NOT IMP
 | MCP prompts | NOT IMPLEMENTED |
 | Vault notes as "resources" | PARTIAL analogue: `lykn_searchVault` / `lykn_loadNeuron` / memory tools |
 | Agent Harness MCP resources/prompts | NOT IMPLEMENTED |
-| Bot harness "prompts" | UNUSED for MCP: local markdown docs under `electron/bot-harness/agent/tools/*.md` |
+| Bot harness "prompts" | UNUSED for MCP: local markdown docs under `electron/agent-harness/agent/tools/*.md` |
 | Browser-agent skill markdown | UNUSED for MCP: local corpus, not MCP prompts |
 
 TaskRuntime `scope.resources` is a string list on the Task object.
@@ -301,10 +301,10 @@ Chat cannot execute them.
 
 ### 4. Bot harness tools
 
-- Canonical source: `electron/bot-harness/runtime/toolRegistry.cjs`.
+- Canonical source: `electron/agent-harness/runtime/toolRegistry.cjs`.
 - Names: `reply`, `research_report`, `edit_report`, `build_artifact`, `generate_image`, `local_computer`, `create_routine`, `browser`.
 - Schema: one-line index in the system prompt; full markdown loaded on first select.
-- Consumer: `electron/bot-harness/index.cjs`.
+- Consumer: `electron/agent-harness/index.cjs`.
 - Execution: injected executors in `agentRuntime.cjs` (streamChat, local runner, parked browser, routine store).
 - Gate: `risk` floor (`read` / `low` / `consequential`); `requiresLocalMode`; browser parks a user opt-in.
 - No connector/MCP tools.
@@ -357,7 +357,7 @@ What capabilities currently represent:
 
 | Compiler | Typical capabilities |
 |---|---|
-| `compileBotTask` | Caller-supplied. Production Bot create uses `reply`, `research_report`, `edit_report`, `build_artifact`, `generate_image`, optional `local_computer`, `browser`. |
+| `compileAgentTask` | Caller-supplied. Production Bot create uses `reply`, `research_report`, `edit_report`, `build_artifact`, `generate_image`, optional `local_computer`, `browser`. |
 | `compileLocalTask` | `files.read` / `files.write` / `local.apps.*` / `local.shell.*` derived from the objective. |
 | `compileRoutineTask` | Copied from the durable Routine record (`reply`, `browser.read`, `files.read`, `research_report`, …). |
 | Browser `ensureBrowserTask` | `browser.read`, `browser.navigate`, `browser.interact`. |
@@ -365,7 +365,7 @@ What capabilities currently represent:
 TaskRuntime does **not** know `gmail.read` or `drive.read`.
 It knows raw harness/local/browser names.
 
-BotExecutor does not resolve connections.
+AgentExecutor does not resolve connections.
 BrowserExecutor enforces browser action types.
 LocalExecutor enforces local tool names.
 
@@ -855,7 +855,7 @@ Task.capabilities
   → CapabilityRegistry (does not exist)
   → ConnectionResolver (does not exist; slug lookup in callApp is the seed)
   → Relevant MCP tools
-  → chat-agent-loop / BotExecutor tool list
+  → chat-agent-loop / AgentExecutor tool list
 ```
 
 `resolveChatTools(toolNames)` is the chat-side injection point.

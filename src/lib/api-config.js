@@ -61,6 +61,8 @@ const getFrontendBaseUrl = () => {
 
 export const FRONTEND_BASE_URL = getFrontendBaseUrl();
 
-if (import.meta.env.DEV) {
+// Optional-chained so the module also loads under plain Node (tests),
+// where import.meta.env does not exist.
+if (import.meta.env?.DEV) {
   console.log('API Configuration:', { API_BASE_URL, FRONTEND_BASE_URL });
 }

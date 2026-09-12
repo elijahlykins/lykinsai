@@ -18,8 +18,8 @@ const APPS = [
   {
     id: "agents",
     name: "Agents",
-    desc: "Purpose-built AI agents that live on your desktop, ready to chat, run tools, and act with your projects and files already in context.",
-    alt: "A roster of LYKN agents working on inbox, research, and ops",
+    desc: "LYKN works on its own: schedule routines, teach it workflows, and let it browse and use your connected apps with your projects and files already in context.",
+    alt: "LYKN agent runs working on inbox, research, and ops",
   },
   {
     id: "projects",

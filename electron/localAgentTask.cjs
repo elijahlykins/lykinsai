@@ -379,14 +379,14 @@ async function runLocalAgentTask({
   onUsage = null,
   runTool = null,
   // Standing authorization (Task approval.policy "standing_authorization",
-  // carried by Bot Routines): ordinary work inside the task's explicit
+  // carried by Routines): ordinary work inside the task's explicit
   // capability envelope — reads, writes to working files, routine shell
   // commands — runs without per-action approval, because nobody is at the
   // keyboard to click Approve at 8 AM. CONSEQUENTIAL actions (destructive
   // commands, credentials, external pushes — classifyRisk's risky tier for
   // commands) still pause for live approval regardless of this flag.
   standingAuthorization = false,
-  // Bot agents may write and run commands after the same approval LYKN uses,
+  // Headless agents may write and run commands after the same approval LYKN uses,
   // but they must never delete files - even if the user would approve.
   forbidDeletes = false,
 }) {
@@ -442,7 +442,7 @@ async function runLocalAgentTask({
     }
     if (tool === "local_run_command") {
       if (forbidDeletes && looksLikeDeleteCommand(args.command)) {
-        return { blocked: true, summary: "Bots cannot delete files." };
+        return { blocked: true, summary: "Background tasks cannot delete files." };
       }
       const risk = localSystem.classifyRisk(tool, args);
       if (!commandPermitted(args.command, capabilities || ["local"], risk)) {

@@ -18,12 +18,10 @@ import { TUNE_VOICE_TOOL, applyVoiceInstructionTune } from "@/lib/voice/tuneInst
 import { applyVoiceToolClientEffects } from "@/lib/voice/applyVoiceToolResult";
 import { refreshLocalMode } from "@/lib/localMode";
 import {
-  VOICE_ASK_BOT_TOOL,
   VOICE_BROWSER_AGENT_TOOL,
   isDesktopVoiceClient,
   isVoiceLocalTool,
   runVoiceDesktopTool,
-  snapshotLyknBots,
 } from "@/lib/voice/voiceDesktopTools";
 import { micErrorMessage, requestMicStream } from "@/lib/voice/micAccess";
 import { claimVoiceReplyPersist } from "@/lib/lyknChat/voiceReplyPersist";
@@ -135,7 +133,7 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
       try { params = JSON.parse(argsJson || "{}"); } catch { params = {}; }
       try { output = JSON.parse(await applyVoiceInstructionTune(params)); }
       catch { output = { ok: false, error: "tune_failed" }; }
-    } else if (name === VOICE_ASK_BOT_TOOL || name === VOICE_BROWSER_AGENT_TOOL || isVoiceLocalTool(name)) {
+    } else if (name === VOICE_BROWSER_AGENT_TOOL || isVoiceLocalTool(name)) {
       let params: unknown = {};
       try { params = JSON.parse(argsJson || "{}"); } catch { params = {}; }
       try {
@@ -200,7 +198,6 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
           chatId: chatIdRef.current,
           desktop: isDesktopVoiceClient(),
           localMode: (await refreshLocalMode()) || isDesktopVoiceClient(),
-          lyknBots: snapshotLyknBots(),
         }),
       });
       const data = await res.json().catch(() => ({}));

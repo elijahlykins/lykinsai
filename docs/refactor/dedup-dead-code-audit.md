@@ -91,7 +91,7 @@ Those files are being rewritten in parallel.
 
 ### 4. `readCached` instruction loader
 
-- **Locations:** `electron/browser-agent/runtime/instructions.cjs:26-36` and `electron/bot-harness/runtime/instructions.cjs:23-33`.
+- **Locations:** `electron/browser-agent/runtime/instructions.cjs:26-36` and `electron/agent-harness/runtime/instructions.cjs:23-33`.
 - **Proof:** Identical cache/read/trim/catch empty implementation.
 - **Canonical owner:** leave in each runtime, or a 15-line shared `electron/lib/readCached.cjs`.
 - **Classification:** EXACT DUPLICATE of scaffolding; surrounding loaders are INTENTIONAL VARIANTS (different corpora).
@@ -222,9 +222,9 @@ Those files are being rewritten in parallel.
 - **Consolidation:** not recommended as a delete.
   A shared "extract first N pages" helper is optional later.
 
-### 8. Browser-agent vs bot-harness markdown
+### 8. Browser-agent vs agent-harness markdown
 
-- **Locations:** `electron/browser-agent/agent/{core,safety,browser}.md` vs `electron/bot-harness/agent/{core,safety}.md` and `bot-harness/agent/tools/browser.md`.
+- **Locations:** `electron/browser-agent/agent/{core,safety,browser}.md` vs `electron/agent-harness/agent/{core,safety}.md` and `agent-harness/agent/tools/browser.md`.
 - **Classification:** INTENTIONAL VARIANT (two products).
 - **Do not merge.**
   Safety rules already differ in length and emphasis; collapsing them would change agent behavior.
@@ -374,7 +374,7 @@ Four live agent paths, not abandoned copies:
 
 1. `browser-agent/` (default browse)
 2. `ownedBrowserAct.cjs` (legacy browse)
-3. `bot-harness/` (Bot)
+3. `agent-harness/` (Bot)
 4. `browserAct.cjs` (external Chrome via AppleScript)
 
 `main.cjs` still hosts a large AppleScript browser cluster and dual history/recents stores.
@@ -595,7 +595,7 @@ When AppleScript / overlay scripts are already being moved:
 - drop unused deprecated aliases (`formatMultiStepAnswer`, `runCreateInSheets`) and update the slice test
 - optionally share `readCached`
 
-Do **not** merge `browser-agent` with `bot-harness`.
+Do **not** merge `browser-agent` with `agent-harness`.
 
 ### Explicitly out of scope until a product decision
 

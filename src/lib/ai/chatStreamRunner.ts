@@ -22,6 +22,7 @@ import { isLocalModeAvailable, getLocalModeCached } from "@/lib/localMode";
 import { executeAwaitingLocalTool } from "@/lib/ai/localToolExecutor";
 import { persistInstructionPrompt } from "@/lib/voice/tuneInstructions";
 import { AI_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
+import { streamInactivityMs } from "@/lib/ai/streamInactivity";
 import {
   emitProjectsChanged,
   projectIdFromToolResult,
@@ -203,12 +204,17 @@ export async function runChatStream(
   // this turn (strict subset of the surface gate above). When false the card
   // still renders; the user pulls it up with one tap.
   const autoOpenVaultViewer = userRequestedVaultDisplay(userText, p.aiThread);
-  // 90s inactivity for normal chat. Research reports can pause between
-  // continue hops / long writes — match the server's longToolTurn window.
-  const STREAM_INACTIVITY_MS = p.composerMode === "research" ? 240000 : 90000;
+  // 90s inactivity for normal chat. Build / research / local-tool waits
+  // match the server's longToolTurn window so a buffered keepalive cannot
+  // abort a healthy turn as "That didn't work."
+  let inactivityMs = streamInactivityMs(p);
 
   if (reader) {
-    let inactivityTimer = setTimeout(() => { reader.cancel(); p.abortController.abort(); }, STREAM_INACTIVITY_MS);
+    let inactivityTimer = setTimeout(() => { reader.cancel(); p.abortController.abort(); }, inactivityMs);
+    const resetInactivity = () => {
+      clearTimeout(inactivityTimer);
+      inactivityTimer = setTimeout(() => { reader.cancel(); p.abortController.abort(); }, inactivityMs);
+    };
     try {
       let stopReading = false;
       while (!stopReading) {
@@ -217,8 +223,7 @@ export async function runChatStream(
           sseBuffer += decoder.decode(undefined, { stream: false });
           break;
         }
-        clearTimeout(inactivityTimer);
-        inactivityTimer = setTimeout(() => { reader.cancel(); p.abortController.abort(); }, STREAM_INACTIVITY_MS);
+        resetInactivity();
         sseBuffer += decoder.decode(value, { stream: true });
         const lines = sseBuffer.split("\n");
         sseBuffer = lines.pop() || "";
@@ -307,6 +312,10 @@ export async function runChatStream(
               // risky actions) and post the result back so the turn resumes.
               const isInFlightLocal =
                 tc.status === "awaiting_client" || tc.status === "awaiting_approval";
+              if (isInFlightLocal) {
+                inactivityMs = streamInactivityMs(p, { localToolInFlight: true });
+                resetInactivity();
+              }
               if (tc.status === "awaiting_client") {
                 void (async () => {
                   const { API_BASE_URL: localApiBase } = await import("@/lib/api-config");

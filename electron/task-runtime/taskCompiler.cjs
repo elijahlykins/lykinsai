@@ -18,10 +18,11 @@ const DEFAULT_BROWSER_CAPABILITIES = [
 ];
 
 /**
- * Default Bot capability envelope at the compiler boundary.
+ * Default capability envelope for a harness (agent) Task at the compiler
+ * boundary.
  * Local computer is added only when Local Mode is on; browser.eval is never granted.
  */
-function defaultBotCapabilities({ localMode = false } = {}) {
+function defaultAgentCapabilities({ localMode = false } = {}) {
   return [
     "reply",
     "write_document",
@@ -57,22 +58,6 @@ function cleanList(value, limit) {
     .slice(0, limit);
 }
 
-function sanitizeBot(bot) {
-  if (!bot || typeof bot !== "object") return null;
-  const connectionIds = cleanConnectionIds(bot.connectionIds);
-  const out = {
-    id: String(bot.id || "").trim().slice(0, 120),
-    name: String(bot.name || "").trim().slice(0, 60),
-    role: String(bot.role || "").trim().slice(0, 80),
-    persona: String(bot.persona || "").trim().slice(0, 1200),
-    face: String(bot.face || "").trim().slice(0, 60),
-    eyes: String(bot.eyes || "").trim().slice(0, 60),
-    color: String(bot.color || "").trim().slice(0, 60),
-  };
-  if (connectionIds !== undefined) out.connectionIds = connectionIds;
-  return out.id || out.name || out.persona ? out : null;
-}
-
 function cleanConnectionIds(value) {
   if (value === undefined || value === null) return undefined;
   const list = Array.isArray(value) ? value : [value];
@@ -91,7 +76,7 @@ function cleanConnectionIds(value) {
 }
 
 /**
- * Trusted Bot/Routine allowlists are the authority.
+ * Trusted Routine allowlists are the authority.
  * Request-supplied ids may only narrow; they cannot expand.
  */
 function intersectConnectionIds(trusted, requested) {
@@ -104,19 +89,18 @@ function intersectConnectionIds(trusted, requested) {
 }
 
 /**
- * Compile facts already known at the Bot invocation boundary.
+ * Compile facts already known at the harness invocation boundary.
  * This compiler does no model call and performs no semantic expansion.
  */
-function compileBotTask(input = {}, options = {}) {
+function compileAgentTask(input = {}, options = {}) {
   const objective = String(input.objective || input.text || "").trim();
-  if (!objective) throw new TypeError("Bot task objective is required");
+  if (!objective) throw new TypeError("Agent task objective is required");
   const now = String(options.now || new Date().toISOString());
   const id = String(options.id || newTaskId());
   const explicitDoNot = cleanList(input.doNot, 12);
   const doNot = explicitDoNot.includes(DEFAULT_DO_NOT)
     ? explicitDoNot
     : [...explicitDoNot, DEFAULT_DO_NOT];
-  const bot = sanitizeBot(input.bot);
   return createTask({
     id,
     runId: id,
@@ -145,26 +129,16 @@ function compileBotTask(input = {}, options = {}) {
       signal: options.signal || null,
     },
     origin: {
-      type: "bot",
-      bot,
+      type: "agent",
     },
     association: {
-      botId: String(input.botId || bot?.id || "").trim(),
-      botTaskId: String(input.botTaskId || "").trim(),
       chatId: String(input.chatId || "").trim(),
       agentId: String(input.agentId || "").trim(),
       parentTaskId: String(input.parentTaskId || "").trim(),
-      ...(intersectConnectionIds(bot?.connectionIds, input.connectionIds) !== undefined
-        ? { connectionIds: intersectConnectionIds(bot?.connectionIds, input.connectionIds) }
+      ...(cleanConnectionIds(input.connectionIds) !== undefined
+        ? { connectionIds: cleanConnectionIds(input.connectionIds) }
         : {}),
     },
-    collaborators: (Array.isArray(input.teammates) ? input.teammates : [])
-      .map((teammate) => ({
-        id: String(teammate?.id || "").trim().slice(0, 120),
-        name: String(teammate?.name || "").trim().slice(0, 60),
-        role: String(teammate?.role || "").trim().slice(0, 80),
-      }))
-      .filter((teammate) => teammate.id && teammate.name),
     status: TASK_STATUSES.CREATED,
     createdAt: now,
     updatedAt: now,
@@ -227,7 +201,7 @@ function compileLocalTask(input = {}, options = {}) {
 }
 
 /**
- * Compile a dedicated browser Task for a normal Agent (or a Bot continuation
+ * Compile a dedicated browser Task for a normal Agent (or an agent continuation
  * that needs a fresh browse envelope). Capabilities are the default browse
  * set unless the caller supplies an explicit browser.* list.
  * This compiler does no model call and does not grant browser.eval.
@@ -394,7 +368,6 @@ function compileRoutineTask(input = {}, options = {}) {
     ? `${instructions}\n\n[Current occurrence]\n${contextLines.join("\n")}`
     : instructions;
 
-  const bot = sanitizeBot(routine.bot || input.bot);
   return createTask({
     id,
     runId: String(input.runId || id),
@@ -430,8 +403,7 @@ function compileRoutineTask(input = {}, options = {}) {
       signal: options.signal || null,
     },
     origin: {
-      type: "bot",
-      bot,
+      type: "agent",
       ...(directWorkflowRun
         ? {
             workflow: {
@@ -452,7 +424,6 @@ function compileRoutineTask(input = {}, options = {}) {
           }),
     },
     association: {
-      botId: String(routine.botId || bot?.id || "").trim(),
       ...(!directWorkflowRun
         ? {
             routineId: String(routine.id),
@@ -462,17 +433,10 @@ function compileRoutineTask(input = {}, options = {}) {
       ...(routine.workflowId
         ? { workflowId: String(routine.workflowId).trim().slice(0, 120) }
         : {}),
-      chatId: String(routine.bot?.chatId || "").trim(),
       agentId: String(input.agentId || "").trim(),
-      ...(intersectConnectionIds(
-        routine.connectionIds ?? bot?.connectionIds,
-        input.connectionIds,
-      ) !== undefined
+      ...(intersectConnectionIds(routine.connectionIds, input.connectionIds) !== undefined
         ? {
-            connectionIds: intersectConnectionIds(
-              routine.connectionIds ?? bot?.connectionIds,
-              input.connectionIds,
-            ),
+            connectionIds: intersectConnectionIds(routine.connectionIds, input.connectionIds),
           }
         : {}),
     },
@@ -483,7 +447,7 @@ function compileRoutineTask(input = {}, options = {}) {
 }
 
 module.exports = {
-  compileBotTask,
+  compileAgentTask,
   compileLocalTask,
   compileBrowserTask,
   compileRemoteTask,
@@ -491,7 +455,7 @@ module.exports = {
   compileLocalCapabilities,
   compileRemoteCapabilities,
   compileBrowserCapabilities,
-  defaultBotCapabilities,
+  defaultAgentCapabilities,
   DEFAULT_BROWSER_CAPABILITIES,
   DEFAULT_SUCCESS,
   DEFAULT_SCOPE,

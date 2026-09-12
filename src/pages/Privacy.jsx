@@ -324,6 +324,14 @@ export function PrivacyBody() {
           </Link>
           . The Mac app does not report to analytics at all.
         </p>
+        <p className="mt-3">
+          When you click Download for Mac or Windows on lykn.io, or open the
+          direct installer link we email you, our API records that a download
+          was requested: time, platform, and the same coarse request metadata
+          we keep on waitlist signups (user agent and IP). This is a
+          first-party product count, not advertising analytics, and is not sent
+          to Google. It is not tied to a LYKN account.
+        </p>
 
         <h3 className="text-[15px] font-semibold tracking-tight mt-5 mb-1">
           What we don't collect

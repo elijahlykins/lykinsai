@@ -25,9 +25,6 @@ import type { PromptMessage } from "@/lib/lyknChat/chatTurnTypes";
 import { safeExternalUrl, safeNavHref } from "@/lib/safeExternalUrl";
 import { handleLyknBrowserClick, studioOpenChatOpts } from "@/lib/lyknChat/openInStudioBrowser";
 import { copyMarkdownAsRich } from "@/lib/copyRichClipboard";
-import BotAvatar from "@/components/bots/BotAvatar";
-import { botSeed } from "@/lib/bots/botStore";
-import BotWaitingChoices from "@/components/bots/BotWaitingChoices";
 import {
   LoadInBubble,
   LoadInUserSectionEditor,
@@ -469,7 +466,7 @@ const ChatMessageItem = React.memo(function MessageItem({
   const aiResponse = msg.aiResponse || "";
   const navigate = useNavigate();
   const linkOpts = studioOpenChatOpts(chatId);
-  const aiOpen = isAiExpanded || (isLatest && !!msg.bot);
+  const aiOpen = isAiExpanded;
   const [isEditingPrompt, setIsEditingPrompt] = useState(false);
   const [editDraft, setEditDraft] = useState("");
 
@@ -605,7 +602,7 @@ const ChatMessageItem = React.memo(function MessageItem({
           })()}
         </div>
       )}
-      {msg.role === "user" && (msg.aiResponse || (msg.bot && msg.botWorking)) && (
+      {msg.role === "user" && msg.aiResponse && (
         <div className="flex justify-start">
           <div className="w-full">
             {/* Expanded: just a small collapse button — no header pill.
@@ -627,8 +624,7 @@ const ChatMessageItem = React.memo(function MessageItem({
                   <span className="text-sm text-black/60 dark:text-white/60 truncate leading-tight flex-1">
                     {(msg as any).aiImageUrl
                       ? "Generated image"
-                      : getCollapsedPreview(msg.aiResponse || "") ||
-                        (msg.botWorking ? msg.botStatus || "Working…" : "")}
+                      : getCollapsedPreview(msg.aiResponse || "")}
                   </span>
                 )}
               </button>
@@ -639,20 +635,6 @@ const ChatMessageItem = React.memo(function MessageItem({
                 : `grid transition-[grid-template-rows,opacity] duration-200 ease-in-out ${aiOpen ? "grid-rows-[1fr] opacity-100 mt-1" : "grid-rows-[0fr] opacity-0"}`
             }>
               <div className="overflow-hidden min-h-0 group/aifocused">
-                {msg.bot ? (
-                  <div className="mb-1.5 flex items-center gap-1.5">
-                    <BotAvatar
-                      face={msg.bot.face}
-                      eyes={msg.bot.eyes}
-                      color={msg.bot.color}
-                      size={18}
-                      seed={botSeed(msg.bot.id)}
-                    />
-                    <span className="text-[11px] font-semibold text-black/50 dark:text-white/55">
-                      {msg.bot.name}
-                    </span>
-                  </div>
-                ) : null}
                 {(msg as any).aiImages?.length ? (
                   <AiImageBatch
                     images={(msg as any).aiImages}
@@ -722,9 +704,7 @@ const ChatMessageItem = React.memo(function MessageItem({
                       ) : null}
                       {bodyRest ? (
                         <div
-                          className={`lykn-chat-ai-text text-[14px] break-words text-black/85 dark:text-white/85 ${
-                            msg.bot ? "lykn-bot-report leading-[1.65]" : "leading-[1.25]"
-                          }`}
+                          className="lykn-chat-ai-text text-[14px] break-words text-black/85 dark:text-white/85 leading-[1.25]"
                         >
                           <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={mdComponents}>
                             {normalizeChecklistSyntax(bodyRest)}
@@ -740,32 +720,17 @@ const ChatMessageItem = React.memo(function MessageItem({
                           <ArtifactBuildingPlaceholder status={inlineThinkingStatus} trail={buildThoughtTrail} />
                         </div>
                       ) : inlineThinkingStatus &&
-                        !isBuildSlotStatus(inlineThinkingStatus) &&
-                        !(msg.bot && msg.botWorking) ? (
+                        !isBuildSlotStatus(inlineThinkingStatus) ? (
                         <div className="mt-3">
                           <ThinkingIndicator
                             status={inlineThinkingStatus}
                             trail={buildThoughtTrail}
-                            bot={msg.bot}
                           />
                         </div>
                       ) : null}
                     </div>
                   );
                 })()}
-                {msg.bot && msg.botWorking ? (
-                  <div className={`px-4 pb-3 text-sm text-black/70 dark:text-white/60 ${String(aiResponse || "").trim() ? "" : "-mt-1"}`}>
-                    <ThinkingIndicator
-                      status={msg.botStatus || "Thinking…"}
-                      bot={msg.bot}
-                    />
-                  </div>
-                ) : null}
-                {msg.bot && isLatest && !msg.botWorking ? (
-                  <div className="px-4 pb-3">
-                    <BotWaitingChoices botId={msg.bot.id} />
-                  </div>
-                ) : null}
                 {Array.isArray(msg.aiResponseSections) && msg.aiResponseSections.length > 0 && (
                   // Structured load-in greeting: heading per topic, each
                   // update rendered as a row with an inline CTA button.

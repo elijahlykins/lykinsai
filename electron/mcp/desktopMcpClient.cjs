@@ -10,7 +10,7 @@
  * should be quick; running someone else's tool legitimately is not.
  *
  * There was no ceiling at all, so a connector that never answered hung the
- * whole call forever — a bot asked to check email would sit "reading up on
+ * whole call forever — an agent asked to check email would sit "reading up on
  * your tools" until the task timed out, with nothing to show for it.
  */
 const LIST_TIMEOUT_MS = 12_000;

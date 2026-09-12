@@ -66,7 +66,7 @@ contextBridge.exposeInMainWorld("lyknWelcome", {
    * Background stage: small preview of the user's current macOS wallpaper.
    * Resolves { ok, dataUrl? }.
    */
-  wallpaperPreview: () => ipcRenderer.invoke("lykn:background-wallpaper-preview"),
+  wallpaperPreview: (opts) => ipcRenderer.invoke("lykn:background-wallpaper-preview", opts),
   /**
    * Background stage: native image picker.
    * Resolves { ok, path?, dataUrl? } (dataUrl is a small preview).

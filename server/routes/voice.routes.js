@@ -32,9 +32,7 @@ import {
   utteranceWantsLiveScreen,
 } from '../ai/voiceTurnTools.js';
 import { prepareVoiceCustomLlmUpstream } from '../ai/voiceCustomLlm.js';
-import { sanitizeLyknBots } from '../../mcp-tools/chatTools.js';
 import { buildVoiceFamilyGuidance } from '../../mcp-tools/chatToolGuidance.js';
-import { buildVoiceBotsSection } from '../ai/chatGuidance.js';
 import { boundToolResult } from '../../mcp-tools/toolResultBounds.js';
 import {
   createUserAuthorizedProject,
@@ -320,7 +318,6 @@ export function registerVoiceRoutes(app, {
         message,
         conversation: Array.isArray(req.body?.conversation) ? req.body.conversation : [],
         localMode: Boolean(req.body?.localMode ?? req.body?.desktop),
-        lyknBots: sanitizeLyknBots(req.body?.lyknBots),
       });
       const guidance = buildVoiceFamilyGuidance(disclosure.capabilities);
       return res.json({
@@ -784,11 +781,8 @@ export function registerVoiceRoutes(app, {
       const parts = [];
       // Briefing block goes first so it survives the 14k truncation below.
       const briefingBlock = formatVoiceBriefingInstructionBlock(req.user, briefingData);
-      const sessionBots = sanitizeLyknBots(req.body?.lyknBots);
       const sessionLocalMode = Boolean(req.body?.localMode ?? req.body?.desktop);
-      const botsBlock = buildVoiceBotsSection(sessionBots);
       if (briefingBlock) parts.push(briefingBlock);
-      if (botsBlock) parts.push(botsBlock);
       if (memoryGrounding) parts.push(memoryGrounding);
       if (clientGrounding) parts.push(`[WORKSPACE_AND_CONVERSATION]\n${clientGrounding}`);
       const instructions = (parts.length
@@ -805,7 +799,6 @@ export function registerVoiceRoutes(app, {
       voiceSessionGrounding.set(sessionToken, {
         instructions,
         tz: sessionTz,
-        lyknBots: sessionBots,
         desktop: sessionLocalMode,
         localMode: sessionLocalMode,
         at: Date.now(),
@@ -970,13 +963,11 @@ export function registerVoiceRoutes(app, {
       let grounding = '';
       let sessionTz = '';
       let screenText = '';
-      let sessionBots = [];
       let sessionDesktop = false;
       if (sessionToken && voiceSessionGrounding.has(sessionToken)) {
         const stored = voiceSessionGrounding.get(sessionToken);
         grounding = stored?.instructions || '';
         sessionTz = stored?.tz || '';
-        sessionBots = Array.isArray(stored?.lyknBots) ? stored.lyknBots : [];
         sessionDesktop = Boolean(stored?.localMode ?? stored?.desktop);
       } else if (userId) {
         const synth = await buildRealtimeMemoryGrounding(null, userId);
@@ -1050,7 +1041,6 @@ export function registerVoiceRoutes(app, {
         message: userText,
         conversation: messages,
         localMode: sessionDesktop,
-        lyknBots: sessionBots,
       });
       const voiceGuidance = buildVoiceFamilyGuidance(voiceDisclosure.capabilities);
       if (voiceGuidance && interruptForTools) {

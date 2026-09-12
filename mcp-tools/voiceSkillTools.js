@@ -312,7 +312,6 @@ export const VOICE_CHAT_SKILL_DEFS = [
 ];
 
 const SKIP_LOCAL = new Set([
-  'local_ask_bot',
   'local_browser_agent',
   // Build workspace tools are a Studio Build (chat) surface: real software
   // builds with dev servers and long installs have no spoken-turn shape.

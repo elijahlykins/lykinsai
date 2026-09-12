@@ -18,7 +18,7 @@ export type SidebarChatEntry =
   | { kind: "thread"; threadId: string; label: string; chats: LyknChatListRow[] };
 
 const THREAD_BOARD_SELECT =
-  "id, title, updated_at, created_at, chat_model_key, thread_id, lykn_chat_states(state)";
+  "id, title, updated_at, created_at, chat_model_key, thread_id, lykn_chat_states(has_content)";
 
 function isMissingThreadSchema(error: { message?: string; code?: string } | null) {
   const msg = String(error?.message || "").toLowerCase();
@@ -172,7 +172,7 @@ export async function fetchSidebarChatEntries(userId: string): Promise<SidebarCh
     if (isMissingThreadSchema(res.error)) {
       const fallback = await supabase
         .from("lykn_chats")
-        .select("id, title, updated_at, created_at, chat_model_key, lykn_chat_states(state)")
+        .select("id, title, updated_at, created_at, chat_model_key, lykn_chat_states(has_content)")
         .eq("user_id", userId)
         .order("updated_at", { ascending: false })
         .limit(120);

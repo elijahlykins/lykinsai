@@ -393,7 +393,7 @@ function registerOverlayAiIpc(d) {
     });
   
     // Past chats — merge ⌘L overlay sessions (local) with app chats (Supabase).
-    ipcMain.handle("lykn:list-chats", async () => {
+    ipcMain.handle("lykn:list-chats", async (_e, opts = {}) => {
       const store = await readOverlaySessionsStore();
       const overlay = store.sessions
         .map((s) => ({
@@ -404,6 +404,14 @@ function registerOverlayAiIpc(d) {
           source: "overlay",
         }))
         .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
+      if (opts && opts.overlayOnly) {
+        return {
+          overlay,
+          app: [],
+          currentSessionId: store.currentSessionId,
+          error: null,
+        };
+      }
       const appResult = await fetchAppChatsForOverlay();
       // Overlay sessions are now also mirrored into the app store (so they show
       // in the app's sidebar), which means they come back in BOTH lists with the

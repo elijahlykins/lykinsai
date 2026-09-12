@@ -73,9 +73,7 @@ const TOOL_RUNNING_STATUS: Record<string, string> = {
   local_read_app: "Reading the app…",
   local_open_app: "Opening the app…",
   local_browser_agent: "Sending it to the browser agent…",
-  local_ask_bot: "Asking your bot…",
   browser_agent: "Sending it to the browser agent…",
-  ask_bot: "Sending your bot…",
   local_open_path: "Opening it…",
   local_organize_desktop: "Tidying your desktop…",
 };

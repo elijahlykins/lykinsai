@@ -62,12 +62,14 @@ function DockChatsList({ userId, search, onOpen }) {
     enabled: !!userId && !needle,
     initialPageParam: 0,
     getNextPageParam: (lastPage) => lastPage.nextOffset ?? undefined,
+    staleTime: 30_000,
   });
 
   const { data: searchResults = [], isLoading: searchLoading } = useQuery({
     queryKey: ["sidebar-boards-search", userId, needle],
     queryFn: () => searchLyknChatsByTitle(userId, needle, 200),
     enabled: !!userId && !!needle,
+    staleTime: 15_000,
   });
 
   const listChats = useMemo(() => {

@@ -38,9 +38,8 @@ const LyknChatPlusMenu = React.memo(function LyknChatPlusMenu({
     window.setTimeout(fn, 0);
   }, []);
 
-  // Settings → Connections, same pattern as the Bots page: Studio handles
-  // the tab event when chat lives on the Studio desktop; the settings URL
-  // fallback covers everything else.
+  // Settings → Connections: Studio handles the tab event when chat lives on
+  // the Studio desktop; the settings URL fallback covers everything else.
   const onConnectTool = React.useCallback(() => {
     openStudioTab("settings", "connections");
     openConnectionsSettings();

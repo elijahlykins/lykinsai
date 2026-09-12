@@ -24,6 +24,10 @@ function registerWelcomeIpc(d) {
   const ownedBrowserAct = d.ownedBrowserAct;
   const agentRecentVisits = d.agentRecentVisits;
   const { broadcastToAllWindows } = require("../services/initializeElectronServices.cjs");
+  const {
+    osDefaultWallpaperItems,
+    resolveMacWallpaperStill,
+  } = require("../wallpaper/macosWallpaper.cjs");
   const overlayConstants = d.constants;
   const {
     OVERLAY_WIDTH, OVERLAY_MIN_HEIGHT, OVERLAY_BUBBLE, MENU_WIDTH, MENU_GAP,
@@ -317,17 +321,17 @@ function registerWelcomeIpc(d) {
         resolve(err ? "" : String(stdout || "").trim())
       );
     });
-  // Permission-free read of the macOS 14+ wallpaper store. Custom image
-  // wallpapers surface as file:// URLs (sometimes inside bookmark data blobs);
-  // built-in dynamic wallpapers have none, and then only AppleScript can
-  // answer — which is why the AppleScript ladder still exists below.
-  const storeWallpaperPath = async () => {
+  // Permission-free read of the macOS 14+ wallpaper store. Custom photos
+  // surface as file:// URLs (sometimes inside bookmark data blobs). Built-in
+  // Apple wallpapers usually have none - Provider is "default" or a stub -
+  // and macosWallpaper maps those onto the stills macOS already ships.
+  const wallpaperStoreXml = async () => {
     const plist = path.join(
       app.getPath("home"),
       "Library/Application Support/com.apple.wallpaper/Store/Index.plist"
     );
     if (!fsSync.existsSync(plist)) return "";
-    const xml = await new Promise((resolve) => {
+    return new Promise((resolve) => {
       execFile(
         "plutil",
         ["-convert", "xml1", "-o", "-", plist],
@@ -335,31 +339,17 @@ function registerWelcomeIpc(d) {
         (err, stdout) => resolve(err ? "" : String(stdout || ""))
       );
     });
-    if (!xml) return "";
-    const candidates = [...xml.matchAll(/file:\/\/[^<"]+/g)].map((m) => m[0]);
-    for (const blob of xml.matchAll(/<data>([\s\S]*?)<\/data>/g)) {
-      try {
-        const txt = Buffer.from(blob[1].replace(/\s+/g, ""), "base64").toString("latin1");
-        for (const m of txt.matchAll(/file:\/\/[\x20-\x7e]+/g)) candidates.push(m[0]);
-      } catch (_) {}
-    }
-    for (const url of candidates) {
-      try {
-        const p = decodeURIComponent(url.replace(/^file:\/\//, "")).replace(/\/$/, "");
-        if (fsSync.existsSync(p) && fsSync.statSync(p).isFile()) return p;
-      } catch (_) {}
-    }
-    return "";
   };
-  const currentWallpaperPath = async () => {
-    // Try the permission-free wallpaper store first: the AppleScript fallback
-    // pops the macOS Automation consent dialog, so it must only ever run on
-    // an explicit user action (choosing "my wallpaper" — callers guarantee
-    // this; nothing invokes this helper passively).
-    const fromStore = await storeWallpaperPath();
+  const wallpaperAppearance = () =>
+    nativeTheme.shouldUseDarkColors ? "dark" : "light";
+  const currentWallpaperPath = async ({ allowAppleScript = true } = {}) => {
+    const fromStore = resolveMacWallpaperStill(await wallpaperStoreXml(), {
+      appearance: wallpaperAppearance(),
+    });
     if (fromStore) return fromStore;
-    // System Events first; Finder as fallback (dynamic wallpapers sometimes
-    // only answer through one of the two).
+    // AppleScript pops the macOS Automation consent dialog, so it must only
+    // run on an explicit user action (choosing "my wallpaper").
+    if (!allowAppleScript) return "";
     const scripts = [
       'tell application "System Events" to get picture of current desktop',
       'tell application "Finder" to get POSIX path of (desktop picture as alias)',
@@ -510,6 +500,7 @@ function registerWelcomeIpc(d) {
       readWallpaperDir(path.join(SYSTEM_WALLPAPER_ROOT, "Solid Colors"), "colors", 0),
       readCatalogWallpapers(),
     ]);
+    const osDefaults = osDefaultWallpaperItems({ appearance: wallpaperAppearance() });
 
     // Newer releases tuck a few full-size stills (e.g. Sonoma Horizon) inside
     // the hidden .wallpapers bundle alongside the .mov versions.
@@ -526,19 +517,18 @@ function registerWelcomeIpc(d) {
     }
 
     // Local first: a wallpaper already on disk needs no download, and several
-    // (the iMac colors, Sonoma) appear in both places.
+    // (the iMac colors, Sonoma) appear in both places. OS defaults (Tahoe,
+    // Aerial) go first so "use my Mac wallpaper" has a matching tile.
     const byName = new Map();
-    for (const item of [...pictures, ...bundled, ...colors, ...remote]) {
+    for (const item of [...osDefaults, ...pictures, ...bundled, ...colors, ...remote]) {
       if (!byName.has(item.name)) byName.set(item.name, item);
     }
     // Colors last, pictures alphabetical — one grid, like System Settings.
-    const ordered = [...byName.values()].sort((a, b) =>
-      a.group === b.group
-        ? a.name.localeCompare(b.name, undefined, { numeric: true })
-        : a.group === "colors"
-          ? 1
-          : -1,
-    );
+    const ordered = [...byName.values()].sort((a, b) => {
+      if (a.group !== b.group) return a.group === "colors" ? 1 : -1;
+      if (!!a.pin !== !!b.pin) return a.pin ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { numeric: true });
+    });
     systemWallpapers = new Map(
       ordered.map((item) => [wallpaperId(item.name), { ...item, id: wallpaperId(item.name) }]),
     );
@@ -731,8 +721,10 @@ function registerWelcomeIpc(d) {
     }
   });
   // Small preview of the user's current macOS wallpaper (welcome stage card).
-  ipcMain.handle("lykn:background-wallpaper-preview", async () => {
-    const src = await currentWallpaperPath();
+  ipcMain.handle("lykn:background-wallpaper-preview", async (_e, opts = {}) => {
+    const src = await currentWallpaperPath({
+      allowAppleScript: opts?.allowAppleScript === true,
+    });
     if (!src) return { ok: false, error: "wallpaper_unavailable" };
     const tmp = path.join(app.getPath("temp"), "lykn-bg-wallpaper-preview.jpg");
     if (!(await bgConvert(src, tmp, 640))) return { ok: false, error: "convert_failed" };

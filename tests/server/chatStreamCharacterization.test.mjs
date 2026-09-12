@@ -48,13 +48,19 @@ test('client disconnect aborts the in-flight stream', () => {
   assert.match(streamSrc, /streamAbort\.abort\(\)/);
 });
 
+test('long tool turns raise the socket idle timeout to the hard-kill window', () => {
+  assert.match(streamSrc, /streamLocalMode/);
+  assert.match(streamSrc, /longToolTurn/);
+  assert.match(streamSrc, /if \(longToolTurn\) \{/);
+  assert.match(streamSrc, /req\.setTimeout\?\.\(hardKillMs \+ 30_000/);
+  assert.match(streamSrc, /streamBuildWorkspace \|\| streamDesktopMcpIntent \|\| streamLocalMode/);
+});
+
 test('tool loop, MCP/local tools, and usage accounting remain on the stream path', () => {
   assert.match(streamSrc, /runAgentLoop\(/);
   assert.match(streamSrc, /CHAT_TOOLS/);
   assert.match(streamSrc, /LOCAL_TOOL_NAMES/);
   assert.match(streamSrc, /streamClientToolsEnabled/);
-  assert.match(streamSrc, /buildLyknBotsSection/);
-  assert.match(streamSrc, /local_ask_bot/);
   assert.match(streamSrc, /logAiUsage\(/);
   assert.match(streamSrc, /resolveProductionChatMemory\(/);
   assert.match(streamSrc, /fetchProjectSection\(/);
@@ -126,7 +132,6 @@ test('browser side chat is ask-only and does not arm agent tools', () => {
   assert.match(streamSrc, /isBrowserAskRequest\(req\.body\)/);
   assert.match(streamSrc, /if \(browserAsk\) prompt \+= "\\n\\n" \+ BROWSER_ASK_ONLY_PROMPT/);
   assert.match(streamSrc, /localMode: streamLocalMode && !browserAsk/);
-  assert.match(streamSrc, /lyknBots: browserAsk \? \[\] : sanitizeLyknBots/);
   assert.match(streamSrc, /!browserAsk &&/);
   assert.match(streamSrc, /streamLocalMode = req\.body\?\.localMode === true && !browserAsk/);
   assert.match(streamSrc, /if \(browserAsk && !streamDisclosure\.keepToolsOn\) useTools = false/);

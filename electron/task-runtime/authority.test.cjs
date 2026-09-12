@@ -17,11 +17,11 @@ const { TASK_STATUSES } = require("./task.cjs");
 const {
   compileBrowserTask,
   compileBrowserCapabilities,
-  defaultBotCapabilities,
+  defaultAgentCapabilities,
   DEFAULT_BROWSER_CAPABILITIES,
 } = require("./taskCompiler.cjs");
 const { BrowserExecutor } = require("./executors/browserExecutor.cjs");
-const { BotExecutor } = require("./executors/botExecutor.cjs");
+const { AgentExecutor } = require("./executors/agentExecutor.cjs");
 
 const AGENT_RUNTIME = fs.readFileSync(
   path.join(__dirname, "../agentRuntime.cjs"),
@@ -75,15 +75,14 @@ test("production browser execution goes through TaskRuntime then BrowserExecutor
   assert.equal(out.result.executor, "browser");
 });
 
-test("production Bot execution goes through TaskRuntime then BotExecutor", async () => {
+test("production agent execution goes through TaskRuntime then AgentExecutor", async () => {
   const runtime = new TaskRuntime();
-  const task = runtime.createBotTask({
+  const task = runtime.createAgentTask({
     objective: "hey",
-    capabilities: defaultBotCapabilities(),
-    bot: { id: "bot-1", name: "Scout" },
+    capabilities: defaultAgentCapabilities(),
   });
-  const executor = new BotExecutor({
-    runBotTask: async () => {
+  const executor = new AgentExecutor({
+    runAgentTask: async () => {
       throw new Error("harness should not run for reply-only");
     },
   });

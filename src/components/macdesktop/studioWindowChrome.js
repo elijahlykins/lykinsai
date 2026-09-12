@@ -16,10 +16,10 @@ export function studioWindowFillsDesktop({
 } = {}) {
   return (
     Boolean(zoomed) &&
-    !Boolean(hidden) &&
-    !Boolean(minimized) &&
-    !Boolean(closing) &&
-    !Boolean(peeked)
+    !hidden &&
+    !minimized &&
+    !closing &&
+    !peeked
   );
 }
 
@@ -40,7 +40,42 @@ export function studioFullscreenTrafficVisible({
   fullscreen = false,
   surfaceFullscreen = false,
 } = {}) {
-  return Boolean(desktop) && Boolean(fullscreen) && !Boolean(surfaceFullscreen);
+  return Boolean(desktop) && Boolean(fullscreen) && !surfaceFullscreen;
+}
+
+/**
+ * Native Browser views paint above every React window. They may only sit on
+ * screen while the Browser window is the one in front — otherwise they cover
+ * the window the user just clicked to raise.
+ */
+export function studioBrowserFront({
+  splitHasBrowser = false,
+  appWins = [],
+  browserId = "browser",
+} = {}) {
+  return Boolean(splitHasBrowser) || appWins[appWins.length - 1] === browserId;
+}
+
+export function studioBrowserViewsLive({
+  splitHasBrowser = false,
+  tab = "dashboard",
+  desktopPeek = false,
+  browserOpen = false,
+  browserMinimized = false,
+  browserSettled = false,
+  split = null,
+  browserFront = false,
+} = {}) {
+  if (splitHasBrowser) return tab === "dashboard" && !desktopPeek;
+  return (
+    tab === "dashboard" &&
+    Boolean(browserOpen) &&
+    !browserMinimized &&
+    Boolean(browserSettled) &&
+    !desktopPeek &&
+    !split &&
+    Boolean(browserFront)
+  );
 }
 
 export function applyStudioWindowAction(lykn, action, { fullscreen = false } = {}) {

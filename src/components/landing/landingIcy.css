@@ -458,6 +458,20 @@
   height: 3.3rem;
 }
 
+/* Icon-based mark: a soft glass disc with a line icon inside. */
+.ls-vis-agent-mark--icon {
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.ls-vis-agent-mark--icon svg {
+  width: 1.35rem;
+  height: 1.35rem;
+  stroke-width: 1.75;
+}
+
 .ls-vis-agent-copy {
   display: grid;
   gap: 0.2rem;

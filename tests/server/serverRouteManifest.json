@@ -4,11 +4,11 @@
     "Ordered registration surface of server.js (Express app). Entry order IS the contract:",
     "Express matches in registration order, so any reordering here is a behavior change."
   ],
-  "routeCount": 177,
+  "routeCount": 179,
   "middlewareCount": 7,
   "byMethod": {
     "DELETE": 7,
-    "GET": 63,
+    "GET": 65,
     "PATCH": 7,
     "POST": 98,
     "PUT": 2
@@ -27,7 +27,7 @@
     "feeds": 8,
     "files": 6,
     "learning": 1,
-    "other": 42,
+    "other": 44,
     "platform": 4,
     "synthesis": 5,
     "usage": 5,
@@ -2787,6 +2787,32 @@
       "path": "/api/download-link",
       "chain": [
         "<anonymous>",
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/download/mac",
+      "chain": [
+        "<anonymous>",
+        "<anonymous>"
+      ],
+      "domain": "other",
+      "flags": []
+    },
+    {
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/download/win",
+      "chain": [
         "<anonymous>",
         "<anonymous>"
       ],

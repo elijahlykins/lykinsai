@@ -77,7 +77,7 @@ export function setActiveThreadChatId(chatId: string | null) {
   activeChatId = chatId ? String(chatId) : null;
 }
 
-/** The last non-Bot LYKN board. Switching back from a Bot lands here. */
+/** The last LYKN board the user was on. */
 export function rememberLyknChatId(chatId: string | null | undefined) {
   const id = String(chatId || "").trim();
   if (!id) return;

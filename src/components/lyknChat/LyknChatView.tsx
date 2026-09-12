@@ -1,7 +1,6 @@
 import React, { useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
 import LocalToolApprovalCard from "@/components/lyknChat/LocalToolApprovalCard";
-import { useBotLocalApprovals } from "@/lib/bots/botLocalApproval";
 import LyknChatArtifactPanel from "@/components/lyknChat/LyknChatArtifactPanel";
 import ChatMessageItem from "@/components/lyknChat/ChatMessageItem";
 import { isLiveBuildStatus, useThinkingTrail } from "@/hooks/useThinkingStatus";
@@ -319,7 +318,6 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
     isChatLoading || keepThinkingWhileLoading,
   );
 
-  useBotLocalApprovals();
 
   const lastSeenArtifactRef = useRef<string | null>(null);
   const artifactChatKeyRef = useRef<string | undefined>(undefined);
@@ -686,15 +684,13 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                 chatMessages.length > 0 &&
                 chatMessages[chatMessages.length - 1]?.role === "user" &&
                 chatMessages[chatMessages.length - 1]?.kind !== "load-in-greeting" &&
-                (Boolean(String(chatMessages[chatMessages.length - 1]?.aiResponse || "").trim()) ||
-                  chatMessages[chatMessages.length - 1]?.botWorking)
+                Boolean(String(chatMessages[chatMessages.length - 1]?.aiResponse || "").trim())
               ) && (
               <div className="flex justify-start">
                 <div className="max-w-[80%] py-3 text-sm leading-relaxed text-black/70 dark:text-white/60 flex items-center gap-3">
                   <ThinkingIndicator
                     status={thinkingStatus}
                     trail={buildThoughtTrail}
-                    bot={[...chatMessages].reverse().find((m) => m.bot)?.bot}
                   />
                 </div>
               </div>

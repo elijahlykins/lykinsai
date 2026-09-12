@@ -33,13 +33,6 @@ function fileFromPickedRow(row) {
   });
 }
 
-function mintAttId() {
-  return (
-    (typeof crypto !== "undefined" && crypto.randomUUID?.()) ||
-    `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  );
-}
-
 export default function BrowserAskComposer({
   chatId = "",
   tabId = "",

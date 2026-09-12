@@ -579,16 +579,11 @@
   box-shadow: none;
 }
 
-.gl-hero-page-body .gl-desk-bot {
-  height: 1.55rem;
-}
-
 .gl-hero-page-body .gl-desk-ask {
   font-size: 0.72rem;
 }
 
 .gl-hero-page-body .gl-desk-ask,
-.gl-hero-page-body .gl-desk-bot,
 .gl-hero-page-body .gl-desk-composer button:not(.gl-desk-send) {
   color: rgba(248, 250, 252, 0.88);
 }
@@ -2111,19 +2106,6 @@
   border: 1px solid var(--lg-hairline, rgba(255, 255, 255, 0.45));
   box-shadow: 0 16px 40px -18px rgba(15, 23, 42, 0.45);
 }
-.gl-desk-bot {
-  display: flex;
-  height: 2rem;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 0.15rem;
-  padding: 0 0.25rem 0 0.35rem;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  color: rgba(15, 23, 42, 0.6);
-  cursor: pointer;
-}
 .gl-desk-ask {
   min-width: 0;
   flex: 1;
@@ -2143,10 +2125,12 @@
    height 2rem + line-height 18px + padding-top 13px on
    .lykn-home-chat-bar-input, which drops the typed prompt too low in the
    scaled-down marketing replica. Landing-only override (extra classes to
-   outrank that rule): center the single text line in the 2rem field. */
+   outrank that rule): make the single line box fill the 2rem field so the
+   glyphs land dead center at any landing font size. */
 .gl-desk-bar .gl-desk-composer.lykn-home-chat-bar textarea.gl-desk-ask.lykn-home-chat-bar-input {
-  padding-top: 9px;
-  padding-bottom: 5px;
+  line-height: 2rem;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 .gl-desk-send {
   display: flex;

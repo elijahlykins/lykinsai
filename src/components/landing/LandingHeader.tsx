@@ -54,7 +54,7 @@ const FEATURE_ITEMS = [
   {
     id: "agents",
     name: "Agents",
-    desc: "Standing AI teammates on your desktop.",
+    desc: "LYKN works on its own: routines, workflows, browsing.",
     to: "/product/agents",
   },
   {

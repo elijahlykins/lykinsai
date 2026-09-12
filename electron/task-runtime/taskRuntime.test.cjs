@@ -14,21 +14,19 @@ function runtimeWithEvents() {
   };
 }
 
-function botInput(overrides = {}) {
+function agentInput(overrides = {}) {
   return {
     objective: "check my email",
-    botTaskId: "ui-task-a",
-    botId: "bot-a",
+    agentId: "agent-a",
     chatId: "chat-a",
-    bot: { id: "bot-a", name: "Scout", role: "Researcher", persona: "Be concise." },
     ...overrides,
   };
 }
 
 test("compiler creates a unique immutable Task without broadening the objective", () => {
   const { runtime } = runtimeWithEvents();
-  const a = runtime.createBotTask(botInput());
-  const b = runtime.createBotTask(botInput({ botTaskId: "ui-task-b" }));
+  const a = runtime.createAgentTask(agentInput());
+  const b = runtime.createAgentTask(agentInput({ agentId: "agent-b" }));
   assert.notEqual(a.id, b.id);
   assert.equal(a.runId, a.id);
   assert.equal(a.objective, "check my email");
@@ -46,7 +44,7 @@ test("compiler creates a unique immutable Task without broadening the objective"
 
 test("executor completion is recorded by TaskRuntime and terminal state is immutable", async () => {
   const { runtime, events } = runtimeWithEvents();
-  const task = runtime.createBotTask(botInput());
+  const task = runtime.createAgentTask(agentInput());
   const out = await runtime.execute(task.id, async (canonical) => {
     assert.equal(canonical.objective, "check my email");
     return { status: "completed", output: "You have two new messages." };
@@ -73,7 +71,7 @@ test("executor completion is recorded by TaskRuntime and terminal state is immut
 
 test("waiting task resumes with the same identity", async () => {
   const { runtime } = runtimeWithEvents();
-  const task = runtime.createBotTask(botInput());
+  const task = runtime.createAgentTask(agentInput());
   const first = await runtime.execute(task.id, async () => ({
     status: "waiting_for_user",
     question: "Which inbox?",
@@ -89,7 +87,7 @@ test("waiting task resumes with the same identity", async () => {
 
 test("cancellation aborts the executor and stale success cannot settle the Task", async () => {
   const { runtime, events } = runtimeWithEvents();
-  const task = runtime.createBotTask(botInput());
+  const task = runtime.createAgentTask(agentInput());
   let release;
   const run = runtime.execute(task.id, (_canonical, context) =>
     new Promise((resolve) => {
@@ -109,7 +107,7 @@ test("cancellation aborts the executor and stale success cannot settle the Task"
 
 test("approval pause is structured and remains runtime-owned", async () => {
   const { runtime, events } = runtimeWithEvents();
-  const task = runtime.createBotTask(botInput());
+  const task = runtime.createAgentTask(agentInput());
   const out = await runtime.execute(task.id, async (_canonical, context) => {
     context.approvalRequired({ tool: "send_email", question: "Approve send?" });
     assert.equal(runtime.get(task.id).status, TASK_STATUSES.WAITING_FOR_APPROVAL);
@@ -122,14 +120,14 @@ test("approval pause is structured and remains runtime-owned", async () => {
 
 test("executor failure and budget exhaustion become failed terminal Tasks", async () => {
   const { runtime } = runtimeWithEvents();
-  const thrown = runtime.createBotTask(botInput());
+  const thrown = runtime.createAgentTask(agentInput());
   const thrownOut = await runtime.execute(thrown.id, async () => {
     throw new Error("provider unavailable");
   });
   assert.equal(thrownOut.task.status, TASK_STATUSES.FAILED);
   assert.equal(thrownOut.task.completion.reason, "provider unavailable");
 
-  const exhausted = runtime.createBotTask(botInput({ botTaskId: "ui-task-budget" }));
+  const exhausted = runtime.createAgentTask(agentInput({ agentId: "agent-budget" }));
   const exhaustedOut = await runtime.execute(exhausted.id, async (task) => ({
     status: "failed",
     reason: `round_budget_exhausted:${task.budgets.maxRounds}`,
@@ -140,7 +138,7 @@ test("executor failure and budget exhaustion become failed terminal Tasks", asyn
 
 test("a waiting Task stays waiting until execute resumes it", async () => {
   const { runtime } = runtimeWithEvents();
-  const task = runtime.createBotTask(botInput());
+  const task = runtime.createAgentTask(agentInput());
   const first = await runtime.execute(task.id, async () => ({
     status: "waiting_for_user",
     question: "Which inbox?",
@@ -151,7 +149,7 @@ test("a waiting Task stays waiting until execute resumes it", async () => {
 
 test("late complete() cannot turn a failed Task into a success", async () => {
   const { runtime } = runtimeWithEvents();
-  const task = runtime.createBotTask(botInput());
+  const task = runtime.createAgentTask(agentInput());
   await runtime.execute(task.id, async () => ({
     ok: false,
     status: "failed",
@@ -165,25 +163,25 @@ test("late complete() cannot turn a failed Task into a success", async () => {
 
 test("late complete() cannot turn a cancelled Task into a success", async () => {
   const { runtime } = runtimeWithEvents();
-  const task = runtime.createBotTask(botInput());
+  const task = runtime.createAgentTask(agentInput());
   runtime.cancel(task.id, "user_stop");
   const late = runtime.complete(task.id, { output: "late success" });
   assert.equal(late.ignored, true);
   assert.equal(runtime.get(task.id).status, TASK_STATUSES.CANCELLED);
 });
 
-test("events are attributable to the exact renderer BotTask", async () => {
+test("events are attributable to the exact originating agent", async () => {
   const { runtime, events } = runtimeWithEvents();
-  const a = runtime.createBotTask(botInput({ botTaskId: "ui-a" }));
-  const b = runtime.createBotTask(botInput({ botTaskId: "ui-b" }));
+  const a = runtime.createAgentTask(agentInput({ agentId: "agent-a" }));
+  const b = runtime.createAgentTask(agentInput({ agentId: "agent-b" }));
   await runtime.execute(a.id, async () => ({ status: "completed", output: "A" }));
   await runtime.execute(b.id, async () => ({ status: "completed", output: "B" }));
   const completions = events.filter((event) => event.type === "task_completed");
   assert.deepEqual(
-    completions.map((event) => [event.taskId, event.association.botTaskId]),
+    completions.map((event) => [event.taskId, event.association.agentId]),
     [
-      [a.id, "ui-a"],
-      [b.id, "ui-b"],
+      [a.id, "agent-a"],
+      [b.id, "agent-b"],
     ],
   );
 });

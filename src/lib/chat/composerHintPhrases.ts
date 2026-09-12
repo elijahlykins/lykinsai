@@ -1,7 +1,6 @@
 /**
- * Empty-composer hints. The chat bar rotates these so people discover /
- * folder access, drops, connected apps, and the other modes instead of
- * sitting on a single "Ask me anything...".
+ * Empty-composer hints. Chat rotates a few discovery lines. Build, Imagine,
+ * and Research stay on one sticky prompt.
  */
 
 export type ComposerHintMode = "chat" | "build" | "imagine" | "research";
@@ -17,21 +16,9 @@ export const COMPOSER_HINT_PHRASES: Record<ComposerHintMode, readonly string[]> 
     "Hold the mic to talk instead of typing",
     "Ask what's on your calendar this week",
   ],
-  build: [
-    "Describe what you want to build...",
-    "A landing page, dashboard, or mini-tool",
-    "Open an app and ask LYKN to change it",
-  ],
-  imagine: [
-    "Describe the image you want...",
-    "Drop a photo as a style reference",
-    "Pick a layout, then describe the scene",
-  ],
-  research: [
-    "What should LYKN research?",
-    "Choose sources: web, news, papers, and more",
-    "Get a sourced report you can save to Vault",
-  ],
+  build: ["What should LYKN build?"],
+  imagine: ["What do you want to create?"],
+  research: ["What should LYKN research?"],
 };
 
 export function composerHintPhrases(mode: string): readonly string[] {

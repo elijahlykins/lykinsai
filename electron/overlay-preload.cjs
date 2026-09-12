@@ -58,7 +58,9 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   // Tell main the current content width + height so it can resize the panel.
   resize: (width, height, opts) =>
     ipcRenderer.send("lykn:resize", { width, height, ...(opts || {}) }),
-  // Drag the floating bar by a screen-pixel delta.
+  // Drag the floating bar. moveStart lets main follow the OS cursor so panel
+  // windows keep moving even when setBounds drops renderer pointer events.
+  moveStart: () => ipcRenderer.send("lykn:move-start"),
   moveBy: (dx, dy) => ipcRenderer.send("lykn:move-by", { dx, dy }),
   // Drag finished — main can catch side panels up without doing it every pixel.
   moveEnd: () => ipcRenderer.send("lykn:move-end"),
@@ -89,7 +91,7 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   openMain: () => ipcRenderer.send("lykn:open-main"),
   openAppChat: (chatId) => ipcRenderer.send("lykn:open-app-chat", chatId),
   // Past chats — overlay sessions (local) + app chats (Supabase via API).
-  listChats: () => ipcRenderer.invoke("lykn:list-chats"),
+  listChats: (opts) => ipcRenderer.invoke("lykn:list-chats", opts || {}),
   getOverlaySession: (sessionId) => ipcRenderer.invoke("lykn:get-overlay-session", sessionId),
   saveOverlaySession: (payload) => ipcRenderer.invoke("lykn:save-overlay-session", payload),
   newOverlaySession: () => ipcRenderer.invoke("lykn:new-overlay-session"),

@@ -1186,56 +1186,6 @@ export function buildAssistantIdentitySection(rawName) {
 // know). Names only — lykn_open_app does the matching and gets the ids from
 // ctx.installedApps. Without this section the model has nothing to recognise
 // when someone says "open my workout tracker".
-// Desktop teammates the user hired. Same reason as [LYKN APPS]: they live on
-// the machine, so this list is the only way the model knows Cody exists.
-export function buildLyknBotsSection(rawBots) {
-  if (!Array.isArray(rawBots) || !rawBots.length) return '';
-  const lines = rawBots
-    .map((bot) => {
-      const name = String(bot?.name || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 60);
-      if (!name) return '';
-      const role = String(bot?.role || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 80);
-      return role ? `- ${name} - ${role}` : `- ${name}`;
-    })
-    .filter(Boolean)
-    .slice(0, 40);
-  if (!lines.length) return '';
-  return [
-    '[LYKN BOTS]',
-    'These are the user\'s desktop teammates. You can talk to them yourself with',
-    'local_ask_bot — send a question, wait for their reply, and report it back.',
-    'Their work appears in THIS chat so the user can watch. If they name a bot,',
-    'call local_ask_bot immediately. Do NOT tell them to open a bot\'s chat or',
-    'paste a question themselves. These are LYKN bots, not published custom',
-    'models and not Mac apps.',
-    lines.join('\n'),
-  ].join('\n');
-}
-
-export function buildVoiceBotsSection(rawBots) {
-  if (!Array.isArray(rawBots) || !rawBots.length) return '';
-  const lines = rawBots
-    .map((bot) => {
-      const name = String(bot?.name || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 60);
-      if (!name) return '';
-      const role = String(bot?.role || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 80);
-      return role ? `- ${name} - ${role}` : `- ${name}`;
-    })
-    .filter(Boolean)
-    .slice(0, 40);
-  if (!lines.length) return '';
-  return [
-    '[LYKN BOTS]',
-    'These are the user\'s desktop teammates. Send them work with ask_bot',
-    '(name + a complete brief). They can operate the browser, research, and',
-    'write. Do not wait — they work in this chat while you keep talking.',
-    'If they did not name a bot and just want a website opened, use browser_agent.',
-    'Never say you cannot run bots or browse. These are LYKN bots, not custom',
-    'models and not Mac apps.',
-    lines.join('\n'),
-  ].join('\n');
-}
-
 export function buildInstalledAppsSection(rawApps) {
   if (!Array.isArray(rawApps) || !rawApps.length) return '';
   const names = rawApps
@@ -1433,18 +1383,6 @@ export function buildLocalModeGuidance(disclosedLocalToolNames = []) {
         'app\'s connected MCP tools (local_mcp_call_tool) over clicking when both exist, ' +
         'and local_browser_agent for websites.'
       : '')
-  );
-}
-
-/** Bots hand-off guidance for turns where local_ask_bot is disclosed. */
-export function buildAskBotGuidance(disclosedLocalToolNames = []) {
-  const names = Array.isArray(disclosedLocalToolNames) ? disclosedLocalToolNames : [];
-  if (!names.includes('local_ask_bot')) return '';
-  return (
-    '\n\n[LYKN BOTS - ASK]\n' +
-    'You can talk to the user\'s bots with local_ask_bot. Send the question, wait for ' +
-    'their reply, and report it back. If they named a bot, call it immediately. Never ' +
-    'tell the user to open a bot\'s chat or paste the question themselves.'
   );
 }
 

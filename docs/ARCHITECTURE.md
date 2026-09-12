@@ -50,7 +50,6 @@ LYKN STUDIO
 │   ├── Studio home src/pages/Studio.jsx + src/components/studio/ + macdesktop/ + macdock/ + macfiles/
 │   ├── Synthesis   src/pages/SynthesisLayer.tsx (soft-disabled) + src/pages/synthesis/
 │   │               + src/components/synthesis/ + src/lib/synthesis/
-│   ├── Bots        src/components/bots/ + src/lib/bots/
 │   ├── Projects    src/pages/Project*.jsx + src/components/projects/
 │   ├── Calendar/Todos/Notes/Settings/Connections/Billing under src/components/
 │   └── Marketing   src/pages/GlassLanding.tsx, Pricing, News, Templates, CapabilityPage…
@@ -58,7 +57,7 @@ LYKN STUDIO
 ├── Shared UI       src/components/ui/ (shadcn-style primitives)
 ├── Hooks           src/hooks/ (useChatEngine, useLyknChatPersistence, voice, viewport…)
 ├── State           src/store/ (zustand), src/context/, module singletons
-│                   (lib/bots/botStore, lib/chat/chatThreadRuntime, lib/files/fileWindows)
+│                   (lib/chat/chatThreadRuntime, lib/files/fileWindows)
 ├── Data / API      NO central client: ~148 fetch() sites over src/lib/api-config.js
 │                   base URL; auth via src/lib/installAuthFetch.ts (patched fetch);
 │                   direct Supabase via src/lib/supabase.ts; desktop via window.lykn IPC
@@ -68,7 +67,7 @@ LYKN STUDIO
 │   ├── Agent OS
 │   │   ├── agentRuntime.cjs          orchestrator (~11.9k lines) — skills, workers, persistence
 │   │   ├── browser-agent/            modular browse loop (runtime/ + markdown doctrine)
-│   │   ├── bot-harness/              NEW multi-tool bot loop (same shape, not a fork)
+│   │   ├── agent-harness/            multi-tool agent loop (decide → tool → verify → deliver)
 │   │   ├── ownedBrowserAct.cjs       page actuator + legacy adaptive loop (~12.8k lines)
 │   │   └── localAgentTask/localSystem/documentEditor  (Local Mode: files, shell, docs)
 │   ├── localStore/                   on-device SQLite vault + ONNX embeddings + blobs
@@ -140,7 +139,7 @@ Rules to preserve:
 
 ## Shared vs feature-specific
 
-`src/lib/` is mostly **feature-owned** (vault/, ai/, chat/, bots/, synthesis/…) with
+`src/lib/` is mostly **feature-owned** (vault/, ai/, chat/, routines/, synthesis/…) with
 a thin shared layer (api-config, supabase, theme, appearance, drag/, utils). The
 top-level of `src/lib/` has accumulated ~80 loose files; prefer placing new files in
 a feature subfolder.
@@ -158,7 +157,7 @@ a feature subfolder.
 The remaining megafiles — `server.js` (~27.8k), `electron/main.cjs` (~16.4k),
 `electron/ownedBrowserAct.cjs` (~12.8k), `electron/agentRuntime.cjs` (~11.9k).
 See `REFACTOR_LOG.md` for the incremental extraction plan and history.
-`electron/browser-agent/` and `electron/bot-harness/` show the preferred
+`electron/browser-agent/` and `electron/agent-harness/` show the preferred
 modular shape for new work.
 
 `src/pages/Vault.jsx` was decomposed in Phase V (9.5k → ~3.7k lines): behavior

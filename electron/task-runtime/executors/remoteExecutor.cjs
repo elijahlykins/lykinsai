@@ -2,7 +2,7 @@
 
 /**
  * RemoteExecutor — the ONE canonical way remote (SSH) work executes under
- * TaskRuntime. It is the fourth executor alongside Bot, Browser, and Local, and
+ * TaskRuntime. It is the fourth executor alongside Agent, Browser, and Local, and
  * it represents an ENVIRONMENT LYKN operates inside: an SSH server, dev box,
  * VM, or production host.
  *
@@ -153,8 +153,8 @@ class RemoteExecutor {
 }
 
 /**
- * Map a RemoteExecutor result onto the Bot harness child-tool envelope, so a
- * Bot that selects a remote tool treats a pause as a terminal handback, never
+ * Map a RemoteExecutor result onto the agent harness child-tool envelope, so an
+ * agent that selects a remote tool treats a pause as a terminal handback, never
  * as completed work. Mirrors localExecutor.toHarnessResult.
  */
 function toHarnessResult(result) {

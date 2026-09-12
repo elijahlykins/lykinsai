@@ -173,8 +173,8 @@ export const StudioModePill = React.memo(function StudioModePill({
   );
 });
 
-// Per-mode composer identity. The first phrase is the static fallback;
-// HomeChatBar and Studio chat rotate the full set from composerHintPhrases.
+// Per-mode composer identity. Chat rotates discovery hints; Build / Imagine /
+// Research stay on the single sticky phrase from composerHintPhrases.
 export const STUDIO_COMPOSER_PLACEHOLDERS: Record<StudioView, string> = {
   chat: defaultComposerPlaceholder("chat"),
   build: defaultComposerPlaceholder("build"),

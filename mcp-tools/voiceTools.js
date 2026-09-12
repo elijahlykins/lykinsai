@@ -657,44 +657,18 @@ const CORE_VOICE_TOOL_DEFS = [
         },
       },
     },
-    // ── Desktop bots + browser agent (client-side; Electron only) ──────────
-    {
-      name: 'ask_bot',
-      client: true,
-      description:
-        "Send one of the user's LYKN bots (named desktop teammates in [LYKN BOTS]) off to do work, " +
-        'including opening a real browser and operating a website. Call this when they name a bot ' +
-        '("send Scout", "have Cody do it") or ask you to run / send a bot. The bot starts immediately ' +
-        'and their work streams into this chat — you do NOT wait for them. Pass their name and a ' +
-        'complete brief (what to do, which site or product, any specifics). After calling, say they ' +
-        "are underway and the user can watch. Never say you cannot run bots or browse. These are " +
-        'LYKN bots, not custom models. If they did not name a bot and just want a website opened, ' +
-        'use browser_agent instead.',
-      parameters: {
-        type: 'object',
-        properties: {
-          name: { type: 'string', description: 'The bot\'s name as listed in [LYKN BOTS] (e.g. "Scout").' },
-          message: {
-            type: 'string',
-            description:
-              'The complete brief. The bot does not hear this conversation, so include what to do, ' +
-              'where (site or product), and any names or constraints the user gave.',
-          },
-        },
-        required: ['name', 'message'],
-      },
-    },
+    // ── Desktop browser agent (client-side; Electron only) ─────────────────
     {
       name: 'browser_agent',
       client: true,
       description:
         "Hand a task to LYKN's browser agent — a separate agent that opens a real browser tab on " +
         'the desktop and operates websites: navigating, clicking, typing, filling forms. Use when ' +
-        'they ask you to GO DO something on a website without naming a bot: "run a browser agent", ' +
+        'they ask you to GO DO something on a website: "run a browser agent", ' +
         '"go to Perplexity Computer", "open Gmail and reply to Sarah". The task starts immediately. ' +
         "Tell them it is underway in the browser and they can watch or take over. Do not narrate " +
         'steps you did not do. Do not use this for a question you can answer yourself or a web lookup ' +
-        '(use web_search / web_fetch). If they named a LYKN bot, use ask_bot instead.',
+        '(use web_search / web_fetch).',
       parameters: {
         type: 'object',
         properties: {
@@ -799,7 +773,6 @@ export const VOICE_TOOL_ALIAS_CLASS = Object.freeze({
   save_to_vault: { class: 'CANONICAL_ALIAS', canonical: 'lykn_createVaultNote', note: 'Voice-shaped schema over the Chat handler.' },
   save_link_to_vault: { class: 'CANONICAL_ALIAS', canonical: 'lykn_saveLinkToVault', note: 'Voice-shaped schema over the Chat handler.' },
   add_to_project: { class: 'REQUIRED_VOICE_ADAPTER', canonical: null, note: 'Session-attachment clustering into lykn_project_neurons; Chat analog is lykn_uploadToProject.' },
-  ask_bot: { class: 'REQUIRED_VOICE_ADAPTER', canonical: 'local_ask_bot', note: 'Client-only desktop dispatch; Voice does not wait.' },
   browser_agent: { class: 'REQUIRED_VOICE_ADAPTER', canonical: 'local_browser_agent', note: 'Client-only desktop browser handoff.' },
   update_voice_instructions: { class: 'REQUIRED_VOICE_ADAPTER', canonical: null, note: 'Client-only; never hits server dispatch.' },
   ...VOICE_SKILL_ALIAS_CLASS,

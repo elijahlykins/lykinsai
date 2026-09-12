@@ -1,7 +1,8 @@
 /* ── Browser window: Ask LYKN side panel ─────────── */
 // Chrome-colored pane joined to the Studio browser by a hairline. Bound tabs
 // continue the LyknChat that opened them. Unbound tabs stay unattached — they
-// never inherit Home.
+// never inherit Home. Sends run the tab's agent runtime (full browser-agent
+// capability); railAgentChat streams the agent's work into this thread.
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import AttachedChatThread from "@/components/lyknChat/AttachedChatThread";
@@ -13,6 +14,7 @@ import {
   subscribeBrowserChatAttach,
   unbindBrowserTabChat,
 } from "@/lib/lyknChat/browserChatAttach";
+import { installRailAgentStreamBridge } from "@/lib/lyknChat/railAgentChat";
 import { getThreadSnapshot, subscribeThreadRuntime } from "@/lib/chat/chatThreadRuntime";
 import { NO_DRAG } from "@/components/studio/studioAppRegistry";
 import BrowserAskComposer from "./BrowserAskComposer";
@@ -93,6 +95,10 @@ export default function StudioAgentRail({
   const [railStreaming, setRailStreaming] = useState(false);
   const [focusNonce, setFocusNonce] = useState(0);
   const chatWidthRef = useRef(chatWidth);
+
+  useEffect(() => {
+    if (desktop) installRailAgentStreamBridge();
+  }, [desktop]);
 
   useEffect(() => {
     onAttachedBarChange?.(!!open);
@@ -263,12 +269,15 @@ export default function StudioAgentRail({
             resizingChat ? "bg-black/15" : "bg-transparent hover:bg-black/10"
           }`}
         />
+        {/* White body so the rail is continuous with the page beside it; the
+            header band keeps the chrome grey so it stays level with the
+            browser toolbar. */}
         <div
-          className="lykn-browser-rail relative flex h-full flex-none flex-col overflow-hidden border-l border-black/[0.08] bg-[#f3f2f0] text-[#1c1c1c]"
+          className="lykn-browser-rail relative flex h-full flex-none flex-col overflow-hidden border-l border-black/[0.08] bg-white text-[#1c1c1c]"
           style={{ width: chatWidth }}
         >
           <div
-            className="flex flex-shrink-0 flex-col border-b border-black/[0.08]"
+            className="flex flex-shrink-0 flex-col border-b border-black/[0.08] bg-[#f3f2f0]"
             style={{ height: chromeHeight }}
           >
             <div className="flex h-[42px] flex-none items-center gap-2 px-2.5">
@@ -277,7 +286,7 @@ export default function StudioAgentRail({
                   Ask LYKN
                 </p>
                 <p className="mt-0.5 truncate text-[10px] leading-none text-[#6f6f6f]">
-                  {about ? `${about} · Ask only` : "Ask only"}
+                  {about ? `${about} · Agent on this tab` : "Agent on this tab"}
                 </p>
               </div>
               <button
@@ -299,19 +308,19 @@ export default function StudioAgentRail({
                 chatId={railChatId}
                 emptyHint={
                   about
-                    ? `Ask about ${about}. For agentic work, use LYKN Chat on Home or a custom agent.`
-                    : "Ask about this page. For agentic work, use LYKN Chat on Home or a custom agent."
+                    ? `Ask about ${about}, or give LYKN a task — it can search, browse, and act in this tab.`
+                    : "Ask about this page, or give LYKN a task — it can search, browse, and act in this tab."
                 }
               />
             ) : (
               <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-5 text-center">
                 <p className="text-[13px] font-medium tracking-tight text-[#1c1c1c]">
-                  Ask about this page
+                  Ask or act on this page
                 </p>
                 <p className="mt-1.5 max-w-[16rem] text-[12px] leading-relaxed text-[#8a8a8a]">
                   {about
-                    ? `Questions about ${about} stay here. To browse, run bots, or build, use LYKN Chat on Home or a custom agent.`
-                    : "Questions stay here. To browse, run bots, or build, use LYKN Chat on Home or a custom agent."}
+                    ? `LYKN can answer questions about ${about}, search the web, and work in this tab — click, type, navigate.`
+                    : "LYKN can answer questions, search the web, and work in this tab — click, type, navigate."}
                 </p>
               </div>
             )}
@@ -322,7 +331,7 @@ export default function StudioAgentRail({
               chatId={railChatId}
               tabId={activeId || ""}
               placeholder={
-                about ? `Ask about ${about}…` : "Ask about this page…"
+                about ? `Ask or act on ${about}…` : "Ask or give LYKN a task…"
               }
               focusNonce={focusNonce}
               disabled={!activeId}

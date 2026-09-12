@@ -65,18 +65,18 @@ export default function StudioBrowserBody({
   desktop,
   shot,
   docked,
+  // Window is still on the desktop, but another window is in front. Native
+  // views can't sit behind React, so they undock and this still stands in.
+  frozen = false,
   chromeHeight = BROWSER_CHROME_HEIGHT,
   railOpen = false,
   onAttachedBarChange,
 }) {
-  // The picture is strictly for leaving: the native views can't be scaled or
-  // faded, so they step aside and this animates out in their place. It has to
-  // expire with the animation that needed it, though. A window that leaves by
-  // minimizing (or by the dock icon, or a peek) never unmounts, so it comes
-  // back still holding the picture — and showing it then puts a stale, scaled
-  // still of the browser on screen, ahead of the skeleton, ahead of the live
-  // page. Three states deep, and the first two read as a blurry flash. Coming
-  // back is the skeleton and nothing else.
+  // The picture stands in whenever native views can't paint: the window's
+  // open animation, a close/minimize/peek, and the moment another window is
+  // in front (views undock so that window can come forward). Coming back from
+  // minimize still uses the skeleton, not this picture — a stale scaled
+  // still of the browser would flash ahead of the live page.
   const [leaving, setLeaving] = useState(false);
   const wasDocked = useRef(false);
   useEffect(() => {
@@ -85,6 +85,9 @@ export default function StudioBrowserBody({
       setLeaving(false);
       return undefined;
     }
+    // Another window is in front: keep the last picture, and leave the
+    // "was docked" bit so a later minimize or peek can still play the leaving shot.
+    if (frozen) return undefined;
     // Undocked without ever having been docked: this window is opening, not
     // going anywhere.
     if (!wasDocked.current) return undefined;
@@ -92,8 +95,8 @@ export default function StudioBrowserBody({
     setLeaving(true);
     const t = setTimeout(() => setLeaving(false), LEAVE_SHOT_MS);
     return () => clearTimeout(t);
-  }, [docked]);
-  const showShot = leaving && !!(shot && (shot.chrome || shot.page));
+  }, [docked, frozen]);
+  const showShot = (leaving || frozen) && !!(shot && (shot.chrome || shot.page));
   const showSkeleton = desktop && !showShot;
   return (
     // The native views paint above the page and would swallow the pointer, so
@@ -130,6 +133,20 @@ export default function StudioBrowserBody({
             </>
           )}
         </div>
+        {/* Electron clips native views with ONE uniform radius, so their right
+            corners still curve when the rail is open. Back the corner notches
+            with the chrome / page colors so the right edge reads flush against
+            the chat instead of showing curved gaps. */}
+        {railOpen && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 right-0 flex flex-col"
+            style={{ width: BROWSER_VIEW_RADIUS }}
+          >
+            <div className="flex-none bg-[#f3f2f0]" style={{ height: chromeHeight }} />
+            <div className="min-h-0 flex-1 bg-white" />
+          </div>
+        )}
         {showSkeleton && <StudioBrowserSkeleton chromeHeight={chromeHeight} />}
         {/* The browser as it last looked, standing in for the native views
             while the window closes, minimizes or slides out of the way — they

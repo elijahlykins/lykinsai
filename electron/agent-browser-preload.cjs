@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld("lyknBrowserHome", {
     }),
   pickFiles: () => ipcRenderer.invoke("lykn:agent-browser-pick-files"),
   openMicSettings: () => ipcRenderer.send("lykn:onboarding-open-mic-settings"),
+  // Omnibox-style suggestions for the centered search bar. Main verifies the
+  // sender is the bundled home document before returning any history.
+  suggestData: () => ipcRenderer.invoke("lykn:agent-browser-home-suggest-data"),
 });
 contextBridge.exposeInMainWorld("lyknBrowserWelcome", {
   sendToAgent: (text, model, requestId) =>

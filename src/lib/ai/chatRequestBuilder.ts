@@ -16,7 +16,6 @@ import { listAiDrive, type AiDriveListing } from "@/lib/vault/aiDriveContents";
 import { messageWantsDeviceInventory } from "@/lib/ai/deviceInventoryIntent";
 import { listInstalledApps } from "@/lib/apps/installApp";
 import { macAppNames } from "@/lib/macApps";
-import { getBots } from "@/lib/bots/botsClient";
 import type { ChatSendParams } from "@/lib/ai/chatSendOrchestrator";
 import type { FocusedChatAttachment } from "@/lib/lyknChat/chatTurnTypes";
 import { collectThreadFolderAttachments, folderPathFromAttachment } from "@/lib/ai/chatTurnPreparation";
@@ -166,16 +165,6 @@ export async function buildChatRequestBody(args: {
     // Cached bridge read — the server arms local_mcp_* tools when non-empty.
     browserAsk ? Promise.resolve([]) : getDesktopMcpAppsSummary().catch(() => []),
   ]);
-  // Desktop teammates live in the renderer store. Names and roles only -
-  // enough for local_ask_bot to match "ask Cody" to a real bot.
-  const lyknBots = getBots()
-    .slice(0, 40)
-    .map((bot) => ({
-      id: bot.id,
-      name: bot.name,
-      ...(bot.role ? { role: bot.role } : {}),
-    }))
-    .filter((bot) => bot.id && bot.name);
   const requestBody: Record<string, unknown> = {
     model: identity.selectedModel,
     ...(customModelId ? { customModelId } : {}),
@@ -272,7 +261,6 @@ export async function buildChatRequestBody(args: {
       return folders.length ? { attachedFolders: folders } : {};
     })(),
     ...(!browserAsk && installedApps.length ? { installedApps } : {}),
-    ...(!browserAsk && lyknBots.length ? { lyknBots } : {}),
     ...(!browserAsk && macApps.length ? { macApps } : {}),
     ...(!browserAsk && aiDrive.items.length
       ? {

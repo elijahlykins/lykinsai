@@ -36,7 +36,7 @@ function ApprovalIcon({ tool }: { tool: string }) {
   return <Icon className="w-4 h-4 text-blue-600 dark:text-blue-400" />;
 }
 
-/** Shared Approve / Decline card used by LYKN and bot agents. */
+/** Shared Approve / Decline card for local tool runs. */
 export function LocalApprovalPanel({
   tool,
   summary,

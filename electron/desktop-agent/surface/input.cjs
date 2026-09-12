@@ -91,14 +91,14 @@ function loadNative() {
   try {
     // Mirrors the upstream platform dispatch so a Windows build resolves its
     // own binary rather than the darwin one.
-    /* eslint-disable global-require */
+     
     native =
       process.platform === "win32"
         ? require("@nut-tree-fork/libnut-win32")
         : process.platform === "linux"
           ? require("@nut-tree-fork/libnut-linux")
           : require("@nut-tree-fork/libnut-darwin");
-    /* eslint-enable global-require */
+     
     native.setMouseDelay(0);
     native.setKeyboardDelay(0);
   } catch (e) {

@@ -2,10 +2,11 @@ import { useMemo, useState } from 'react';
 import { Search } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { LG_FIELD, LG_SELECT_CONTENT, LG_SELECT_INLINE } from '@/components/settings/glassTokens';
+import { displayModelLabel, modelPickerHint } from '@/lib/models/modelPickerMeta';
 
 function modelLabel(model) {
   if (!model) return '';
-  return model.label || model.id;
+  return displayModelLabel(model);
 }
 
 function containScroll(event) {
@@ -33,7 +34,7 @@ export default function CatalogModelPicker({
     const rows = models.filter((m) => {
       if (provider !== 'all' && m.provider !== provider) return false;
       if (!query) return true;
-      return `${m.label} ${m.id} ${m.provider}`.toLowerCase().includes(query);
+      return `${m.label} ${m.id} ${m.provider} ${modelPickerHint(m)}`.toLowerCase().includes(query);
     });
     rows.sort((a, b) => {
       if (a.recommended !== b.recommended) return a.recommended ? -1 : 1;
@@ -110,7 +111,7 @@ export default function CatalogModelPicker({
                   </span>
                 </span>
                 <span className="shrink-0 pt-0.5 text-[11px] text-black/35 dark:text-white/30">
-                  {active ? 'On' : model.provider}
+                  {active ? 'On' : modelPickerHint(model) || model.provider}
                 </span>
               </button>
             );

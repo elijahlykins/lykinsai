@@ -34,6 +34,29 @@ test("chat lists LYKN first and every curated text model, including cheap ones",
   assert.equal(values.has(STUDIO_MODEL_AUTO), false);
 });
 
+test("picker rows show cost and speed tags, never Free", () => {
+  const opts = optionsForStudioMode("chat", [
+    ...FALLBACK,
+    {
+      id: "meta-llama/llama-3.3-70b-instruct:free",
+      label: "Meta: Llama 3.3 70B Instruct (free)",
+      provider: "meta-llama",
+      pricing: { input: 0, output: 0 },
+      modalities: { output: ["text"] },
+    },
+  ]);
+  const llama = opts.find((o) => o.value.includes("llama-3.3"));
+  assert.ok(llama);
+  assert.equal(llama.label, "Llama 3.3 70B Instruct");
+  assert.match(llama.hint, /Cheap/);
+  assert.doesNotMatch(llama.hint, /free/i);
+  const nano = opts.find((o) => o.value === "gpt-5-nano");
+  assert.match(nano.hint, /Cheap/);
+  assert.match(nano.hint, /Fast/);
+  const astra = opts.find((o) => o.value === "gpt-6-astra");
+  assert.match(astra.hint, /Top tier/);
+});
+
 test("research is text-only Auto, not image generators", () => {
   const opts = optionsForStudioMode("research", FALLBACK);
   assert.equal(opts[0].value, STUDIO_MODEL_AUTO);

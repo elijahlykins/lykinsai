@@ -162,6 +162,11 @@ export function CookiePolicyBody() {
             never see the banner there.
           </Bullet>
           <Bullet>
+            After you accept, a Download click can also send a{" "}
+            <code>file_download</code> event. Installer counts themselves are
+            first-party (our API), not Google.
+          </Bullet>
+          <Bullet>
             Google acts as a sub-processor for this analytics data. See{" "}
             <Link
               to="/privacy#processors"

@@ -96,8 +96,8 @@ export function hideStudioBrowser() {
 
 /**
  * Raise this chat's revealed browser tab, or park the window when the
- * visible preview belongs to a different board. Hidden Bot work stays a
- * peek on that Bot's chat — it does not follow the user.
+ * visible preview belongs to a different board. Hidden agent work stays on
+ * its own board — it does not follow the user.
  */
 export function syncStudioBrowserToChat(chatId?: string | null) {
   if (typeof window === "undefined") return;

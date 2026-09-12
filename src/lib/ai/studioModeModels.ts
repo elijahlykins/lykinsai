@@ -15,6 +15,10 @@ import {
   MODEL_GROUPS,
   MY_SETUP_ID,
 } from "@/lib/modelCatalog";
+import {
+  displayModelLabel,
+  modelPickerHint,
+} from "@/lib/models/modelPickerMeta";
 import { isModelAllowedForPlan } from "@/lib/modelTiers";
 import type { StudioView } from "@/components/lyknChat/StudioChatChrome";
 
@@ -38,6 +42,11 @@ export type CatalogModel = {
     input?: string[];
     output?: string[];
   };
+  pricing?: {
+    input?: number;
+    output?: number;
+    cachedInput?: number;
+  } | null;
 };
 
 export type StudioModelOption = {
@@ -56,17 +65,34 @@ export type StudioModelOption = {
  *  native audio, first-frame image-to-video, and a per-clip cost that fits
  *  the video_gen pricing assumption. Flagship tiers (Kling 3 Pro, Sora 2
  *  Pro) stay explicit picks. */
+function imagineOption(
+  value: string,
+  label: string,
+  group: "Image" | "Video",
+): StudioModelOption {
+  return {
+    value,
+    label,
+    hint: modelPickerHint({
+      id: value,
+      label,
+      modalities: { output: [group.toLowerCase()] },
+    }),
+    group,
+  };
+}
+
 export const IMAGINE_CURATED_MODELS: StudioModelOption[] = [
   { value: STUDIO_MODEL_AUTO, label: "Auto", hint: "GPT Image 2 · Veo 3.1 Fast", group: "" },
-  { value: "gpt-image-2", label: "GPT Image 2", hint: "OpenAI · Image", group: "Image" },
-  { value: "dall-e-3", label: "DALL·E 3", hint: "OpenAI · Image", group: "Image" },
-  { value: "gemini-2.5-flash-image", label: "Gemini 2.5 Flash Image", hint: "Google · Image", group: "Image" },
-  { value: "gemini-3.1-flash-image", label: "Gemini 3.1 Flash Image", hint: "Google · Image", group: "Image" },
-  { value: "google/veo-3.1-fast", label: "Veo 3.1 Fast", hint: "Google · Video", group: "Video" },
-  { value: "google/veo-3.1", label: "Veo 3.1", hint: "Google · Video", group: "Video" },
-  { value: "kwaivgi/kling-v3.0-pro", label: "Kling 3.0 Pro", hint: "Kuaishou · Video", group: "Video" },
-  { value: "bytedance/seedance-2.0", label: "Seedance 2.0", hint: "ByteDance · Video", group: "Video" },
-  { value: "openai/sora-2-pro", label: "Sora 2 Pro", hint: "OpenAI · Video", group: "Video" },
+  imagineOption("gpt-image-2", "GPT Image 2", "Image"),
+  imagineOption("dall-e-3", "DALL·E 3", "Image"),
+  imagineOption("gemini-2.5-flash-image", "Gemini 2.5 Flash Image", "Image"),
+  imagineOption("gemini-3.1-flash-image", "Gemini 3.1 Flash Image", "Image"),
+  imagineOption("google/veo-3.1-fast", "Veo 3.1 Fast", "Video"),
+  imagineOption("google/veo-3.1", "Veo 3.1", "Video"),
+  imagineOption("kwaivgi/kling-v3.0-pro", "Kling 3.0 Pro", "Video"),
+  imagineOption("bytedance/seedance-2.0", "Seedance 2.0", "Video"),
+  imagineOption("openai/sora-2-pro", "Sora 2 Pro", "Video"),
 ];
 
 export const IMAGINE_CURATED_IDS = new Set(
@@ -186,12 +212,11 @@ export function catalogFromPickerGroups(): CatalogModel[] {
 
 function optionFromCatalog(model: CatalogModel): StudioModelOption {
   const provider = providerOf(model);
-  const hint = providerGroupLabel(provider);
   return {
     value: model.id,
-    label: model.label || model.id,
-    hint,
-    group: hint,
+    label: displayModelLabel(model),
+    hint: modelPickerHint(model),
+    group: providerGroupLabel(provider),
   };
 }
 
@@ -218,8 +243,11 @@ export function optionsForStudioMode(
       const kind = imagineKind(model);
       out.push({
         value: model.id,
-        label: model.label || model.id,
-        hint: `${providerGroupLabel(providerOf(model))} · ${kind}`,
+        label: displayModelLabel(model),
+        hint: modelPickerHint({
+          ...model,
+          modalities: { output: [kind.toLowerCase()] },
+        }),
         group: kind,
       });
     }
@@ -229,8 +257,8 @@ export function optionsForStudioMode(
   const out: StudioModelOption[] = [];
   if (mode === "chat") {
     out.push(
-      { value: LYKN_ID, label: "LYKN", hint: "", group: "" },
-      { value: MY_SETUP_ID, label: "My Setup", hint: "Your routing", group: "" },
+      { value: LYKN_ID, label: "LYKN", hint: modelPickerHint({ id: LYKN_ID }), group: "" },
+      { value: MY_SETUP_ID, label: "My Setup", hint: modelPickerHint({ id: MY_SETUP_ID }), group: "" },
     );
   } else {
     out.push({
@@ -272,7 +300,7 @@ export function studioModelLabel(
   const curated = IMAGINE_CURATED_MODELS.find((o) => o.value === id);
   if (curated) return curated.label;
   const hit = catalog.find((m) => m.id === id);
-  if (hit?.label) return hit.label;
+  if (hit?.label) return displayModelLabel(hit);
   for (const group of MODEL_GROUPS) {
     const item = group.items.find((i) => i.value === id);
     if (item) return item.label;

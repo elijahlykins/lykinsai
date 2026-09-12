@@ -15,7 +15,7 @@ export function Toaster() {
     <ToastProvider>
       {toasts
         .filter(({ open }) => open !== false)
-        .map(function ({ id, title, description, action, open, onOpenChange, ...props }) {
+        .map(function ({ id, title, description, action, open: _open, onOpenChange: _onOpenChange, ...props }) {
           return (
             <Toast key={id} {...props}>
               <div className="grid gap-1">

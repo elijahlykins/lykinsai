@@ -22,8 +22,10 @@ import { File as FileIcon } from "lucide-react";
 import SettingsModal from "@/components/notes/SettingsModal";
 import { useAuth } from "@/lib/SupabaseAuth";
 import {
+  fetchLyknChatsPage,
   fetchLyknChatsWithContext,
   invalidateLyknChatListQueries,
+  SIDEBAR_PAGE_SIZE,
 } from "@/lib/lyknChat/fetchLyknChatsWithContext";
 import { createNewChat } from "@/lib/chat/chatThreadsClient";
 import { STUDIO_OPEN_TAB_EVENT } from "@/lib/studioTabs";
@@ -86,6 +88,8 @@ import StudioPop from "@/components/macdesktop/StudioPop";
 import StudioSplit from "@/components/macdesktop/StudioSplit";
 import StudioWindowControls from "@/components/macdesktop/StudioWindowControls";
 import {
+  studioBrowserFront,
+  studioBrowserViewsLive,
   studioFullscreenTrafficVisible,
   studioSurfaceFullscreen,
 } from "@/components/macdesktop/studioWindowChrome";
@@ -93,7 +97,6 @@ import StudioUpdateBanners from "@/components/desktop/StudioUpdateBanners";
 import MacDesktopMirror from "@/components/macdesktop/MacDesktopMirror";
 import WidgetCanvas from "@/components/macdesktop/WidgetCanvas";
 import StudioSurface, { StudioChatPane } from "@/components/studio/StudioSurface";
-import { BOTS_TOGGLE_ACTIVITY, BotsActivityButton } from "@/components/bots/BotsPage";
 import StudioBrowserBody from "@/components/studio/StudioBrowserBody";
 import {
   BROWSER_CHROME_HEIGHT,
@@ -283,7 +286,7 @@ export default function Studio() {
   }, []);
   // Embedded frames mount on first visit and stay warm after that. A widget
   // can deep-link a section (e.g. a specific chat or project) via frameSrc.
-  // Chat stays warm from the first Home paint so a Bot pick / first send
+  // Chat stays warm from the first Home paint so the first send
   // already has a live board. Hidden until homeChat is true.
   const [visited, setVisited] = useState({ chat: true });
   const [frameSrc, setFrameSrc] = useState({});
@@ -358,6 +361,21 @@ export default function Studio() {
     staleTime: 30_000,
     queryFn: () => fetchLyknChatsWithContext(user.id, 30),
   });
+
+  // Dock "Chat history" unmounts when closed, so prefetch the first page
+  // while Studio is open. Opening the popover then reads cache instead of
+  // waiting on a network round-trip.
+  useEffect(() => {
+    if (!user?.id) return undefined;
+    void queryClient.prefetchInfiniteQuery({
+      queryKey: ["sidebar-boards-paged", user.id],
+      queryFn: ({ pageParam }) => fetchLyknChatsPage(user.id, pageParam, SIDEBAR_PAGE_SIZE),
+      initialPageParam: 0,
+      getNextPageParam: (lastPage) => lastPage.nextOffset ?? undefined,
+      staleTime: 30_000,
+    });
+    return undefined;
+  }, [queryClient, user?.id]);
 
   // Chats save inside the embedded chat iframe (a sibling document), so the
   // rail and Recent Chats lists refresh off the cross-document chats-changed
@@ -468,9 +486,12 @@ export default function Studio() {
   // Stable so the window frame's geometry effect doesn't re-fire every render.
   const reportBrowserBounds = useCallback(() => sendBrowserBounds.current?.(), []);
   // Native views paint above the whole renderer, so they may only be on screen
-  // while the window itself is: Home tab, open, not minimized, at rest, and not
-  // swept aside by a desktop peek (a CSS transform can't carry them off with
-  // the frame, so they undock for the duration instead).
+  // while the window itself is: Home tab, open, not minimized, at rest, the
+  // frontmost window, and not swept aside by a desktop peek (a CSS transform
+  // can't carry them off with the frame, so they undock for the duration
+  // instead). A Calendar (or anything else) clicked while the Browser is up
+  // has to actually come forward — leaving the views docked would keep them
+  // painted over that window.
   //
   // At rest has to be something the frame states, not the absence of a report:
   // on the first render after the window opens it hasn't said anything yet, and
@@ -509,14 +530,26 @@ export default function Studio() {
   // A split pane is at rest the moment it mounts. Waiting on the hidden
   // floating frame's settle clock left the native page on the old rect, then
   // undocked it — the glitch instead of a snap.
-  const browserDocked = splitHasBrowser
-    ? tab === "dashboard" && !desktopPeek
-    : tab === "dashboard" &&
-      browserOpen &&
-      !minimized.browser &&
-      browserSettled &&
-      !desktopPeek &&
-      !split;
+  const browserFront = studioBrowserFront({ splitHasBrowser, appWins });
+  const browserDocked = studioBrowserViewsLive({
+    splitHasBrowser,
+    tab,
+    desktopPeek,
+    browserOpen,
+    browserMinimized: !!minimized.browser,
+    browserSettled,
+    split,
+    browserFront,
+  });
+  // Still on screen, but another window is in front: keep the last picture of
+  // the page so the frame doesn't flash to a skeleton while it waits.
+  const browserFrozen =
+    browserOpen &&
+    !browserDocked &&
+    !minimized.browser &&
+    !desktopPeek &&
+    tab === "dashboard" &&
+    !split;
   useEffect(() => {
     // A closed window reports nothing, so its last word was "at rest" — clear
     // it, or the next open would dock before the frame has been placed.
@@ -629,7 +662,7 @@ export default function Studio() {
 
   // Artifact "Open" / a chat link routes the URL into the Studio browser
   // and docks that window. The side chat stays closed until Ask LYKN or
-  // AI Mode - bot work and opened tabs must not pop it open.
+  // AI Mode - agent work and opened tabs must not pop it open.
   useEffect(() => {
     const onShowBrowser = (event) => {
       setTab("dashboard");
@@ -646,7 +679,7 @@ export default function Studio() {
     };
     window.addEventListener("lykn-studio-show-browser", onShowBrowser);
     const onHideBrowser = () => {
-      // Yellow-minimize: park the frame and keep every tab alive so a Bot
+      // Yellow-minimize: park the frame and keep every tab alive so an agent
       // (or a LYKN-opened page) is still there when that chat comes back.
       setMinimized((m) => (m.browser ? m : { ...m, browser: true }));
     };
@@ -1554,15 +1587,6 @@ export default function Studio() {
                   // Browser tab strip and Settings sidebar each draw their
                   // own traffic lights and drag the frame through `controls`.
                   chromeless={!!(app.native || app.chromeless)}
-                  titleTrailing={
-                    id === "bots" ? (
-                      <BotsActivityButton
-                        onClick={() =>
-                          window.dispatchEvent(new Event(BOTS_TOGGLE_ACTIVITY))
-                        }
-                      />
-                    ) : null
-                  }
                   controls={
                     app.native
                       ? browserControls
@@ -1599,6 +1623,7 @@ export default function Studio() {
                       desktop={desktop}
                       shot={browserShot}
                       docked={browserDocked}
+                      frozen={browserFrozen}
                       chromeHeight={browserChromeH}
                       railOpen={railAttachedOpen}
                       onAttachedBarChange={setRailAttachedOpen}
@@ -1649,6 +1674,7 @@ export default function Studio() {
                     desktop={desktop}
                     shot={browserShot}
                     docked={browserDocked}
+                    frozen={browserFrozen}
                     chromeHeight={browserChromeH}
                     railOpen={railAttachedOpen}
                     onAttachedBarChange={setRailAttachedOpen}

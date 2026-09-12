@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { fetchModelCatalog } from '@/lib/models/modelPlatformClient';
+import { displayModelLabel, modelPickerHint } from '@/lib/models/modelPickerMeta';
 
 export default function ModelExplorer({ open, onOpenChange, onPick, modelTier }) {
   const [models, setModels] = useState([]);
@@ -21,7 +22,7 @@ export default function ModelExplorer({ open, onOpenChange, onPick, modelTier })
 
   const filtered = models.filter((m) => {
     if (provider !== 'all' && m.provider !== provider) return false;
-    if (q && !`${m.label} ${m.id}`.toLowerCase().includes(q.toLowerCase())) return false;
+    if (q && !`${displayModelLabel(m)} ${m.id} ${m.provider} ${modelPickerHint(m)}`.toLowerCase().includes(q.toLowerCase())) return false;
     return true;
   });
 
@@ -65,8 +66,8 @@ export default function ModelExplorer({ open, onOpenChange, onPick, modelTier })
                 className="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
               >
                 <span className="min-w-0">
-                  <span className="block truncate text-[13px] text-black dark:text-white">{m.label}</span>
-                  <span className="block truncate text-[11px] text-black/40 dark:text-white/35">{m.id}</span>
+                  <span className="block truncate text-[13px] text-black dark:text-white">{displayModelLabel(m)}</span>
+                  <span className="block truncate text-[11px] text-black/40 dark:text-white/35">{modelPickerHint(m) || m.id}</span>
                 </span>
                 <span className="shrink-0 text-[11px] text-black/35 dark:text-white/30">{m.provider}</span>
               </button>

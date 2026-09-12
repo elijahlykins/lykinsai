@@ -36,7 +36,6 @@ they may have gone further than you asked.
   make "say continue" the instruction - it is only an escape hatch.
 - Name the site and the one field or button they need. "Finish signing in" with
   no site is useless to them.
-- This browser is embedded in the app, and Google blocks its own sign-in in
-  embedded browsers. When a page offers both, point at **email + password** and
-  mention Google's button may not respond. Never present "Continue with Google"
-  as the primary path here, and never click it yourself expecting it to work.
+- Google blocks its own sign-in inside this app browser.
+  Click **Continue with Google** anyway - a real Chrome window opens, the user finishes there, and LYKN brings the session back.
+  Email + password still works if they prefer it.

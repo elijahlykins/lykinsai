@@ -16,9 +16,6 @@
 // order relative to dotenv does not matter.
 
 import { callStructured, resolveAgentStageModel } from '../../lib/agentModelProviders.js';
-import { isSelectableModelId } from '../../lib/models/registry.js';
-import { isModelAllowedForPlan } from '../../src/lib/modelTiers.js';
-import { resolveUserPlan } from '../services/billingService.js';
 import { runHoloGrounding } from '../../lib/holo/grounding.js';
 import { runHoloBrowserStep } from '../../lib/holo/browserAgent.js';
 import { runScreenReader, formatScreenBriefForHolo } from '../../lib/holo/screenReader.js';
@@ -84,6 +81,22 @@ export function registerDesktopRoutes(app, {
     if (Array.isArray(rel)) return rel[0]?.state ?? null;
     if (rel && typeof rel === 'object') return rel.state ?? null;
     return null;
+  }
+
+  function desktopChatHasContentFromRow(row) {
+    const rel = row?.lykn_chat_states;
+    const rec = Array.isArray(rel) ? rel[0] : rel;
+    if (rec && typeof rec === 'object' && typeof rec.has_content === 'boolean') {
+      return rec.has_content;
+    }
+    const state = desktopChatStateFromRow(row);
+    if (state == null) return false;
+    return desktopSnapshotHasContext(state);
+  }
+
+  function missingHasContentColumn(error) {
+    const msg = String(error?.message || '').toLowerCase();
+    return msg.includes('has_content');
   }
 
   function desktopSnapshotHasContext(state) {
@@ -711,24 +724,6 @@ export function registerDesktopRoutes(app, {
   // executor / verifier stages: { stage, system, user, imageUrl?, schema,
   // maxTokens? } -> { ok, json }. Keeps API keys server-side and lets the
   // provider/model change without touching browser control, state, or skills.
-  /**
-   * Validate a client-supplied Bot model id. Returns '' (no override) unless
-   * it is a real, selectable catalog model the user's plan allows.
-   */
-  async function resolveBotStageModel(req, requested) {
-    if (!requested) return '';
-    if (!isSelectableModelId(requested)) return '';
-    try {
-      const plan = await resolveUserPlan(req.user?.id, req.user?.email);
-      if (!isModelAllowedForPlan(requested, plan?.modelTier)) return '';
-    } catch {
-      // Plan lookup failed — fall back to the stage default rather than
-      // handing out a premium model on an unverified plan.
-      return '';
-    }
-    return requested;
-  }
-
   app.post('/api/desktop/agent-model', requireAuth, requireAppAccess, requireMetered, aiLimiter, async (req, res) => {
     try {
       const stage = String(req.body?.stage || 'decide').slice(0, 24);
@@ -741,16 +736,8 @@ export function registerDesktopRoutes(app, {
       const arm = String(req.body?.arm || '').slice(0, 40);
       if (!user || !schema) return res.status(400).json({ error: 'Missing user content or schema' });
 
-      // A Bot pinned to a specific model (Bots → model picker) runs its own
-      // reasoning on that model. The id arrives from the client, so it is
-      // validated exactly like the chat picker's: it must be a selectable
-      // catalog model AND allowed on this user's plan. Anything else is
-      // dropped silently and the stage default stands — a client can never
-      // name an arbitrary model here, which is the cost hole the `arm`
-      // mechanism exists to avoid.
-      const botModelId = await resolveBotStageModel(req, String(req.body?.botModelId || '').trim());
       const { model, effort, armError } = resolveAgentStageModel({
-        stage, arm, userId: req.user?.id, botModelId,
+        stage, arm, userId: req.user?.id,
       });
       if (armError) return res.status(403).json({ ok: false, error: armError });
 
@@ -1470,26 +1457,29 @@ export function registerDesktopRoutes(app, {
       if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
 
       const limit = Math.min(Math.max(parseInt(String(req.query.limit || '40'), 10) || 40, 1), 80);
-      const { data, error } = await userOwnedTable(supabaseAdmin, 'lykn_chats', userId)
-        .select('id, title, updated_at, created_at, lykn_chat_states(state)')
-        .order('updated_at', { ascending: false })
-        .limit(limit * 2);
+      const listQuery = (select) =>
+        userOwnedTable(supabaseAdmin, 'lykn_chats', userId)
+          .select(select)
+          .order('updated_at', { ascending: false })
+          .limit(limit * 2);
 
-      if (error) {
-        console.error('❌ /api/desktop/chats:', error.message);
+      let listed = await listQuery('id, title, updated_at, created_at, lykn_chat_states(has_content)');
+      let usedHasContent = !listed.error;
+      if (listed.error && missingHasContentColumn(listed.error)) {
+        listed = await listQuery('id, title, updated_at, created_at');
+        usedHasContent = false;
+      }
+      if (listed.error) {
+        console.error('❌ /api/desktop/chats:', listed.error.message);
         return res.status(500).json({ error: 'Failed to load chats' });
       }
 
       const rows = [];
-      for (const row of data || []) {
-        const state = desktopChatStateFromRow(row);
+      for (const row of listed.data || []) {
         const customTitle = String(row.title || '').trim();
         const hasCustomTitle = customTitle && !DEFAULT_CHAT_TITLES.has(customTitle);
-        if (state == null) {
-          if (!hasCustomTitle) continue;
-        } else if (!hasCustomTitle && !desktopSnapshotHasContext(state)) {
-          continue;
-        }
+        if (!hasCustomTitle && usedHasContent && !desktopChatHasContentFromRow(row)) continue;
+        const state = desktopChatStateFromRow(row);
         rows.push({
           id: row.id,
           title: desktopChatTitle(row, state),

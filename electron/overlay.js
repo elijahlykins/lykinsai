@@ -22,6 +22,7 @@ import { attachPlaceholderRotation } from "./overlay-ui/placeholderRotation.js";
 import { attachPromptQueue } from "./overlay-ui/promptQueue.js";
 import { createThinkingTimeline, thinkingMarkup } from "./overlay-ui/thinkingTimeline.js";
 import { pauseOverlayTurn } from "./overlay-ui/workPause.js";
+import { attachOverlayDrag, OVERLAY_DRAG_IGNORE } from "./overlay-ui/overlayDrag.js";
 import { isEngineeringPath, summarizeEngineeringFile } from "../lib/engineering/readEngineeringFile.js";
 
 // Glass-bar overlay renderer. The user types a question; the main process
@@ -869,7 +870,7 @@ const COMPOSER_MODES = {
   // "image" mode retired — image generation lives in Studio Imagine only.
   // setComposerMode("image") from any stale path coerces to "chat".
   build: {
-    placeholder: "Describe what to build, then Send…",
+    placeholder: "What should LYKN build?",
     title: "Build mode, click to exit",
   },
   agent: {
@@ -877,7 +878,7 @@ const COMPOSER_MODES = {
     title: "Agent mode, click to exit",
   },
   research: {
-    placeholder: "Deep research a topic, multi-source analysis…",
+    placeholder: "What should LYKN research?",
     title: "Deep research, click to exit",
   },
   translate: {
@@ -2337,24 +2338,32 @@ threadEl.addEventListener("click", (e) => {
     const url = dlBtn.getAttribute("data-url") || "";
     const name = dlBtn.getAttribute("data-name") || "";
     const title = dlBtn.getAttribute("data-title") || "";
-    const origLabel = dlBtn.textContent;
+    const origLabel = dlBtn.getAttribute("data-label") || dlBtn.textContent;
+    dlBtn.setAttribute("data-label", origLabel);
     dlBtn.disabled = true;
+    dlBtn.classList.remove("saved");
     dlBtn.textContent = "Saving…";
     void (async () => {
       let ok = false;
-      let vaulted = false;
       try {
         const res = await window.lyknOverlay.downloadFile(url, name, title);
         ok = !!(res && res.ok);
-        vaulted = !!(res && res.savedToVault);
       } catch (_) {
         ok = false;
       }
-      dlBtn.textContent = ok ? (vaulted ? "Saved + Vault ✓" : "Saved ✓") : "Failed";
-      setTimeout(() => {
-        dlBtn.textContent = origLabel;
+      if (ok) {
+        dlBtn.classList.add("saved");
+        dlBtn.textContent = "✓";
+        dlBtn.setAttribute("aria-label", "Downloaded");
+        dlBtn.title = "Downloaded";
         dlBtn.disabled = false;
-      }, 2200);
+      } else {
+        dlBtn.textContent = "Failed";
+        setTimeout(() => {
+          dlBtn.textContent = origLabel;
+          dlBtn.disabled = false;
+        }, 1800);
+      }
     })();
     return;
   }
@@ -2752,6 +2761,7 @@ window.lyknOverlay.onShown(() => {
     reportHeight();
   }, 220);
   void refreshNightBriefBanner();
+  void window.lyknOverlay.listChats().catch(() => {});
 });
 
 // Clicking back into the bar after Cursor/another app often leaves the macOS
@@ -2791,118 +2801,13 @@ window.addEventListener("focus", () => {
   }
 });
 
-// Drag the panel via the titlebar handle (or the collapsed bubble). Electron
-// panel windows sometimes drop pointerup while setBounds is racing the cursor
-// — without a buttons check / lostpointercapture handler the bar stays glued
-// to the mouse and every move floods IPC (which stalls the cursor badly).
-// True while any overlay drag handle is mid-gesture (Esc cancels drag first).
-let overlayDragActive = false;
-const overlayDragEnders = new Set();
-
-function bindOverlayDrag(el, { ignoreTarget, onClick, dragClass } = {}) {
-  if (!el) return;
-  let dragging = false;
-  let moved = false;
-  let pointerId = null;
-  let lastX = 0;
-  let lastY = 0;
-  let pendingDx = 0;
-  let pendingDy = 0;
-  let raf = 0;
-
-  const flush = () => {
-    raf = 0;
-    if (!pendingDx && !pendingDy) return;
-    const dx = pendingDx;
-    const dy = pendingDy;
-    pendingDx = 0;
-    pendingDy = 0;
-    window.lyknOverlay.moveBy(dx, dy);
-  };
-
-  const end = (e) => {
-    if (!dragging) return;
-    dragging = false;
-    overlayDragActive = false;
-    const id = e && e.pointerId != null ? e.pointerId : pointerId;
-    pointerId = null;
-    if (dragClass) el.classList.remove(dragClass);
-    if (raf) {
-      cancelAnimationFrame(raf);
-      raf = 0;
-    }
-    if (pendingDx || pendingDy) flush();
-    try {
-      if (id != null) el.releasePointerCapture(id);
-    } catch (_) {
-      /* already released */
-    }
-    try {
-      window.lyknOverlay.moveEnd();
-    } catch (_) {
-      /* older preload */
-    }
-    if (onClick && !moved) onClick();
-    moved = false;
-  };
-
-  overlayDragEnders.add(end);
-
-  el.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return;
-    if (ignoreTarget && ignoreTarget(e.target)) return;
-    dragging = true;
-    overlayDragActive = true;
-    moved = false;
-    pointerId = e.pointerId;
-    lastX = e.screenX;
-    lastY = e.screenY;
-    pendingDx = 0;
-    pendingDy = 0;
-    if (dragClass) el.classList.add(dragClass);
-    try {
-      el.setPointerCapture(e.pointerId);
-    } catch (_) {
-      /* capture optional */
-    }
-    e.preventDefault();
-  });
-
-  el.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
-    // Primary button no longer down — pointerup was lost (common on macOS
-    // panel windows while the HWND is being moved under the cursor).
-    if ((e.buttons & 1) === 0) {
-      end(e);
-      return;
-    }
-    const dx = e.screenX - lastX;
-    const dy = e.screenY - lastY;
-    if (!dx && !dy) return;
-    // Ignore tiny jitter so a click doesn't start a "drag".
-    if (!moved && Math.abs(dx) + Math.abs(dy) < 3) return;
-    moved = true;
-    lastX = e.screenX;
-    lastY = e.screenY;
-    pendingDx += dx;
-    pendingDy += dy;
-    if (!raf) raf = requestAnimationFrame(flush);
-  });
-
-  el.addEventListener("pointerup", end);
-  el.addEventListener("pointercancel", end);
-  el.addEventListener("lostpointercapture", end);
-  window.addEventListener("blur", () => end());
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) end();
-  });
-}
-
-const dragEl = document.getElementById("drag");
-bindOverlayDrag(dragEl, {
+// Drag the glass card (or the collapsed bubble). Main follows the OS cursor
+// for the gesture; Esc cancels an in-flight drag.
+const overlayDrag = attachOverlayDrag();
+const wrapElForDrag = document.getElementById("wrap");
+overlayDrag.bind(wrapElForDrag, {
   dragClass: "dragging",
-  ignoreTarget: (t) =>
-    !!(t && t.closest && t.closest(".bar-btn, .side-picker-btn, .mode-badge")),
+  ignoreTarget: (t) => !!(t && t.closest && t.closest(OVERLAY_DRAG_IGNORE)),
 });
 
 // ── Collapse to a single LYKN icon bubble ──────────────────────────────────
@@ -2929,7 +2834,7 @@ function expandOverlay() {
 dotEl.addEventListener("click", collapseOverlay);
 
 // Bubble: drag to reposition, or click (no drag) to expand.
-bindOverlayDrag(bubbleEl, { onClick: expandOverlay });
+overlayDrag.bind(bubbleEl, { onClick: expandOverlay });
 
 // ── Dictation ────────────────────────────────────────────────────────────
 // Record mic audio with MediaRecorder, then hand the bytes to the main process
@@ -3393,10 +3298,15 @@ function historyItemButton(item, active) {
 async function refreshHistoryList() {
   historyListEl.innerHTML = '<div class="history-empty">Loading…</div>';
   try {
-    const data = await window.lyknOverlay.listChats();
-    renderHistoryList(data);
+    const local = await window.lyknOverlay.listChats({ overlayOnly: true });
+    if ((local && local.overlay && local.overlay.length) || (local && local.app && local.app.length)) {
+      renderHistoryList(local);
+    }
+    renderHistoryList(await window.lyknOverlay.listChats());
   } catch (_) {
-    historyListEl.innerHTML = '<div class="history-empty">Could not load chats.</div>';
+    if (!historyListEl.querySelector(".history-item")) {
+      historyListEl.innerHTML = '<div class="history-empty">Could not load chats.</div>';
+    }
   }
 }
 
@@ -3841,17 +3751,13 @@ function handleOverlayEscape(e) {
     return true;
   }
 
-  if (overlayDragActive) {
+  if (overlayDrag.active) {
     escapeHandledAt = now;
     if (e) {
       e.preventDefault();
       e.stopPropagation();
     }
-    for (const end of overlayDragEnders) {
-      try {
-        end();
-      } catch (_) {}
-    }
+    overlayDrag.cancel();
     return true;
   }
 

@@ -76,7 +76,7 @@ test("compiler emits the canonical LocalExecutor capability grammar", async () =
   assert.deepEqual(workflow.capabilities, ["files.read", "local.apps.interact"]);
 });
 
-test("workflow MCP connections are intersected with the Bot allowlist", async () => {
+test("workflow MCP connections resolve from the recorded definition", async () => {
   const workflow = await compileWorkflow({
     ...OWNER,
     name: "Scoped connection",
@@ -86,19 +86,7 @@ test("workflow MCP connections are intersected with the Bot allowlist", async ()
       target: { connectionId: "work_gmail", toolName: "messages.list" },
     }],
   });
-  assert.deepEqual(resolveMcpConnectionIds(workflow, {}), {
-    connectionIds: ["work_gmail"],
-    unavailable: [],
-  });
-  assert.deepEqual(resolveMcpConnectionIds(workflow, { connectionIds: [] }), {
-    connectionIds: [],
-    unavailable: ["work_gmail"],
-  });
-  assert.deepEqual(resolveMcpConnectionIds(workflow, { connectionIds: ["personal_gmail"] }), {
-    connectionIds: [],
-    unavailable: ["work_gmail"],
-  });
-  assert.deepEqual(resolveMcpConnectionIds(workflow, { connectionIds: ["work_gmail"] }), {
+  assert.deepEqual(resolveMcpConnectionIds(workflow), {
     connectionIds: ["work_gmail"],
     unavailable: [],
   });

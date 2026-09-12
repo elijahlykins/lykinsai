@@ -4415,9 +4415,8 @@ function describeSignInUserAction({ url = "", pageText = "", title = "", host = 
 }
 
 /**
- * Google refuses its OAuth flow in embedded/desktop-shell browsers on more
- * than the UA string, so "Continue with Google" can silently no-op even with
- * popups allowed. When a sign-in page offers it, point at the path that works.
+ * Google refuses its OAuth flow in Electron, so "Continue with Google" is
+ * completed in real Chrome and the session is copied back. Tell the user that.
  */
 function signInPageThirdPartyNote({ pageText = "", title = "", url = "" } = {}) {
   const t = `${title}\n${pageText}`.toLowerCase();
@@ -4427,8 +4426,7 @@ function signInPageThirdPartyNote({ pageText = "", title = "", url = "" } = {}) 
     )
   ) {
     return (
-      `_Google refused this sign-in because it happened inside an app browser. ` +
-      `Go back and sign in with **email + password** instead — that path works here._`
+      `_Google is finishing this sign-in in Chrome. Sign in there - LYKN brings you back._`
     );
   }
   const offersGoogle =
@@ -4438,13 +4436,12 @@ function signInPageThirdPartyNote({ pageText = "", title = "", url = "" } = {}) 
   if (!offersGoogle) return "";
   if (/\b(password|email|username)\b/.test(t)) {
     return (
-      `_If **Continue with Google** doesn't respond, use your email + password here — ` +
-      `Google restricts its sign-in button inside app-embedded browsers._`
+      `_Google sign-in opens in Chrome (Google does not allow it inside an app browser). ` +
+      `Sign in there and this tab continues. Email + password also works._`
     );
   }
   return (
-    `_Google restricts its sign-in button inside app-embedded browsers. If it ` +
-    `won't open, use the email/password option instead._`
+    `_Google sign-in opens in Chrome. Finish there and this tab continues._`
   );
 }
 

@@ -38,7 +38,7 @@ import {
 
 const require = createRequire(import.meta.url);
 const { compileRoutineTask } = require('../../electron/task-runtime/taskCompiler.cjs');
-const { createRoutineStore } = require('../../electron/bot-routines/routineStore.cjs');
+const { createRoutineStore } = require('../../electron/routines/routineStore.cjs');
 const { McpExecutor } = require('../../electron/task-runtime/executors/mcpExecutor.cjs');
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');

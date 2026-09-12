@@ -12,9 +12,7 @@ import {
   Plug,
   Search,
 } from "lucide-react";
-import BotAvatar from "@/components/bots/BotAvatar";
 import { classifyStatusLine, isTrailWorthyStatus, useThinkingStatus, useThinkingTrail } from "@/hooks/useThinkingStatus";
-import { botSeed } from "@/lib/bots/botStore";
 import {
   collapseThinkingSteps,
   thinkingHeaderLabel,
@@ -22,19 +20,9 @@ import {
 } from "@/lib/lyknChat/thinkingActivity";
 import LyknOutlineSpinner from "./LyknOutlineSpinner";
 
-export type ThinkingBotFace = {
-  id?: string;
-  face: string;
-  eyes: string;
-  color: string;
-  seed?: number;
-};
-
 interface ThinkingIndicatorProps {
   /** Live status. Generic "Thinking…" / "Building…" rotate; specific lines show as-is. */
   status: string;
-  /** When set, the live mark is this Bot doing its move — not the LYKN outline. */
-  bot?: ThinkingBotFace | null;
   /** Compact variant for tight surfaces like the canvas side rail. */
   compact?: boolean;
   /**
@@ -96,13 +84,11 @@ function useElapsedSeconds(running: boolean) {
 }
 
 /**
- * LYKN (or a Bot) thinks at the top. Real work appears underneath as a
- * connected activity log — same language in chat, Build, Imagine, Research,
- * and Bot turns.
+ * LYKN thinks at the top. Real work appears underneath as a connected
+ * activity log — same language in chat, Build, Imagine, and Research.
  */
 export default function ThinkingIndicator({
   status,
-  bot = null,
   compact = false,
   tone = "brand",
   paused = false,
@@ -143,18 +129,7 @@ export default function ThinkingIndicator({
     >
       <div className="lykn-thinking__row lykn-thinking__head">
         <span className="lykn-thinking__mark">
-          {bot ? (
-            <BotAvatar
-              face={bot.face}
-              eyes={bot.eyes}
-              color={bot.color}
-              size={mark}
-              mood={paused ? "waiting" : "working"}
-              seed={Number.isFinite(bot.seed) ? Number(bot.seed) : botSeed(bot.id)}
-            />
-          ) : (
-            <LyknOutlineSpinner size={mark} paused={paused} />
-          )}
+          <LyknOutlineSpinner size={mark} paused={paused} />
         </span>
         <span
           className={`lykn-thinking__label lykn-thinking__label--head ${

@@ -11,11 +11,14 @@ Task lifecycle
 Task compilation
 → TaskCompiler
 
-Bot execution
-→ BotExecutor
+Agent execution (headless agent-harness tasks: routines, workflows, background work)
+→ AgentExecutor
 
 Browser execution
 → BrowserExecutor
+
+In-app Google sign-in (system Chrome/Edge handoff, cookies returned to the agent browser)
+→ `electron/agent-browser/googleAuthHandoff.cjs`
 
 Local execution
 → LocalExecutor
@@ -36,6 +39,9 @@ Desktop MCP catalog (vetted name→command map, installed-app detection, registr
 
 Desktop control (screen capture, native mouse/keyboard, window geometry)
 → `electron/desktop-agent` (`surface/*` primitives, `desktopControl.cjs` look/act tools)
+
+Current macOS wallpaper still (built-in Apple wallpapers → image file for the Studio backdrop)
+→ `electron/wallpaper/macosWallpaper.cjs`
 
 Agent stall policy (abandonment classifiers + continuation-nudge prompts for workspace and desktop-MCP turns)
 → `lib/agentStallPolicy.js` (consulted by `chat-agent-loop.js` after each hop)
@@ -148,6 +154,9 @@ Vault.jsx
 
 Public marketing site
 → standalone `LYKN Landing` repo (see LANDING_SEPARATION.md). This app still serves a temporary copy.
+
+Public waitlists and desktop download capture
+→ `server/routes/waitlist.routes.js`
 
 ## Invariant
 

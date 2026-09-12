@@ -240,9 +240,15 @@ document.getElementById("past-chats").addEventListener("click", async () => {
   setHistoryView(true);
   historyListEl.innerHTML = '<div class="history-empty">Loading…</div>';
   try {
+    const local = await window.lyknMenu.listChats({ overlayOnly: true });
+    if ((local && local.overlay && local.overlay.length) || (local && local.app && local.app.length)) {
+      renderHistoryList(local);
+    }
     renderHistoryList(await window.lyknMenu.listChats());
   } catch (_) {
-    historyListEl.innerHTML = '<div class="history-empty">Could not load chats.</div>';
+    if (!historyListEl.querySelector(".history-item")) {
+      historyListEl.innerHTML = '<div class="history-empty">Could not load chats.</div>';
+    }
   }
 });
 

@@ -19,6 +19,11 @@ import {
 } from "./streamTypewriter";
 import { fetchYouTubeTranscriptWithWhisperRetry } from "./chatTranscription";
 import { editTargetFromArtifact } from "./chatArtifacts";
+import {
+  streamInactivityMs,
+  STREAM_INACTIVITY_SHORT_MS,
+  STREAM_INACTIVITY_LONG_MS,
+} from "./streamInactivity";
 import type { FocusedChatAttachment } from "@/lib/lyknChat/chatTurnTypes";
 import type { ChatAttachmentLike } from "@/lib/chat/chatAttachmentFile";
 
@@ -56,6 +61,10 @@ describe("send pipeline stage modules", () => {
     assert.doesNotMatch(launch, /getActiveThreadChatId/);
     const executor = src("src/lib/ai/localToolExecutor.ts");
     assert.match(executor, /runLocalToolNow\(tc\.name,[\s\S]*host\)/);
+    // Mid-stream local-tool-result must ride installAuthFetch's refresh, not a
+    // stale getSession() JWT — that was "chat works, Build says That didn't work."
+    assert.doesNotMatch(executor, /Authorization.*Bearer/);
+    assert.match(executor, /Do NOT attach Authorization/);
   });
 
   it("documents the load-bearing stage order in the facade header", () => {
@@ -149,7 +158,6 @@ describe("stream typewriter catch-up", () => {
     assert.match(src("src/lib/ai/chatStreamRunner.ts"), /streamTypewriterStep\(behind\)/);
     assert.match(src("src/lib/ai/chatStreamRunner.ts"), /export function typeStreamReply/);
     assert.match(src("src/hooks/useChatEngine.ts"), /typeStreamReply\(/);
-    assert.match(src("src/hooks/useBotChatBridge.ts"), /createStreamTypewriter/);
   });
 
   it("holds stream painting until the turn is finished", () => {
@@ -157,6 +165,18 @@ describe("stream typewriter catch-up", () => {
     assert.match(runner, /Buffer the live target only/);
     assert.match(src("src/lib/ai/chatSendOrchestrator.ts"), /paint:\s*false/);
     assert.match(src("electron/overlay.js"), /Hold the typewriter until onDone/);
+  });
+
+  it("gives Build and in-flight local tools the long inactivity window", () => {
+    assert.equal(streamInactivityMs({ composerMode: "none" }), STREAM_INACTIVITY_SHORT_MS);
+    assert.equal(streamInactivityMs({ composerMode: "create:webapp" }), STREAM_INACTIVITY_LONG_MS);
+    assert.equal(streamInactivityMs({ composerMode: "none", buildWorkspace: true }), STREAM_INACTIVITY_LONG_MS);
+    assert.equal(
+      streamInactivityMs({ composerMode: "none" }, { localToolInFlight: true }),
+      STREAM_INACTIVITY_LONG_MS,
+    );
+    assert.match(src("src/lib/ai/chatStreamRunner.ts"), /localToolInFlight: true/);
+    assert.match(src("src/lib/ai/chatStreamRunner.ts"), /from "@\/lib\/ai\/streamInactivity"/);
   });
 
   it("types toward the target instead of painting it all at once", () => {

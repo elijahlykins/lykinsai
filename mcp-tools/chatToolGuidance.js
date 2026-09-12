@@ -149,12 +149,6 @@ const FAMILY_GUIDANCE = {
   'browser.agent': [
     'BROWSER AGENT — use the listed browser-agent tool for on-screen browsing tasks.',
   ].join('\n'),
-  'bots.ask': [
-    'LYKN BOTS — when they name a bot or ask you to consult a teammate, call local_ask_bot,',
-    'wait for the reply, and report it back. Their work appears in this chat. Never tell',
-    'them to open the bot\'s chat or paste the question themselves. These are desktop',
-    'teammates, not custom models.',
-  ].join('\n'),
 };
 
 const GENERIC_VOICE_TOOL_GUIDANCE = [
@@ -188,8 +182,6 @@ const VOICE_FAMILY_GUIDANCE = {
     'update_voice_instructions for lasting tone/behavior changes. Confirm briefly; do not read the text aloud.',
   'browser.agent':
     'browser_agent starts a desktop browser tab immediately. Tell them it is underway and they can watch or take over. Do not narrate steps you did not do.',
-  'bots.ask':
-    'ask_bot sends a named LYKN bot the work and returns at once. Their work streams into this chat. Use it to send a teammate to the browser or any other job. Never say you cannot run bots.',
   'documents.write':
     'write_document saves a finished letter, memo, or simple document and opens it on screen. Not for apps or research reports.',
   'media.image':

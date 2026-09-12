@@ -1,8 +1,12 @@
 # LYKN Model Platform
 
-Unified model routing, OpenRouter gateway, bot model policy, and unified usage billing.
+Unified model routing, OpenRouter gateway, and unified usage billing.
 This document is the Phase 0 audit, the target architecture, and the migration record.
 Keep it current as phases land.
+
+> Note (2026-09): the Bots product was removed.
+> Its agentic capability lives in LYKN chat and Automations (routines / learned workflows), executed by the agent harness.
+> References to "bots" and per-bot model policy below are historical; per-bot model pinning no longer exists.
 
 ## Part 1 - Audit of the existing architecture
 

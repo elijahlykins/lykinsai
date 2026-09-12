@@ -14,7 +14,7 @@ function collectMainProcessSource() {
       if (ent.name.startsWith(".")) continue;
       const full = path.join(dir, ent.name);
       if (ent.isDirectory()) {
-        if (["browser-agent", "bot-harness", "eval", "appRuntime", "vendor", "resources", "localStore"].includes(ent.name)) {
+        if (["browser-agent", "agent-harness", "eval", "appRuntime", "vendor", "resources", "localStore"].includes(ent.name)) {
           continue;
         }
         walk(full);
@@ -160,6 +160,6 @@ test("runtime identity prompts live in prompt corpora, never as AGENTS.md", () =
   // each runtime keeps its identity inside its own prompt corpus.
   assert.equal(fs.existsSync(path.join(ELECTRON_ROOT, "browser-agent/agent/identity.md")), true);
   assert.equal(fs.existsSync(path.join(ELECTRON_ROOT, "browser-agent/AGENTS.md")), false);
-  assert.equal(fs.existsSync(path.join(ELECTRON_ROOT, "bot-harness/prompts/identity.md")), true);
-  assert.equal(fs.existsSync(path.join(ELECTRON_ROOT, "bot-harness/AGENTS.md")), false);
+  assert.equal(fs.existsSync(path.join(ELECTRON_ROOT, "agent-harness/prompts/identity.md")), true);
+  assert.equal(fs.existsSync(path.join(ELECTRON_ROOT, "agent-harness/AGENTS.md")), false);
 });

@@ -20,7 +20,6 @@ class TeachSession {
     const startedAt = this.now();
     this.current = {
       id: this.idFactory(),
-      botId: String(input.botId || "").trim().slice(0, 120),
       name: String(input.name || "").trim().slice(0, 120),
       objective: String(input.objective || input.objectiveHint || "").trim().slice(0, 1000),
       sourceTaskId: String(input.sourceTaskId || "").trim().slice(0, 120),
@@ -53,7 +52,6 @@ class TeachSession {
     if (!this.active) throw new Error("no_active_teach_session");
     const result = {
       id: this.current.id,
-      botId: this.current.botId,
       name: this.current.name,
       objective: this.current.objective,
       sourceTaskId: this.current.sourceTaskId,

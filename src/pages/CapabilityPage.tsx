@@ -169,11 +169,11 @@ const CAPS: Record<CapId, CapContent> = {
   },
   agents: {
     name: "Agents",
-    headline: "AI teammates,\nalways on the job.",
+    headline: "AI that works,\nwhile you don't.",
     lede:
-      "Agents are standing teammates, not one-off chats. Give one a name, a role, and a job, then message it like a coworker. It can research, browse, use your connected apps, and keep working from the desktop while you do something else.",
+      "LYKN is an agent, not just a chat. Hand it a job and it researches, browses real pages, and uses your connected apps — then keeps working from the desktop while you do something else.",
     body:
-      "Each agent lives in the dock with its own character, memory, and skills. Check in, hand it the next job, or pick up where it left off. You stay in charge of anything that sends, deletes, or shares.",
+      "Put work on a schedule with routines, or teach LYKN a task once by demonstration and replay it as a workflow. You stay in charge of anything that sends, deletes, or shares.",
     demo: CapAgentsDemo,
   },
   sync: {

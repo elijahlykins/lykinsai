@@ -32,7 +32,7 @@ Provider adapters only serialize.
 They do not choose tools.
 There is no extra LLM routing call.
 
-Bot Harness remains a separate tool surface.
+The Agent Harness remains a separate tool surface.
 Browser / Local / Remote action schemas are not forced into this registry.
 
 ## Capability families
@@ -57,7 +57,6 @@ Grammar is small and shared by Chat and Voice:
 - `self.write`
 - `local.files.read` / `local.files.write` / `local.apps` / `local.shell` / `local.desktop`
 - `browser.agent`
-- `bots.ask`
 - `connections.external` (MCP need; zero first-party Chat tools)
 
 There is no always-visible core.
@@ -84,7 +83,7 @@ Voice-only adapters (kept):
 
 - `add_to_project` — session-attachment clustering
 - `update_voice_instructions` — client-only
-- `ask_bot` / `browser_agent` — client-only desktop dispatch (`local_ask_bot` / `local_browser_agent`)
+- `browser_agent` — client-only desktop dispatch (`local_browser_agent`)
 - `create_project` / `get_project_state` — confirm-first / no-arg Voice contracts
 
 OpenAI Realtime mints a session with **zero** tools (`create_response: false`).

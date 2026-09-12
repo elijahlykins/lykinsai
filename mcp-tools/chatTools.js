@@ -562,12 +562,6 @@ export function buildChatToolCtx(req, extras = {}) {
      */
     installedApps: sanitizeInstalledApps(req.body?.installedApps),
     /**
-     * Desktop teammates (LYKN bots), as { id, name, role }. They live in the
-     * renderer store, so the server only knows they exist because the desktop
-     * client sends them. local_ask_bot matches a spoken name against this.
-     */
-    lyknBots: sanitizeLyknBots(req.body?.lyknBots),
-    /**
      * The applications on the user's Mac, by name. lykn_open_app checks this to
      * tell an app they HAVE (open the real thing) from one they don't (the web
      * is the right answer) — which differs per machine, so it can't be a fixed
@@ -641,24 +635,6 @@ function sanitizeMacApps(raw) {
   for (const app of raw.slice(0, 200)) {
     const name = String(typeof app === 'string' ? app : app?.name || '').trim().slice(0, 80);
     if (name) out.push(name);
-  }
-  return out;
-}
-
-/** Desktop bot roster: id + name required, role optional. */
-export function sanitizeLyknBots(raw) {
-  if (!Array.isArray(raw)) return [];
-  const out = [];
-  for (const bot of raw.slice(0, 40)) {
-    if (!bot || typeof bot !== 'object') continue;
-    const id = typeof bot.id === 'string' ? bot.id.trim().slice(0, 80) : '';
-    const name = typeof bot.name === 'string' ? bot.name.trim().slice(0, 60) : '';
-    if (!id || !name) continue;
-    out.push({
-      id,
-      name,
-      role: typeof bot.role === 'string' ? bot.role.trim().slice(0, 80) : '',
-    });
   }
   return out;
 }

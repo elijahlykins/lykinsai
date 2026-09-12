@@ -18,14 +18,13 @@ test("TeachSession has explicit lifecycle, one active session, bounded temporary
     now: () => `2026-01-01T00:00:0${tick++}.000Z`,
   });
   assert.equal(session.record({ kind: "task", action: "start" }).accepted, false);
-  assert.equal(session.start({ botId: "bot_1", name: "Demo" }).status, "active");
+  assert.equal(session.start({ name: "Demo" }).status, "active");
   assert.throws(() => session.start(), /already_active/);
   session.record({ kind: "task", action: "one" });
   session.record({ kind: "task", action: "two" });
   session.record({ kind: "task", action: "three" });
   assert.deepEqual(session.snapshot(), {
     id: "teach_fixed",
-    botId: "bot_1",
     name: "Demo",
     objective: "",
     sourceTaskId: "",

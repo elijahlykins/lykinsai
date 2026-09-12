@@ -8,7 +8,7 @@ const path = require("node:path");
 
 const { TaskRuntime } = require("./taskRuntime.cjs");
 const { TASK_STATUSES } = require("./task.cjs");
-const { BotExecutor } = require("./executors/botExecutor.cjs");
+const { AgentExecutor } = require("./executors/agentExecutor.cjs");
 const { LocalExecutor, toHarnessResult, LOCAL_SAFETY_CEILING } = require("./executors/localExecutor.cjs");
 const {
   allowedToolNames,
@@ -99,12 +99,11 @@ test("normal Agent local work keeps the same Task identity through completion", 
   assert.equal(out.task.completion.output, "Report covers Q3 pipeline.");
 });
 
-test("Bot local work uses LocalExecutor on the SAME Task", async () => {
+test("Agent local work uses LocalExecutor on the SAME Task", async () => {
   const runtime = new TaskRuntime();
-  const task = runtime.createBotTask({
+  const task = runtime.createAgentTask({
     objective: "Look through the files in this folder and tell me which proposal is newest.",
-    botTaskId: "ui-local-1",
-    bot: { id: "bot-1", name: "Scout" },
+    agentId: "agent-local-1",
     capabilities: ["reply", "local_computer"],
   });
   const seen = { localTaskId: null, child: 0 };
@@ -114,8 +113,8 @@ test("Bot local work uses LocalExecutor on the SAME Task", async () => {
       return { ok: true, status: "completed", answer: "proposal-v3.pdf is newest." };
     },
   });
-  const bot = new BotExecutor({
-    runBotTask: async ({ task: canonical, executors }) => {
+  const bot = new AgentExecutor({
+    runAgentTask: async ({ task: canonical, executors }) => {
       seen.child += 1;
       const child = await executors.local_computer({
         instruction: "list the folder and pick the newest proposal",

@@ -14,7 +14,6 @@ export const BROWSER_ASK_DENIED_FAMILIES = Object.freeze([
   "local.shell",
   "local.desktop",
   "browser.agent",
-  "bots.ask",
   "connections.external",
   "media.image",
   "media.video",
@@ -31,11 +30,11 @@ export const BROWSER_ASK_DENIED_FAMILIES = Object.freeze([
 ]);
 
 export const BROWSER_ASK_ONLY_PROMPT = `[BROWSER SIDE CHAT - ASK ONLY]
-This turn is from the LYKN Browser side chat. Answer questions about the current page and talk. Do not do agentic work from here: no browsing or clicking for them, no bots, no custom agents, no files, apps, email, automations, or builds.
+This turn is from the LYKN Browser side chat. Answer questions about the current page and talk. Do not do agentic work from here: no browsing or clicking for them, no custom agents, no files, apps, email, automations, or builds.
 
 If they want you to act, tell them in one or two short sentences:
 - Use LYKN Chat on the Home desktop for agentic work.
-- Or build a custom agent in LYKN for work that should keep happening.
+- Or create a routine in LYKN for work that should keep happening.
 
 Do not claim you started that work. Do not call action tools.`;
 
@@ -53,7 +52,6 @@ export function applyBrowserAskCapabilities(caps, extra) {
 export function stripBrowserAskToolNames(names, localToolNames = []) {
   const set = names instanceof Set ? names : new Set(Array.isArray(names) ? names : []);
   for (const name of localToolNames) set.delete(name);
-  set.delete("local_ask_bot");
   set.delete("local_browser_agent");
   set.delete("lykn_open_app");
   set.delete("lykn_list_apps");

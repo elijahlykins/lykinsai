@@ -7,8 +7,8 @@ import {
   Inbox,
   ListTodo,
   Search,
+  Workflow,
 } from "lucide-react";
-import BotAvatar, { BotMark } from "@/components/bots/BotAvatar";
 import BrowserMark from "@/components/macdesktop/BrowserMark";
 import { LyknWordmark } from "@/components/landing/LyknWordmark";
 import { CalendarTile, MonthTile } from "@/components/landing/DesktopHomePreview";
@@ -59,7 +59,7 @@ function CustomizeVisual() {
           <BrowserMark className="h-5 w-5" />
         </span>
         <span>
-          <BotMark className="h-5 w-5" />
+          <Workflow className="h-5 w-5" />
         </span>
         <span>
           <FolderKanban className="h-5 w-5" />
@@ -78,25 +78,18 @@ function CustomizeVisual() {
   );
 }
 
-/** "Create agents": a roster of real bot characters, each with its own
-    shape, eyes, color, and signature move. Also the Agents feature page's
-    demo, framed over the same blue glass wallpaper. */
+/** "Works on its own": live agent runs — inbox watch, research in flight,
+    and a scheduled routine. Also the Agents feature page's demo, framed
+    over the same blue glass wallpaper. */
 export function AgentsVisual() {
   return (
     <div className="ls-vis-panel ls-vis-agents">
       <div className="ls-vis-agent">
-        <span className="ls-vis-agent-mark">
-          <BotAvatar
-            face="squircle"
-            eyes="dot"
-            color="sky"
-            size={44}
-            seed={11}
-            quirk="wobble"
-          />
+        <span className="ls-vis-agent-mark ls-vis-agent-mark--icon">
+          <Inbox />
         </span>
         <span className="ls-vis-agent-copy">
-          <strong>Inbox agent</strong>
+          <strong>Inbox watch</strong>
           <em>
             <Inbox /> Watching mail · 3 drafts ready
           </em>
@@ -104,18 +97,11 @@ export function AgentsVisual() {
         <i className="ls-vis-live" />
       </div>
       <div className="ls-vis-agent">
-        <span className="ls-vis-agent-mark">
-          <BotAvatar
-            face="circle"
-            eyes="visor"
-            color="teal"
-            size={44}
-            seed={23}
-            quirk="spin"
-          />
+        <span className="ls-vis-agent-mark ls-vis-agent-mark--icon">
+          <Search />
         </span>
         <span className="ls-vis-agent-copy">
-          <strong>Research agent</strong>
+          <strong>Deep research</strong>
           <em>
             <Search /> Reading 12 sources
           </em>
@@ -123,15 +109,8 @@ export function AgentsVisual() {
         <i className="ls-vis-live" />
       </div>
       <div className="ls-vis-agent">
-        <span className="ls-vis-agent-mark">
-          <BotAvatar
-            face="blob"
-            eyes="arc"
-            color="orange"
-            size={44}
-            seed={37}
-            quirk="hop"
-          />
+        <span className="ls-vis-agent-mark ls-vis-agent-mark--icon">
+          <CalendarDays />
         </span>
         <span className="ls-vis-agent-copy">
           <strong>Ops routine</strong>
@@ -160,8 +139,8 @@ const SLIDES = [
   },
   {
     id: "agents",
-    title: "Create agents",
-    body: "Spin up a teammate for a job: research, inbox, or a repeating workflow. It keeps context and works from the same desktop.",
+    title: "Works on its own",
+    body: "Hand LYKN a job: research, inbox triage, or a repeating workflow. It browses, uses your connected apps, and keeps working from the same desktop.",
     Visual: AgentsVisual,
   },
 ] as const;

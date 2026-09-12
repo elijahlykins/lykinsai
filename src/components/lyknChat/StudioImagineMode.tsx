@@ -1786,7 +1786,7 @@ const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps
         }
       }}
       rows={1}
-      placeholder={mediaKind === "video" ? "Describe the video you want…" : "Describe the image you want…"}
+      placeholder="What do you want to create?"
       // flex-auto, not flex-1: the auto-grown height is the flex basis, so the
       // field fills the tall Slate shell and then pushes it taller. flex-1
       // would zero that basis and leave the bar stuck at its minimum.

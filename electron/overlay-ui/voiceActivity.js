@@ -26,7 +26,6 @@ const VOICE_TOOL_STATUS = {
   generate_image: "Creating the image…",
   write_document: "Writing it out…",
   browser_agent: "Sending it to the browser…",
-  ask_bot: "Sending your bot…",
 };
 
 export function voiceToolStatus(name) {

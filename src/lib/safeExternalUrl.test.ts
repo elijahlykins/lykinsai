@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
 import {
   safeAttachmentUrl,
   safeExternalUrl,
@@ -9,63 +10,64 @@ import {
 
 describe("safeExternalUrl", () => {
   it("allows http(s) and mailto", () => {
-    expect(safeExternalUrl("https://example.com/a")).toBe("https://example.com/a");
-    expect(safeExternalUrl("mailto:a@b.com")).toBe("mailto:a@b.com");
+    assert.equal(safeExternalUrl("https://example.com/a"), "https://example.com/a");
+    assert.equal(safeExternalUrl("mailto:a@b.com"), "mailto:a@b.com");
   });
 
   it("blocks javascript and data html", () => {
-    expect(safeExternalUrl("javascript:alert(1)")).toBeNull();
-    expect(safeExternalUrl("data:text/html,<script>")).toBeNull();
+    assert.equal(safeExternalUrl("javascript:alert(1)"), null);
+    assert.equal(safeExternalUrl("data:text/html,<script>"), null);
   });
 
   it("promotes protocol-relative to https (not SPA-internal)", () => {
-    expect(safeExternalUrl("//evil.com/x")).toBe("https://evil.com/x");
+    assert.equal(safeExternalUrl("//evil.com/x"), "https://evil.com/x");
   });
 });
 
 describe("safeInternalPath", () => {
   it("accepts path-absolute routes", () => {
-    expect(safeInternalPath("/vault")).toBe("/vault");
-    expect(safeInternalPath("/share?url=https%3A%2F%2Fa.com")).toBe(
+    assert.equal(safeInternalPath("/vault"), "/vault");
+    assert.equal(
+      safeInternalPath("/share?url=https%3A%2F%2Fa.com"),
       "/share?url=https%3A%2F%2Fa.com",
     );
   });
 
   it("rejects protocol-relative and absolute URLs", () => {
-    expect(safeInternalPath("//evil.com")).toBeNull();
-    expect(safeInternalPath("https://evil.com")).toBeNull();
-    expect(safeInternalPath("javascript:alert(1)")).toBeNull();
+    assert.equal(safeInternalPath("//evil.com"), null);
+    assert.equal(safeInternalPath("https://evil.com"), null);
+    assert.equal(safeInternalPath("javascript:alert(1)"), null);
   });
 });
 
 describe("safeNavHref", () => {
   it("routes // as external https, /app as internal", () => {
-    expect(safeNavHref("//evil.com")).toEqual({
+    assert.deepEqual(safeNavHref("//evil.com"), {
       kind: "external",
       href: "https://evil.com",
     });
-    expect(safeNavHref("/app")).toEqual({ kind: "internal", href: "/app" });
-    expect(safeNavHref("javascript:alert(1)")).toBeNull();
+    assert.deepEqual(safeNavHref("/app"), { kind: "internal", href: "/app" });
+    assert.equal(safeNavHref("javascript:alert(1)"), null);
   });
 });
 
 describe("safeAttachmentUrl", () => {
   it("allows blob and image data URIs", () => {
-    expect(safeAttachmentUrl("blob:https://lykn.io/abc")).toMatch(/^blob:/);
-    expect(safeAttachmentUrl("data:image/png;base64,aaa")).toMatch(/^data:image/);
-    expect(safeAttachmentUrl("data:text/html,<b>")).toBeNull();
+    assert.match(String(safeAttachmentUrl("blob:https://lykn.io/abc") ?? ""), /^blob:/);
+    assert.match(String(safeAttachmentUrl("data:image/png;base64,aaa") ?? ""), /^data:image/);
+    assert.equal(safeAttachmentUrl("data:text/html,<b>"), null);
   });
 });
 
 describe("safeHtmlPreviewUrl", () => {
   it("allowlists trusted hosts and opaque-sandboxes blob", () => {
     const a = safeHtmlPreviewUrl("https://artifacts.lykn.io/f/token");
-    expect(a?.url).toContain("artifacts.lykn.io");
-    expect(a?.sandbox).toContain("allow-same-origin");
+    assert.ok(String(a?.url ?? "").includes("artifacts.lykn.io"));
+    assert.ok(String(a?.sandbox ?? "").includes("allow-same-origin"));
 
     const b = safeHtmlPreviewUrl("blob:https://lykn.io/x");
-    expect(b?.sandbox).not.toContain("allow-same-origin");
+    assert.ok(!String(b?.sandbox ?? "").includes("allow-same-origin"));
 
-    expect(safeHtmlPreviewUrl("https://evil.com/deck.html")).toBeNull();
+    assert.equal(safeHtmlPreviewUrl("https://evil.com/deck.html"), null);
   });
 });

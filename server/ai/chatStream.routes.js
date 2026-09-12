@@ -63,7 +63,7 @@ import {
   getCustomModelChatPersonaStatic,
   getCustomModelStreamPersonaFull,
 } from '../../lib/modelBuilder/lyknCustomModelRuntimePersona.js';
-import { CHAT_TOOLS, buildChatToolCtx, providerForModel, resolveChatModelLabel, sanitizeLyknBots, supportsTools } from '../../mcp-tools/chatTools.js';
+import { CHAT_TOOLS, buildChatToolCtx, providerForModel, resolveChatModelLabel, supportsTools } from '../../mcp-tools/chatTools.js';
 import { LOCAL_TOOL_NAMES } from '../../mcp-tools/localTools.js';
 import {
   resolveDesktopMcpApps,
@@ -78,7 +78,6 @@ import { armBuildWorkspaceTools, buildWorkspaceGuidance, workspaceOwnsFreshBuild
 import {
   AGENTS_APPS_CODE_INTENT_RE,
   messageWantsAgentTools,
-  messageWantsBotAsk,
   turnWantsLocalFileTools,
   messageWantsPageFetch,
   messageWantsProjectContext,
@@ -153,9 +152,7 @@ import {
   sanitizeAttachedApps,
   attachedAppsHaystack,
   buildAiDriveSection,
-  buildLyknBotsSection,
   buildLocalModeGuidance,
-  buildAskBotGuidance,
 } from './chatGuidance.js';
 import {
   hasExplicitUrlScrapeIntent,
@@ -1155,6 +1152,9 @@ export function registerAiStreamRoutes(app, {
       // closes it pins the socket indefinitely — slow connection-table
       // exhaustion is a DoS vector that aiLimiter (per-user) doesn't catch
       // (one user, many hung connections under the 30/min ceiling).
+      // Long tool turns (builds, local tools, research) raise this later to
+      // the hard-kill window — a 3 min socket idle kill was aborting healthy
+      // Build / "do something" turns as "That didn't work."
       const streamIdleTimeoutMs = deepResearch ? 300_000 : 180_000;
       try { req.setTimeout?.(streamIdleTimeoutMs, () => { try { res.end(); } catch { /* socket already closed */ } }); } catch { /* req.setTimeout missing on some test transports */ }
       const streamAbort = new AbortController();
@@ -1217,7 +1217,6 @@ export function registerAiStreamRoutes(app, {
           ),
           localMode: streamLocalMode && !browserAsk,
           buildWorkspace: streamBuildWorkspace,
-          lyknBots: browserAsk ? [] : sanitizeLyknBots(req.body?.lyknBots),
           attachedFolders: streamAttachedFolders,
           allowNewArtifactBuild: browserAsk ? false : allowNewArtifactBuild,
           lockOutArtifactBuilds,
@@ -1372,7 +1371,6 @@ export function registerAiStreamRoutes(app, {
         const installedAppsSection = input?.browserAsk
           ? ""
           : buildInstalledAppsSection(input?.installedApps);
-        const lyknBotsSection = input?.browserAsk ? "" : buildLyknBotsSection(input?.lyknBots);
 
         // What they have on their Mac — the difference between opening Spotify
         // and opening spotify.com.
@@ -1408,7 +1406,6 @@ export function registerAiStreamRoutes(app, {
           responseLengthSection,
           activeModeSection,
           installedAppsSection,
-          lyknBotsSection,
           macAppsSection,
           attachedAppsSection,
           aiDriveSection,
@@ -1451,8 +1448,6 @@ export function registerAiStreamRoutes(app, {
       // Casual 'none' turns skip the tool loop. Exceptions: project-linked
       // custom models (lykn_pushProjectState on "yes"), and Local Mode file asks.
       const streamLocalAskText = streamPureUserMessage || text;
-      const streamLyknBots = browserAsk ? [] : sanitizeLyknBots(req.body?.lyknBots);
-      const streamBotIntent = !browserAsk && messageWantsBotAsk(streamLocalAskText, streamLyknBots);
       const streamLocalIntent = turnWantsLocalFileTools({
         localMode: streamLocalMode, browserAsk, message: streamLocalAskText,
         attachedFolders: streamAttachedFolders, conversation,
@@ -1474,14 +1469,8 @@ export function registerAiStreamRoutes(app, {
       if (streamDesktopMcpIntent) {
         console.log('🧩 Stream: desktop MCP app named — keeping tools on');
       }
-      if (streamBotIntent) {
-        console.log('🤝 Stream: bot-ask detected — keeping tools on');
-      }
       if (useTools && streamEnrichTier === 'none') {
-        if (streamBotIntent) {
-          streamEnrichTierEffective = 'light';
-          console.log('🤝 Stream: bot-ask — keeping tools on despite casual tier');
-        } else if (streamLocalIntent) {
+        if (streamLocalIntent) {
           streamEnrichTierEffective = 'light';
           console.log('🖥️ Stream: local-mode ask — keeping tools on despite casual tier');
         } else if (streamDesktopMcpIntent) {
@@ -1536,7 +1525,6 @@ export function registerAiStreamRoutes(app, {
         forceWebSearch,
         deepResearch,
         forcePageFetch,
-        lyknBots: streamLyknBots,
         conversation,
         artifactToolName,
         activeArtifactEditable,
@@ -1551,7 +1539,6 @@ export function registerAiStreamRoutes(app, {
         !streamActionIntent &&
         !streamLocalIntent &&
         !streamDesktopMcpIntent &&
-        !streamBotIntent &&
         !streamDisclosure?.keepToolsOn &&
         !forceImage &&
         !artifactToolName &&
@@ -1711,7 +1698,6 @@ export function registerAiStreamRoutes(app, {
           requestedModel: model,
           // Desktop-only, and the model's only way to know these apps exist.
           installedApps: browserAsk ? undefined : req.body?.installedApps,
-          lyknBots: browserAsk ? undefined : req.body?.lyknBots,
           macApps: browserAsk ? undefined : req.body?.macApps,
           attachedApps: browserAsk ? undefined : streamAttachedApps,
           aiDrive: browserAsk ? undefined : req.body?.aiDrive,
@@ -2657,7 +2643,7 @@ export function registerAiStreamRoutes(app, {
       // creative loops: many act→look cycles with slow app-side operations.
       const longToolTurn =
         codedArtifactTurn || videoRenderLikelyTurn || forceImage || deepResearch ||
-        streamBuildWorkspace || streamDesktopMcpIntent;
+        streamBuildWorkspace || streamDesktopMcpIntent || streamLocalMode;
       const streamStallMs = longToolTurn ? 240000 : 90000;
       stallCheck = setInterval(() => {
         if (Date.now() - streamActivity > streamStallMs) {
@@ -2697,6 +2683,9 @@ export function registerAiStreamRoutes(app, {
           sendError(forceImage ? IMAGE_GEN_FAILURE_TEXT : AI_TEMPORARY_FAILURE_TEXT);
         }
       }, hardKillMs);
+      if (longToolTurn) {
+        try { req.setTimeout?.(hardKillMs + 30_000, () => { try { res.end(); } catch { /* socket already closed */ } }); } catch { /* req.setTimeout missing on some test transports */ }
+      }
       res.on('close', cleanup);
 
       // Hard ceiling per provider attempt. The fetch() Promise resolves the
@@ -3454,8 +3443,7 @@ export function registerAiStreamRoutes(app, {
         useTools &&
         !!toolProvider &&
         disclosedLocalToolNames.length > 0 &&
-        (streamLocalMode || streamWorkspaceToolsArmed || streamDesktopMcpArmed ||
-          disclosedLocalToolNames.includes('local_ask_bot'));
+        (streamLocalMode || streamWorkspaceToolsArmed || streamDesktopMcpArmed);
       const connectedRegistryOn = (Array.isArray(streamChatToolNames) ? streamChatToolNames : []).some(
         (n) => n === 'lykn_search_connected_tools' || n === 'lykn_call_connected_tool',
       );
@@ -3500,8 +3488,7 @@ export function registerAiStreamRoutes(app, {
                 connectArmed: streamDesktopMcpAvailable,
               })
             : '') +
-          (streamWorkspaceToolsArmed ? buildWorkspaceGuidance() : '') +
-          buildAskBotGuidance(disclosedLocalToolNames);
+          (streamWorkspaceToolsArmed ? buildWorkspaceGuidance() : '');
         if (streamLocalToolsEnabled) {
           console.log(
             `🖥️ local tools offered: ${disclosedLocalSystemToolNames.length}/${LOCAL_TOOL_NAMES.length}`,

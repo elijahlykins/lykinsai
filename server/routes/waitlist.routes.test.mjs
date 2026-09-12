@@ -245,7 +245,7 @@ test('download link captures the email and sends the link', async () => {
     assert.equal(resend.calls.length, 1);
     assert.deepEqual(resend.calls[0].to, ['alex@lykn.io']);
     assert.match(resend.calls[0].subject, /download link/i);
-    assert.match(resend.calls[0].text, /LYKN\.dmg/);
+    assert.match(resend.calls[0].text, /api\/download\/mac/);
   } finally {
     await close();
   }
@@ -289,6 +289,118 @@ test('windows waitlist GET reports seed plus stored signups', async () => {
     const json = await res.json();
     assert.equal(res.status, 200);
     assert.equal(json.count, SEED + 12);
+  } finally {
+    await close();
+  }
+});
+
+test('mac download records a click then redirects to the GitHub dmg', async () => {
+  let inserted = null;
+  const supabaseAdmin = {
+    from(table) {
+      assert.equal(table, 'desktop_download_events');
+      return {
+        async insert(row) {
+          inserted = row;
+          return { error: null };
+        },
+      };
+    },
+  };
+  const { url, close } = await listen(makeApp(supabaseAdmin));
+  try {
+    const res = await fetch(`${url}/api/download/mac?src=website`, {
+      redirect: 'manual',
+      headers: { 'user-agent': 'Mozilla/5.0 Macintosh', referer: 'https://lykn.io/download' },
+    });
+    assert.equal(res.status, 302);
+    assert.match(res.headers.get('location') || '', /LYKN\.dmg$/);
+    assert.equal(inserted.platform, 'mac');
+    assert.equal(inserted.artifact, 'dmg');
+    assert.equal(inserted.source, 'website');
+    assert.equal(inserted.metadata.ua, 'Mozilla/5.0 Macintosh');
+  } finally {
+    await close();
+  }
+});
+
+test('windows download records a click then redirects to the setup exe', async () => {
+  let inserted = null;
+  const supabaseAdmin = {
+    from() {
+      return {
+        async insert(row) {
+          inserted = row;
+          return { error: null };
+        },
+      };
+    },
+  };
+  const { url, close } = await listen(makeApp(supabaseAdmin));
+  try {
+    const res = await fetch(`${url}/api/download/win?src=email`, {
+      redirect: 'manual',
+      headers: { 'user-agent': 'Mozilla/5.0' },
+    });
+    assert.equal(res.status, 302);
+    assert.match(res.headers.get('location') || '', /LYKN-Setup\.exe$/);
+    assert.equal(inserted.platform, 'win');
+    assert.equal(inserted.artifact, 'exe');
+    assert.equal(inserted.source, 'email');
+  } finally {
+    await close();
+  }
+});
+
+test('download redirect still works when the database is not configured', async () => {
+  const { url, close } = await listen(makeApp(null));
+  try {
+    const res = await fetch(`${url}/api/download/mac`, { redirect: 'manual' });
+    assert.equal(res.status, 302);
+    assert.match(res.headers.get('location') || '', /LYKN\.dmg$/);
+  } finally {
+    await close();
+  }
+});
+
+test('download redirect skips crawler user agents', async () => {
+  let called = false;
+  const supabaseAdmin = {
+    from() {
+      called = true;
+      throw new Error('should not write');
+    },
+  };
+  const { url, close } = await listen(makeApp(supabaseAdmin));
+  try {
+    const res = await fetch(`${url}/api/download/mac`, {
+      redirect: 'manual',
+      headers: { 'user-agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+    });
+    assert.equal(res.status, 302);
+    assert.equal(called, false);
+  } finally {
+    await close();
+  }
+});
+
+test('download HEAD probes redirect without writing a click', async () => {
+  let called = false;
+  const supabaseAdmin = {
+    from() {
+      called = true;
+      throw new Error('should not write');
+    },
+  };
+  const { url, close } = await listen(makeApp(supabaseAdmin));
+  try {
+    const res = await fetch(`${url}/api/download/mac`, {
+      method: 'HEAD',
+      redirect: 'manual',
+      headers: { 'user-agent': 'Mozilla/5.0' },
+    });
+    assert.equal(res.status, 302);
+    assert.equal(called, false);
   } finally {
     await close();
   }

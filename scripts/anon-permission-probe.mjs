@@ -284,7 +284,7 @@ async function runProbe(p) {
   for (const p of PROBES) {
     // Sequential rather than Promise.all so failure output is easy to read
     // and so we don't hammer Supabase with 14 parallel POSTs from CI.
-    // eslint-disable-next-line no-await-in-loop
+     
     results.push(await runProbe(p));
   }
 

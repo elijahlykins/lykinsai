@@ -164,10 +164,6 @@ contextBridge.exposeInMainWorld("lykn", {
       agentId,
       fromSuggestion: !!opts?.fromSuggestion,
       questionsOnly: !!opts?.questionsOnly,
-      // Bot dispatches carry the structured identity (name/role/persona) so
-      // the harness system prompt holds it every turn — never parsed back
-      // out of the message text.
-      bot: opts?.bot || null,
       // Canonical Task input. The renderer supplies provenance and the raw
       // objective; Electron's TaskCompiler creates the authoritative Task.
       task: opts?.task || null,
@@ -184,13 +180,6 @@ contextBridge.exposeInMainWorld("lykn", {
     ipcRenderer.invoke("lykn:agent-show-browser", { agentId, visible: true }),
   agentShowStep: (agentId, stepIndex) =>
     ipcRenderer.invoke("lykn:agent-show-step", { agentId, stepIndex }),
-  // Live screenshots of a Bot's hidden browser tab while it runs a
-  // user-approved browser task — feeds the tiny viewport above the chat bar.
-  onBotBrowserShot: (cb) => {
-    const fn = (_e, p) => cb(p || {});
-    ipcRenderer.on("lykn:bot-browser-shot", fn);
-    return () => ipcRenderer.removeListener("lykn:bot-browser-shot", fn);
-  },
   agentHistory: (agentId) => ipcRenderer.invoke("lykn:agent-history", agentId),
   // Ask LYKN pill — open/close the agent chat side panel.
   agentChatSet: (payload) =>
@@ -297,9 +286,9 @@ contextBridge.exposeInMainWorld("lykn", {
     ipcRenderer.on("lykn:task-event", fn);
     return () => ipcRenderer.removeListener("lykn:task-event", fn);
   },
-  // Bot Routines — durable schedules/monitors owned by main. The renderer
+  // Routines — durable schedules/monitors owned by main. The renderer
   // reads and edits definitions; execution stays in the task runtime.
-  routinesList: (botId) => ipcRenderer.invoke("lykn:routines-list", botId ? { botId } : {}),
+  routinesList: () => ipcRenderer.invoke("lykn:routines-list", {}),
   routineCreate: (payload) => ipcRenderer.invoke("lykn:routine-create", payload || {}),
   routineUpdate: (routineId, patch) =>
     ipcRenderer.invoke("lykn:routine-update", { routineId, patch: patch || {} }),
@@ -316,14 +305,14 @@ contextBridge.exposeInMainWorld("lykn", {
     ipcRenderer.on("lykn:routines-changed", fn);
     return () => ipcRenderer.removeListener("lykn:routines-changed", fn);
   },
-  // Explicit Teach-by-Demonstration sessions and Bot-owned learned workflows.
+  // Explicit Teach-by-Demonstration sessions and learned workflows.
   // Main owns capture, scrubbing, compilation, persistence, and execution.
   teachStart: (input) => ipcRenderer.invoke("lykn:teach-start", input || {}),
   teachFinish: (input) => ipcRenderer.invoke("lykn:teach-finish", input || {}),
   teachCancel: () => ipcRenderer.invoke("lykn:teach-cancel"),
   teachStatus: () => ipcRenderer.invoke("lykn:teach-status"),
   teachRecordEvent: (event) => ipcRenderer.invoke("lykn:teach-record-event", event || {}),
-  workflowsList: (botId) => ipcRenderer.invoke("lykn:workflows-list", botId ? { botId } : {}),
+  workflowsList: () => ipcRenderer.invoke("lykn:workflows-list", {}),
   workflowCreate: (input) => ipcRenderer.invoke("lykn:workflow-create", input || {}),
   workflowUpdate: (workflowId, patch) =>
     ipcRenderer.invoke("lykn:workflow-update", { workflowId, patch: patch || {} }),

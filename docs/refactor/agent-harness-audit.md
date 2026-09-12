@@ -93,7 +93,7 @@ flowchart TD
     end
 
     subgraph BotHarness["Bot Harness"]
-      BH[bot-harness/index.cjs]
+      BH[agent-harness/index.cjs]
       BCTX[contextRouter.cjs]
       BTOOLS[toolRegistry.cjs]
     end
@@ -183,10 +183,10 @@ This path contains two semantic decisions before browser planning:
 1. `src/hooks/useBotChatBridge.ts` and `src/lib/bots/botChatBridge.js` send a user turn to the Bot API.
 2. `src/lib/bots/botStore.ts` and `src/lib/bots/botsClient.js` own renderer-side Bot identity, chat history, queue, and task status.
 3. `server/routes/desktop.routes.js` exposes desktop Bot execution endpoints and proxies execution to Electron.
-4. `electron/agentRuntime.cjs:runBotTask` finds or creates a headless worker with the Bot profile.
+4. `electron/agentRuntime.cjs:runAgentTask` finds or creates a headless worker with the Bot profile.
 5. `agentRuntime.send` routes that worker into `runBotHarnessTask`.
-6. `electron/bot-harness/index.cjs` creates Bot task state and runs a decide, use-tool, observe, continue, ask, or deliver loop.
-7. `electron/bot-harness/runtime/toolRegistry.cjs` exposes a compact tool index.
+6. `electron/agent-harness/index.cjs` creates Bot task state and runs a decide, use-tool, observe, continue, ask, or deliver loop.
+7. `electron/agent-harness/runtime/toolRegistry.cjs` exposes a compact tool index.
 8. Full tool documentation is loaded only when a tool is first selected.
 9. Bot tools call back into host capabilities such as `runLocalTask`, report generation, artifact building, image generation, or reply streaming.
 10. Selecting `browser` does not immediately invoke the browser agent.
@@ -351,15 +351,15 @@ The following Electron IPC entry points can start or affect work:
 
 ### Bot Harness
 
-- `electron/bot-harness/index.cjs`
+- `electron/agent-harness/index.cjs`
   Owns the Bot decide, select-tool, execute, observe, ask, recover, and deliver loop.
-- `electron/bot-harness/runtime/contextRouter.cjs`
+- `electron/agent-harness/runtime/contextRouter.cjs`
   Builds Bot identity, task, event, tool-index, and output-contract context.
-- `electron/bot-harness/runtime/toolRegistry.cjs`
+- `electron/agent-harness/runtime/toolRegistry.cjs`
   Defines the Bot-level tool index and progressive documentation loading.
-- `electron/bot-harness/runtime/taskState.cjs`
+- `electron/agent-harness/runtime/taskState.cjs`
   Owns Bot run events, loaded documents, execution count, recovery count, guidance, and brief.
-- `electron/bot-harness/runtime/instructions.cjs`
+- `electron/agent-harness/runtime/instructions.cjs`
   Explicitly loads Bot runtime markdown.
 
 ### Model/provider boundary
@@ -504,15 +504,15 @@ These are runtime prompt sources even though they are JavaScript strings rather 
 
 ### Bot Harness markdown
 
-- `electron/bot-harness/AGENTS.md`
+- `electron/agent-harness/AGENTS.md`
   - 357 words, about 475 tokens.
   - Always loaded.
   - Defines Bot identity, LYKN promise, operating loop, and file map.
-- `electron/bot-harness/agent/core.md`
+- `electron/agent-harness/agent/core.md`
   - 539 words, about 720 tokens.
   - Always loaded.
   - Defines reasoning, tool choice, instructions, asking, delivery, and narration.
-- `electron/bot-harness/agent/safety.md`
+- `electron/agent-harness/agent/safety.md`
   - 271 words, about 360 tokens.
   - Always loaded.
   - Defines consequence risk, delivery, data handling, honesty, and refusal.
@@ -536,11 +536,11 @@ The Bot always-loaded markdown subtotal is 1,167 words, roughly 1,550 tokens.
 - `agent/tools/research_report.md`
   - 210 words, about 280 tokens.
 
-Loader: `bot-harness/runtime/instructions.cjs:loadToolDoc`.
+Loader: `agent-harness/runtime/instructions.cjs:loadToolDoc`.
 
-Registry: `bot-harness/runtime/toolRegistry.cjs`.
+Registry: `agent-harness/runtime/toolRegistry.cjs`.
 
-Consumer: `bot-harness/index.cjs`.
+Consumer: `agent-harness/index.cjs`.
 
 Scope: the full selected tool documentation is loaded after first selection and remains in Bot task state.
 
@@ -548,9 +548,9 @@ This progressive disclosure is materially more token-efficient than the browser 
 
 ### Bot generated prompt sources
 
-- `bot-harness/runtime/contextRouter.cjs`
+- `agent-harness/runtime/contextRouter.cjs`
   Builds persona identity, task brief, recent conversation, recent task events, tool index, loaded tool docs, guidance, and output schema.
-- `bot-harness/index.cjs`
+- `agent-harness/index.cjs`
   Adds per-round results and recovery guidance.
 - `agentRuntime.cjs:runBotHarnessTask`
   Builds the Bot task brief and host tool dispatch instructions.
@@ -575,18 +575,18 @@ This progressive disclosure is materially more token-efficient than the browser 
 3. The file text is cached in memory.
 4. `runtime/contextRouter.cjs` injects `AGENTS.md` and core into planning, and all four files into decision systems.
 
-`electron/bot-harness/AGENTS.md` is loaded similarly:
+`electron/agent-harness/AGENTS.md` is loaded similarly:
 
-1. `bot-harness/runtime/instructions.cjs` resolves the Bot Harness root.
+1. `agent-harness/runtime/instructions.cjs` resolves the Bot Harness root.
 2. `loadAgentsMd()`, `loadCoreRules()`, and `loadSafetyRules()` read the three files separately.
 3. The file text is cached.
-4. `bot-harness/runtime/contextRouter.cjs` injects it into Bot decision systems.
+4. `agent-harness/runtime/contextRouter.cjs` injects it into Bot decision systems.
 
 The repository root `AGENTS.md` is not loaded by either runtime loader.
 It is intended for development agents.
 
 The naming collision still matters because development agents commonly discover `AGENTS.md` hierarchically.
-A development agent editing `electron/browser-agent/**` or `electron/bot-harness/**` can interpret the nested runtime identity and behavior as development instructions in addition to the root development instructions.
+A development agent editing `electron/browser-agent/**` or `electron/agent-harness/**` can interpret the nested runtime identity and behavior as development instructions in addition to the root development instructions.
 The runtime files therefore have two accidental consumers with different semantics.
 This can cause instruction conflict, unusual coding-agent behavior, and unsafe confusion about whether phrases such as "finish what you start" or "operate the browser" govern code changes.
 

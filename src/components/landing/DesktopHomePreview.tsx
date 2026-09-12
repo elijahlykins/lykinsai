@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { CalendarDays, Folder, FolderKanban, ListTodo } from "lucide-react";
-import { BotMark } from "@/components/bots/BotAvatar";
 import BrowserMark from "@/components/macdesktop/BrowserMark";
 import lyknIconBlue from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-BLUE-master.png";
 import imagineClouds from "@/assets/imagine-clouds.png";
@@ -12,7 +11,6 @@ const WIDGET = "gl-desk-widget";
 
 const DOCK = [
   { id: "browser", label: "Browser", icon: BrowserMark },
-  { id: "bots", label: "Bots", icon: BotMark },
   { id: "projects", label: "Projects", icon: FolderKanban },
   { id: "vault", label: "Vault", icon: Folder },
   { id: "calendar", label: "Calendar", icon: CalendarDays },

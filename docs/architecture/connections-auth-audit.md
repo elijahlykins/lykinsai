@@ -413,14 +413,14 @@ Chat explicitly excludes those (`firstPartyCapabilities.js`).
 
 ### 6.3 Desktop bot harness
 
-`electron/bot-harness/runtime/toolRegistry.cjs`.
+`electron/agent-harness/runtime/toolRegistry.cjs`.
 
 Index (progressive disclosure, markdown docs):
 
 - `reply`, `write_document`, `research_report`, `edit_report`, `build_artifact`, `generate_image`, `local_computer`, `ai_drive`, `create_routine`, `browser`
 
 There is **no `gmail` or `mcp` tool** in this index.
-Gmail work is expected to go through `browser` (`electron/bot-harness/agent/tools/browser.md`) or through TaskRuntime MCP when a connection is assigned (inbox watch / learned workflow).
+Gmail work is expected to go through `browser` (`electron/agent-harness/agent/tools/browser.md`) or through TaskRuntime MCP when a connection is assigned (inbox watch / learned workflow).
 
 ### 6.4 Browser agent
 
@@ -956,7 +956,7 @@ Future implementation only.
 | `lib/security/credentialStore.js` | Only if Composio tokens are stored as typed credentials instead of MCP blobs |
 | `supabase-migrations/*` | Pending auth, run continuation, tighter RLS on secret columns |
 
-Unlikely to need Composio imports: `chat-agent-loop.js`, `electron/bot-harness/runtime/toolRegistry.cjs`, `electron/browser-agent/**`.
+Unlikely to need Composio imports: `chat-agent-loop.js`, `electron/agent-harness/runtime/toolRegistry.cjs`, `electron/browser-agent/**`.
 
 ---
 

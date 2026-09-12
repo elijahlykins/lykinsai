@@ -27,6 +27,16 @@ contextBridge.exposeInMainWorld("lyknAgentStage", {
   newTab: () => ipcRenderer.invoke("lykn:agent-stage-new-tab"),
   toggleIncognito: () => ipcRenderer.invoke("lykn:agent-stage-toggle-incognito"),
   listHistory: () => ipcRenderer.invoke("lykn:agent-browser-history-list"),
+  // Chrome-style visit history + user bookmarks.
+  listVisits: () => ipcRenderer.invoke("lykn:agent-visits-list"),
+  clearVisits: () => ipcRenderer.invoke("lykn:agent-visits-clear"),
+  toggleBookmark: (payload) =>
+    ipcRenderer.invoke("lykn:agent-bookmark-toggle", payload || {}),
+  onDownloadProgress: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-stage-download-progress", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-stage-download-progress", fn);
+  },
   removeRecent: (payload) => ipcRenderer.invoke("lykn:agent-recents-remove", payload || {}),
   resizeChrome: (height) => ipcRenderer.send("lykn:agent-stage-chrome-height", { height }),
   // Dropdown open/closed — main raises the chrome over the page.

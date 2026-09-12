@@ -4,6 +4,8 @@ const agentTabIds = require("../agentTabIds.cjs");
 const { bindOverlayIpcContext } = require("./overlayIpcContext.cjs");
 const { untrustedSenderResult, trustedLyknIpcOpts } = require("../trustedIpcSender.cjs");
 const { extractOwnedTabPageContext } = require("../agent-browser/tabPageContext.cjs");
+const visitHistory = require("../agent-browser/visitHistory.cjs");
+const agentBookmarksStore = require("../agent-browser/bookmarks.cjs");
 
 // Keep in sync with electron/agent-browser/host.cjs. Required here (not
 // borrowed from the host bag) so tab open/close never throws if the host
@@ -81,7 +83,7 @@ function registerAgentBridgeIpc(d) {
     closeAgentFinishedPopup,
     closeStudioBrowserSession,
     commitAgentBrowserHistory,
-    concealBotBrowserTab,
+    concealAgentBrowserTab,
     createMainWindow,
     describeBrowserTabProblem,
     destroyAgentBrowserWindow,
@@ -199,7 +201,7 @@ function registerAgentBridgeIpc(d) {
     ipcMain.handle("lykn:agent-create", async (_e, payload = {}) => {
       // "New agent" from the rail = new tab too: agents and tabs are paired.
       const res = runtime().createAgent(payload || {});
-      // Silent creation (LYKN Bots building a Bot) still gets its paired tab
+      // Silent creation (headless workers) still gets its paired tab
       // from the runtime, but must not raise the browser window or steal focus.
       if (res?.ok && res.agentId && !payload?.silent) {
         try {
@@ -212,7 +214,7 @@ function registerAgentBridgeIpc(d) {
       }
       return res;
     });
-    // LYKN Bots adopting an agent created before the headless flag existed:
+    // Adopting an agent created before the headless flag existed:
     // mark it so the runtime stops raising the browser window for its runs.
     ipcMain.handle("lykn:agent-set-headless", async (_e, { agentId, headless } = {}) => {
       return runtime().setAgentHeadless?.(agentId, headless !== false) || { ok: false };
@@ -477,14 +479,14 @@ function registerAgentBridgeIpc(d) {
       // view). Tabs with no agent behind them — artifact previews, agent-owned
       // browse sub-tabs, manual new-tab pages, and the pinned Main agent
       // (closeAgent refuses to delete it) — just close the browser surface.
-      // A Bot's primary tab is a work surface, not the Bot. Closing it must
+      // A headless agent's primary tab is a work surface, not the agent. Closing it must
       // not retire the teammate or cancel the task they are still running.
       const ownerId = agentTabIds.partitionOwner(id) || id;
-      const botSurface = !!runtime().isHeadless?.(ownerId);
-      // Closing a revealed Bot tab parks the work surface again. Destroying
+      const headlessSurface = !!runtime().isHeadless?.(ownerId);
+      // Closing a revealed headless tab parks the work surface again. Destroying
       // it would reload a blank home the next time the peek is opened.
-      if (botSurface) {
-        concealBotBrowserTab(id);
+      if (headlessSurface) {
+        concealAgentBrowserTab(id);
         return { ok: true };
       }
       // Capture the tab for the rail's History section before teardown.
@@ -743,6 +745,61 @@ function registerAgentBridgeIpc(d) {
       pushAgentStageState();
       return { ok: !!result?.ok, items: result.items || [] };
     });
+    // Chrome-style browsing history (every visit) — the History dropdown in
+    // the browser chrome and omnibox suggestions read from here.
+    ipcMain.handle("lykn:agent-visits-list", async () => ({
+      ok: true,
+      items: visitHistory.readVisits(app.getPath("userData")).items,
+    }));
+    ipcMain.handle("lykn:agent-visits-remove", async (_e, { url, at } = {}) => {
+      const res = visitHistory.removeVisit(app.getPath("userData"), { url, at });
+      return { ok: !!res.ok, items: res.items || [] };
+    });
+    ipcMain.handle("lykn:agent-visits-clear", async () => {
+      const res = visitHistory.clearVisits(app.getPath("userData"));
+      return { ok: true, items: res.items || [] };
+    });
+    // New-tab page suggestions — same sources as the omnibox dropdown. The
+    // preload is injected into every agent tab, so only the bundled home
+    // document may read browsing history (ordinary websites must not).
+    ipcMain.handle("lykn:agent-browser-home-suggest-data", async (event) => {
+      if (!agentBrowserHomeSender(event)) {
+        return { ok: false, tabs: [], history: [] };
+      }
+      const tabs = [];
+      for (const [id, view] of agentBrowserViews) {
+        if (isAgentArtifactTabId(id)) continue;
+        const meta = agentBrowserMeta.get(id) || {};
+        let url = meta.url || "";
+        try {
+          if (view?.webContents && !view.webContents.isDestroyed()) {
+            url = view.webContents.getURL() || url;
+          }
+        } catch (_) {}
+        if (!/^https?:\/\//i.test(url)) continue;
+        tabs.push({
+          url,
+          pageTitle: meta.pageTitle || "",
+          favicon: meta.favicon || "",
+        });
+      }
+      const visits = visitHistory.readVisits(app.getPath("userData")).items;
+      const closed = readAgentBrowserHistory();
+      return { ok: true, tabs, history: [...visits, ...closed] };
+    });
+    // User bookmarks — only what the user stars lands in the favorites bar.
+    ipcMain.handle(
+      "lykn:agent-bookmark-toggle",
+      async (_e, { url, title, favicon } = {}) => {
+        const res = agentBookmarksStore.toggleBookmark(app.getPath("userData"), {
+          url,
+          title,
+          favicon,
+        });
+        pushAgentStageState();
+        return res;
+      },
+    );
   
     ipcMain.on("lykn:agent-stage-chrome-height", (_e, { height } = {}) => {
       const h = Math.round(Number(height) || 0);
@@ -801,8 +858,8 @@ function registerAgentBridgeIpc(d) {
       pushAgentStageState();
       return next;
     };
-    // The browser rail is opt-in: Ask LYKN / AI Mode only. Bot work and
-    // opened tabs must not pop it open.
+    // The browser rail opens only when the user asks for it (Ask LYKN pill).
+    // Headless agent work and opened tabs must not pop it open.
     d.openBrowserTaskChat = () => d.agentChatOpen;
     ipcMain.handle("lykn:agent-chat-set", (_e, { open, toggle, agentId } = {}) => {
       if (toggle) return setAgentChatOpen(!d.agentChatOpen, agentId);
@@ -1040,7 +1097,7 @@ function registerAgentBridgeIpc(d) {
   
     // Studio agent rail chat bar → Main orchestrator. Enables Agent Mode
     // quietly (no floating sidebar window — the rail is already showing).
-    ipcMain.handle("lykn:studio-bar-send", async (_e, { text, attachments, agentId, fromSuggestion, bot, task, questionsOnly } = {}) => {
+    ipcMain.handle("lykn:studio-bar-send", async (_e, { text, attachments, agentId, fromSuggestion, task, questionsOnly } = {}) => {
       const rt = runtime();
       try {
         if (!rt.isAgentModeOn?.()) rt.setAgentMode?.(true);
@@ -1055,7 +1112,6 @@ function registerAgentBridgeIpc(d) {
         text,
         attachments,
         fromSuggestion: !!fromSuggestion,
-        bot: bot || null,
         task: task || null,
         questionsOnly: !!questionsOnly,
       });

@@ -200,12 +200,9 @@ export default function AttachedChatThread({
   const loading = !!snap?.isChatLoading;
   const status = String(snap?.chatStatusText || "").trim();
   const trail = useThinkingTrail(status, loading);
-  const liveBot = [...messages].reverse().find((m) => m.bot)?.bot || null;
-  const botAlreadyWorking = messages.some((m) => (m as { botWorking?: boolean }).botWorking);
   const lastAiResponse = String(messages[messages.length - 1]?.aiResponse || "");
   const showWaiting = railShowsWaitingIndicator({
     loading,
-    botAlreadyWorking,
     lastAiResponse,
   });
   const stopped = !loading && /^(stopped|paused)$/i.test(status);
@@ -279,16 +276,6 @@ export default function AttachedChatThread({
                 ))}
               </div>
             ) : null}
-            {(msg as { botWorking?: boolean; botStatus?: string }).botWorking ? (
-              <div className="min-w-0 text-[12px] text-black">
-                <ThinkingIndicator
-                  status={(msg as { botStatus?: string }).botStatus || "Thinking…"}
-                  compact
-                  tone="brand"
-                  bot={(msg as { bot?: { id: string; face: string; eyes: string; color: string } }).bot}
-                />
-              </div>
-            ) : null}
             {images.map((src) => (
               <ChatPopImage
                 key={src}
@@ -307,7 +294,6 @@ export default function AttachedChatThread({
             compact
             tone="brand"
             trail={trail}
-            bot={liveBot}
           />
         </div>
       ) : null}

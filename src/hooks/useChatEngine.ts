@@ -51,7 +51,6 @@ import {
   patchThreadSnapshot,
   registerStreamAbortController,
 } from "@/lib/chat/chatThreadRuntime";
-import { stopBotsWorkingOnChat } from "@/lib/bots/botsClient";
 import {
   enqueuePrompt,
   runNextQueuedPrompt,
@@ -958,11 +957,6 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       sr.streamTargetTextRef.current = ""; sr.streamDisplayedLenRef.current = 0; sr.streamPromptIdRef.current = null;
     }
     flushTypingForStop(bid);
-    try {
-      stopBotsWorkingOnChat(bid);
-    } catch {
-      /* bot stop is best-effort; the stream abort already happened */
-    }
     if (bid) {
       sendingBoardsRef.current.delete(bid);
       streamRuntimeRef.current.delete(bid);

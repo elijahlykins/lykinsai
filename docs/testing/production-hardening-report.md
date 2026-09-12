@@ -28,7 +28,7 @@ No subsystem was redesigned.
 | 2 Tool disclosure | `test:architecture` first-party + voice | NOT TESTED | PASSED characterization. |
 | 3 Memory | `test:memory` | NOT TESTED | PASSED. User Facts copy removed. |
 | 4 Vault | `test:vault` | NOT TESTED | Automated green. Ghost preview / stale selection remain P2. |
-| 5 Bots | `test:agent`, BotExecutor + TaskCompiler allowlist | NOT TESTED | Approval/handoff fallback fixed. Request cannot expand Bot/Routine allowlists. |
+| 5 Bots | `test:agent`, AgentExecutor + TaskCompiler allowlist | NOT TESTED | Approval/handoff fallback fixed. Request cannot expand Bot/Routine allowlists. |
 | 6 Browser | batch abort + generation-scoped `loc=` | NOT TESTED | Stop between batch steps fixed. Stale `loc=` after navigate FIXED. |
 | 7 Local | process-group abort test | NOT TESTED | Cancel kills the zsh group. `runOsa` still has no signal (P2). |
 | 8 Remote | exact target + SSH `-F /dev/null` | NOT TESTED | Substring host match FIXED. `~/.ssh/config` is not rewritten. Non-config targets ignore user HostName rewrite. |
@@ -82,7 +82,7 @@ P1 remediation rows are appended.
 | P1 | MCP results forwarded `access_token` to the model | `lib/mcp/trust.js` | `redactDeep` inside `wrapUntrustedObservation` | oauthTrust observation test |
 | P1 | Local cancel killed zsh but not grandchildren | `electron/localSystem.cjs` | Detached process group + `kill(-pid)` | `electron/localSystem.test.cjs` (`6c8d9ea`) |
 | P1 | Browser batch kept acting after Stop | `electron/browser-agent/index.cjs` | Abort check between steps | `batching.test.cjs` |
-| P1 | Bot fallback completed `[[ask]]` and collapsed approval | `electron/task-runtime/executors/botExecutor.cjs` | Same status mapping as harness path | `botExecutor.test.cjs` |
+| P1 | Bot fallback completed `[[ask]]` and collapsed approval | `electron/task-runtime/executors/agentExecutor.cjs` | Same status mapping as harness path | `agentExecutor.test.cjs` |
 | P2 | Routine `lastFiredOccurrence` was async, so a crash could double-fire | `electron/bot-routines/routineStore.cjs` | `persistNowSync()` in `setSchedulingState` | `scheduler.test.cjs` |
 | P1 | Teach used `el.value` as target name (password leak) | `electron/teach/browserCapture.cjs` | Never use field value for name | `tests/teach/browserCapture.test.cjs` (`2cf32d2`) |
 | P1 | Voice session accumulated tools across turns | `src/hooks/useRealtimeVoice.ts` | Replace the map each turn | `mcp-tools/voiceTools.test.mjs` |

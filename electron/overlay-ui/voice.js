@@ -176,13 +176,6 @@ export function attachVoice(host) {
       try { return JSON.stringify(await startOverlayBrowserAgent(params)); }
       finally { endVoiceTool(); }
     };
-    // Overlay has no bot roster. Send the same work to the browser agent so
-    // "send a bot to this site" still starts the job.
-    tools.ask_bot = async (params) => {
-      beginVoiceTool("ask_bot");
-      try { return JSON.stringify(await startOverlayBrowserAgent(params)); }
-      finally { endVoiceTool(); }
-    };
     return tools;
   }
 

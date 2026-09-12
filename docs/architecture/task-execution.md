@@ -35,9 +35,9 @@ It must not independently decide terminal success.
 The browse brain is `electron/browser-agent/`.
 The actuator is `electron/ownedBrowserAct.cjs` (`runAction`, catalog, screenshots, mail/sheet helpers, satisfaction heuristics).
 
-`BotExecutor` is the only Bot Task execution authority.
-Casual chat: TaskRuntime → BotExecutor → reply-only stream.
-Task-shaped Bot work: TaskRuntime → BotExecutor → Bot Harness → child executors/tools → TaskRuntime.
+`AgentExecutor` is the only Bot Task execution authority.
+Casual chat: TaskRuntime → AgentExecutor → reply-only stream.
+Task-shaped Bot work: TaskRuntime → AgentExecutor → Bot Harness → child executors/tools → TaskRuntime.
 
 Browser-agent and Bot Harness are sibling runtimes.
 They are not merged.
@@ -50,7 +50,7 @@ Default capabilities are `browser.read`, `browser.navigate`, `browser.interact`.
 The compiler does not infer extra capabilities from prose.
 `BrowserExecutor` still enforces the capability set at action time.
 
-Bot Tasks use `defaultBotCapabilities({ localMode })` at the compiler boundary.
+Bot Tasks use `defaultAgentCapabilities({ localMode })` at the compiler boundary.
 The Bot `"browser"` string is the blanket read+navigate+interact grant, not `browser.eval`.
 
 ## Retired execution forks
@@ -60,7 +60,7 @@ These are gone:
 - `LYKN_BROWSER_AGENT=legacy`
 - `ownedBrowserAct.executeOwnedAdaptiveTask`
 - `browser_legacy_fallback` send-tail settlement
-- `LYKN_BOT_HARNESS=0` host-level skip around BotExecutor
+- `LYKN_BOT_HARNESS=0` host-level skip around AgentExecutor
 
 If someone intentionally set `LYKN_BROWSER_AGENT=legacy`, that mode no longer exists.
 If someone intentionally disabled Bot Harness via `LYKN_BOT_HARNESS=0`, that alternate architecture no longer exists.
@@ -71,8 +71,8 @@ A structural miss of `/api/desktop/agent-model` fails the Task.
 It does not swap to a second browse engine.
 Transient 408/429/5xx retries stay inside the same `TaskRuntime.execute`.
 
-BotExecutor may still degrade *inside the executor* to the capability stream when harness `decide` cannot run.
-That is still TaskRuntime → BotExecutor, not a second host architecture.
+AgentExecutor may still degrade *inside the executor* to the capability stream when harness `decide` cannot run.
+That is still TaskRuntime → AgentExecutor, not a second host architecture.
 
 ## Approvals and waiting
 

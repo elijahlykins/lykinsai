@@ -26,7 +26,6 @@ import { VOICE_CLIENT_TOOL_NAMES, VOICE_TOOL_STATUS_COPY } from "@/lib/voice/voi
 import {
   isDesktopVoiceClient,
   runVoiceDesktopTool,
-  snapshotLyknBots,
 } from "@/lib/voice/voiceDesktopTools";
 import { refreshLocalMode } from "@/lib/localMode";
 import VoiceModePopup from "./VoiceModePopup";
@@ -284,7 +283,6 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
           timezone: (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; } })(),
           desktop: isDesktopVoiceClient(),
           localMode: (await refreshLocalMode()) || isDesktopVoiceClient(),
-          lyknBots: snapshotLyknBots(),
         }),
       });
       const data = await res.json().catch(() => ({}));
