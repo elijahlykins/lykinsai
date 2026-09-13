@@ -30,71 +30,59 @@ function run(cmd, args, opts = {}) {
 }
 
 /**
- * Submit the zip once and return the submission id.
+ * Submit the zip and return the submission id from a CLEAN submit only.
  *
- * notarytool 1.1.2 on macOS 26 dies with SIGBUS during `submit` — usually
- * AFTER the upload has landed in Apple's queue (observed 2026-09-03: `submit`
- * crashes, yet `history` shows the submission In Progress seconds later).
- * Recover the id from history instead of failing the whole release: find the
- * newest submission for this zip name created after we started the upload.
+ * notarytool 1.1.2 on macOS 26 is unreliable on large uploads: it has died
+ * with SIGBUS (2026-09-03/09) and with "Connection reset by peer" against the
+ * plain S3 endpoint while the accelerated CloudFront path uploaded the same
+ * 507MB zip fine (2026-09-12) — and vice versa on 2026-09-09. Which path
+ * works varies with the network, so alternate between them.
+ *
+ * A crashed submit must NOT be trusted: it still creates a submission record
+ * in Apple's queue, but the upload may be truncated, leaving a zombie that
+ * reports In Progress forever (observed 2026-09-12: three crashed submits,
+ * all still In Progress hours later, while a clean upload was Accepted in
+ * minutes). So retry the upload itself and only return an id printed by a
+ * clean submit.
  */
 function submitForNotarization(zipPath, authArgs) {
-  const submittedAt = Date.now();
-  console.log(`[notarize] Submitting ${zipPath} …`);
-  // Submit without --wait so we get a clean JSON id even if the queue is slow.
-  const submit = run("xcrun", [
-    "notarytool",
-    "submit",
-    zipPath,
-    ...authArgs,
-    // The S3 transfer-acceleration upload path SIGBUSes on large files here
-    // (macOS 26, notarytool 1.1.2), truncating the upload into a submission
-    // that reports In Progress forever. The plain S3 path uploads reliably —
-    // verified 2026-09-09: the same 507MB zip crashed with acceleration and
-    // was Accepted in ~3 minutes without it.
-    "--no-s3-acceleration",
-    "--output-format",
-    "json",
-  ]);
-  const submitOut = String(submit.stdout || "").trim();
-  try {
-    const submitted = JSON.parse(submitOut);
-    if (!submitted?.id) {
-      throw new Error(`[notarize] submit missing id:\n${submitOut}`);
+  const UPLOAD_ATTEMPTS = 6;
+  let last = null;
+  for (let attempt = 1; attempt <= UPLOAD_ATTEMPTS; attempt++) {
+    // Odd attempts use the accelerated (CloudFront) path, even attempts the
+    // plain S3 path, so a broken route to either endpoint can't stall us.
+    const accelArgs = attempt % 2 === 0 ? ["--no-s3-acceleration"] : [];
+    console.log(
+      `[notarize] Uploading ${zipPath} (attempt ${attempt}/${UPLOAD_ATTEMPTS}, ` +
+        `${accelArgs.length ? "plain S3" : "accelerated"}) …`,
+    );
+    const submit = run("xcrun", [
+      "notarytool",
+      "submit",
+      zipPath,
+      ...authArgs,
+      ...accelArgs,
+      "--output-format",
+      "json",
+    ]);
+    last = submit;
+    const submitOut = String(submit.stdout || "").trim();
+    try {
+      const submitted = JSON.parse(submitOut);
+      if (submitted?.id) return submitted.id;
+    } catch {
+      /* fall through to retry */
     }
-    return submitted.id;
-  } catch {
     console.warn(
-      `[notarize] submit crashed (code ${submit.status}, signal ${submit.signal}) — recovering id from history …`,
+      `[notarize] upload attempt ${attempt} failed (code ${submit.status}, ` +
+        `signal ${submit.signal}):\n${(submit.stderr || submit.stdout || "").slice(0, 500)}`,
     );
+    run("sleep", ["10"]);
   }
-  const zipName = path.basename(zipPath);
-  const history = run("xcrun", [
-    "notarytool",
-    "history",
-    ...authArgs,
-    "--output-format",
-    "json",
-  ]);
-  let recovered = null;
-  try {
-    const parsed = JSON.parse(String(history.stdout || "").trim());
-    // Allow a small clock skew between this machine and Apple.
-    const cutoff = submittedAt - 5 * 60 * 1000;
-    recovered = (parsed.history || [])
-      .filter((h) => h.name === zipName && Date.parse(h.createdDate) >= cutoff)
-      .sort((a, b) => Date.parse(b.createdDate) - Date.parse(a.createdDate))[0];
-  } catch {
-    recovered = null;
-  }
-  if (!recovered?.id) {
-    throw new Error(
-      `[notarize] submit returned non-JSON (code ${submit.status}) and no matching ` +
-        `submission found in history:\n${submitOut}\n${submit.stderr || ""}`,
-    );
-  }
-  console.log(`[notarize] Recovered submission id ${recovered.id} from history.`);
-  return recovered.id;
+  throw new Error(
+    `[notarize] all ${UPLOAD_ATTEMPTS} upload attempts failed; last code ` +
+      `${last?.status}, signal ${last?.signal}:\n${last?.stderr || last?.stdout || ""}`,
+  );
 }
 
 /**
@@ -232,7 +220,7 @@ exports.default = async function notarizing(context) {
   // release on a single submission id — cap the wait per submission and
   // resubmit the same bytes fresh.
   const ATTEMPTS = 3;
-  const WAIT_MINUTES = 20;
+  const WAIT_MINUTES = 30;
   let waited = null;
   let submissionId = null;
   for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
@@ -243,8 +231,8 @@ exports.default = async function notarizing(context) {
     waited = waitForSubmission(submissionId, authArgs, WAIT_MINUTES);
     if (waited) break;
     console.warn(
-      `[notarize] ${submissionId} still In Progress after ${WAIT_MINUTES}m — ` +
-        `likely a truncated upload (notarytool SIGBUS)${attempt < ATTEMPTS ? "; submitting fresh …" : ""}`,
+      `[notarize] ${submissionId} still In Progress after ${WAIT_MINUTES}m` +
+        `${attempt < ATTEMPTS ? " — submitting fresh …" : ""}`,
     );
   }
   if (!waited) {
